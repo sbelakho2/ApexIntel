@@ -120,8 +120,17 @@ pub async fn mark_notification_read(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     if let Ok(uuid) = Uuid::parse_str(&id) {
-        let _ = store.mark_notification_read(&session.user_id, uuid).await;
+        if let Err(error) = store.mark_notification_read(&session.user_id, uuid).await {
+            // Authoritative persistence: do not redirect as if the read state
+            // was stored when the write failed.
+            tracing::error!(%error, notification_id = %id, "mark_notification_read: write failed");
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to mark notification read",
+            )
+                .into_response();
+        }
     }
 
-    Redirect::to("/notifications")
+    Redirect::to("/notifications").into_response()
 }

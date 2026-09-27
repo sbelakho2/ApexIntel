@@ -6,13 +6,15 @@
 //! - Subdomain discovery
 //! - Certificate misuse detection
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
 use tracing::{info, warn};
+
+use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
 
 /// A certificate entry from CT logs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +117,12 @@ impl CtMonitor {
             .timeout(StdDuration::from_secs(30))
             .user_agent("ApexIntel-CtMonitor/1.0")
             .build()
-            .unwrap_or_else(|error| panic!("failed to build CT monitor HTTP client: {error}"));
+            .unwrap_or_else(|error| {
+                // CT monitoring is best-effort telemetry; never panic the
+                // worker over an HTTP client construction failure.
+                warn!(%error, "CtMonitor: failed to build HTTP client; using default client");
+                Client::new()
+            });
 
         Self {
             client,
@@ -124,12 +131,17 @@ impl CtMonitor {
         }
     }
 
-    /// Search for certificates for a domain
+    /// Search for certificates for a domain.
+    ///
+    /// Returns a [`ParseOutcome`]: a crt.sh outage is `FetchFailed`, an
+    /// unparseable body is `ParseFailed` (with a redacted sample), and only a
+    /// successfully deserialized response — empty or not — is
+    /// `ParsedSuccessfully`.
     pub async fn search_certificates(
         &self,
         domain: &str,
         include_expired: bool,
-    ) -> Result<Vec<CtCertificate>> {
+    ) -> ParseOutcome<CtCertificate> {
         info!(domain = %domain, "Searching CT logs for certificates");
 
         let url = format!(
@@ -143,42 +155,78 @@ impl CtMonitor {
             }
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("crt.sh request failed")?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome =
+                    ParseOutcome::fetch_failed(format!("crt.sh request failed: {error}"), None);
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
-            warn!(status = %resp.status(), "crt.sh returned non-success");
-            return Ok(Vec::new());
+            let status = resp.status().as_u16();
+            let outcome =
+                ParseOutcome::fetch_failed(format!("crt.sh returned HTTP {status}"), Some(status));
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
-        let text = resp
-            .text()
-            .await
-            .context("Failed to read crt.sh response")?;
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read crt.sh response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         // Handle empty response
-        if text.is_empty() || text == "[]" {
-            return Ok(Vec::new());
+        if text.is_empty() || text.trim() == "[]" {
+            let outcome = ParseOutcome::parsed(Vec::new());
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
-        let entries: Vec<CrtShEntry> =
-            serde_json::from_str(&text).context("Failed to parse crt.sh JSON")?;
+        let entries: Vec<CrtShEntry> = match serde_json::from_str(&text) {
+            Ok(entries) => entries,
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to parse crt.sh JSON: {error}"),
+                    &text,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
-        let certs = entries.into_iter().map(|e| e.into_certificate()).collect();
-
-        Ok(certs)
+        let outcome =
+            ParseOutcome::parsed(entries.into_iter().map(|e| e.into_certificate()).collect());
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 
-    /// Monitor domains and generate alerts
+    /// Monitor domains and generate alerts.
+    ///
+    /// Fails the caller when any domain's fetch or parse failed: an empty
+    /// alert list must only mean "no alerts", never "the parser broke".
     pub async fn monitor(&self) -> Result<Vec<CtAlert>> {
         let mut alerts = Vec::new();
 
         for domain in &self.config.domains.clone() {
-            let certs = self.search_certificates(domain, false).await?;
+            let certs = match self.search_certificates(domain, false).await {
+                ParseOutcome::ParsedSuccessfully { items } => items,
+                ParseOutcome::FetchFailed { error, .. } => {
+                    anyhow::bail!("crt.sh fetch failed for {domain}: {error}")
+                }
+                ParseOutcome::ParseFailed { error, .. } => {
+                    anyhow::bail!("crt.sh parser failed for {domain}: {error}")
+                }
+            };
 
             for cert in certs {
                 alerts.extend(self.analyze_certificate(&cert, domain));
@@ -188,8 +236,11 @@ impl CtMonitor {
         Ok(alerts)
     }
 
-    /// Search for lookalike certificates
-    pub async fn search_lookalikes(&self, base_domain: &str) -> Result<Vec<CtCertificate>> {
+    /// Search for lookalike certificates.
+    ///
+    /// Parse failures are returned as [`ParseOutcome::ParseFailed`] instead of
+    /// being converted into "no lookalikes found".
+    pub async fn search_lookalikes(&self, base_domain: &str) -> ParseOutcome<CtCertificate> {
         info!(domain = %base_domain, "Searching for lookalike certificates");
 
         // Use wildcard search to find similar domains
@@ -200,23 +251,55 @@ impl CtMonitor {
             urlencoding::encode(base)
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("crt.sh lookalike search failed")?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("crt.sh lookalike search failed: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            let status = resp.status().as_u16();
+            let outcome =
+                ParseOutcome::fetch_failed(format!("crt.sh returned HTTP {status}"), Some(status));
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
-        let text = resp.text().await?;
-        if text.is_empty() || text == "[]" {
-            return Ok(Vec::new());
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read crt.sh response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        if text.is_empty() || text.trim() == "[]" {
+            let outcome = ParseOutcome::parsed(Vec::new());
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
-        let entries: Vec<CrtShEntry> = serde_json::from_str(&text).unwrap_or_default();
+        let entries: Vec<CrtShEntry> = match serde_json::from_str(&text) {
+            Ok(entries) => entries,
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to parse crt.sh lookalike JSON: {error}"),
+                    &text,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         // Filter to lookalikes (not exact matches)
         let lookalikes = entries
@@ -230,14 +313,25 @@ impl CtMonitor {
             .map(|e| e.into_certificate())
             .collect();
 
-        Ok(lookalikes)
+        let outcome = ParseOutcome::parsed(lookalikes);
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 
-    /// Get subdomains discovered via CT logs
+    /// Get subdomains discovered via CT logs.
     pub async fn discover_subdomains(&self, domain: &str) -> Result<Vec<String>> {
-        let certs = self
+        let certs = match self
             .search_certificates(&format!("%.{}", domain), true)
-            .await?;
+            .await
+        {
+            ParseOutcome::ParsedSuccessfully { items } => items,
+            ParseOutcome::FetchFailed { error, .. } => {
+                anyhow::bail!("crt.sh fetch failed for {domain}: {error}")
+            }
+            ParseOutcome::ParseFailed { error, .. } => {
+                anyhow::bail!("crt.sh parser failed for {domain}: {error}")
+            }
+        };
 
         let mut subdomains: HashSet<String> = HashSet::new();
 

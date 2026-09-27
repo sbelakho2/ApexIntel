@@ -53,7 +53,9 @@ pub async fn get_placements(
     let mut placements = Vec::new();
     for row in &rows {
         use sqlx::Row;
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
         let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
         let metadata: serde_json::Value = row.try_get("metadata").unwrap_or_default();
         let confidence: f64 = row.try_get("confidence").unwrap_or(0.0);
         let created_at: chrono::DateTime<Utc> = row.try_get("created_at").unwrap_or_else(|_| Utc::now());
@@ -129,7 +131,9 @@ pub async fn get_quarantine(
     let mut items = Vec::new();
     for row in &rows {
         use sqlx::Row;
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
         let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
         let value: serde_json::Value = row.try_get("value").unwrap_or_default();
         let created_at: chrono::DateTime<Utc> = row.try_get("created_at").unwrap_or_else(|_| Utc::now());
 
@@ -209,6 +213,7 @@ pub async fn get_source_reliability(
         let last_updated: chrono::DateTime<Utc> = row
             .try_get("last_updated")
             .unwrap_or_else(|_| Utc::now());
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
         let metadata: serde_json::Value = row.try_get("metadata").unwrap_or_default();
 
         let tier = match tier_str.as_str() {

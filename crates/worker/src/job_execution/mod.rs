@@ -144,7 +144,9 @@ pub(crate) async fn execute_job(
         JobKind::SlaEnforcement => security::run_sla_enforcement(kind, store).await,
         JobKind::DnsPostureScan => security::run_dns_posture_scan(kind, store, &ctx.ingress).await,
         JobKind::KevCatalogFetch => security::run_kev_catalog_fetch(kind, store).await,
-        JobKind::LookalikeDomainScan => security::run_lookalike_domain_scan(kind, store).await,
+        JobKind::LookalikeDomainScan => {
+            security::run_lookalike_domain_scan(kind, store, &ctx.ingress).await
+        }
         JobKind::SelfImprovementCycle => {
             intelligence::run_self_improvement_cycle(kind, store, ctx).await
         }

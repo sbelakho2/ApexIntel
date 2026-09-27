@@ -137,7 +137,14 @@ pub(super) async fn run_starzcrm_sync(store: &Arc<PgStore>) -> JobRun {
     let deal_count = deals.len();
     if deal_count == 0 {
         // Update sync state to record that we checked but found nothing new.
-        let _ = update_sync_state(store, last_deal_id, last_account_id, 0).await;
+        // This cursor is authoritative for incremental sync: swallowing a
+        // failed write would report success with an unadvanced checkpoint.
+        if let Err(error) = update_sync_state(store, last_deal_id, last_account_id, 0).await {
+            run.fail(&format!(
+                "starzcrm_sync: failed to persist sync state for empty sync: {error}"
+            ));
+            return run;
+        }
         run.succeed(0, "no new deals to sync");
         return run;
     }
@@ -696,6 +703,7 @@ pub(crate) async fn write_back_icp_targets(
     )
     .fetch_one(mysql_pool)
     .await
+    // false-success-classification: best-effort — optional boolean default; absence is not a failure
     .unwrap_or(false);
 
     if !has_leads {

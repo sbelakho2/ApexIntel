@@ -460,6 +460,7 @@ pub(crate) async fn regenerate_battlecard(
         .store
         .list_closed_deals(bc.our_company_id, Some(bc.competitor_id), 200)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let closed_deals: Vec<apex_insights::battlecards::ClosedDeal> = deal_rows
         .iter()
@@ -477,6 +478,7 @@ pub(crate) async fn regenerate_battlecard(
         .store
         .list_competitor_pricing(bc.competitor_id)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let pricing: Vec<apex_insights::battlecards::PricingObservation> = pricing_rows
         .iter()
@@ -508,6 +510,7 @@ pub(crate) async fn regenerate_battlecard(
         .store
         .list_insights(&filters, 20, 0)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let insights: Vec<apex_insights::Insight> = insight_rows
         .iter()
@@ -618,6 +621,7 @@ pub(crate) async fn regenerate_battlecard(
             tracing::warn!(section, error = %e, "regenerate_battlecard: persist section failed");
         }
     }
+    // false-success-classification: best-effort — timestamp touch-up on an already-persisted battlecard
     let _ = state.store.update_battlecard_timestamp(uid).await;
 
     // 7. Activity-feed entry (best-effort).

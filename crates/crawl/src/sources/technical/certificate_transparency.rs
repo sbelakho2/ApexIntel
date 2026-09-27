@@ -9,13 +9,15 @@
 //!
 //! Certificate Transparency logs are mandated by CA/Browser Forum for all public CAs.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration;
 use tracing::{debug, info};
+
+use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
 
 /// A discovered certificate from CT logs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,27 +98,86 @@ impl CtMonitor {
     }
 
     /// Search crt.sh for certificates matching a domain.
-    pub async fn search_domain(&mut self, domain: &str) -> Result<Vec<CtCertificate>> {
+    ///
+    /// Distinguishes fetch failure, parse failure (schema change with a
+    /// redacted sample) and a successfully deserialized — possibly empty —
+    /// result.
+    pub async fn search_domain(&mut self, domain: &str) -> ParseOutcome<CtCertificate> {
         let url = format!(
             "https://crt.sh/?q={}&output=json",
             urlencoding::encode(domain)
         );
 
-        let resp = self
+        let resp = match self
             .client
             .get(&url)
             .header("User-Agent", "ApexIntel/1.0 CT Monitor")
             .send()
             .await
-            .context("crt.sh API request")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome =
+                    ParseOutcome::fetch_failed(format!("crt.sh API request failed: {error}"), None);
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), domain = %domain, "crt.sh returned non-success");
-            return Ok(Vec::new());
+            let outcome =
+                ParseOutcome::fetch_failed(format!("crt.sh returned HTTP {status}"), Some(status));
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
-        let entries: Vec<CtLogEntry> = resp.json().await.unwrap_or_default();
-        self.entries_to_certs(&entries, domain)
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read crt.sh response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        if text.is_empty() || text.trim() == "[]" {
+            let outcome = ParseOutcome::parsed(Vec::new());
+            PARSER_METRICS.record(&outcome);
+            return outcome;
+        }
+
+        let entries: Vec<CtLogEntry> = match serde_json::from_str(&text) {
+            Ok(entries) => entries,
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to parse crt.sh JSON: {error}"),
+                    &text,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        match self.entries_to_certs(&entries, domain) {
+            Ok(certs) => {
+                let outcome = ParseOutcome::parsed(certs);
+                PARSER_METRICS.record(&outcome);
+                outcome
+            }
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to convert crt.sh entries: {error}"),
+                    &text,
+                );
+                PARSER_METRICS.record(&outcome);
+                outcome
+            }
+        }
     }
 
     fn entries_to_certs(
@@ -176,8 +237,19 @@ impl CtMonitor {
     }
 
     /// Enumerate subdomains from CT logs.
+    ///
+    /// Propagates fetch/parse failures instead of returning an empty list, so
+    /// a broken crt.sh response cannot masquerade as "no subdomains".
     pub async fn enumerate_subdomains(&mut self, domain: &str) -> Result<Vec<String>> {
-        let certs = self.search_domain(domain).await?;
+        let certs = match self.search_domain(domain).await {
+            ParseOutcome::ParsedSuccessfully { items } => items,
+            ParseOutcome::FetchFailed { error, .. } => {
+                anyhow::bail!("crt.sh fetch failed for {domain}: {error}")
+            }
+            ParseOutcome::ParseFailed { error, .. } => {
+                anyhow::bail!("crt.sh parser failed for {domain}: {error}")
+            }
+        };
         let mut subdomains: HashSet<String> = HashSet::new();
 
         for cert in &certs {

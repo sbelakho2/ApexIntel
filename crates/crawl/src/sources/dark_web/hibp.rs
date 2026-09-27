@@ -16,6 +16,8 @@ use sha1::{Digest, Sha1};
 use std::time::Duration;
 use tracing::debug;
 
+use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
+
 /// API mode for HIBP queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HibpApiMode {
@@ -156,7 +158,11 @@ impl HibpMonitor {
     }
 
     /// Check if an email has been in any breach (k-Anonymous API).
-    pub async fn check_breaches(&self, email: &str) -> Result<Vec<HibpBreach>> {
+    ///
+    /// A 404 means the hash prefix is not in the corpus — a definitive
+    /// "no breach" parsed success. A malformed body that contains no
+    /// `HASH:COUNT` line is a parse failure, not an empty result.
+    pub async fn check_breaches(&self, email: &str) -> ParseOutcome<HibpBreach> {
         // Compute SHA-1 hash of email
         let mut hasher = Sha1::new();
         hasher.update(email.as_bytes());
@@ -169,72 +175,135 @@ impl HibpMonitor {
             urlencoding::encode(prefix)
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("HIBP k-Anonymous API request")?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("HIBP k-Anonymous API request failed: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
-            if resp.status().as_u16() == 404 {
-                return Ok(Vec::new());
+            let status = resp.status().as_u16();
+            if status == 404 {
+                let outcome = ParseOutcome::parsed(Vec::new());
+                PARSER_METRICS.record(&outcome);
+                return outcome;
             }
-            anyhow::bail!("HIBP API returned {}", resp.status());
+            let outcome = ParseOutcome::fetch_failed(
+                format!("HIBP API returned HTTP {status}"),
+                Some(status),
+            );
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
-        let text = resp.text().await.context("read HIBP response")?;
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read HIBP response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        let mut parsed_lines = 0usize;
+        let mut breaches = Vec::new();
         for line in text.lines() {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 2 && parts[0].to_uppercase() == suffix.to_uppercase() {
-                let count: u64 = parts[1].trim().parse().unwrap_or(0);
-                if count > 0 {
-                    debug!(email = %email, count = count, "HIBP breach found via k-Anonymous API");
-                    return Ok(vec![HibpBreach {
-                        name: "PwnedPassword".to_string(),
-                        title: "Password found in breach".to_string(),
-                        domain: "pwnedpasswords.com".to_string(),
-                        breach_date: Utc::now(),
-                        added_date: Utc::now(),
-                        modified_date: Utc::now(),
-                        pwn_count: count,
-                        description: format!("The password associated with this account was found in {} data breaches.", count),
-                        data_classes: vec!["Passwords".to_string()],
-                        is_verified: false,
-                        is_fabricated: false,
-                        is_sensitive: true,
-                        is_retired: false,
-                        is_spam_list: false,
-                        logo_path: None,
-                    }]);
-                }
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((line_hash, count_raw)) = line.split_once(':') else {
+                continue;
+            };
+            // Best-effort telemetry: a single malformed line is skipped, but
+            // if *no* line in the body parses as HASH:COUNT the schema changed.
+            let Ok(count) = count_raw.trim().parse::<u64>() else {
+                continue;
+            };
+            parsed_lines += 1;
+            if line_hash.to_uppercase() == suffix.to_uppercase() && count > 0 {
+                debug!(email = %email, count = count, "HIBP breach found via k-Anonymous API");
+                breaches.push(HibpBreach {
+                    name: "PwnedPassword".to_string(),
+                    title: "Password found in breach".to_string(),
+                    domain: "pwnedpasswords.com".to_string(),
+                    breach_date: Utc::now(),
+                    added_date: Utc::now(),
+                    modified_date: Utc::now(),
+                    pwn_count: count,
+                    description: format!(
+                        "The password associated with this account was found in {} data breaches.",
+                        count
+                    ),
+                    data_classes: vec!["Passwords".to_string()],
+                    is_verified: false,
+                    is_fabricated: false,
+                    is_sensitive: true,
+                    is_retired: false,
+                    is_spam_list: false,
+                    logo_path: None,
+                });
             }
         }
 
-        Ok(Vec::new())
+        if parsed_lines == 0 && !text.trim().is_empty() {
+            let outcome =
+                ParseOutcome::parse_failed("HIBP range response had no HASH:COUNT lines", &text);
+            PARSER_METRICS.record(&outcome);
+            return outcome;
+        }
+
+        let outcome = ParseOutcome::parsed(breaches);
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 
     /// Get all breaches (full API).
-    pub async fn all_breaches(&self) -> Result<Vec<HibpBreach>> {
-        let api_key = self
-            .config
-            .api_key
-            .as_ref()
-            .context("HIBP full API requires an API key")?;
+    pub async fn all_breaches(&self) -> ParseOutcome<HibpBreach> {
+        let Some(api_key) = self.config.api_key.as_ref() else {
+            let outcome = ParseOutcome::fetch_failed("HIBP full API requires an API key", None);
+            PARSER_METRICS.record(&outcome);
+            return outcome;
+        };
 
-        let url = "https://haveibeenpwned.com/api/v3/all breaches";
-        let resp = self
+        let url = "https://haveibeenpwned.com/api/v3/breaches";
+        let resp = match self
             .client
             .get(url)
             .header("hibp-api-key", api_key)
             .header("user-agent", "ApexIntel/1.0")
             .send()
             .await
-            .context("HIBP all breaches request")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("HIBP all-breaches request failed: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), "HIBP all breaches returned non-success");
-            return Ok(Vec::new());
+            let outcome = ParseOutcome::fetch_failed(
+                format!("HIBP all-breaches returned HTTP {status}"),
+                Some(status),
+            );
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
         #[derive(Deserialize)]
@@ -256,56 +325,131 @@ impl HibpMonitor {
             is_spam_list: bool,
         }
 
-        let breaches: Vec<HibpApiBreach> = resp.json().await.unwrap_or_default();
-        Ok(breaches
-            .into_iter()
-            .map(|b| HibpBreach {
-                name: b.name,
-                title: b.title,
-                domain: b.domain,
-                breach_date: chrono::DateTime::parse_from_rfc3339(&b.breach_date)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                added_date: chrono::DateTime::parse_from_rfc3339(&b.added_date)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read HIBP all-breaches response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        let breaches: Vec<HibpApiBreach> = match serde_json::from_str(&text) {
+            Ok(breaches) => breaches,
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to parse HIBP all-breaches JSON: {error}"),
+                    &text,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        // Date parsing failure is a schema change, not a reason to silently
+        // substitute "now" and keep a fabricated breach timestamp.
+        let mut mapped = Vec::with_capacity(breaches.len());
+        for breach in breaches {
+            let breach_date = match chrono::DateTime::parse_from_rfc3339(&breach.breach_date) {
+                Ok(date) => date.with_timezone(&Utc),
+                Err(error) => {
+                    let outcome = ParseOutcome::parse_failed(
+                        format!(
+                            "failed to parse HIBP breach_date '{}': {error}",
+                            breach.breach_date
+                        ),
+                        &text,
+                    );
+                    PARSER_METRICS.record(&outcome);
+                    return outcome;
+                }
+            };
+            let added_date = match chrono::DateTime::parse_from_rfc3339(&breach.added_date) {
+                Ok(date) => date.with_timezone(&Utc),
+                Err(error) => {
+                    let outcome = ParseOutcome::parse_failed(
+                        format!(
+                            "failed to parse HIBP added_date '{}': {error}",
+                            breach.added_date
+                        ),
+                        &text,
+                    );
+                    PARSER_METRICS.record(&outcome);
+                    return outcome;
+                }
+            };
+            mapped.push(HibpBreach {
+                name: breach.name,
+                title: breach.title,
+                domain: breach.domain,
+                breach_date,
+                added_date,
                 modified_date: Utc::now(),
-                pwn_count: b.pwn_count,
-                description: b.description,
-                data_classes: b.data_classes,
-                is_verified: b.is_verified,
-                is_fabricated: b.is_fabricated,
-                is_sensitive: b.is_sensitive,
-                is_retired: b.is_retired,
-                is_spam_list: b.is_spam_list,
+                pwn_count: breach.pwn_count,
+                description: breach.description,
+                data_classes: breach.data_classes,
+                is_verified: breach.is_verified,
+                is_fabricated: breach.is_fabricated,
+                is_sensitive: breach.is_sensitive,
+                is_retired: breach.is_retired,
+                is_spam_list: breach.is_spam_list,
                 logo_path: None,
-            })
-            .collect())
+            });
+        }
+
+        let outcome = ParseOutcome::parsed(mapped);
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 
     /// Check for pastes associated with an email (full API).
-    pub async fn check_pastes(&self, email: &str) -> Result<Vec<HibpPaste>> {
-        let api_key = self
-            .config
-            .api_key
-            .as_ref()
-            .context("HIBP paste check requires an API key")?;
+    ///
+    /// A 404 means no pastes (parsed success, empty); other non-success
+    /// statuses are fetch failures instead of a fake "no pastes".
+    pub async fn check_pastes(&self, email: &str) -> ParseOutcome<HibpPaste> {
+        let Some(api_key) = self.config.api_key.as_ref() else {
+            let outcome = ParseOutcome::fetch_failed("HIBP paste check requires an API key", None);
+            PARSER_METRICS.record(&outcome);
+            return outcome;
+        };
 
         let url = format!(
             "https://haveibeenpwned.com/api/v3/pasteaccount/{}",
             urlencoding::encode(email)
         );
-        let resp = self
+        let resp = match self
             .client
             .get(&url)
             .header("hibp-api-key", api_key)
             .header("user-agent", "ApexIntel/1.0")
             .send()
             .await
-            .context("HIBP paste request")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome =
+                    ParseOutcome::fetch_failed(format!("HIBP paste request failed: {error}"), None);
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            let status = resp.status().as_u16();
+            if status == 404 {
+                let outcome = ParseOutcome::parsed(Vec::new());
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+            let outcome = ParseOutcome::fetch_failed(
+                format!("HIBP paste API returned HTTP {status}"),
+                Some(status),
+            );
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
         #[derive(Deserialize)]
@@ -319,43 +463,117 @@ impl HibpMonitor {
             email_count: u64,
         }
 
-        let pastes: Vec<HibpApiPaste> = resp.json().await.unwrap_or_default();
-        Ok(pastes
-            .into_iter()
-            .map(|p| {
-                let source_lower = p.source.to_lowercase();
-                let id = p.id.clone();
-                HibpPaste {
-                    source: p.source,
-                    id,
-                    title: p.title,
-                    date: chrono::DateTime::parse_from_rfc3339(&p.date)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    email_count: p.email_count,
-                    url: Some(format!("https://{}.com/{}", source_lower, p.id)),
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read HIBP paste response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        if text.trim().is_empty() {
+            let outcome = ParseOutcome::parsed(Vec::new());
+            PARSER_METRICS.record(&outcome);
+            return outcome;
+        }
+
+        let pastes: Vec<HibpApiPaste> = match serde_json::from_str(&text) {
+            Ok(pastes) => pastes,
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to parse HIBP paste JSON: {error}"),
+                    &text,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        let mut mapped = Vec::with_capacity(pastes.len());
+        for paste in pastes {
+            let source_lower = paste.source.to_lowercase();
+            let id = paste.id.clone();
+            let date = match chrono::DateTime::parse_from_rfc3339(&paste.date) {
+                Ok(date) => date.with_timezone(&Utc),
+                Err(error) => {
+                    let outcome = ParseOutcome::parse_failed(
+                        format!("failed to parse HIBP paste date '{}': {error}", paste.date),
+                        &text,
+                    );
+                    PARSER_METRICS.record(&outcome);
+                    return outcome;
                 }
-            })
-            .collect())
+            };
+            mapped.push(HibpPaste {
+                source: paste.source,
+                id: id.clone(),
+                title: paste.title,
+                date,
+                email_count: paste.email_count,
+                url: Some(format!("https://{}.com/{}", source_lower, id)),
+            });
+        }
+
+        let outcome = ParseOutcome::parsed(mapped);
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 
     /// Aggregate breach results for an email.
-    pub async fn full_check(&self, email: &str) -> HibpCheckResult {
-        let breaches = self.check_breaches(email).await.unwrap_or_default();
-        let paste_count = self.check_pastes(email).await.map(|p| p.len()).unwrap_or(0);
+    ///
+    /// Never converts a fetch/parse failure into a "clean" result: the
+    /// [`HibpCheckResult`] carries the failure states so callers cannot
+    /// mistake a broken HIBP response for "no breaches".
+    pub async fn full_check(&self, email: &str) -> HibpFullCheckResult {
+        let breaches = self.check_breaches(email).await;
+        let pastes = self.check_pastes(email).await;
 
-        HibpCheckResult {
-            email: email.to_string(),
-            breach_count: breaches.len(),
-            paste_count,
-            total_affected: breaches.iter().map(|b| b.pwn_count).sum(),
-            highest_severity: breaches
-                .iter()
-                .max_by(|a, b| a.pwn_count.cmp(&b.pwn_count))
-                .map(|b| b.title.clone()),
-            breaches,
-            checked_at: Utc::now(),
+        let breach_failure = breaches.failure_error().map(str::to_string);
+        let paste_failure = pastes.failure_error().map(str::to_string);
+        let breach_items: Vec<HibpBreach> = breaches.into_items();
+        let paste_count = pastes.item_count();
+
+        HibpFullCheckResult {
+            result: HibpCheckResult {
+                email: email.to_string(),
+                breach_count: breach_items.len(),
+                paste_count,
+                total_affected: breach_items.iter().map(|b| b.pwn_count).sum(),
+                highest_severity: breach_items
+                    .iter()
+                    .max_by(|a, b| a.pwn_count.cmp(&b.pwn_count))
+                    .map(|b| b.title.clone()),
+                breaches: breach_items,
+                checked_at: Utc::now(),
+            },
+            breach_failure,
+            paste_failure,
         }
+    }
+}
+
+/// Full HIBP check result plus any fetch/parse failures that prevented a
+/// definitive answer. A caller must not treat a non-`None` failure as "clean".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HibpFullCheckResult {
+    pub result: HibpCheckResult,
+    pub breach_failure: Option<String>,
+    pub paste_failure: Option<String>,
+}
+
+impl HibpFullCheckResult {
+    /// True when every HIBP sub-check completed (a clean or breached answer).
+    pub fn is_complete(&self) -> bool {
+        self.breach_failure.is_none() && self.paste_failure.is_none()
+    }
+
+    /// True only when HIBP definitively reported no breach and no paste.
+    pub fn is_definitively_clean(&self) -> bool {
+        self.is_complete() && !self.result.is_pwned() && self.result.paste_count == 0
     }
 }
 
@@ -470,5 +688,33 @@ mod tests {
     fn hibp_monitor_constructs() {
         let result = HibpMonitor::new(Default::default());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn hibp_full_check_treats_failures_as_not_clean() {
+        let clean_result = HibpCheckResult {
+            email: "test@example.com".to_string(),
+            breach_count: 0,
+            paste_count: 0,
+            total_affected: 0,
+            highest_severity: None,
+            breaches: vec![],
+            checked_at: Utc::now(),
+        };
+        let clean = HibpFullCheckResult {
+            result: clean_result.clone(),
+            breach_failure: None,
+            paste_failure: None,
+        };
+        assert!(clean.is_complete());
+        assert!(clean.is_definitively_clean());
+
+        let degraded = HibpFullCheckResult {
+            result: clean_result,
+            breach_failure: Some("failed to parse HIBP JSON".to_string()),
+            paste_failure: None,
+        };
+        assert!(!degraded.is_complete());
+        assert!(!degraded.is_definitively_clean());
     }
 }

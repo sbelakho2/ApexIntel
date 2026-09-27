@@ -147,6 +147,7 @@ pub async fn list_recipes(
         .await
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/recipes", unack);
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let active_status = params.status.clone().unwrap_or_default();
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(25).clamp(1, 100);

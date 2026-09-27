@@ -131,3 +131,71 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
         .unwrap();
     pool.close().await;
 }
+
+/// Parser failures (fetch succeeded, deserialization did not) must degrade the
+/// source and preserve `last_success_at`: a schema change is not a successful
+/// empty parse, and the last known-good validation timestamp stays intact.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn source_parse_failure_preserves_last_success_and_degrades() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = PgStore::from_pool(pool.clone());
+    let slug = "integration_parser_contract_feed";
+
+    sqlx::query("DELETE FROM source_runtime_state WHERE source_slug = $1")
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let base = Utc::now();
+    let interval = Duration::hours(24);
+    let success_at = base - Duration::hours(2);
+    let row = store
+        .record_source_success(slug, interval, Some(90.0), Some(200), success_at)
+        .await
+        .unwrap();
+    assert_eq!(row.last_success_at, Some(success_at));
+    assert_eq!(row.consecutive_failures, 0);
+
+    let failure_at = base;
+    let row = store
+        .record_source_parse_failure(
+            slug,
+            "failed to parse source JSON: missing field `items`",
+            Some("[{\"unexpected\": true}]"),
+            Some(200),
+            interval,
+            failure_at,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        row.last_success_at,
+        Some(success_at),
+        "a parser failure must NOT update last_success_at"
+    );
+    assert_eq!(
+        row.consecutive_failures, 1,
+        "a parser failure must mark the source degraded (backoff counter advances)"
+    );
+    assert_eq!(row.last_attempt_at, Some(failure_at));
+    assert!(
+        row.last_error.as_deref().is_some_and(|error| {
+            error.starts_with("parser_failure:")
+                && error.contains("missing field `items`")
+                && error.contains("sample:")
+        }),
+        "parser failure metadata (error + redacted sample) must be preserved: {:?}",
+        row.last_error
+    );
+
+    sqlx::query("DELETE FROM source_runtime_state WHERE source_slug = $1")
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}

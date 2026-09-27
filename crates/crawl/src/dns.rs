@@ -9,6 +9,10 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use hickory_resolver::proto::op::ResponseCode;
+use hickory_resolver::proto::{ProtoError, ProtoErrorKind};
+use hickory_resolver::TokioResolver;
+use hickory_resolver::{ResolveError, ResolveErrorKind};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -127,7 +131,15 @@ impl DnsChecker {
             .timeout(Duration::from_secs(10))
             .user_agent("ApexIntel-DnsChecker/1.0")
             .build()
-            .unwrap_or_else(|error| panic!("failed to build DNS checker HTTP client: {error}"));
+            .unwrap_or_else(|error| {
+                // DNS posture checks are best-effort telemetry; a rare HTTP
+                // client construction failure must not panic the worker.
+                tracing::warn!(
+                    %error,
+                    "DnsChecker: failed to build HTTP client; falling back to default client"
+                );
+                Client::new()
+            });
 
         Self {
             client,
@@ -579,8 +591,325 @@ impl DnsChecker {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Structured DNS resolution (hickory-resolver)
+//
+// Shelling out to `dig` conflated NXDOMAIN, empty answers, timeouts and
+// process failures into one empty string, which made "no SPF/DKIM/DMARC" and
+// "the resolver was broken" indistinguishable. These types keep the outcome
+// explicit so callers can record definite absence differently from an unknown
+// resolution state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Outcome of one structured DNS lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum DnsLookupOutcome {
+    /// The name resolved and at least one record of the requested type exists.
+    Records(Vec<String>),
+    /// The name does not exist (`NXDOMAIN`) — a definitive absence.
+    NxDomain,
+    /// The name exists but has no record of the requested type (`NODATA`).
+    NoRecords,
+    /// The resolver timed out: absence is **unknown**, not proven.
+    Timeout,
+    /// Transport/resolver failure: absence is **unknown**, not proven.
+    Failure(String),
+}
+
+impl DnsLookupOutcome {
+    /// Records when resolution succeeded with at least one answer.
+    pub fn records(&self) -> Option<&[String]> {
+        match self {
+            Self::Records(records) => Some(records),
+            _ => None,
+        }
+    }
+
+    /// True when the outcome is a definitive "no such record" (NXDOMAIN or
+    /// NODATA) — the only case in which a missing DNS record may be asserted.
+    pub fn is_definitive_absence(&self) -> bool {
+        matches!(self, Self::NxDomain | Self::NoRecords)
+    }
+
+    /// True when resolution failed without proving absence (timeout or
+    /// transport failure).
+    pub fn is_indeterminate(&self) -> bool {
+        matches!(self, Self::Timeout | Self::Failure(_))
+    }
+
+    /// Short machine-readable label for metrics/logs.
+    pub fn as_label(&self) -> &'static str {
+        match self {
+            Self::Records(_) => "records",
+            Self::NxDomain => "nxdomain",
+            Self::NoRecords => "no_records",
+            Self::Timeout => "timeout",
+            Self::Failure(_) => "failure",
+        }
+    }
+}
+
+/// Tri-state DKIM observation.
+///
+/// A boolean could not distinguish "no DKIM on the selectors we know" from
+/// "we could not determine this because DNS failed". Warning generation uses
+/// the distinction so an indeterminate lookup never becomes a missing-DKIM
+/// finding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum DkimStatus {
+    /// At least one known selector returned a usable DKIM public key record.
+    ConfirmedPresent { selectors: Vec<String> },
+    /// Every known selector definitively resolved without a DKIM record.
+    NotObservedOnKnownSelectors,
+    /// At least one selector lookup failed; DKIM state cannot be asserted.
+    Unknown { reason: String },
+}
+
+impl DkimStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ConfirmedPresent { .. } => "confirmed_present",
+            Self::NotObservedOnKnownSelectors => "not_observed_on_known_selectors",
+            Self::Unknown { .. } => "unknown",
+        }
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        matches!(self, Self::ConfirmedPresent { .. })
+    }
+
+    /// Only a definitive all-selectors miss may be reported as a DKIM gap.
+    pub fn is_confirmed_absent(&self) -> bool {
+        matches!(self, Self::NotObservedOnKnownSelectors)
+    }
+
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown { .. })
+    }
+}
+
+/// Common DKIM selectors probed when no provider-specific selector is known.
+pub const COMMON_DKIM_SELECTORS: &[&str] = &[
+    "default",
+    "selector1",
+    "selector2",
+    "google",
+    "k1",
+    "s1",
+    "s2",
+    "mail",
+    "email",
+    "dkim",
+    "smtp",
+];
+
+/// Test whether a TXT record is a usable DKIM key record.
+pub fn is_dkim_record(record: &str) -> bool {
+    let lower = record.to_lowercase();
+    lower.contains("v=dkim1") || lower.contains("p=")
+}
+
+/// Collapse per-selector lookup outcomes into a [`DkimStatus`].
+///
+/// * any selector with a DKIM record → `ConfirmedPresent`
+/// * no DKIM record, every lookup definitive → `NotObservedOnKnownSelectors`
+/// * any timeout/failure → `Unknown` (never a false "missing" finding)
+pub fn classify_dkim_outcomes(
+    outcomes: impl IntoIterator<Item = (String, DnsLookupOutcome)>,
+) -> DkimStatus {
+    let mut found_selectors = Vec::new();
+    let mut had_indeterminate = false;
+    let mut indeterminate_reason: Option<String> = None;
+
+    for (selector, outcome) in outcomes {
+        match outcome {
+            DnsLookupOutcome::Records(records) => {
+                if records.iter().any(|record| is_dkim_record(record)) {
+                    found_selectors.push(selector);
+                }
+            }
+            DnsLookupOutcome::Timeout => {
+                had_indeterminate = true;
+                indeterminate_reason
+                    .get_or_insert_with(|| format!("selector '{selector}' timed out"));
+            }
+            DnsLookupOutcome::Failure(error) => {
+                had_indeterminate = true;
+                indeterminate_reason
+                    .get_or_insert_with(|| format!("selector '{selector}' lookup failed: {error}"));
+            }
+            DnsLookupOutcome::NxDomain | DnsLookupOutcome::NoRecords => {}
+        }
+    }
+
+    if !found_selectors.is_empty() {
+        found_selectors.sort();
+        return DkimStatus::ConfirmedPresent {
+            selectors: found_selectors,
+        };
+    }
+    match indeterminate_reason {
+        Some(reason) if had_indeterminate => DkimStatus::Unknown { reason },
+        _ => DkimStatus::NotObservedOnKnownSelectors,
+    }
+}
+
+/// Extract the SPF record from TXT answers, if present.
+pub fn extract_spf_record(records: &[String]) -> Option<String> {
+    records
+        .iter()
+        .find(|record| record.to_lowercase().contains("v=spf1"))
+        .cloned()
+}
+
+/// Extract the DMARC record and its `p=` policy from TXT answers.
+pub fn extract_dmarc_record(records: &[String]) -> Option<(String, Option<String>)> {
+    let record = records
+        .iter()
+        .find(|record| record.to_lowercase().contains("v=dmarc1"))?
+        .clone();
+    let policy = record
+        .to_lowercase()
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("p=").map(|p| p.trim().to_string()));
+    Some((record, policy))
+}
+
+/// Structured resolver built on hickory-resolver (system configuration).
+///
+/// Construction never panics: when the system resolver configuration cannot
+/// be loaded the resolver reports [`DnsLookupOutcome::Failure`] for every
+/// lookup so callers can degrade instead of asserting DNS facts.
+pub struct StructuredDnsResolver {
+    resolver: Option<TokioResolver>,
+}
+
+impl Default for StructuredDnsResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StructuredDnsResolver {
+    pub fn new() -> Self {
+        match TokioResolver::builder_tokio() {
+            Ok(builder) => Self {
+                resolver: Some(builder.build()),
+            },
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "StructuredDnsResolver: system resolver config unavailable; DNS lookups will report failure"
+                );
+                Self { resolver: None }
+            }
+        }
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.resolver.is_some()
+    }
+
+    /// Look up TXT records with structured error semantics.
+    pub async fn txt(&self, domain: &str) -> DnsLookupOutcome {
+        let Some(resolver) = self.resolver.as_ref() else {
+            return DnsLookupOutcome::Failure(
+                "structured DNS resolver unavailable (no system resolver configuration)".into(),
+            );
+        };
+        match resolver.txt_lookup(domain).await {
+            Ok(lookup) => {
+                let records: Vec<String> = lookup
+                    .iter()
+                    .map(|txt| {
+                        txt.txt_data()
+                            .iter()
+                            .map(|chunk| String::from_utf8_lossy(chunk).to_string())
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .collect();
+                if records.is_empty() {
+                    DnsLookupOutcome::NoRecords
+                } else {
+                    DnsLookupOutcome::Records(records)
+                }
+            }
+            Err(error) => classify_resolve_error(&error),
+        }
+    }
+
+    /// Look up MX records with structured error semantics.
+    pub async fn mx(&self, domain: &str) -> DnsLookupOutcome {
+        let Some(resolver) = self.resolver.as_ref() else {
+            return DnsLookupOutcome::Failure(
+                "structured DNS resolver unavailable (no system resolver configuration)".into(),
+            );
+        };
+        match resolver.mx_lookup(domain).await {
+            Ok(lookup) => {
+                let records: Vec<String> = lookup
+                    .iter()
+                    .map(|mx| format!("{} {}", mx.preference(), mx.exchange()))
+                    .collect();
+                if records.is_empty() {
+                    DnsLookupOutcome::NoRecords
+                } else {
+                    DnsLookupOutcome::Records(records)
+                }
+            }
+            Err(error) => classify_resolve_error(&error),
+        }
+    }
+
+    /// Resolve DKIM state across the common selectors as a tri-state value.
+    pub async fn dkim_status(&self, domain: &str) -> DkimStatus {
+        self.dkim_status_for_selectors(domain, COMMON_DKIM_SELECTORS)
+            .await
+    }
+
+    /// Resolve DKIM state across an explicit selector list.
+    pub async fn dkim_status_for_selectors(&self, domain: &str, selectors: &[&str]) -> DkimStatus {
+        let mut outcomes = Vec::with_capacity(selectors.len());
+        for selector in selectors {
+            let dkim_domain = format!("{selector}._domainkey.{domain}");
+            let outcome = self.txt(&dkim_domain).await;
+            outcomes.push(((*selector).to_string(), outcome));
+        }
+        classify_dkim_outcomes(outcomes)
+    }
+}
+
+/// Map a hickory resolution error to the structured outcome.
+///
+/// `NXDOMAIN` and `NODATA` are definitive absence; timeouts and transport
+/// errors are indeterminate.
+pub fn classify_resolve_error(error: &ResolveError) -> DnsLookupOutcome {
+    if let ResolveErrorKind::Proto(proto) = error.kind() {
+        return classify_proto_error(proto);
+    }
+    DnsLookupOutcome::Failure(error.to_string())
+}
+
+fn classify_proto_error(proto: &ProtoError) -> DnsLookupOutcome {
+    match proto.kind() {
+        ProtoErrorKind::NoRecordsFound { response_code, .. } => {
+            if *response_code == ResponseCode::NXDomain {
+                DnsLookupOutcome::NxDomain
+            } else {
+                DnsLookupOutcome::NoRecords
+            }
+        }
+        ProtoErrorKind::Timeout => DnsLookupOutcome::Timeout,
+        other => DnsLookupOutcome::Failure(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -619,5 +948,115 @@ mod tests {
         // No protection
         let score = checker.calculate_posture_score(false, &None, false, false, &None, None);
         assert!(score < 1.0);
+    }
+
+    #[test]
+    fn test_extract_spf_record() {
+        let records = vec![
+            "google-site-verification=abc".to_string(),
+            "v=spf1 include:_spf.example.com -all".to_string(),
+        ];
+        assert_eq!(
+            extract_spf_record(&records).as_deref(),
+            Some("v=spf1 include:_spf.example.com -all")
+        );
+        assert!(extract_spf_record(&[]).is_none());
+    }
+
+    #[test]
+    fn test_extract_dmarc_record_and_policy() {
+        let records = vec!["v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com".to_string()];
+        let (record, policy) = extract_dmarc_record(&records).expect("dmarc record");
+        assert!(record.starts_with("v=DMARC1"));
+        assert_eq!(policy.as_deref(), Some("quarantine"));
+
+        assert!(extract_dmarc_record(&["v=spf1 -all".to_string()]).is_none());
+    }
+
+    #[test]
+    fn test_dkim_tristate_confirmed_present() {
+        let status = classify_dkim_outcomes(vec![
+            (
+                "default".to_string(),
+                DnsLookupOutcome::Records(vec!["v=DKIM1; k=rsa; p=abc".to_string()]),
+            ),
+            ("google".to_string(), DnsLookupOutcome::NxDomain),
+        ]);
+        assert!(status.is_confirmed());
+        assert_eq!(status.as_str(), "confirmed_present");
+        match status {
+            DkimStatus::ConfirmedPresent { selectors } => assert_eq!(selectors, vec!["default"]),
+            other => panic!("expected ConfirmedPresent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dkim_tristate_not_observed_requires_definitive_absence() {
+        let status = classify_dkim_outcomes(vec![
+            ("default".to_string(), DnsLookupOutcome::NxDomain),
+            ("google".to_string(), DnsLookupOutcome::NoRecords),
+            (
+                "k1".to_string(),
+                DnsLookupOutcome::Records(vec!["some other txt".to_string()]),
+            ),
+        ]);
+        assert!(status.is_confirmed_absent());
+        assert!(!status.is_confirmed());
+        assert_eq!(status.as_str(), "not_observed_on_known_selectors");
+    }
+
+    #[test]
+    fn test_dkim_tristate_unknown_on_timeout_or_failure() {
+        let status = classify_dkim_outcomes(vec![
+            ("default".to_string(), DnsLookupOutcome::NxDomain),
+            ("google".to_string(), DnsLookupOutcome::Timeout),
+        ]);
+        assert!(status.is_unknown());
+        assert!(!status.is_confirmed_absent());
+        assert_eq!(status.as_str(), "unknown");
+
+        let status = classify_dkim_outcomes(vec![
+            ("default".to_string(), DnsLookupOutcome::NxDomain),
+            (
+                "google".to_string(),
+                DnsLookupOutcome::Failure("connection refused".to_string()),
+            ),
+        ]);
+        assert!(status.is_unknown());
+        match status {
+            DkimStatus::Unknown { reason } => assert!(reason.contains("google")),
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dkim_status_serde_roundtrip() {
+        for status in [
+            DkimStatus::ConfirmedPresent {
+                selectors: vec!["default".to_string()],
+            },
+            DkimStatus::NotObservedOnKnownSelectors,
+            DkimStatus::Unknown {
+                reason: "timeout".to_string(),
+            },
+        ] {
+            let json = serde_json::to_string(&status).expect("serialize dkim status");
+            let decoded: DkimStatus = serde_json::from_str(&json).expect("deserialize dkim status");
+            assert_eq!(decoded, status);
+        }
+    }
+
+    #[test]
+    fn test_lookup_outcome_absence_semantics() {
+        assert!(DnsLookupOutcome::NxDomain.is_definitive_absence());
+        assert!(DnsLookupOutcome::NoRecords.is_definitive_absence());
+        assert!(!DnsLookupOutcome::Timeout.is_definitive_absence());
+        assert!(DnsLookupOutcome::Timeout.is_indeterminate());
+        assert!(DnsLookupOutcome::Failure("boom".into()).is_indeterminate());
+        assert!(!DnsLookupOutcome::Records(vec!["x".into()]).is_definitive_absence());
+        assert_eq!(
+            DnsLookupOutcome::Records(vec!["x".into()]).records(),
+            Some(["x".to_string()].as_slice())
+        );
     }
 }

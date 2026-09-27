@@ -86,6 +86,7 @@ pub(crate) async fn list_sites(
         .store
         .list_sites(company_id, region, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,
@@ -129,6 +130,7 @@ pub(crate) async fn list_capabilities(
         .store
         .list_capabilities(company_id, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,
@@ -175,6 +177,7 @@ pub(crate) async fn list_certifications_all(
         .store
         .list_certifications(company_id, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,
@@ -219,6 +222,7 @@ pub(crate) async fn list_observations(
         .store
         .list_observations(entity_id, observation_type, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,
@@ -265,6 +269,7 @@ pub(crate) async fn list_product_families(
         .store
         .list_product_families(company_id, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,
@@ -311,6 +316,7 @@ pub(crate) async fn list_logistics_nodes(
         .store
         .list_logistics_nodes(country_code, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,
@@ -354,6 +360,7 @@ pub(crate) async fn list_regulations(
         .store
         .list_regulations(jurisdiction, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,
@@ -397,6 +404,7 @@ pub(crate) async fn list_poi_artifacts(
         .store
         .list_poi_artifacts(person_id, per_page as i64, offset)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let payload = PagedResponse {
         items,

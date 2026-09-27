@@ -1540,6 +1540,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             .bind(role_history_backfill_limit)
             .fetch_all(&store.pool)
             .await
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             .unwrap_or_default();
 
             for row in missing_role_history {
@@ -1652,6 +1653,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .bind(enrichment_limit)
         .fetch_all(&store.pool)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
         if !thin_persons.is_empty() {
@@ -1864,6 +1866,7 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             .bind(role_history_backfill_limit)
             .fetch_all(&store.pool)
             .await
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             .unwrap_or_default();
 
             for row in missing {

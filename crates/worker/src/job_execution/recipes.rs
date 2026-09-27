@@ -835,6 +835,54 @@ async fn notify_slack_high_severity(
     }
 }
 
+/// Tracks recipe feature-input loads and preserves explicit failure evidence.
+///
+/// A failed store read must never collapse into an empty feature set: this
+/// keeps the loaded/failed input names so the run can degrade and every
+/// entity feature map can carry an explicit `<input>.missing` marker instead
+/// of pretending the input was measured as zero.
+#[derive(Debug, Default)]
+struct FeatureLoadReport {
+    loaded: Vec<&'static str>,
+    failed: Vec<&'static str>,
+}
+
+impl FeatureLoadReport {
+    fn take<T: Default>(&mut self, name: &'static str, result: anyhow::Result<T>) -> T {
+        match result {
+            Ok(value) => {
+                self.loaded.push(name);
+                value
+            }
+            Err(error) => {
+                tracing::warn!(
+                    input = name,
+                    %error,
+                    "recipe_fire: feature input failed to load; marking it missing (not zero)"
+                );
+                self.failed.push(name);
+                T::default()
+            }
+        }
+    }
+
+    /// Feature keys inserted into every entity map to mark a failed input.
+    fn missing_feature_markers(&self) -> Vec<(String, f64)> {
+        self.failed
+            .iter()
+            .map(|name| (format!("{name}.missing"), 1.0))
+            .collect()
+    }
+
+    fn inputs_loaded(&self) -> usize {
+        self.loaded.len()
+    }
+
+    fn inputs_failed(&self) -> usize {
+        self.failed.len()
+    }
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(super) async fn run_recipe_fire(
     kind: &JobKind,
@@ -887,6 +935,7 @@ pub(super) async fn run_recipe_fire(
             5_000,
         )
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let calibration_samples = resolved_calibration_rows
         .iter()
@@ -918,6 +967,7 @@ pub(super) async fn run_recipe_fire(
     let source_reliability_aggregates = store
         .aggregate_source_reliability_outcomes(None)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     for aggregate in source_reliability_aggregates {
         let observation_count = aggregate.observation_count.max(0) as u64;
@@ -954,11 +1004,13 @@ pub(super) async fn run_recipe_fire(
     let pending_source_promotions = store
         .list_pending_source_reliability_promotions(50)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     if !pending_source_promotions.is_empty() {
         let analyst_users = store
             .list_analyst_users()
             .await
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             .unwrap_or_default()
             .into_iter()
             .filter(|user| user.is_active)
@@ -1035,61 +1087,72 @@ pub(super) async fn run_recipe_fire(
     let warn_counts = store
         .get_warning_type_counts_per_entity(since)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
-    let ce_features = store
-        .get_competitor_event_features(since)
-        .await
-        .unwrap_or_default();
-    let wc_features = store
-        .get_webchange_jsonb_features(since)
-        .await
-        .unwrap_or_default();
-    let wc_kw_features = store
-        .get_webchange_keyword_features(since)
-        .await
-        .unwrap_or_default();
-    let person_feats = store
-        .get_person_features_per_company()
-        .await
-        .unwrap_or_default();
-    let cert_feats = store
-        .get_certification_features_per_company(since)
-        .await
-        .unwrap_or_default();
-    let cap_feats = store
-        .get_capability_features_per_company()
-        .await
-        .unwrap_or_default();
-    let site_feats = store
-        .get_site_features_per_company()
-        .await
-        .unwrap_or_default();
-    let graph_feats = store.get_graph_edge_features().await.unwrap_or_default();
-    let job_post_feats = store
-        .get_job_post_features_per_entity(since)
-        .await
-        .unwrap_or_default();
-    let commodity_fx_feats = store
-        .get_commodity_fx_features_per_entity(since)
-        .await
-        .unwrap_or_default();
-    let poi_artifact_feats = store
-        .get_poi_artifact_features_per_company(since)
-        .await
-        .unwrap_or_default();
-    let daily_obs_series = store
-        .get_daily_observation_counts_per_entity(since)
-        .await
-        .unwrap_or_default();
-    let daily_warning_series = store
-        .get_daily_warning_counts_per_entity(since)
-        .await
-        .unwrap_or_default();
+    // Feature inputs are authoritative for recipe evaluation. A load failure
+    // must not silently become an empty feature set (missing inputs would
+    // suppress recipes and look like "no signals"): the report records each
+    // failed input, the run is degraded, and the missing inputs are marked
+    // explicitly on every entity map below.
+    let mut feature_report = FeatureLoadReport::default();
+    let ce_features = feature_report.take(
+        "competitor_event",
+        store.get_competitor_event_features(since).await,
+    );
+    let wc_features = feature_report.take(
+        "webchange_jsonb",
+        store.get_webchange_jsonb_features(since).await,
+    );
+    let wc_kw_features = feature_report.take(
+        "webchange_keyword",
+        store.get_webchange_keyword_features(since).await,
+    );
+    let person_feats = feature_report.take("person", store.get_person_features_per_company().await);
+    let cert_feats = feature_report.take(
+        "certification",
+        store.get_certification_features_per_company(since).await,
+    );
+    let cap_feats = feature_report.take(
+        "capability",
+        store.get_capability_features_per_company().await,
+    );
+    let site_feats = feature_report.take("site", store.get_site_features_per_company().await);
+    let graph_feats = feature_report.take("graph_edge", store.get_graph_edge_features().await);
+    let job_post_feats = feature_report.take(
+        "job_post",
+        store.get_job_post_features_per_entity(since).await,
+    );
+    let commodity_fx_feats = feature_report.take(
+        "commodity_fx",
+        store.get_commodity_fx_features_per_entity(since).await,
+    );
+    let poi_artifact_feats = feature_report.take(
+        "poi_artifact",
+        store.get_poi_artifact_features_per_company(since).await,
+    );
+    let daily_obs_series = feature_report.take(
+        "daily_observation_series",
+        store.get_daily_observation_counts_per_entity(since).await,
+    );
+    let daily_warning_series = feature_report.take(
+        "daily_warning_series",
+        store.get_daily_warning_counts_per_entity(since).await,
+    );
     let observation_series_by_entity = build_daily_entity_series(&daily_obs_series, 31);
     let warning_series_by_entity = build_daily_entity_series(&daily_warning_series, 31);
 
     if obs_counts.is_empty() && warn_counts.is_empty() {
-        run.skip("recipe_fire: no observations or warnings in last 30 days");
+        if feature_report.failed.is_empty() {
+            run.skip("recipe_fire: no observations or warnings in last 30 days");
+        } else {
+            run.fail(&format!(
+                "recipe_fire: no observations/warnings and {} feature input(s) failed to load \
+                 (inputs_failed={}): {}",
+                feature_report.failed.len(),
+                feature_report.failed.len(),
+                feature_report.failed.join(",")
+            ));
+        }
         return run;
     }
 
@@ -2506,8 +2569,26 @@ pub(super) async fn run_recipe_fire(
         job_post_rows = job_post_feats.len(),
         commodity_fx_rows = commodity_fx_feats.len(),
         poi_artifact_rows = poi_artifact_feats.len(),
+        inputs_loaded = feature_report.inputs_loaded(),
+        inputs_failed = feature_report.inputs_failed(),
         "recipe_fire: built feature maps"
     );
+
+    // Represent failed feature inputs explicitly on every entity map: a
+    // `<input>.missing` marker instead of the input silently contributing zero
+    // evidence.
+    if !feature_report.failed.is_empty() {
+        let markers = feature_report.missing_feature_markers();
+        for feature_map in entity_maps.values_mut() {
+            for (key, value) in &markers {
+                feature_map.insert(key.clone(), *value);
+            }
+        }
+        tracing::warn!(
+            missing_inputs = ?feature_report.failed,
+            "recipe_fire: proceeding with explicitly marked missing feature inputs"
+        );
+    }
 
     let entity_id_strs: Vec<(String, FeatureMap)> = entity_maps
         .into_iter()
@@ -2806,8 +2887,11 @@ pub(super) async fn run_recipe_fire(
             .await {
                 if let Some(ctx) = context_map.get_mut(&entity_id_str) {
                     for (sname, city, cc, stype, caps) in sites {
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                         let location = city.unwrap_or_else(|| cc.unwrap_or_default());
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                         let type_str = stype.unwrap_or_default();
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                         let caps_str = caps.map(|c| c.join(", ")).unwrap_or_default();
                         let summary = if caps_str.is_empty() {
                             format!("{} ({}) in {}", sname, type_str, location)
@@ -2884,6 +2968,7 @@ pub(super) async fn run_recipe_fire(
                         let valid_info = cert
                             .valid_until
                             .map(|d| format!(" (valid until {})", d))
+                            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                             .unwrap_or_default();
                         let cert_str = format!("{}{}", cert.standard, valid_info);
                         ctx.certifications.push(cert_str.clone());
@@ -2929,6 +3014,7 @@ pub(super) async fn run_recipe_fire(
                             .proof_grade
                             .as_deref()
                             .map(|g| format!(" ({})", g))
+                            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                             .unwrap_or_default();
                         ctx.capabilities
                             .push(format!("{}{}", cap.capability, proof_info));
@@ -3050,6 +3136,7 @@ pub(super) async fn run_recipe_fire(
                 for (sname, city, cc, stype, caps) in &sites {
                     let location = city.as_deref().unwrap_or(cc.as_deref().unwrap_or("Unknown"));
                     let type_str = stype.as_deref().unwrap_or("facility");
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                     let caps_str = caps.as_ref().map(|c| c.join(", ")).unwrap_or_default();
 
                     let mut facts = vec![
@@ -4700,7 +4787,7 @@ pub(super) async fn run_recipe_fire(
     );
 
     let summary = format!(
-        "recipe_fire: {} candidate(s), inserted {} insight(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run)",
+        "recipe_fire: {} candidate(s), inserted {} insight(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run); feature inputs loaded {}/{}",
         total_candidates,
         insights_inserted,
         warnings_inserted,
@@ -4708,11 +4795,23 @@ pub(super) async fn run_recipe_fire(
         skipped_low_conf,
         skipped_dedup,
         skipped_cross_run,
+        feature_report.inputs_loaded(),
+        feature_report.inputs_loaded() + feature_report.inputs_failed(),
     );
     if warning_ingest_failures > 0 {
         // Persistence failures must never be reported as a clean success.
         run.items_processed = insights_inserted;
         run.fail(&format!("{summary} — warning ingestion degraded"));
+    } else if !feature_report.failed.is_empty() {
+        // Structured degraded stage: evaluation ran with explicitly marked
+        // missing feature inputs, so this is not a clean success.
+        run.degrade(
+            insights_inserted,
+            &format!(
+                "{summary} — degraded: missing feature inputs [{}]",
+                feature_report.failed.join(",")
+            ),
+        );
     } else {
         run.succeed(insights_inserted, &summary);
     }
@@ -4740,6 +4839,28 @@ mod tests {
     use chrono::Utc;
     #[cfg(feature = "llm")]
     use uuid::Uuid;
+
+    #[test]
+    fn feature_load_report_marks_failed_inputs_as_missing() {
+        use super::FeatureLoadReport;
+
+        let mut report = FeatureLoadReport::default();
+        let loaded: Vec<u32> = report.take("ok_input", Ok(vec![1, 2]));
+        let failed: Vec<u32> = report.take("failed_input", Err(anyhow::anyhow!("db down")));
+
+        assert_eq!(loaded, vec![1, 2]);
+        assert!(
+            failed.is_empty(),
+            "a failed feature input must default empty but be reported, never treated as loaded"
+        );
+        assert_eq!(report.inputs_loaded(), 1);
+        assert_eq!(report.inputs_failed(), 1);
+        assert_eq!(
+            report.missing_feature_markers(),
+            vec![("failed_input.missing".to_string(), 1.0)],
+            "missing feature inputs are represented explicitly, not as zero evidence"
+        );
+    }
 
     #[test]
     fn suppresses_low_signal_dns_hygiene_recipe_alerts() {

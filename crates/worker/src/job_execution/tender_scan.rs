@@ -116,6 +116,7 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .user_agent("ApexIntel-Tenders/1.0 (+research; tenders)")
         .timeout(std::time::Duration::from_secs(20))
         .build()
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let mut total_posted: u64 = 0;

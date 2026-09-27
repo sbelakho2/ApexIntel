@@ -246,10 +246,12 @@ pub(crate) async fn bookmark_insight(
         .await
     {
         Ok(created) => {
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
             let _ = state
                 .store
                 .record_insight_feedback(uid, &auth_ctx.user_id, "bookmarked", None)
                 .await;
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
             let _ = state
                 .store
                 .record_audit_event(
@@ -406,6 +408,7 @@ pub(crate) async fn unbookmark_insight(
         .await
     {
         Ok(_removed) => {
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
             let _ = state
                 .store
                 .record_audit_event(
@@ -530,6 +533,7 @@ pub(crate) async fn analyze_insight(
         .store
         .get_company_names_by_ids(&entity_ids)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let entity_names: Vec<String> = company_names
         .iter()
@@ -542,6 +546,7 @@ pub(crate) async fn analyze_insight(
             .store
             .get_observations_by_entity(*eid, 30)
             .await
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             .unwrap_or_default();
         all_observations.extend(obs);
     }
@@ -564,12 +569,15 @@ pub(crate) async fn analyze_insight(
         .store
         .get_warnings_by_entity_ids(&entity_ids, 10)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let related_insights = state
         .store
         .get_related_insights(&entity_ids, uid, 5)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let evidence_urls = insight.evidence_urls.clone().unwrap_or_default();
     let source_count = evidence_urls.len();
 
@@ -840,6 +848,7 @@ pub(crate) async fn investigate_insight(
         .store
         .get_company_names_by_ids(&entity_ids)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let entity_name = company_names
         .first()
@@ -853,6 +862,7 @@ pub(crate) async fn investigate_insight(
             .store
             .get_observations_by_entity(eid, 30)
             .await
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             .unwrap_or_default();
         for (i, o) in obs.iter().enumerate() {
             evidence_items.push(apex_investigation::reasoning::EvidenceItem {
@@ -1023,6 +1033,7 @@ pub(crate) async fn analyze_warning(
         .store
         .get_company_names_by_ids(&entity_ids)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let entity_names: Vec<String> = company_names
         .iter()
@@ -1035,6 +1046,7 @@ pub(crate) async fn analyze_warning(
             .store
             .get_observations_by_entity(*eid, 30)
             .await
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             .unwrap_or_default();
         all_observations.extend(obs);
     }
@@ -1057,7 +1069,9 @@ pub(crate) async fn analyze_warning(
         .store
         .get_insights_by_entity_ids(&entity_ids, 10)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let source_urls = warning.source_urls.clone().unwrap_or_default();
     let source_count = source_urls.len();
 

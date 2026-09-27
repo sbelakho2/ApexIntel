@@ -24,7 +24,7 @@ pub(super) async fn run_threat_intel_refresh(
     run.start();
     let total_start = Instant::now();
 
-    let companies = store
+    let companies = match store
         .list_companies(
             &apex_store::postgres::CompanyListFilters {
                 regions: vec![],
@@ -37,7 +37,15 @@ pub(super) async fn run_threat_intel_refresh(
             0,
         )
         .await
-        .unwrap_or_default();
+    {
+        Ok(companies) => companies,
+        Err(error) => {
+            run.fail(&format!(
+                "threat_intel_refresh: failed to load companies (refusing empty assessment): {error}"
+            ));
+            return run;
+        }
+    };
 
     if companies.is_empty() {
         run.skip("threat_intel_refresh: no companies found in database");
@@ -64,8 +72,18 @@ pub(super) async fn run_threat_intel_refresh(
     let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
 
     for company in &companies {
-        // Assess supply chain risk heuristically from observations
-        let heuristic_risk = assess_supply_chain_heuristic(store, ingress, company).await;
+        // Assess supply chain risk heuristically from observations. A failed
+        // observation read is an input failure, not "no risk observed".
+        let heuristic_risk = match assess_supply_chain_heuristic(store, ingress, company).await {
+            Ok(risk) => risk,
+            Err(error) => {
+                run.fail(&format!(
+                    "threat_intel_refresh: supply-chain observation read failed for {}: {error}",
+                    company.name
+                ));
+                return run;
+            }
+        };
         if heuristic_risk > 0 {
             supply_chain_risks += heuristic_risk as u64;
             total_scores_updated += 1;
@@ -137,7 +155,7 @@ async fn assess_supply_chain_heuristic(
     store: &Arc<PgStore>,
     ingress: &Arc<IntelligenceIngress>,
     company: &apex_store::postgres::CompanyRow,
-) -> usize {
+) -> Result<usize, sqlx::Error> {
     let since = chrono::Utc::now() - chrono::Duration::days(30);
     let rows = sqlx::query(
         r#"SELECT COALESCE(value->>'description', value->>'text_content', '') AS text
@@ -149,12 +167,15 @@ async fn assess_supply_chain_heuristic(
     .bind(since)
     .fetch_all(&store.pool)
     .await
-    .unwrap_or_default();
+    // A failed read propagates: the caller must not count it as "0 risks".
+    ?;
 
     let disruption_count = rows
         .iter()
         .filter(|row| {
             use sqlx::Row;
+            // false-success-classification: best-effort — row field default; an
+            // unreadable text column contributes no keyword evidence.
             let text: String = row.try_get("text").unwrap_or_default();
             let lower = text.to_lowercase();
             lower.contains("disruption")
@@ -185,7 +206,9 @@ async fn assess_supply_chain_heuristic(
             "source": "worker_threat_intel_refresh_heuristic",
         });
 
-        let _ = sqlx::query(
+        // Authoritative persistence: this observation feeds recipe evaluation,
+        // so an insert failure propagates instead of being swallowed.
+        sqlx::query(
             r#"INSERT INTO observations
                (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
                VALUES ($1, 'supply_chain_heuristic', $2, 'company', $3, $4::jsonb, $5::jsonb, $6)
@@ -198,7 +221,7 @@ async fn assess_supply_chain_heuristic(
         .bind(provenance)
         .bind(0.55)
         .execute(&store.pool)
-        .await;
+        .await?;
 
         if disruption_count >= 3 {
             let title = format!(
@@ -231,7 +254,7 @@ async fn assess_supply_chain_heuristic(
             }
         }
     }
-    disruption_count
+    Ok(disruption_count)
 }
 
 /// Collect the industry sectors a company operates in from its stored

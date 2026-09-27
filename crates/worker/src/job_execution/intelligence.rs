@@ -42,6 +42,7 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
     let window_start = now - chrono::Duration::days(window_days);
 
     // Persist real telemetry snapshots (async — done before the sync builder).
+    let mut crawl_metric_write_failures: u64 = 0;
     for src in &live_sources {
         let domain = src
             .url
@@ -51,7 +52,7 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
             .unwrap_or(src.url.as_str())
             .to_string();
         if let Some(r) = by_slug.get(src.slug.as_str()) {
-            let _ = store
+            if let Err(error) = store
                 .upsert_crawl_metric(&NewCrawlMetric {
                     source_id: r.source_id.clone(),
                     domain: Some(domain),
@@ -67,7 +68,16 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
                     observation_types_produced: r.observation_types_produced.clone(),
                     metadata: serde_json::json!({}),
                 })
-                .await;
+                .await
+            {
+                // Authoritative persistence for source reliability metrics.
+                crawl_metric_write_failures += 1;
+                tracing::warn!(
+                    source = %src.slug,
+                    %error,
+                    "source_scoring: failed to persist crawl metric snapshot"
+                );
+            }
         }
     }
 
@@ -132,17 +142,22 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
         bottom_score = bottom.map(|s| s.score).unwrap_or(0.0),
         "source_scoring: complete (real telemetry)"
     );
-    run.succeed(
-        scored.len() as u64,
-        &format!(
-            "source_scoring: ranked {} sources from real telemetry; top={} ({:.3}), bottom={} ({:.3})",
-            scored.len(),
-            top.map(|s| s.source_id.as_str()).unwrap_or("none"),
-            top.map(|s| s.score).unwrap_or(0.0),
-            bottom.map(|s| s.source_id.as_str()).unwrap_or("none"),
-            bottom.map(|s| s.score).unwrap_or(0.0),
-        ),
+    let summary = format!(
+        "source_scoring: ranked {} sources from real telemetry; top={} ({:.3}), bottom={} ({:.3}); crawl_metric_write_failures={}",
+        scored.len(),
+        top.map(|s| s.source_id.as_str()).unwrap_or("none"),
+        top.map(|s| s.score).unwrap_or(0.0),
+        bottom.map(|s| s.source_id.as_str()).unwrap_or("none"),
+        bottom.map(|s| s.score).unwrap_or(0.0),
+        crawl_metric_write_failures,
     );
+    if crawl_metric_write_failures > 0 {
+        // Scoring completed, but the persisted telemetry snapshots are
+        // incomplete: report degraded instead of a clean success.
+        run.fail(&summary);
+    } else {
+        run.succeed(scored.len() as u64, &summary);
+    }
     run
 }
 
@@ -162,6 +177,9 @@ pub(super) async fn run_cross_domain_mining(kind: &JobKind, store: &Arc<PgStore>
             "kev_match",
         ];
         let mut all_events: Vec<TypedEvent> = Vec::new();
+        // A failed observation read must not shrink the event set silently and
+        // then be reported as "insufficient observations" (a clean skip).
+        let mut inputs_failed: usize = 0;
         for obs_type in &obs_types {
             match store.get_observations_by_type(obs_type, since, 500).await {
                 Ok(rows) => {
@@ -177,13 +195,23 @@ pub(super) async fn run_cross_domain_mining(kind: &JobKind, store: &Arc<PgStore>
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(
+                    inputs_failed += 1;
+                    tracing::warn!(
                         obs_type = %obs_type,
                         error = %e,
-                        "cross_domain_mining: skipping type"
+                        "cross_domain_mining: observation input failed to load"
                     );
                 }
             }
+        }
+
+        if inputs_failed > 0 {
+            run.fail(&format!(
+                "cross_domain_mining: {inputs_failed} of {} observation inputs failed to load; \
+                 refusing to evaluate on a partial event set",
+                obs_types.len()
+            ));
+            return run;
         }
 
         if all_events.len() < 10 {
@@ -367,9 +395,16 @@ pub(super) async fn run_self_improvement_cycle(
 
     let base_total =
         source_run.items_processed + cross_run.items_processed + outcome_run.items_processed;
+    // Degraded stages count as failures here: a stage that ran with failed
+    // inputs or explicitly missing features must not roll up as success.
     let base_failed = [&source_run, &cross_run, &outcome_run]
         .iter()
-        .filter(|r| matches!(r.status, JobStatus::Failed { .. }))
+        .filter(|r| {
+            matches!(
+                r.status,
+                JobStatus::Failed { .. } | JobStatus::Degraded { .. }
+            )
+        })
         .count();
 
     #[cfg(feature = "llm")]

@@ -89,6 +89,7 @@ pub(crate) async fn promote_recipe(
     let request_id = Uuid::new_v4().to_string();
     match state.store.promote_recipe(&id).await {
         Ok(true) => {
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
             let _ = state
                 .store
                 .record_audit_event(
@@ -134,6 +135,7 @@ pub(crate) async fn deprecate_recipe(
     let request_id = Uuid::new_v4().to_string();
     match state.store.deprecate_recipe(&id).await {
         Ok(true) => {
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
             let _ = state
                 .store
                 .record_audit_event(

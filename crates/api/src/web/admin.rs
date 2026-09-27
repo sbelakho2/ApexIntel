@@ -193,6 +193,9 @@ pub struct AdminPage {
     pub delivery_dead_letters: Vec<DeliveryDeadLetterItem>,
     /// Dead-lettered outbox alert events awaiting replay.
     pub outbox_dead_letters: Vec<OutboxDeadLetterItem>,
+    /// Process-wide source-adapter parser health (P0 #26): fetch/parse/success
+    /// counters and the parser success rate shown on the admin dashboard.
+    pub parser_metrics: apex_crawl::parse_outcome::ParserMetricsSnapshot,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
@@ -635,6 +638,7 @@ pub async fn admin_page(
         source_backlog,
         delivery_dead_letters,
         outbox_dead_letters,
+        parser_metrics: apex_crawl::parse_outcome::PARSER_METRICS.snapshot(),
     };
 
     super::render_template(&tpl)

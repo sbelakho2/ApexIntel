@@ -324,7 +324,9 @@ pub async fn list_warnings(
         Some("all") => "all".to_string(),
         _ => "focused".to_string(),
     };
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let active_severity = params.severity.clone().unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let active_type = params.warning_type.clone().unwrap_or_default();
     let active_region = params.region.clone().unwrap_or_default();
     let active_status = params.status.clone().unwrap_or_default();

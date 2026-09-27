@@ -106,6 +106,7 @@ async fn run_placement_clustering(
             .filter_map(|r| {
                 let id: Uuid = r.try_get("id").ok()?;
                 let content: String = r.try_get("content").ok()?;
+                // false-success-classification: best-effort — row-column default; a missing column contributes no value
                 let source_url: String = r.try_get("source_url").ok().unwrap_or_default();
                 let ts: chrono::DateTime<chrono::Utc> = r.try_get("ts_utc").ok()?;
 

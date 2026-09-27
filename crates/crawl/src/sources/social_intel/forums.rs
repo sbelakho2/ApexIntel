@@ -217,17 +217,35 @@ impl ForumMonitor {
     }
 
     /// Scan all configured forums and return matching activities.
-    pub async fn scan(&self) -> Vec<ForumActivity> {
+    ///
+    /// Aggregates per-forum outcomes conservatively: any parser failure is
+    /// propagated so a schema change is never reported as an empty scan.
+    pub async fn scan(&self) -> ParseOutcome<ForumActivity> {
         let mut all_activities = Vec::new();
+        let mut any_parsed = false;
+        let mut first_fetch_failure: Option<(String, Option<u16>)> = None;
+        let mut first_parse_failure: Option<(String, String)> = None;
 
         for forum in &self.config.forums {
             match self.scan_forum(forum).await {
-                Ok(activities) => {
-                    debug!(forum = %forum.name, count = activities.len(), "Forum scan complete");
-                    all_activities.extend(activities);
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    debug!(forum = %forum.name, count = items.len(), "Forum scan complete");
+                    any_parsed = true;
+                    all_activities.extend(items);
                 }
-                Err(e) => {
-                    warn!(forum = %forum.name, error = %e, "Forum scan failed — skipping");
+                ParseOutcome::FetchFailed {
+                    error,
+                    http_status,
+                } => {
+                    warn!(forum = %forum.name, error = %error, "Forum scan failed — skipping");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    warn!(forum = %forum.name, error = %error, "Forum parser failed");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
                 }
             }
         }
@@ -237,11 +255,28 @@ impl ForumMonitor {
         });
 
         info!(total = all_activities.len(), "Forum monitoring scan complete");
-        all_activities
+
+        if let Some((error, redacted_sample)) = first_parse_failure {
+            return ParseOutcome::ParseFailed {
+                error,
+                redacted_sample,
+            };
+        }
+        if !any_parsed {
+            if let Some((error, http_status)) = first_fetch_failure {
+                return ParseOutcome::FetchFailed {
+                    error,
+                    http_status,
+                };
+            }
+        }
+        ParseOutcome::ParsedSuccessfully {
+            items: all_activities,
+        }
     }
 
     /// Scan a single forum.
-    async fn scan_forum(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+    async fn scan_forum(&self, forum: &MonitoredForum) -> ParseOutcome<ForumActivity> {
         match forum.platform_type {
             ForumPlatform::Reddit => self.scan_reddit(forum).await,
             ForumPlatform::Discourse => self.scan_discourse(forum).await,
@@ -253,26 +288,45 @@ impl ForumMonitor {
     }
 
     /// Scan a Reddit subreddit.
-    async fn scan_reddit(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
-        let rss_url = forum
-            .rss_url
-            .as_ref()
-            .context("Reddit forum requires RSS URL")?;
+    async fn scan_reddit(&self, forum: &MonitoredForum) -> ParseOutcome<ForumActivity> {
+        let Some(rss_url) = forum.rss_url.as_ref() else {
+            return ParseOutcome::fetch_failed("Reddit forum requires RSS URL", None);
+        };
 
-        let resp = self
-            .client
-            .get(rss_url)
-            .send()
-            .await
-            .context("Reddit RSS fetch")?;
+        let resp = match self.client.get(rss_url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(format!("Reddit RSS fetch failed: {error}"), None)
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), "Reddit RSS returned non-success");
-            return Ok(Vec::new());
+            return ParseOutcome::fetch_failed(
+                format!("Reddit RSS returned HTTP {status}"),
+                Some(status),
+            );
         }
 
-        let body = resp.text().await.context("read Reddit RSS")?;
-        let items = crate::rss::parse_feed(&body).unwrap_or_default();
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read Reddit RSS: {error}"),
+                    None,
+                )
+            }
+        };
+        let items = match crate::rss::parse_feed(&body) {
+            Ok(items) => items,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse Reddit RSS: {error}"),
+                    &body,
+                )
+            }
+        };
 
         let keywords: Vec<String> = forum
             .target_keywords
@@ -315,11 +369,11 @@ impl ForumMonitor {
             })
             .collect();
 
-        Ok(activities)
+        ParseOutcome::parsed(activities)
     }
 
     /// Scan a Discourse forum.
-    async fn scan_discourse(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+    async fn scan_discourse(&self, forum: &MonitoredForum) -> ParseOutcome<ForumActivity> {
         let search_url = format!("{}/search.json", forum.base_url.trim_end_matches('/'));
 
         let keywords = forum
@@ -329,17 +383,23 @@ impl ForumMonitor {
             .join(" ");
         let params = [("q", keywords.as_str())];
 
-        let resp = self
-            .client
-            .get(&search_url)
-            .query(&params)
-            .send()
-            .await
-            .context("Discourse search request")?;
+        let resp = match self.client.get(&search_url).query(&params).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("Discourse search request failed: {error}"),
+                    None,
+                )
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), "Discourse search returned non-success");
-            return Ok(Vec::new());
+            return ParseOutcome::fetch_failed(
+                format!("Discourse search returned HTTP {status}"),
+                Some(status),
+            );
         }
 
         #[derive(Deserialize)]
@@ -361,7 +421,24 @@ impl ForumMonitor {
             topic_slug: Option<String>,
         }
 
-        let search: DiscourseSearch = resp.json().await.unwrap_or_default();
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read Discourse response: {error}"),
+                    None,
+                )
+            }
+        };
+        let search: DiscourseSearch = match serde_json::from_str(&body) {
+            Ok(search) => search,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse Discourse JSON: {error}"),
+                    &body,
+                )
+            }
+        };
         let posts = search.posts.unwrap_or_default();
 
         let activities = posts
@@ -408,27 +485,34 @@ impl ForumMonitor {
             })
             .collect();
 
-        Ok(activities)
+        ParseOutcome::parsed(activities)
     }
 
     /// Scan Stack Overflow for tagged questions.
-    async fn scan_stackoverflow(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+    async fn scan_stackoverflow(&self, forum: &MonitoredForum) -> ParseOutcome<ForumActivity> {
         let tags = forum.target_keywords.join(";");
         let url = format!(
             "https://api.stackexchange.com/2.3/questions?order=desc&sort=creation&tagged={}&site=stackoverflow",
             urlencoding::encode(&tags)
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Stack Overflow API request")?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("Stack Overflow API request failed: {error}"),
+                    None,
+                )
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), "Stack Overflow API returned non-success");
-            return Ok(Vec::new());
+            return ParseOutcome::fetch_failed(
+                format!("Stack Overflow API returned HTTP {status}"),
+                Some(status),
+            );
         }
 
         #[derive(Deserialize)]
@@ -456,7 +540,24 @@ impl ForumMonitor {
             link: Option<String>,
         }
 
-        let so_resp: SoResponse = resp.json().await.unwrap_or_default();
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read Stack Overflow response: {error}"),
+                    None,
+                )
+            }
+        };
+        let so_resp: SoResponse = match serde_json::from_str(&body) {
+            Ok(so_resp) => so_resp,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse Stack Overflow JSON: {error}"),
+                    &body,
+                )
+            }
+        };
         let questions = so_resp.items.unwrap_or_default();
 
         let activities = questions
@@ -501,11 +602,11 @@ impl ForumMonitor {
             })
             .collect();
 
-        Ok(activities)
+        ParseOutcome::parsed(activities)
     }
 
     /// Scan Hacker News for keyword mentions via their API.
-    async fn scan_hackernews(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+    async fn scan_hackernews(&self, forum: &MonitoredForum) -> ParseOutcome<ForumActivity> {
         // HN Algolia API for keyword search
         let keywords = forum.target_keywords.join(" ");
         let url = format!(
@@ -513,16 +614,23 @@ impl ForumMonitor {
             urlencoding::encode(&keywords)
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Hacker News API request")?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("Hacker News API request failed: {error}"),
+                    None,
+                )
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), "HN API returned non-success");
-            return Ok(Vec::new());
+            return ParseOutcome::fetch_failed(
+                format!("Hacker News API returned HTTP {status}"),
+                Some(status),
+            );
         }
 
         #[derive(Deserialize)]
@@ -543,7 +651,24 @@ impl ForumMonitor {
             _tags: Option<Vec<String>>,
         }
 
-        let hn_resp: HnResponse = resp.json().await.unwrap_or_default();
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read Hacker News response: {error}"),
+                    None,
+                )
+            }
+        };
+        let hn_resp: HnResponse = match serde_json::from_str(&body) {
+            Ok(hn_resp) => hn_resp,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse Hacker News JSON: {error}"),
+                    &body,
+                )
+            }
+        };
         let hits = hn_resp.hits.unwrap_or_default();
 
         let activities = hits
@@ -587,16 +712,19 @@ impl ForumMonitor {
             })
             .collect();
 
-        Ok(activities)
+        ParseOutcome::parsed(activities)
     }
 
     /// Scan Discord servers for keyword mentions via public search endpoints.
     /// Uses Discord's public discoverable server search API where available,
     /// falls back to scraping public guild channels if accessible.
-    async fn scan_discord(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+    async fn scan_discord(&self, forum: &MonitoredForum) -> ParseOutcome<ForumActivity> {
         // Discord public guild search (discoverable servers only)
         let keywords = &forum.target_keywords;
         let mut activities = Vec::new();
+        let mut any_parsed = false;
+        let mut first_fetch_failure: Option<(String, Option<u16>)> = None;
+        let mut first_parse_failure: Option<(String, String)> = None;
 
         // Use Discord's public API for discoverable server search
         // Each keyword is searched individually via the guild discovery endpoint
@@ -614,14 +742,23 @@ impl ForumMonitor {
                 .await
             {
                 Ok(r) => r,
-                Err(e) => {
-                    warn!(keyword = %kw, error = %e, "Discord discoverable guilds request failed");
+                Err(error) => {
+                    warn!(keyword = %kw, error = %error, "Discord discoverable guilds request failed");
+                    first_fetch_failure.get_or_insert((
+                        format!("Discord discoverable-guilds request failed: {error}"),
+                        None,
+                    ));
                     continue;
                 }
             };
 
             if !resp.status().is_success() {
+                let status = resp.status().as_u16();
                 debug!(status = %resp.status(), keyword = %kw, "Discord API returned non-success");
+                first_fetch_failure.get_or_insert((
+                    format!("Discord API returned HTTP {status}"),
+                    Some(status),
+                ));
                 continue;
             }
 
@@ -635,7 +772,27 @@ impl ForumMonitor {
                 approximate_presence_count: Option<i64>,
             }
 
-            let guilds: Vec<DiscordGuild> = resp.json().await.unwrap_or_default();
+            let body = match resp.text().await {
+                Ok(body) => body,
+                Err(error) => {
+                    first_fetch_failure.get_or_insert((
+                        format!("failed to read Discord response: {error}"),
+                        None,
+                    ));
+                    continue;
+                }
+            };
+            let guilds: Vec<DiscordGuild> = match serde_json::from_str(&body) {
+                Ok(guilds) => guilds,
+                Err(error) => {
+                    first_parse_failure.get_or_insert((
+                        format!("failed to parse Discord JSON: {error}"),
+                        body.clone(),
+                    ));
+                    continue;
+                }
+            };
+            any_parsed = true;
 
             for guild in guilds {
                 let name = match guild.name.as_ref() {
@@ -677,22 +834,51 @@ impl ForumMonitor {
             }
         }
 
-        Ok(activities)
+        if let Some((error, redacted_sample)) = first_parse_failure {
+            return ParseOutcome::ParseFailed {
+                error,
+                redacted_sample: crate::parse_outcome::redact_sample(&redacted_sample),
+            };
+        }
+        if !any_parsed {
+            if let Some((error, http_status)) = first_fetch_failure {
+                return ParseOutcome::FetchFailed {
+                    error,
+                    http_status,
+                };
+            }
+        }
+        ParseOutcome::parsed(activities)
     }
 
     /// Scan a custom forum (generic RSS/HTML scraping).
     /// Attempts RSS feed first, falls back to HTML scraping of the base URL.
-    async fn scan_custom_forum(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+    async fn scan_custom_forum(&self, forum: &MonitoredForum) -> ParseOutcome<ForumActivity> {
         let mut activities = Vec::new();
+        let mut any_parsed = false;
+        let mut first_fetch_failure: Option<(String, Option<u16>)> = None;
+        let mut first_parse_failure: Option<(String, String)> = None;
 
         // Try RSS feed if available
         if let Some(rss_url) = forum.rss_url.as_ref() {
             match self.scan_custom_forum_rss(forum, rss_url).await {
-                Ok(rss_activities) => {
-                    activities.extend(rss_activities);
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    any_parsed = true;
+                    activities.extend(items);
                 }
-                Err(e) => {
-                    debug!(forum = %forum.name, error = %e, "Custom forum RSS scan failed, trying HTML");
+                ParseOutcome::FetchFailed {
+                    error,
+                    http_status,
+                } => {
+                    debug!(forum = %forum.name, error = %error, "Custom forum RSS scan failed, trying HTML");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    debug!(forum = %forum.name, error = %error, "Custom forum RSS parser failed");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
                 }
             }
         }
@@ -700,16 +886,42 @@ impl ForumMonitor {
         // Fallback: scrape the base URL HTML for keyword matches
         if activities.is_empty() {
             match self.scan_custom_forum_html(forum).await {
-                Ok(html_activities) => {
-                    activities.extend(html_activities);
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    any_parsed = true;
+                    activities.extend(items);
                 }
-                Err(e) => {
-                    debug!(forum = %forum.name, error = %e, "Custom forum HTML scan failed");
+                ParseOutcome::FetchFailed {
+                    error,
+                    http_status,
+                } => {
+                    debug!(forum = %forum.name, error = %error, "Custom forum HTML scan failed");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    debug!(forum = %forum.name, error = %error, "Custom forum HTML parser failed");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
                 }
             }
         }
 
-        Ok(activities)
+        if let Some((error, redacted_sample)) = first_parse_failure {
+            return ParseOutcome::ParseFailed {
+                error,
+                redacted_sample,
+            };
+        }
+        if !any_parsed {
+            if let Some((error, http_status)) = first_fetch_failure {
+                return ParseOutcome::FetchFailed {
+                    error,
+                    http_status,
+                };
+            }
+        }
+        ParseOutcome::parsed(activities)
     }
 
     /// Scan a custom forum via its RSS feed.
@@ -717,20 +929,43 @@ impl ForumMonitor {
         &self,
         forum: &MonitoredForum,
         rss_url: &str,
-    ) -> Result<Vec<ForumActivity>> {
-        let resp = self
-            .client
-            .get(rss_url)
-            .send()
-            .await
-            .context("Custom forum RSS fetch")?;
+    ) -> ParseOutcome<ForumActivity> {
+        let resp = match self.client.get(rss_url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("Custom forum RSS fetch failed: {error}"),
+                    None,
+                )
+            }
+        };
 
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            let status = resp.status().as_u16();
+            return ParseOutcome::fetch_failed(
+                format!("Custom forum RSS returned HTTP {status}"),
+                Some(status),
+            );
         }
 
-        let body = resp.text().await.context("read custom forum RSS")?;
-        let items = crate::rss::parse_feed(&body).unwrap_or_default();
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read custom forum RSS: {error}"),
+                    None,
+                )
+            }
+        };
+        let items = match crate::rss::parse_feed(&body) {
+            Ok(items) => items,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse custom forum RSS: {error}"),
+                    &body,
+                )
+            }
+        };
 
         let keywords: Vec<String> = forum
             .target_keywords
@@ -775,26 +1010,41 @@ impl ForumMonitor {
             })
             .collect();
 
-        Ok(activities)
+        ParseOutcome::parsed(activities)
     }
 
     /// Scan a custom forum by scraping its base URL HTML for keyword matches.
     async fn scan_custom_forum_html(
         &self,
         forum: &MonitoredForum,
-    ) -> Result<Vec<ForumActivity>> {
-        let resp = self
-            .client
-            .get(&forum.base_url)
-            .send()
-            .await
-            .context("Custom forum HTML fetch")?;
+    ) -> ParseOutcome<ForumActivity> {
+        let resp = match self.client.get(&forum.base_url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("Custom forum HTML fetch failed: {error}"),
+                    None,
+                )
+            }
+        };
 
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            let status = resp.status().as_u16();
+            return ParseOutcome::fetch_failed(
+                format!("Custom forum HTML returned HTTP {status}"),
+                Some(status),
+            );
         }
 
-        let html = resp.text().await.context("read custom forum HTML")?;
+        let html = match resp.text().await {
+            Ok(html) => html,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read custom forum HTML: {error}"),
+                    None,
+                )
+            }
+        };
         // Strip HTML tags to get plain text
         let plain = html
             .replace('<', "\n<")
@@ -817,7 +1067,7 @@ impl ForumMonitor {
             .collect();
 
         if matched.is_empty() {
-            return Ok(Vec::new());
+            return ParseOutcome::parsed(Vec::new());
         }
 
         // Extract a relevant snippet around the first keyword match
@@ -837,7 +1087,7 @@ impl ForumMonitor {
             }
         };
 
-        Ok(vec![ForumActivity {
+        let activities = vec![ForumActivity {
             platform: forum.platform_type.as_str().to_string(),
             forum_id: forum.forum_id.clone(),
             activity_id: format!("html-{}", Utc::now().timestamp()),
@@ -853,7 +1103,8 @@ impl ForumMonitor {
             activity_url: forum.base_url.clone(),
             sentiment: SentimentLabel::Neutral,
             relevance_score: 0.3,
-        }])
+        }];
+        ParseOutcome::parsed(activities)
     }
 }
 
