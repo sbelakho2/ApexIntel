@@ -28,7 +28,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use apex_crawl::sources_registry::SourceCoverageSummary;
-use apex_store::postgres::{AlertEngineStateRow, OutboxBacklog, WorkerJobStateRecord};
+use apex_store::postgres::{
+    AlertEngineStateRow, NotificationDeliveryHealth, OutboxBacklog, WorkerJobStateRecord,
+};
 use apex_store::tantivy_index::IndexCheckpoint;
 
 use super::capabilities::CapabilityStatus;
@@ -76,6 +78,24 @@ pub struct ReadinessPolicy {
     pub outbox_max_pending: i64,
     /// Maximum age of the oldest unpublished outbox event.
     pub outbox_max_oldest_pending_secs: i64,
+    /// Maximum age of the notification retry processor's last run.
+    pub notification_delivery_max_processor_age_secs: i64,
+    /// Maximum due-but-unclaimed channel deliveries before readiness degrades.
+    pub notification_delivery_max_overdue: i64,
+    /// Maximum age of the oldest overdue channel delivery.
+    pub notification_delivery_max_overdue_age_secs: i64,
+    /// Maximum dead-lettered channel deliveries awaiting operator replay.
+    pub notification_delivery_max_dead_lettered: i64,
+    /// Maximum new dead letters inside the success window (change rate).
+    pub notification_delivery_max_dead_letter_rate: i64,
+    /// Maximum channel deliveries stuck in `delivering` with an expired lease.
+    pub notification_delivery_max_stuck_leases: i64,
+    /// Recent window used for the delivery success ratio and dead-letter rate.
+    pub notification_delivery_success_window_secs: i64,
+    /// Minimum recent attempts before the success ratio is enforced.
+    pub notification_delivery_min_recent_attempts: i64,
+    /// Minimum successful-attempt percentage inside the window.
+    pub notification_delivery_min_success_percent: i64,
     /// Scheduled jobs whose freshness gates readiness.
     pub critical_jobs: Vec<String>,
     /// Maximum age of a critical job's last run.
@@ -99,6 +119,15 @@ impl Default for ReadinessPolicy {
             alert_engine_max_age_secs: 900,
             outbox_max_pending: 100,
             outbox_max_oldest_pending_secs: 300,
+            notification_delivery_max_processor_age_secs: 900,
+            notification_delivery_max_overdue: 250,
+            notification_delivery_max_overdue_age_secs: 600,
+            notification_delivery_max_dead_lettered: 25,
+            notification_delivery_max_dead_letter_rate: 10,
+            notification_delivery_max_stuck_leases: 0,
+            notification_delivery_success_window_secs: 3_600,
+            notification_delivery_min_recent_attempts: 5,
+            notification_delivery_min_success_percent: 90,
             critical_jobs: DEFAULT_CRITICAL_JOBS
                 .iter()
                 .map(|job| (*job).to_string())
@@ -156,6 +185,42 @@ impl ReadinessPolicy {
             outbox_max_oldest_pending_secs: env_i64(
                 "APEX_OUTBOX_MAX_OLDEST_PENDING_SECS",
                 defaults.outbox_max_oldest_pending_secs,
+            ),
+            notification_delivery_max_processor_age_secs: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MAX_PROCESSOR_AGE_SECS",
+                defaults.notification_delivery_max_processor_age_secs,
+            ),
+            notification_delivery_max_overdue: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE",
+                defaults.notification_delivery_max_overdue,
+            ),
+            notification_delivery_max_overdue_age_secs: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE_AGE_SECS",
+                defaults.notification_delivery_max_overdue_age_secs,
+            ),
+            notification_delivery_max_dead_lettered: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED",
+                defaults.notification_delivery_max_dead_lettered,
+            ),
+            notification_delivery_max_dead_letter_rate: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTER_RATE",
+                defaults.notification_delivery_max_dead_letter_rate,
+            ),
+            notification_delivery_max_stuck_leases: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MAX_STUCK_LEASES",
+                defaults.notification_delivery_max_stuck_leases,
+            ),
+            notification_delivery_success_window_secs: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_SUCCESS_WINDOW_SECS",
+                defaults.notification_delivery_success_window_secs,
+            ),
+            notification_delivery_min_recent_attempts: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MIN_RECENT_ATTEMPTS",
+                defaults.notification_delivery_min_recent_attempts,
+            ),
+            notification_delivery_min_success_percent: env_i64(
+                "APEX_NOTIFICATION_DELIVERY_MIN_SUCCESS_PERCENT",
+                defaults.notification_delivery_min_success_percent,
             ),
             critical_jobs: env_csv("APEX_CRITICAL_JOBS", &defaults.critical_jobs),
             critical_job_max_age_secs: env_i64(
@@ -947,6 +1012,147 @@ pub fn evaluate_outbox(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Durable notification delivery
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Evaluate durable channel delivery health against policy.
+///
+/// Five independent failure modes gate readiness, because each one can leave
+/// the raw backlog looking harmless:
+///
+/// * the retry processor stopped running (stale `notification_delivery` job);
+/// * due rows keep aging (`oldest_overdue_age_secs`) even if the count is low;
+/// * dead letters accumulate (terminal count and recent change rate);
+/// * a crash left rows `delivering` past their lease (stuck leases);
+/// * attempts fail more often than the success-ratio policy allows.
+pub fn evaluate_notification_delivery(
+    health: Option<&NotificationDeliveryHealth>,
+    processor: Option<&WorkerJobStateRecord>,
+    policy: &ReadinessPolicy,
+    now: DateTime<Utc>,
+) -> CapabilityStatus {
+    let Some(health) = health else {
+        return CapabilityStatus::new("unavailable", "notification delivery health query failed");
+    };
+
+    let mut problems: Vec<String> = Vec::new();
+
+    let processor_age_secs = match processor {
+        None => {
+            problems.push(
+                "retry processor has never recorded a run; channel deliveries are not attempted"
+                    .to_string(),
+            );
+            None
+        }
+        Some(state) => {
+            if state.circuit_open {
+                problems.push("retry processor circuit is open".to_string());
+            }
+            if state.consecutive_failures >= 3 {
+                problems.push(format!(
+                    "retry processor has {} consecutive failures",
+                    state.consecutive_failures
+                ));
+            }
+            match state.last_run {
+                None => {
+                    problems.push("retry processor has never run".to_string());
+                    None
+                }
+                Some(last_run) => {
+                    let age_secs = (now - last_run).num_seconds().max(0);
+                    if age_secs > policy.notification_delivery_max_processor_age_secs {
+                        problems.push(format!(
+                            "retry processor last ran {age_secs}s ago (policy {}s)",
+                            policy.notification_delivery_max_processor_age_secs
+                        ));
+                    }
+                    Some(age_secs)
+                }
+            }
+        }
+    };
+
+    if health.overdue > policy.notification_delivery_max_overdue {
+        problems.push(format!(
+            "{} overdue deliveries exceed policy {}",
+            health.overdue, policy.notification_delivery_max_overdue
+        ));
+    }
+    if let Some(oldest_age) = health.oldest_overdue_age_secs {
+        if oldest_age > policy.notification_delivery_max_overdue_age_secs {
+            problems.push(format!(
+                "oldest overdue delivery is {oldest_age}s old (policy {}s)",
+                policy.notification_delivery_max_overdue_age_secs
+            ));
+        }
+    }
+    if health.dead_lettered > policy.notification_delivery_max_dead_lettered {
+        problems.push(format!(
+            "{} dead-lettered deliveries await operator replay (policy {})",
+            health.dead_lettered, policy.notification_delivery_max_dead_lettered
+        ));
+    }
+    if health.dead_lettered_recent > policy.notification_delivery_max_dead_letter_rate {
+        problems.push(format!(
+            "{} deliveries dead-lettered in the last {}s (policy rate {})",
+            health.dead_lettered_recent,
+            policy.notification_delivery_success_window_secs,
+            policy.notification_delivery_max_dead_letter_rate
+        ));
+    }
+    if health.stuck_delivering > policy.notification_delivery_max_stuck_leases {
+        problems.push(format!(
+            "{} deliveries are stuck 'delivering' past their lease (policy {})",
+            health.stuck_delivering, policy.notification_delivery_max_stuck_leases
+        ));
+    }
+    // Success ratio over terminal outcomes in the window: a delivery that
+    // succeeded after transient retries counts as a success, and an empty
+    // window (nothing concluded yet) is not a failure. `min_recent_attempts`
+    // keeps a tiny sample from gating readiness.
+    let terminal_recent = health.delivered_recent + health.failed_recent;
+    if terminal_recent >= policy.notification_delivery_min_recent_attempts {
+        let success_percent = health.delivered_recent * 100 / terminal_recent;
+        if success_percent < policy.notification_delivery_min_success_percent {
+            problems.push(format!(
+                "delivery success ratio {success_percent}% ({}/{} deliveries concluded in the last {}s) below policy {}%",
+                health.delivered_recent,
+                terminal_recent,
+                policy.notification_delivery_success_window_secs,
+                policy.notification_delivery_min_success_percent
+            ));
+        }
+    }
+
+    let mut status = if problems.is_empty() {
+        CapabilityStatus::new(
+            "ok",
+            format!(
+                "{} pending, {} overdue, {} dead-lettered, {} stuck; {}/{} deliveries concluded in the window succeeded",
+                health.pending,
+                health.overdue,
+                health.dead_lettered,
+                health.stuck_delivering,
+                health.delivered_recent,
+                terminal_recent
+            ),
+        )
+    } else {
+        CapabilityStatus::new(
+            "degraded",
+            format!("delivery health: {}", problems.join("; ")),
+        )
+    };
+    status.age_seconds = processor_age_secs;
+    status.last_seen_at = processor
+        .and_then(|state| state.last_run)
+        .map(|last_run| last_run.to_rfc3339());
+    status
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Critical scheduled jobs
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1684,6 +1890,189 @@ mod tests {
             last_published_at: Some(now() - chrono::Duration::seconds(10)),
         };
         let status = evaluate_outbox(Some(&backlog), &ReadinessPolicy::default(), now());
+        assert_eq!(status.status, "ok");
+    }
+
+    // ── Durable notification delivery ───────────────────────────────────────
+
+    fn delivery_health() -> NotificationDeliveryHealth {
+        NotificationDeliveryHealth {
+            pending: 0,
+            overdue: 0,
+            oldest_overdue_age_secs: None,
+            dead_lettered: 0,
+            dead_lettered_recent: 0,
+            stuck_delivering: 0,
+            attempts_recent: 10,
+            delivered_recent: 10,
+            failed_recent: 0,
+        }
+    }
+
+    #[test]
+    fn notification_delivery_missing_probe_data_is_unavailable() {
+        let status = evaluate_notification_delivery(
+            None,
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "unavailable");
+    }
+
+    #[test]
+    fn notification_delivery_healthy_pipeline_is_ok() {
+        let status = evaluate_notification_delivery(
+            Some(&delivery_health()),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "ok");
+        assert!(status
+            .detail
+            .contains("10/10 deliveries concluded in the window succeeded"));
+        assert_eq!(status.age_seconds, Some(0));
+    }
+
+    #[test]
+    fn notification_delivery_backlog_beyond_policy_is_degraded() {
+        let health = NotificationDeliveryHealth {
+            overdue: 500,
+            oldest_overdue_age_secs: Some(120),
+            ..delivery_health()
+        };
+        let status = evaluate_notification_delivery(
+            Some(&health),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("overdue deliveries exceed policy"));
+    }
+
+    #[test]
+    fn notification_delivery_oldest_overdue_age_beyond_policy_is_degraded() {
+        let health = NotificationDeliveryHealth {
+            overdue: 1,
+            oldest_overdue_age_secs: Some(3_600),
+            ..delivery_health()
+        };
+        let status = evaluate_notification_delivery(
+            Some(&health),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("oldest overdue delivery"));
+    }
+
+    #[test]
+    fn notification_delivery_dead_letters_beyond_policy_are_degraded() {
+        let by_count = NotificationDeliveryHealth {
+            dead_lettered: 100,
+            ..delivery_health()
+        };
+        let status = evaluate_notification_delivery(
+            Some(&by_count),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("dead-lettered deliveries"));
+
+        let by_rate = NotificationDeliveryHealth {
+            dead_lettered: 1,
+            dead_lettered_recent: 50,
+            ..delivery_health()
+        };
+        let status = evaluate_notification_delivery(
+            Some(&by_rate),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("dead-lettered in the last"));
+    }
+
+    #[test]
+    fn notification_delivery_stuck_leases_are_degraded() {
+        let health = NotificationDeliveryHealth {
+            stuck_delivering: 2,
+            ..delivery_health()
+        };
+        let status = evaluate_notification_delivery(
+            Some(&health),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status
+            .detail
+            .contains("stuck 'delivering' past their lease"));
+    }
+
+    #[test]
+    fn notification_delivery_stale_retry_processor_is_degraded() {
+        let status = evaluate_notification_delivery(
+            Some(&delivery_health()),
+            Some(&sample_job(
+                "notification_delivery",
+                Some(now() - chrono::Duration::hours(2)),
+                0,
+                false,
+            )),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("retry processor last ran"));
+
+        let never = evaluate_notification_delivery(
+            Some(&delivery_health()),
+            None,
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(never.status, "degraded");
+        assert!(never.detail.contains("never recorded a run"));
+    }
+
+    #[test]
+    fn notification_delivery_low_success_ratio_is_degraded() {
+        let failing = NotificationDeliveryHealth {
+            attempts_recent: 10,
+            delivered_recent: 5,
+            failed_recent: 5,
+            ..delivery_health()
+        };
+        let status = evaluate_notification_delivery(
+            Some(&failing),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("success ratio 50%"));
+
+        // A small sample must not fail readiness on its own.
+        let small_sample = NotificationDeliveryHealth {
+            attempts_recent: 2,
+            delivered_recent: 0,
+            failed_recent: 2,
+            ..delivery_health()
+        };
+        let status = evaluate_notification_delivery(
+            Some(&small_sample),
+            Some(&sample_job("notification_delivery", Some(now()), 0, false)),
+            &ReadinessPolicy::default(),
+            now(),
+        );
         assert_eq!(status.status, "ok");
     }
 

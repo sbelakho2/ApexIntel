@@ -89,6 +89,8 @@ pub struct Capabilities {
     pub alert_engine: CapabilityStatus,
     /// Outbox publisher backlog (full profile).
     pub outbox: CapabilityStatus,
+    /// Durable channel delivery / retry processor health (full profile).
+    pub notification_delivery: CapabilityStatus,
     /// Critical scheduled-job freshness (full profile).
     pub scheduled_jobs: CapabilityStatus,
 }
@@ -132,7 +134,7 @@ impl ProductSurface {
                 "browser_renderer",
             ],
             Self::Intelligence => &["llm", "embeddings", "alert_engine"],
-            Self::Delivery => &["nats", "outbox"],
+            Self::Delivery => &["nats", "outbox", "notification_delivery"],
         }
     }
 }
@@ -208,6 +210,7 @@ impl Capabilities {
             &self.source_coverage,
             &self.alert_engine,
             &self.outbox,
+            &self.notification_delivery,
             &self.scheduled_jobs,
         ];
         if all.iter().any(|c| c.status == "unavailable") {
@@ -246,6 +249,7 @@ impl Capabilities {
             ("source_coverage", &self.source_coverage),
             ("alert_engine", &self.alert_engine),
             ("outbox", &self.outbox),
+            ("notification_delivery", &self.notification_delivery),
             ("scheduled_jobs", &self.scheduled_jobs),
         ]
         .into_iter()
@@ -278,6 +282,7 @@ impl Capabilities {
             "source_coverage" => Some(&self.source_coverage),
             "alert_engine" => Some(&self.alert_engine),
             "outbox" => Some(&self.outbox),
+            "notification_delivery" => Some(&self.notification_delivery),
             "scheduled_jobs" => Some(&self.scheduled_jobs),
             _ => None,
         }
@@ -426,6 +431,11 @@ async fn probe_capabilities_plan(
     } else {
         not_required()
     };
+    let notification_delivery = if required("notification_delivery") {
+        probe_notification_delivery(&store, ctx.policy).await
+    } else {
+        not_required()
+    };
     let scheduled_jobs = if required("scheduled_jobs") {
         probe_scheduled_jobs(&store, ctx.policy).await
     } else {
@@ -444,6 +454,7 @@ async fn probe_capabilities_plan(
         source_coverage,
         alert_engine,
         outbox,
+        notification_delivery,
         scheduled_jobs,
     }
 }
@@ -605,6 +616,40 @@ async fn probe_outbox(store: &PgStore, policy: &ReadinessPolicy) -> CapabilitySt
     }
 }
 
+/// Durable channel delivery health: backlog and oldest overdue age,
+/// dead-letter count and recent change rate, stuck `delivering` leases, the
+/// recent attempt success ratio, and the retry processor's own freshness.
+async fn probe_notification_delivery(
+    store: &PgStore,
+    policy: &ReadinessPolicy,
+) -> CapabilityStatus {
+    let now = Utc::now();
+    let health = match store
+        .notification_delivery_health(now, policy.notification_delivery_success_window_secs)
+        .await
+    {
+        Ok(health) => health,
+        Err(error) => {
+            return CapabilityStatus::new(
+                "unavailable",
+                format!("notification delivery health query failed: {error}"),
+            )
+        }
+    };
+    let processor = match store.list_worker_job_states().await {
+        Ok(states) => states
+            .into_iter()
+            .find(|state| state.job_kind == "notification_delivery"),
+        Err(error) => {
+            return CapabilityStatus::new(
+                "unavailable",
+                format!("worker job state query failed: {error}"),
+            )
+        }
+    };
+    probes::evaluate_notification_delivery(Some(&health), processor.as_ref(), policy, now)
+}
+
 async fn probe_scheduled_jobs(store: &PgStore, policy: &ReadinessPolicy) -> CapabilityStatus {
     match store.list_worker_job_states().await {
         Ok(states) => probes::evaluate_scheduled_jobs(&states, policy, Utc::now()),
@@ -649,11 +694,12 @@ mod tests {
             source_coverage: ok_capability("60 operational sources"),
             alert_engine: ok_capability("25 rules loaded"),
             outbox: ok_capability("0 pending"),
+            notification_delivery: ok_capability("0 pending, 0 overdue, 0 dead-lettered"),
             scheduled_jobs: ok_capability("2 critical jobs fresh"),
         }
     }
 
-    const ALL_CAPABILITY_NAMES: [&str; 12] = [
+    const ALL_CAPABILITY_NAMES: [&str; 13] = [
         "database",
         "worker_heartbeat",
         "llm",
@@ -665,6 +711,7 @@ mod tests {
         "source_coverage",
         "alert_engine",
         "outbox",
+        "notification_delivery",
         "scheduled_jobs",
     ];
 
@@ -747,6 +794,7 @@ mod tests {
                 "source_coverage",
                 "alert_engine",
                 "outbox",
+                "notification_delivery",
                 "scheduled_jobs",
             ]
         );
@@ -804,6 +852,7 @@ mod tests {
             "source_coverage",
             "alert_engine",
             "outbox",
+            "notification_delivery",
             "scheduled_jobs",
         ] {
             caps = with_capability(
@@ -905,6 +954,93 @@ mod tests {
         );
     }
 
+    fn healthy_delivery_health() -> apex_store::postgres::NotificationDeliveryHealth {
+        apex_store::postgres::NotificationDeliveryHealth {
+            pending: 0,
+            overdue: 0,
+            oldest_overdue_age_secs: None,
+            dead_lettered: 0,
+            dead_lettered_recent: 0,
+            stuck_delivering: 0,
+            attempts_recent: 10,
+            delivered_recent: 10,
+            failed_recent: 0,
+        }
+    }
+
+    fn delivery_processor(
+        last_run: chrono::DateTime<Utc>,
+    ) -> apex_store::postgres::WorkerJobStateRecord {
+        apex_store::postgres::WorkerJobStateRecord {
+            job_kind: "notification_delivery".to_string(),
+            last_run: Some(last_run),
+            last_status: Some("succeeded".to_string()),
+            last_error: None,
+            last_duration_ms: Some(10),
+            consecutive_failures: 0,
+            max_consecutive_failures: 5,
+            circuit_open: false,
+            updated_at: last_run,
+        }
+    }
+
+    #[test]
+    fn full_readiness_fails_503_when_notification_delivery_degrades() {
+        let policy = ReadinessPolicy::default();
+        let now = Utc::now();
+
+        // Backlog/dead-letters above policy: the capability degrades and full
+        // readiness answers 503.
+        let mut caps = sample_capabilities();
+        caps.notification_delivery = probes::evaluate_notification_delivery(
+            Some(&apex_store::postgres::NotificationDeliveryHealth {
+                dead_lettered: 100,
+                ..healthy_delivery_health()
+            }),
+            Some(&delivery_processor(now)),
+            &policy,
+            now,
+        );
+        assert!(!caps.notification_delivery.is_ok());
+        let status = readiness_status(&caps, DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // A stale retry processor: deliveries are not being attempted, so full
+        // readiness answers 503 even with an empty backlog.
+        let mut caps = sample_capabilities();
+        caps.notification_delivery = probes::evaluate_notification_delivery(
+            Some(&healthy_delivery_health()),
+            Some(&delivery_processor(now - chrono::Duration::seconds(3_600))),
+            &policy,
+            now,
+        );
+        assert!(!caps.notification_delivery.is_ok());
+        let status = readiness_status(&caps, DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // A healthy pipeline keeps full readiness green.
+        let mut caps = sample_capabilities();
+        caps.notification_delivery = probes::evaluate_notification_delivery(
+            Some(&healthy_delivery_health()),
+            Some(&delivery_processor(now)),
+            &policy,
+            now,
+        );
+        assert!(caps.notification_delivery.is_ok());
+        assert_eq!(
+            readiness_status(&caps, DeploymentProfile::Full),
+            HealthStatus::Healthy
+        );
+    }
+
     #[test]
     fn readiness_report_lists_exactly_the_required_capabilities() {
         let caps = sample_capabilities();
@@ -938,6 +1074,7 @@ mod tests {
                 "source_coverage",
                 "alert_engine",
                 "outbox",
+                "notification_delivery",
                 "scheduled_jobs",
             ]
         );
@@ -995,6 +1132,7 @@ mod tests {
             "source_coverage",
             "alert_engine",
             "outbox",
+            "notification_delivery",
             "scheduled_jobs",
         ] {
             caps = with_capability(
@@ -1043,6 +1181,7 @@ mod tests {
             "source_coverage" => caps.source_coverage = status,
             "alert_engine" => caps.alert_engine = status,
             "outbox" => caps.outbox = status,
+            "notification_delivery" => caps.notification_delivery = status,
             "scheduled_jobs" => caps.scheduled_jobs = status,
             other => panic!("unknown capability {other}"),
         }

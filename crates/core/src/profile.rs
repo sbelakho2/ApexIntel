@@ -46,6 +46,7 @@ impl DeploymentProfile {
         "source_coverage",
         "alert_engine",
         "outbox",
+        "notification_delivery",
         "scheduled_jobs",
     ];
 
@@ -160,6 +161,7 @@ mod tests {
             "source_coverage",
             "alert_engine",
             "outbox",
+            "notification_delivery",
             "scheduled_jobs",
         ] {
             assert!(required.contains(&name), "full must require {name}");
@@ -177,6 +179,7 @@ mod tests {
             "source_coverage",
             "alert_engine",
             "outbox",
+            "notification_delivery",
             "scheduled_jobs",
         ] {
             assert!(!core.requires_capability(name), "core permits {name}");

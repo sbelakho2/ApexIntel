@@ -402,8 +402,16 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
         // `notification_delivery_state` row per configured channel BEFORE any
         // attempt. The retry-processor job owns the channel sends, backoff and
         // dead-lettering — this job never publishes or sends directly.
-        let channels =
-            apex_worker::notification_delivery::ConfiguredChannelRouter::from_env().channels();
+        let channels = match apex_worker::notification_delivery::ConfiguredChannelRouter::from_env()
+        {
+            Ok(router) => router.channels(),
+            Err(error) => {
+                run.fail(&format!(
+                    "sla_enforcement: failed to build the channel router: {error}"
+                ));
+                return run;
+            }
+        };
         match apex_worker::notification_delivery::enqueue_sla_alerts(
             store.as_ref(),
             pending_alerts,

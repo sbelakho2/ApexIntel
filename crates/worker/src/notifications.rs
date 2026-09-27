@@ -370,17 +370,19 @@ pub struct NotificationDispatcher {
 }
 
 impl NotificationDispatcher {
-    pub fn new(config: NotificationConfig) -> Self {
-        Self {
+    /// Build the dispatcher. A client that cannot be built is an `Err` the
+    /// caller must handle; this constructor never panics.
+    pub fn new(config: NotificationConfig) -> Result<Self> {
+        Ok(Self {
             config,
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .unwrap_or_else(|error| panic!("failed to build reqwest client: {error}")),
-        }
+                .context("failed to build notification HTTP client")?,
+        })
     }
 
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self> {
         Self::new(NotificationConfig::from_env())
     }
 
@@ -582,78 +584,88 @@ impl NotificationDispatcher {
 
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn format_slack_message(&self, alert: &PendingAlert) -> String {
-        let emoji = match alert.severity {
-            AlertSeverity::Critical => "🚨",
-            AlertSeverity::High => "🔴",
-            AlertSeverity::Medium => "🟡",
-            AlertSeverity::Low => "🔵",
-            AlertSeverity::Info => "ℹ️",
-        };
-
-        let body_text = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
-        let region = alert.region.as_deref().unwrap_or("Global");
-        let entity = alert.display_name();
-
-        serde_json::json!({
-            "text": format!("{emoji} *[{}] {}*\n", alert.severity.as_str().to_uppercase(), alert.title),
-            "blocks": [
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": format!("{emoji} {} — {}", alert.severity.as_str().to_uppercase(), alert.title)
-                    }
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        { "type": "mrkdwn", "text": format!("*Entity:*\n{}", entity) },
-                        { "type": "mrkdwn", "text": format!("*Region:*\n{}", region) },
-                        { "type": "mrkdwn", "text": format!("*Category:*\n{}", alert.category) },
-                        { "type": "mrkdwn", "text": format!("*Priority Score:*\n{:.2}", alert.priority_score) },
-                    ]
-                },
-                {
-                    "type": "section",
-                    "text": { "type": "mrkdwn", "text": body_text }
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        { "type": "mrkdwn", "text": format!("Source ID: `{}` | {}", alert.source_id, alert.created_at.format("%Y-%m-%d %H:%M UTC")) }
-                    ]
-                }
-            ]
-        })
-        .to_string()
+        format_slack_message(alert)
     }
 
     fn format_email_body(&self, alert: &PendingAlert) -> String {
-        let body_text = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
-        format!(
-            "ApexIntel Intelligence Alert\n\
-            ==============================\n\
-            Severity:       {}\n\
-            Entity:         {}\n\
-            Category:       {}\n\
-            Region:         {}\n\
-            Priority Score: {:.2}\n\
-            \n\
-            {}\n\
-            \n\
-            -- \n\
-            Source ID: {}\n\
-            Generated: {}\n",
-            alert.severity.as_str().to_uppercase(),
-            alert.display_name(),
-            alert.category,
-            alert.region.as_deref().unwrap_or("Global"),
-            alert.priority_score,
-            body_text,
-            alert.source_id,
-            alert.created_at.format("%Y-%m-%d %H:%M UTC"),
-        )
+        format_email_body(alert)
     }
+}
+
+/// Slack Block Kit JSON for an alert (legacy webhook body format).
+pub(crate) fn format_slack_message(alert: &PendingAlert) -> String {
+    let emoji = match alert.severity {
+        AlertSeverity::Critical => "🚨",
+        AlertSeverity::High => "🔴",
+        AlertSeverity::Medium => "🟡",
+        AlertSeverity::Low => "🔵",
+        AlertSeverity::Info => "ℹ️",
+    };
+
+    let body_text = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
+    let region = alert.region.as_deref().unwrap_or("Global");
+    let entity = alert.display_name();
+
+    serde_json::json!({
+        "text": format!("{emoji} *[{}] {}*\n", alert.severity.as_str().to_uppercase(), alert.title),
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": format!("{emoji} {} — {}", alert.severity.as_str().to_uppercase(), alert.title)
+                }
+            },
+            {
+                "type": "section",
+                "fields": [
+                    { "type": "mrkdwn", "text": format!("*Entity:*\n{}", entity) },
+                    { "type": "mrkdwn", "text": format!("*Region:*\n{}", region) },
+                    { "type": "mrkdwn", "text": format!("*Category:*\n{}", alert.category) },
+                    { "type": "mrkdwn", "text": format!("*Priority Score:*\n{:.2}", alert.priority_score) },
+                ]
+            },
+            {
+                "type": "section",
+                "text": { "type": "mrkdwn", "text": body_text }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    { "type": "mrkdwn", "text": format!("Source ID: `{}` | {}", alert.source_id, alert.created_at.format("%Y-%m-%d %H:%M UTC")) }
+                ]
+            }
+        ]
+    })
+    .to_string()
+}
+
+/// Plain-text email body for an alert.
+pub(crate) fn format_email_body(alert: &PendingAlert) -> String {
+    let body_text = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
+    format!(
+        "ApexIntel Intelligence Alert\n\
+        ==============================\n\
+        Severity:       {}\n\
+        Entity:         {}\n\
+        Category:       {}\n\
+        Region:         {}\n\
+        Priority Score: {:.2}\n\
+        \n\
+        {}\n\
+        \n\
+        -- \n\
+        Source ID: {}\n\
+        Generated: {}\n",
+        alert.severity.as_str().to_uppercase(),
+        alert.display_name(),
+        alert.category,
+        alert.region.as_deref().unwrap_or("Global"),
+        alert.priority_score,
+        body_text,
+        alert.source_id,
+        alert.created_at.format("%Y-%m-%d %H:%M UTC"),
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -989,7 +1001,7 @@ mod tests {
     #[test]
     fn slack_message_format_is_valid_json() {
         let cfg = NotificationConfig::default();
-        let dispatcher = NotificationDispatcher::new(cfg);
+        let dispatcher = NotificationDispatcher::new(cfg).expect("client builds");
         let alert = make_alert(AlertSeverity::Critical, 0.95);
         let msg = dispatcher.format_slack_message(&alert);
         let _parsed: serde_json::Value =
@@ -999,7 +1011,7 @@ mod tests {
     #[test]
     fn email_body_contains_entity_name() {
         let cfg = NotificationConfig::default();
-        let dispatcher = NotificationDispatcher::new(cfg);
+        let dispatcher = NotificationDispatcher::new(cfg).expect("client builds");
         let alert = make_alert(AlertSeverity::High, 0.8);
         let body = dispatcher.format_email_body(&alert);
         assert!(body.contains("Test Corp"));
@@ -1008,7 +1020,8 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_batch_empty_returns_empty() {
-        let dispatcher = NotificationDispatcher::new(NotificationConfig::default());
+        let dispatcher =
+            NotificationDispatcher::new(NotificationConfig::default()).expect("client builds");
         let records = dispatcher.dispatch_batch(vec![]).await;
         assert!(records.is_empty());
     }
@@ -1024,7 +1037,7 @@ mod tests {
             min_priority: 0.9,
         });
 
-        let dispatcher = NotificationDispatcher::new(cfg);
+        let dispatcher = NotificationDispatcher::new(cfg).expect("client builds");
         // Send low severity alert — should be filtered
         let alert = make_alert(AlertSeverity::Low, 0.1);
         let records = dispatcher.dispatch_batch(vec![alert]).await;

@@ -849,7 +849,9 @@ curl -s -o /dev/null -w '%{http_code}\n' https://starzerp.fi/api/health/ready
 # and search index. APEX_PROFILE=full composes the product surfaces and
 # additionally requires the LLM endpoint, NATS, browser rendering, crawl
 # freshness, minimum operational source coverage, alert-rule engine state,
-# outbox publisher backlog and critical scheduled-job freshness; it refuses to
+# outbox publisher backlog, durable notification-delivery health (retry
+# processor freshness, backlog/dead-letter policy, stuck leases, recent
+# success ratio) and critical scheduled-job freshness; it refuses to
 # start without a `--features llm` build. The response publishes the exact
 # required set and the resolved thresholds as policy.
 
@@ -858,7 +860,7 @@ curl -s https://starzerp.fi/process/live       # 200 while the API serves
 curl -s https://starzerp.fi/process/ready      # database, worker, scheduled jobs
 curl -s https://starzerp.fi/data/healthy       # freshness, sources, index, browser
 curl -s https://starzerp.fi/intelligence/healthy  # LLM, embeddings, alert engine
-curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher
+curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher, notification delivery
 # Expected: {"surface":"...","status":"ok","checks":[...]}
 # Policy thresholds are configurable without a rebuild (defaults in parens):
 #   APEX_LLM_PROBE_TTL_SECS (60)         APEX_LLM_PROBE_TIMEOUT_SECS (5)
@@ -869,6 +871,15 @@ curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher
 #   APEX_MIN_OPERATIONAL_SOURCES (25)
 #   APEX_ALERT_ENGINE_MAX_AGE_SECS (900)
 #   APEX_OUTBOX_MAX_PENDING (100)        APEX_OUTBOX_MAX_OLDEST_PENDING_SECS (300)
+#   APEX_NOTIFICATION_DELIVERY_MAX_PROCESSOR_AGE_SECS (900)
+#   APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE (250)
+#   APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE_AGE_SECS (600)
+#   APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED (25)
+#   APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTER_RATE (10)
+#   APEX_NOTIFICATION_DELIVERY_MAX_STUCK_LEASES (0)
+#   APEX_NOTIFICATION_DELIVERY_SUCCESS_WINDOW_SECS (3600)
+#   APEX_NOTIFICATION_DELIVERY_MIN_RECENT_ATTEMPTS (5)
+#   APEX_NOTIFICATION_DELIVERY_MIN_SUCCESS_PERCENT (90)
 #   APEX_CRITICAL_JOBS (crawl_cycle,triage_processing)
 #   APEX_CRITICAL_JOB_MAX_AGE_SECS (7200)
 # and search index; APEX_PROFILE=full additionally requires LLM, NATS and the

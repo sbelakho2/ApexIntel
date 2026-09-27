@@ -40,13 +40,17 @@ through `crates/worker/src/alert_transport.rs` (enforced by
   `alerts` stream keeps a 2-hour duplicate window, so the broker suppresses a
   republish of the same row inside that window. Consumers (API SSE router) must
   still tolerate a redelivery outside the window.
-- Channel deliveries carry a stable per-attempt idempotency key
-  `sha256(notification_event_id | channel | destination | attempt | payload_hash)`
-  (webhook `Idempotency-Key` header); channels are expected to deduplicate on
-  it.
+- Channel deliveries carry a **stable per-delivery** idempotency key
+  `sha256(notification_event_id | channel | destination | payload_hash)` (webhook
+  `Idempotency-Key` and `X-Apex-Delivery-Key` headers); channels are expected to
+  deduplicate on it. The attempt number is deliberately NOT part of the key: a
+  send the channel accepted but whose settlement write was lost (crash, lease
+  expiry, row reclaim) is retried with the same key, and the attempt number
+  travels separately as `X-Apex-Attempt`.
 
 Exactly-once delivery is explicitly **not** claimed: a channel that accepted a
-notification but crashed before the settlement write is retried.
+notification but crashed before the settlement write is retried — the receiver
+deduplicates that retry by the stable delivery key.
 
 ## Claim / lease
 
@@ -82,6 +86,13 @@ notification but crashed before the settlement write is retried.
     rows), `NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED` (default 25);
   - alert outbox: `OUTBOX_MAX_OVERDUE` (default 250 rows claimable for more
     than five minutes), `OUTBOX_MAX_DEAD_LETTERED` (default 25).
+- `/api/health/ready` under `APEX_PROFILE=full` additionally requires the
+  `notification_delivery` capability, which measures the retry processor from
+  live state: processor freshness, overdue backlog and oldest-overdue age,
+  dead-letter count and recent change rate, `delivering` rows stuck past their
+  lease, and the delivered/failed success ratio over the recent attempt window
+  (`notification_delivery_attempts`, written in the same transaction as each
+  settlement). Thresholds are the `APEX_NOTIFICATION_DELIVERY_*` env vars.
 
 ## Migrations
 
@@ -89,3 +100,5 @@ notification but crashed before the settlement write is retried.
 - `076_notification_delivery.sql` — `notification_events`, per-channel delivery
   state (claims, lease, payload hash, dead-letter), outbox lease/dead-letter
   columns.
+- `080_notification_delivery_readiness.sql` — indexes for the readiness probe
+  (stuck leases, recent attempt window).

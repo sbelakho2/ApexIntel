@@ -64,6 +64,70 @@ fn sample_event(dedupe_key: &str) -> (NewNotificationEvent, DeliveryChannel, Del
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
+async fn expired_delivering_lease_is_reclaimable_after_a_crash() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = PgStore::from_pool(pool.clone());
+    sqlx::query("DELETE FROM notification_events")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM event_outbox")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let dedupe_key = format!("crash-reclaim:{}", Uuid::new_v4());
+    let (event, webhook, _email) = sample_event(&dedupe_key);
+    let outcome = store
+        .enqueue_notification_event(&event, std::slice::from_ref(&webhook))
+        .await
+        .unwrap();
+    let outbox_id = outcome.outbox_id.expect("alert outbox row id");
+
+    // Claim with an already-expired lease: the channel send is attempted but
+    // the settlement write never lands (crash).
+    let first = store
+        .claim_due_notification_deliveries("crashed-worker", 0.0, 10)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].attempts, 1);
+    assert_eq!(first[0].status, "delivering");
+
+    let reclaimed = store
+        .claim_due_notification_deliveries("recovering-worker", 120.0, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        reclaimed.len(),
+        1,
+        "a crash must leave the delivery reclaimable after its lease expires, not stuck"
+    );
+    assert_eq!(reclaimed[0].attempts, 2);
+    assert_eq!(reclaimed[0].delivery_key, first[0].delivery_key);
+    assert_eq!(
+        reclaimed[0].lease_owner.as_deref(),
+        Some("recovering-worker")
+    );
+
+    // Cleanup (delivery rows cascade with the domain event).
+    sqlx::query("DELETE FROM notification_events WHERE id = $1")
+        .bind(outcome.notification_event_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM event_outbox WHERE id = $1")
+        .bind(outbox_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
 async fn sla_alert_enqueues_outbox_and_deliveries_then_retry_lifecycle() {
     let _guard = DB_TEST_LOCK.lock().await;
     let pool = connect().await;
@@ -109,6 +173,21 @@ async fn sla_alert_enqueues_outbox_and_deliveries_then_retry_lifecycle() {
     .await
     .unwrap();
     assert_eq!(delivery_count, 2, "one pending row per channel");
+
+    // The persisted payload is the transport wrapper the retry processor
+    // deserializes (`{"alert": ...}`), not the raw domain alert.
+    let (wrapper_stored,): (bool,) = sqlx::query_as(
+        "SELECT payload ? 'alert' FROM notification_delivery_state \
+          WHERE notification_event_id = $1 LIMIT 1",
+    )
+    .bind(outcome.notification_event_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        wrapper_stored,
+        "delivery rows must store the transport wrapper, not the raw domain alert"
+    );
 
     // Repeated scheduler runs must not create uncontrolled duplicates.
     let repeat = store
