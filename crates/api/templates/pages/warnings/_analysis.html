@@ -13,6 +13,15 @@
 
   {% if has_result %}
   <div class="space-y-4">
+    {% if is_insufficient %}
+    <div class="rounded-sm border border-amber-500/40 bg-amber-500/5 p-3">
+      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-amber-400">Insufficient evidence</p>
+      <p class="mt-1 text-sm leading-relaxed">No observations or related insights were available for this warning, so no analysis was generated. The deterministic preflight skipped the model call instead of producing ungrounded claims.</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ coverage_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ scope_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ evidence_digest_line }}</p>
+    </div>
+    {% else %}
     <div>
       <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Claims &amp; evidence</h3>
       {% if !has_claims %}
@@ -22,7 +31,7 @@
         {% for claim in claims %}
         <li class="rounded-sm border border-border p-3">
           <div class="flex items-center gap-2">
-            <span class="rounded-sm border border-border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-muted-foreground" data-claim-kind="{{ claim.kind_label }}">{{ claim.kind_label }}</span>
+            <span class="rounded-sm border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide{% if claim.kind_slug == "observed" %} border-emerald-500/60 bg-emerald-500/10 text-emerald-400{% else if claim.kind_slug == "inference" %} border-amber-500/60 bg-amber-500/10 text-amber-400{% else if claim.kind_slug == "recommendation" %} border-sky-500/60 bg-sky-500/10 text-sky-400{% else %} border-border text-muted-foreground{% endif %}" data-claim-kind="{{ claim.kind_slug }}">{{ claim.kind_label }}</span>
             {% if claim.has_confidence %}<span class="text-[10px] text-muted-foreground tabular-nums">{{ claim.confidence }}% confidence</span>{% endif %}
           </div>
           <p class="mt-1 text-sm leading-relaxed">{{ claim.text }}</p>
@@ -42,9 +51,12 @@
       <p class="mt-2 text-[10px] text-muted-foreground">{{ quality_line }}</p>
       <p class="mt-1 text-[10px] text-muted-foreground">{{ reliability_line }}</p>
       <p class="mt-1 text-[10px] text-muted-foreground">{{ coverage_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ scope_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ evidence_digest_line }}</p>
       <p class="mt-1 text-[10px] text-muted-foreground">{{ provenance_line }}</p>
       <p class="mt-1 text-[10px] text-muted-foreground">{{ evidence_summary }}</p>
     </div>
+    {% endif %}
 
     {% if has_impact %}
     <div>
@@ -95,7 +107,7 @@
       <ul class="space-y-2">
         {% for action in actions %}
         <li class="rounded-sm border border-border p-3">
-          <span class="rounded-sm border border-border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-muted-foreground">{{ action.kind_label }}</span>
+          <span class="rounded-sm border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide{% if action.kind_slug == "observed" %} border-emerald-500/60 bg-emerald-500/10 text-emerald-400{% else if action.kind_slug == "inference" %} border-amber-500/60 bg-amber-500/10 text-amber-400{% else if action.kind_slug == "recommendation" %} border-sky-500/60 bg-sky-500/10 text-sky-400{% else %} border-border text-muted-foreground{% endif %}" data-claim-kind="{{ action.kind_slug }}">{{ action.kind_label }}</span>
           <p class="mt-1 text-sm leading-relaxed">{{ action.text }}</p>
           {% if action.has_citations %}
           <ul class="mt-1 space-y-0.5">

@@ -616,6 +616,34 @@ impl PgStore {
             .bind(is_system_broadcast)
             .execute(&mut *conn)
             .await?;
+
+            // Upstream evidence model (audit warning-evidence item): the merged
+            // warning resolves each source URL into a source document ->
+            // observation -> `warning_evidence` link, so the analysis has
+            // citable evidence even when no entity ids are attached.
+            let (final_urls, final_entity_ids, final_confidence): (
+                Vec<String>,
+                Vec<Uuid>,
+                Option<f64>,
+            ) = sqlx::query_as(
+                "SELECT COALESCE(source_urls, ARRAY[]::TEXT[]), \
+                        COALESCE(entity_ids, ARRAY[]::UUID[]), \
+                        confidence \
+                 FROM warnings WHERE id = $1",
+            )
+            .bind(existing_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            super::warning_evidence::link_warning_evidence_on(
+                &mut *conn,
+                existing_id,
+                &normalized_title,
+                normalized_description.as_deref(),
+                &final_entity_ids,
+                final_confidence,
+                &final_urls,
+            )
+            .await?;
             return Ok(WarningInsertOutcome {
                 id: existing_id,
                 created: false,
@@ -643,6 +671,20 @@ impl PgStore {
         .bind(confidence)
         .bind(is_system_broadcast)
         .execute(&mut *conn)
+        .await?;
+
+        // Upstream evidence model (audit warning-evidence item): resolve each
+        // source URL into a source document -> observation -> warning_evidence
+        // link so a warning with only a source URL has citable evidence.
+        super::warning_evidence::link_warning_evidence_on(
+            &mut *conn,
+            id,
+            &normalized_title,
+            normalized_description.as_deref(),
+            normalized_entity_ids.as_deref().unwrap_or_default(),
+            confidence,
+            normalized_source_urls.as_deref().unwrap_or_default(),
+        )
         .await?;
         Ok(WarningInsertOutcome { id, created: true })
     }

@@ -1333,6 +1333,9 @@ pub async fn unread_count(
 pub struct AnalysisClaimLine {
     pub text: String,
     pub kind_label: String,
+    /// Machine-readable kind (`observed`/`inference`/`recommendation`/
+    /// `unknown`) so the template can give each kind a distinct visual.
+    pub kind_slug: String,
     /// Confidence as a percentage (0 when the run emitted none) plus a flag so
     /// the template can hide unset confidences.
     pub confidence: i64,
@@ -1372,6 +1375,11 @@ pub struct WarningAnalysisPanel {
     pub quality_line: String,
     pub reliability_line: String,
     pub coverage_line: String,
+    pub evidence_digest_line: String,
+    pub scope_line: String,
+    /// True when the deterministic preflight found nothing citable; the panel
+    /// then states the gap instead of showing an empty model result.
+    pub is_insufficient: bool,
     pub provenance_line: String,
     pub confidence_pct: i64,
     pub entities_line: String,
@@ -1392,6 +1400,7 @@ fn claim_lines(rendered: &[crate::warning_analysis::RenderedClaim]) -> Vec<Analy
             AnalysisClaimLine {
                 text: claim.text.clone(),
                 kind_label: kind.label().to_string(),
+                kind_slug: kind.as_str().to_string(),
                 confidence: claim
                     .confidence
                     .map(|confidence| (confidence * 100.0).round() as i64)
@@ -1426,6 +1435,9 @@ impl WarningAnalysisPanel {
             quality_line: String::new(),
             reliability_line: String::new(),
             coverage_line: String::new(),
+            evidence_digest_line: String::new(),
+            scope_line: String::new(),
+            is_insufficient: false,
             provenance_line: String::new(),
             confidence_pct: 0,
             entities_line: String::new(),
@@ -1481,8 +1493,14 @@ impl WarningAnalysisPanel {
             .collect::<Vec<_>>()
             .join(" · ");
         let mut panel = Self::base(warning_id, warning_title);
-        panel.status = "succeeded".to_string();
-        panel.status_label = "Analysis complete".to_string();
+        let insufficient = output.analysis_status.is_insufficient();
+        panel.status = output.analysis_status.as_str().to_string();
+        panel.status_label = if insufficient {
+            "Insufficient evidence".to_string()
+        } else {
+            "Analysis complete".to_string()
+        };
+        panel.is_insufficient = insufficient;
         panel.run_id = run_id.to_string();
         panel.has_result = true;
         panel.has_claims = !claims.is_empty();
@@ -1494,6 +1512,12 @@ impl WarningAnalysisPanel {
             output.source_domains.len(),
             output.model,
             output.prompt_version,
+        );
+        panel.scope_line = format!(
+            "Direct evidence source: {} · {} warning evidence link(s) · {} entity observation(s)",
+            output.evidence_scope.as_str(),
+            output.warning_evidence_count,
+            output.entity_count,
         );
         panel.quality_line = format!(
             "Evidence quality: {} ({:.2}) · {} evidence records · {} independent domain(s) · {} contradiction(s)",
@@ -1515,6 +1539,7 @@ impl WarningAnalysisPanel {
             output.insight_count_sent,
             output.insight_count_available,
         );
+        panel.evidence_digest_line = format!("Evidence digest: {}", output.evidence_digest);
         panel.provenance_line = format!(
             "Direct evidence: {} · derived evidence: {} · freshness {:.2} · completeness {:.2} · domain diversity {:.2}",
             quality.direct_evidence_count,
