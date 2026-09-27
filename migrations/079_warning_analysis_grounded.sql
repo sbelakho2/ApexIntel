@@ -16,7 +16,7 @@
 --
 --   warning_analysis_claims
 --     the validated claims/impact/actions of a run, through the same
---     claim-kind policy as insight claims (migration 078):
+--     claim-kind policy as insight claims (migration 079 join-table policy):
 --       observed       — must cite at least one existing evidence row
 --       inference      — must cite at least one existing evidence row
 --       recommendation — may cite zero direct evidence

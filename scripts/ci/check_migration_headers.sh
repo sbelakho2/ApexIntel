@@ -37,7 +37,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIR="${1:-${ROOT}/migrations}"
 FROZEN_MANIFEST="${FROZEN_MANIFEST:-${ROOT}/scripts/ci/frozen_migrations.txt}"
-FROZEN_MAX="${FROZEN_MAX:-68}"
+FROZEN_MAX="${FROZEN_MAX:-78}"
 
 failed=0
 checked=0
