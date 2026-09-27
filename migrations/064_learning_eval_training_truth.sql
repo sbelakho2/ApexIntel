@@ -1,5 +1,5 @@
 -- ──────────────────────────────────────────────────────────────────────────────
--- Migration 064: training truth is explicit opt-in (P0 audit #6B)
+-- Migration 062: training truth is explicit opt-in (P0 audit #6B)
 --
 -- 054 enforced `is_training_truth = (signal_class = 'positive_confirmation')`,
 -- which auto-promoted every positive confirmation into training truth and made

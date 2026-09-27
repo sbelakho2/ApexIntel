@@ -1,5 +1,5 @@
 -- ──────────────────────────────────────────────────────────────────────────────
--- Migration 054: measurable learning — versioned evaluation metrics (P0 #38)
+-- Migration 051: measurable learning — versioned evaluation metrics (P0 #38)
 --
 -- The improvement loop previously compared candidate rules/models/prompts
 -- against whatever data happened to be around, and mixed explicit analyst

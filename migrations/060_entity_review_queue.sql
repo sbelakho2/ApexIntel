@@ -1,4 +1,4 @@
--- 060_entity_review_queue.sql
+-- 058_entity_review_queue.sql
 --
 -- Entity admission review queue (P0 entity-admission audit).
 --
