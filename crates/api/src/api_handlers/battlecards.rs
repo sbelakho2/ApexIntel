@@ -621,8 +621,15 @@ pub(crate) async fn regenerate_battlecard(
             tracing::warn!(section, error = %e, "regenerate_battlecard: persist section failed");
         }
     }
-    // false-success-classification: best-effort — timestamp touch-up on an already-persisted battlecard
-    let _ = state.store.update_battlecard_timestamp(uid).await;
+    // Timestamp touch-up on an already-persisted battlecard; a failure must
+    // not disappear silently.
+    if let Err(error) = state.store.update_battlecard_timestamp(uid).await {
+        tracing::error!(
+            battlecard_id = %uid,
+            %error,
+            "regenerate_battlecard: failed to update the battlecard timestamp"
+        );
+    }
 
     // 7. Activity-feed entry (best-effort).
     let details = serde_json::json!({

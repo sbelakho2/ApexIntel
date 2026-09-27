@@ -1312,11 +1312,20 @@ pub async fn bookmark_insight_html(
     {
         Ok(true) => true, // newly bookmarked
         Ok(false) => {
-            // Already bookmarked — remove it
-            // false-success-classification: best-effort — best-effort write whose failure is logged upstream
-            let _ = store
+            // Already bookmarked — remove it. This toggle write is the
+            // authoritative state change; a failure must not render as a
+            // successful unbookmark.
+            if let Err(e) = store
                 .unbookmark_insight_scoped(uuid, &session.user_id, session.role.as_str())
-                .await;
+                .await
+            {
+                tracing::error!("Failed to unbookmark insight {id}: {e}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html("Failed to toggle bookmark".to_string()),
+                )
+                    .into_response();
+            }
             false
         }
         Err(e) => {
@@ -1461,6 +1470,13 @@ pub async fn create_insight_note(
         }
         Err(error) => {
             tracing::error!(insight_id = %id, error = %error, "failed to create insight note");
+            // Authoritative persistence: the redirect must not claim the note
+            // was saved when the write failed.
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to save note".to_string()),
+            )
+                .into_response();
         }
     }
 

@@ -628,12 +628,22 @@ pub async fn create_workspace(
     }
 
     // Entity focus keeps the decision loop closed: investigation started from
-    // a signal or dossier stays linked to that entity (audit #27).
-    let entity_focus = match form.entity_id.as_deref() {
-        Some(entity_id) if !entity_id.trim().is_empty() => {
-            serde_json::json!([entity_id.trim()])
+    // a signal or dossier stays linked to that entity (audit #27). A malformed
+    // entity reference is a validation error — persisting it would create a
+    // dangling focus that no dossier can ever resolve.
+    let entity_focus = match form
+        .entity_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(entity_id) => {
+            if Uuid::parse_str(entity_id).is_err() {
+                return Redirect::to("/workspaces/new?error=invalid_entity").into_response();
+            }
+            serde_json::json!([entity_id])
         }
-        _ => serde_json::json!([]),
+        None => serde_json::json!([]),
     };
     let description = form.description.as_deref().filter(|d| !d.trim().is_empty());
     let description = match (&form.signal_id, description) {
@@ -659,7 +669,7 @@ pub async fn create_workspace(
         )
         .await
     {
-        Ok(workspace) => Redirect::to(&format!("/workspaces/{}", workspace.id)),
+        Ok(workspace) => Redirect::to(&format!("/workspaces/{}", workspace.id)).into_response(),
         Err(error) => {
             tracing::warn!(%error, "create_workspace failed");
             // Surface the failure on the form instead of pretending success,
@@ -674,7 +684,7 @@ pub async fn create_workspace(
             let query = url::form_urlencoded::Serializer::new(String::new())
                 .extend_pairs(params)
                 .finish();
-            Redirect::to(&format!("/workspaces/new?{query}"))
+            Redirect::to(&format!("/workspaces/new?{query}")).into_response()
         }
     }
 }
@@ -799,23 +809,52 @@ pub async fn close_workspace(
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        if let Ok(Some(workspace)) = store.get_investigation_workspace(uuid).await {
-            let _ = store
-                .update_investigation_workspace(
-                    uuid,
-                    Some(&workspace.name),
-                    None, // description — leave as-is
-                    Some("closed"),
-                    Some(&workspace.tags),
-                    Some(&workspace.entity_focus),
-                    None, // findings — leave as-is
-                    None, // conclusions — leave as-is
-                )
-                .await;
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid workspace ID").into_response();
         }
+    };
+
+    let workspace = match store.get_investigation_workspace(uuid).await {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, "Workspace not found").into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, workspace_id = %id, "close_workspace: load failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to close workspace",
+            )
+                .into_response();
+        }
+    };
+
+    // Authoritative persistence: the redirect must not claim the workspace
+    // was closed when the update failed.
+    if let Err(error) = store
+        .update_investigation_workspace(
+            uuid,
+            Some(&workspace.name),
+            None, // description — leave as-is
+            Some("closed"),
+            Some(&workspace.tags),
+            Some(&workspace.entity_focus),
+            None, // findings — leave as-is
+            None, // conclusions — leave as-is
+        )
+        .await
+    {
+        tracing::error!(%error, workspace_id = %id, "close_workspace: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to close workspace",
+        )
+            .into_response();
     }
-    Redirect::to(&format!("/workspaces/{}", id))
+
+    Redirect::to(&format!("/workspaces/{}", id)).into_response()
 }
 
 /// POST /workspaces/:id/assign — assign a user to a workspace.
@@ -825,20 +864,24 @@ pub async fn assign_user_to_workspace(
     Path(id): Path<String>,
     Form(form): Form<AssignUserForm>,
 ) -> impl IntoResponse {
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        if let Err(error) = store
-            .create_workspace_assignment(uuid, &form.user_id, &form.role, &session.user_id)
-            .await
-        {
-            // Authoritative persistence: never redirect as if the assignment
-            // was stored when the write failed.
-            tracing::error!(%error, workspace_id = %id, "assign_user_to_workspace: write failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to assign user to workspace",
-            )
-                .into_response();
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid workspace ID").into_response();
         }
+    };
+    if let Err(error) = store
+        .create_workspace_assignment(uuid, &form.user_id, &form.role, &session.user_id)
+        .await
+    {
+        // Authoritative persistence: never redirect as if the assignment
+        // was stored when the write failed.
+        tracing::error!(%error, workspace_id = %id, "assign_user_to_workspace: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to assign user to workspace",
+        )
+            .into_response();
     }
     Redirect::to(&format!("/workspaces/{}", id)).into_response()
 }
@@ -850,28 +893,50 @@ pub async fn share_workspace(
     Path(id): Path<String>,
     Form(form): Form<ShareWorkspaceForm>,
 ) -> impl IntoResponse {
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        let expires_at = form.expires_at.and_then(|s| {
-            chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
-                .ok()
-                .and_then(|d| d.and_hms_opt(0, 0, 0))
-                .map(|dt| {
-                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc)
-                })
-        });
-        let _ = store
-            .create_investigation_share(
-                uuid,
-                &session.user_id,
-                &form.shared_with,
-                &form.share_type,
-                &form.access_level,
-                form.message.as_deref(),
-                expires_at,
-            )
-            .await;
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid workspace ID").into_response();
+        }
+    };
+    let expires_at = match form
+        .expires_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(raw) => match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+            Ok(date) => date.and_hms_opt(0, 0, 0).map(|dt| {
+                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc)
+            }),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Invalid share expiry date").into_response();
+            }
+        },
+        None => None,
+    };
+    // Authoritative persistence: a failed share write must not redirect as if
+    // the workspace had been shared.
+    if let Err(error) = store
+        .create_investigation_share(
+            uuid,
+            &session.user_id,
+            &form.shared_with,
+            &form.share_type,
+            &form.access_level,
+            form.message.as_deref(),
+            expires_at,
+        )
+        .await
+    {
+        tracing::error!(%error, workspace_id = %id, "share_workspace: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to share workspace",
+        )
+            .into_response();
     }
-    Redirect::to(&format!("/workspaces/{}", id))
+    Redirect::to(&format!("/workspaces/{}", id)).into_response()
 }
 
 // ─── Handlers — Priority Queue ─────────────────────────────────────────
@@ -941,8 +1006,15 @@ pub async fn add_to_queue(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<AddToQueueForm>,
 ) -> impl IntoResponse {
-    let item_id = Uuid::parse_str(&form.item_id).unwrap_or_else(|_| Uuid::new_v4());
-    let _ = store
+    // A malformed item reference is a validation error: substituting a fresh
+    // UUID would queue a fabricated identity that no dossier can resolve.
+    let item_id = match Uuid::parse_str(form.item_id.trim()) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid queue item ID").into_response();
+        }
+    };
+    if let Err(error) = store
         .create_priority_queue_item(
             &session.user_id,
             &form.item_type,
@@ -951,8 +1023,16 @@ pub async fn add_to_queue(
             form.priority,
             form.notes.as_deref(),
         )
-        .await;
-    Redirect::to("/queue")
+        .await
+    {
+        tracing::error!(%error, item_type = %form.item_type, "add_to_queue: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to add item to queue",
+        )
+            .into_response();
+    }
+    Redirect::to("/queue").into_response()
 }
 
 /// POST /queue/:id/complete — mark queue item as completed.
@@ -961,19 +1041,33 @@ pub async fn complete_queue_item(
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        let _ = store
-            .update_priority_queue_item_scoped(
-                &session.user_id,
-                session.role.as_str(),
-                uuid,
-                None,
-                Some("completed"),
-                None,
-            )
-            .await;
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid queue item ID").into_response();
+        }
+    };
+    // Authoritative persistence: a failed completion update must not redirect
+    // as if the item had been completed.
+    if let Err(error) = store
+        .update_priority_queue_item_scoped(
+            &session.user_id,
+            session.role.as_str(),
+            uuid,
+            None,
+            Some("completed"),
+            None,
+        )
+        .await
+    {
+        tracing::error!(%error, queue_item_id = %id, "complete_queue_item: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to complete queue item",
+        )
+            .into_response();
     }
-    Redirect::to("/queue")
+    Redirect::to("/queue").into_response()
 }
 
 // ─── Handlers — Activity Feed ──────────────────────────────────────────
@@ -994,7 +1088,17 @@ pub async fn list_activity(
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/activity", warning_count);
 
-    let workspace_id = params.workspace_id.and_then(|s| Uuid::parse_str(&s).ok());
+    // A malformed workspace filter must not silently widen the feed to every
+    // workspace; it is a validation error.
+    let workspace_id = match params.workspace_id.as_deref() {
+        Some(raw) => match Uuid::parse_str(raw) {
+            Ok(uuid) => Some(uuid),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Invalid workspace ID filter").into_response();
+            }
+        },
+        None => None,
+    };
     let limit = params.limit.unwrap_or(100);
 
     let items = store
@@ -1096,10 +1200,16 @@ pub async fn add_supplier_risk(
     let risk_factors: serde_json::Value = form
         .risk_factors
         .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(|s| serde_json::from_str(s).unwrap_or(serde_json::json!({"summary": s})))
         .unwrap_or(serde_json::json!({}));
 
-    let _ = store
+    if Uuid::parse_str(form.supplier_id.trim()).is_err() {
+        return (StatusCode::BAD_REQUEST, "Invalid supplier ID").into_response();
+    }
+
+    if let Err(error) = store
         .create_supplier_risk_entry(
             &form.supplier_id,
             &form.risk_category,
@@ -1108,9 +1218,17 @@ pub async fn add_supplier_risk(
             form.mitigation.as_deref(),
             form.owner_id.as_deref(),
         )
-        .await;
+        .await
+    {
+        tracing::error!(%error, supplier_id = %form.supplier_id, "add_supplier_risk: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to save supplier risk entry",
+        )
+            .into_response();
+    }
 
-    Redirect::to("/supplier-risk")
+    Redirect::to("/supplier-risk").into_response()
 }
 
 // ─── Handlers — Pipeline Opportunities ─────────────────────────────────
@@ -1175,11 +1293,24 @@ pub async fn create_pipeline_opportunity(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreatePipelineForm>,
 ) -> impl IntoResponse {
-    let expected_close = form
+    let expected_close = match form
         .expected_close
-        .and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(raw) => match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+            Ok(date) => Some(date),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Invalid expected close date").into_response();
+            }
+        },
+        None => None,
+    };
 
-    let _ = store
+    // Authoritative persistence: a failed insert must not redirect as if the
+    // opportunity had been created.
+    if let Err(error) = store
         .create_pipeline_opportunity(
             None, // opportunity_id
             &form.title,
@@ -1190,9 +1321,17 @@ pub async fn create_pipeline_opportunity(
             expected_close,
             form.notes.as_deref(),
         )
-        .await;
+        .await
+    {
+        tracing::error!(%error, title = %form.title, "create_pipeline_opportunity: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create pipeline opportunity",
+        )
+            .into_response();
+    }
 
-    Redirect::to("/pipeline")
+    Redirect::to("/pipeline").into_response()
 }
 
 /// POST /pipeline/:id/stage — update pipeline stage.
@@ -1202,17 +1341,21 @@ pub async fn update_pipeline_stage(
     Path(id): Path<String>,
     Form(form): Form<UpdateStageForm>,
 ) -> impl IntoResponse {
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        if let Err(error) = store.update_pipeline_stage(uuid, &form.stage, None).await {
-            // Authoritative persistence: the redirect must not claim the
-            // stage change was stored when the write failed.
-            tracing::error!(%error, opportunity_id = %id, "update_pipeline_stage: write failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to update pipeline stage",
-            )
-                .into_response();
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid opportunity ID").into_response();
         }
+    };
+    if let Err(error) = store.update_pipeline_stage(uuid, &form.stage, None).await {
+        // Authoritative persistence: the redirect must not claim the
+        // stage change was stored when the write failed.
+        tracing::error!(%error, opportunity_id = %id, "update_pipeline_stage: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to update pipeline stage",
+        )
+            .into_response();
     }
     Redirect::to("/pipeline").into_response()
 }
@@ -1278,7 +1421,13 @@ pub async fn add_evidence(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<AddEvidenceForm>,
 ) -> impl IntoResponse {
-    let _ = store
+    if Uuid::parse_str(form.entity_id.trim()).is_err() {
+        return (StatusCode::BAD_REQUEST, "Invalid evidence entity ID").into_response();
+    }
+
+    // Authoritative persistence: a failed insert must not redirect as if the
+    // evidence had been stored.
+    if let Err(error) = store
         .create_source_evidence(
             &form.entity_type,
             &form.entity_id,
@@ -1290,9 +1439,17 @@ pub async fn add_evidence(
             form.excerpt.as_deref(),
             &serde_json::json!({}),
         )
-        .await;
+        .await
+    {
+        tracing::error!(%error, entity_type = %form.entity_type, "add_evidence: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to save source evidence",
+        )
+            .into_response();
+    }
 
-    Redirect::to("/evidence")
+    Redirect::to("/evidence").into_response()
 }
 
 // ─── Handlers — Team Assignments ───────────────────────────────────────
@@ -1356,7 +1513,13 @@ pub async fn create_team_assignment(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreateTeamAssignmentForm>,
 ) -> impl IntoResponse {
-    let _ = store
+    if Uuid::parse_str(form.entity_id.trim()).is_err() {
+        return (StatusCode::BAD_REQUEST, "Invalid assignment entity ID").into_response();
+    }
+
+    // Authoritative persistence: a failed insert must not redirect as if the
+    // assignment had been stored.
+    if let Err(error) = store
         .create_team_assignment(
             &form.team_id,
             &form.team_name,
@@ -1367,9 +1530,17 @@ pub async fn create_team_assignment(
             &form.role,
             form.notes.as_deref(),
         )
-        .await;
+        .await
+    {
+        tracing::error!(%error, team_id = %form.team_id, "create_team_assignment: write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create team assignment",
+        )
+            .into_response();
+    }
 
-    Redirect::to("/team-assignments")
+    Redirect::to("/team-assignments").into_response()
 }
 
 #[cfg(test)]
@@ -1409,5 +1580,227 @@ mod tests {
         );
         assert_eq!(normalized_workspace_visibility("private"), "private");
         assert_eq!(normalized_workspace_visibility("garbage"), "team");
+    }
+
+    // ── Malformed-ID validation and write-failure surfacing ────────────
+    //
+    // The store below is lazy and points at a closed port: a handler that
+    // validates before touching the store must return 400 without connecting,
+    // and a handler that reaches the store must surface the failure (500)
+    // instead of redirecting as success.
+
+    fn lazy_store() -> Arc<PgStore> {
+        let pool = sqlx::PgPool::connect_lazy("postgres://apex:apex@127.0.0.1:1/apex_unused_test")
+            .expect("lazy pool construction never connects");
+        Arc::new(PgStore::from_pool(pool))
+    }
+
+    fn test_session() -> WebSession {
+        WebSession {
+            user_id: apex_core::identity::UserId::new("test-user"),
+            username: apex_core::identity::Username::new("tester"),
+            role: crate::auth::ApiRole::Admin,
+            session_version: 1,
+            principal_id: uuid::Uuid::new_v4(),
+            issued_at: 0,
+            expires_at: None,
+        }
+    }
+
+    fn add_to_queue_form(item_id: &str) -> AddToQueueForm {
+        AddToQueueForm {
+            item_type: "warning".to_string(),
+            item_id: item_id.to_string(),
+            item_title: "Test item".to_string(),
+            priority: 10,
+            notes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn add_to_queue_rejects_malformed_item_id() {
+        let response = add_to_queue(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(add_to_queue_form("not-a-uuid")),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn add_to_queue_surfaces_db_write_failure() {
+        let response = add_to_queue(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(add_to_queue_form(&uuid::Uuid::new_v4().to_string())),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn close_workspace_rejects_malformed_id() {
+        let response = close_workspace(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Path("not-a-uuid".to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn complete_queue_item_surfaces_db_write_failure() {
+        let response = complete_queue_item(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Path(uuid::Uuid::new_v4().to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn add_supplier_risk_rejects_malformed_supplier_id() {
+        let response = add_supplier_risk(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(AddSupplierRiskForm {
+                supplier_id: "not-a-uuid".to_string(),
+                risk_category: "financial".to_string(),
+                risk_score: 0.5,
+                risk_factors: None,
+                mitigation: None,
+                owner_id: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn add_evidence_rejects_malformed_entity_id() {
+        let response = add_evidence(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(AddEvidenceForm {
+                entity_type: "company".to_string(),
+                entity_id: "not-a-uuid".to_string(),
+                evidence_type: "news".to_string(),
+                source_url: "https://example.com".to_string(),
+                source_domain: None,
+                source_name: None,
+                reliability_score: 0.5,
+                excerpt: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_team_assignment_rejects_malformed_entity_id() {
+        let response = create_team_assignment(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(CreateTeamAssignmentForm {
+                team_id: "team-1".to_string(),
+                team_name: "Team One".to_string(),
+                entity_type: "company".to_string(),
+                entity_id: "not-a-uuid".to_string(),
+                assigned_to: "analyst".to_string(),
+                role: "contributor".to_string(),
+                notes: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_pipeline_opportunity_surfaces_db_write_failure() {
+        let response = create_pipeline_opportunity(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(CreatePipelineForm {
+                title: "New opportunity".to_string(),
+                stage: "discovery".to_string(),
+                value_estimate: None,
+                probability: 0.5,
+                owner_id: None,
+                expected_close: None,
+                notes: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn create_pipeline_opportunity_rejects_malformed_close_date() {
+        let response = create_pipeline_opportunity(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(CreatePipelineForm {
+                title: "New opportunity".to_string(),
+                stage: "discovery".to_string(),
+                value_estimate: None,
+                probability: 0.5,
+                owner_id: None,
+                expected_close: Some("31/12/2026".to_string()),
+                notes: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_workspace_rejects_malformed_entity_focus() {
+        let response = create_workspace(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(CreateWorkspaceForm {
+                name: "Investigation".to_string(),
+                description: None,
+                workspace_type: "structured".to_string(),
+                visibility: "team".to_string(),
+                tags: None,
+                entity_id: Some("not-a-uuid".to_string()),
+                signal_id: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert!(response.status().is_redirection());
+    }
+
+    #[tokio::test]
+    async fn share_workspace_rejects_malformed_expiry() {
+        let response = share_workspace(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Path(uuid::Uuid::new_v4().to_string()),
+            Form(ShareWorkspaceForm {
+                shared_with: "analyst".to_string(),
+                share_type: "view".to_string(),
+                access_level: "read".to_string(),
+                message: None,
+                expires_at: Some("31/12/2026".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

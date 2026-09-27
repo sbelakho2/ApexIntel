@@ -119,17 +119,27 @@ pub async fn mark_notification_read(
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        if let Err(error) = store.mark_notification_read(&session.user_id, uuid).await {
-            // Authoritative persistence: do not redirect as if the read state
-            // was stored when the write failed.
-            tracing::error!(%error, notification_id = %id, "mark_notification_read: write failed");
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            // A malformed notification ID is a validation error: silently
+            // redirecting would read as "marked read" when nothing was.
             return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to mark notification read",
+                axum::http::StatusCode::BAD_REQUEST,
+                "Invalid notification ID",
             )
                 .into_response();
         }
+    };
+    if let Err(error) = store.mark_notification_read(&session.user_id, uuid).await {
+        // Authoritative persistence: do not redirect as if the read state
+        // was stored when the write failed.
+        tracing::error!(%error, notification_id = %id, "mark_notification_read: write failed");
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to mark notification read",
+        )
+            .into_response();
     }
 
     Redirect::to("/notifications").into_response()

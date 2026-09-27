@@ -1,5 +1,7 @@
 use super::*;
 
+use anyhow::Context;
+
 type WeeklyMemoRowTuple = (
     Uuid,
     String,
@@ -16,7 +18,12 @@ fn normalize_memo_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
 
-fn weekly_memo_from_parts(row: WeeklyMemoRowTuple) -> WeeklyMemo {
+/// Decode one persisted memo row.
+///
+/// Malformed `sections` / `key_metrics` / `action_items` are an error: mapping
+/// them to empty lists and zero metrics would fabricate a memo that measured
+/// nothing, and a zero must only ever mean a measured zero.
+fn weekly_memo_from_parts(row: WeeklyMemoRowTuple) -> Result<WeeklyMemo> {
     let (
         id,
         title,
@@ -28,20 +35,14 @@ fn weekly_memo_from_parts(row: WeeklyMemoRowTuple) -> WeeklyMemo {
         actions_json,
         generated_at,
     ) = row;
-    let sections: Vec<WeeklyMemoSection> =
-        serde_json::from_value(sections_json).unwrap_or_default();
-    let key_metrics: WeeklyMemoKeyMetrics =
-        serde_json::from_value(metrics_json).unwrap_or(WeeklyMemoKeyMetrics {
-            warnings_total: 0,
-            warnings_critical: 0,
-            insights_generated: 0,
-            companies_monitored: 0,
-            pois_tracked: 0,
-        });
-    let action_items: Vec<WeeklyMemoActionItem> =
-        serde_json::from_value(actions_json).unwrap_or_default();
+    let sections: Vec<WeeklyMemoSection> = serde_json::from_value(sections_json)
+        .with_context(|| format!("weekly memo {id}: sections is not a valid section list"))?;
+    let key_metrics: WeeklyMemoKeyMetrics = serde_json::from_value(metrics_json)
+        .with_context(|| format!("weekly memo {id}: key_metrics is not a valid metrics object"))?;
+    let action_items: Vec<WeeklyMemoActionItem> = serde_json::from_value(actions_json)
+        .with_context(|| format!("weekly memo {id}: action_items is not a valid action list"))?;
 
-    WeeklyMemo {
+    Ok(WeeklyMemo {
         id,
         title,
         week_start: week_start.to_string(),
@@ -51,7 +52,7 @@ fn weekly_memo_from_parts(row: WeeklyMemoRowTuple) -> WeeklyMemo {
         key_metrics,
         action_items,
         generated_at: generated_at.to_rfc3339(),
-    }
+    })
 }
 
 impl PgStore {
@@ -65,7 +66,7 @@ impl PgStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(weekly_memo_from_parts))
+        row.map(weekly_memo_from_parts).transpose()
     }
 
     pub async fn get_weekly_memo(&self) -> Result<WeeklySummaryStats> {
@@ -79,27 +80,28 @@ impl PgStore {
         offset: i64,
     ) -> Result<(Vec<WeeklyMemo>, i64)> {
         let (limit, offset) = normalize_memo_window(limit, offset);
+        // A failed count is an error, not a measured zero.
         let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM weekly_memos")
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or((0,));
+            .await?;
 
         let rows: Vec<WeeklyMemoRowTuple> = sqlx::query_as(
             r#"SELECT id, title, week_start, week_end, executive_summary, sections, key_metrics, action_items, generated_at
                FROM weekly_memos
                ORDER BY week_start DESC
-               LIMIT $1 OFFSET $2"#
+               LIMIT $1 OFFSET $2"#,
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        .await?;
 
-        Ok((
-            rows.into_iter().map(weekly_memo_from_parts).collect(),
-            total,
-        ))
+        let mut memos = Vec::with_capacity(rows.len());
+        for row in rows {
+            memos.push(weekly_memo_from_parts(row)?);
+        }
+
+        Ok((memos, total))
     }
 
     pub async fn upsert_weekly_memo(
@@ -158,8 +160,8 @@ mod tests {
     }
 
     #[test]
-    fn test_weekly_memo_from_parts_defaults_invalid_json_shapes() {
-        let memo = weekly_memo_from_parts((
+    fn test_weekly_memo_from_parts_rejects_invalid_json_shapes() {
+        let result = weekly_memo_from_parts((
             Uuid::new_v4(),
             "Weekly Memo".to_string(),
             NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
@@ -170,6 +172,34 @@ mod tests {
             json!({"bad": true}),
             Utc::now(),
         ));
+
+        let error = result.expect_err("malformed sections must not decode to zeros");
+        assert!(
+            error.to_string().contains("sections"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn test_weekly_memo_from_parts_preserves_measured_zero_metrics() {
+        let memo = weekly_memo_from_parts((
+            Uuid::new_v4(),
+            "Weekly Memo".to_string(),
+            NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 8).unwrap(),
+            "Summary".to_string(),
+            json!([]),
+            json!({
+                "warnings_total": 0,
+                "warnings_critical": 0,
+                "insights_generated": 0,
+                "companies_monitored": 0,
+                "pois_tracked": 0
+            }),
+            json!([]),
+            Utc::now(),
+        ))
+        .expect("valid persisted memo decodes");
 
         assert!(memo.sections.is_empty());
         assert_eq!(memo.key_metrics.warnings_total, 0);

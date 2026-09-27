@@ -414,37 +414,73 @@ pub(super) async fn run_self_improvement_cycle(
         let mut partial_learning_failures = false;
 
         match run_llm_continuous_improvement_cycle(store, &ctx.ingress).await {
-            Ok(stats) => {
-                tracing::info!(
-                    eval_pass_rate = stats.eval_pass_rate,
-                    eval_avg_score = %stats.eval_avg_score.display_fixed(3),
-                    eval_hallucination_rate = stats.eval_hallucination_rate,
-                    captures_seeded = stats.captures_seeded,
-                    captures_analysed = stats.captures_analysed,
-                    qualifying_examples = stats.qualifying_examples,
-                    avg_critique = %stats.avg_critique_score.display_fixed(3),
-                    stage_failures = stats.stage_failures.len(),
-                    failed_stages = stats.failed_stages.len(),
-                    "self_improvement_cycle: llm continuous improvement completed"
-                );
-                total += stats.captures_analysed as u64;
-                // Only terminally failed stages (model call error, invalid
-                // JSON with no value) fail the cycle. Partial stages produced
-                // their value and mark the cycle degraded at most.
-                if !stats.failed_stages.is_empty() {
+            Ok(outcome) => {
+                let stage_failures = outcome.failures();
+                if !stage_failures.is_empty() {
                     tracing::warn!(
-                        stages = ?stats.failed_stages,
-                        "self_improvement_cycle: llm learning stages failed"
-                    );
-                    failed += 1;
-                } else if !stats.stage_failures.is_empty() {
-                    tracing::warn!(
-                        stages = ?stats
-                            .stage_failures
+                        stages = ?stage_failures
                             .iter()
                             .map(|failure| failure.stage.as_str())
                             .collect::<Vec<_>>(),
-                        "self_improvement_cycle: llm learning stages partially failed"
+                        "self_improvement_cycle: llm stages reported failures"
+                    );
+                }
+                tracing::info!(
+                    eval_pass_rate = outcome.evaluation.value_ref().map(|summary| summary.pass_rate),
+                    eval_avg_score = %outcome
+                        .evaluation
+                        .value_ref()
+                        .map(|summary| summary.avg_judge_score.display_fixed(3))
+                        .unwrap_or_else(|| "not measured".to_string()),
+                    eval_hallucination_rate = outcome
+                        .evaluation
+                        .value_ref()
+                        .map(|summary| summary.hallucination_rate),
+                    captures_seeded = outcome
+                        .critique
+                        .value_ref()
+                        .map(|summary| summary.captures_seeded),
+                    captures_analysed = outcome
+                        .critique
+                        .value_ref()
+                        .map(|summary| summary.captures_analysed),
+                    qualifying_examples = outcome
+                        .critique
+                        .value_ref()
+                        .map(|summary| summary.qualifying_examples),
+                    avg_critique = %outcome
+                        .critique
+                        .value_ref()
+                        .map(|summary| summary.avg_critique_score.display_fixed(3))
+                        .unwrap_or_else(|| "not measured".to_string()),
+                    stage_failures = stage_failures.len(),
+                    governance_persistence_failed = outcome.persistence_degraded(),
+                    "self_improvement_cycle: llm continuous improvement completed"
+                );
+                total += outcome
+                    .critique
+                    .value_ref()
+                    .map_or(0, |summary| summary.captures_analysed) as u64;
+                // A terminally failed learning stage (evaluation, critique,
+                // proposals) fails the cycle. A failed governance/dataset
+                // persistence step, or a partial learning stage, degrades it:
+                // the cycle produced values, but they are not fully recorded.
+                if outcome.has_terminal_learning_failure() {
+                    tracing::error!(
+                        stages = ?stage_failures
+                            .iter()
+                            .map(|failure| failure.stage.as_str())
+                            .collect::<Vec<_>>(),
+                        "self_improvement_cycle: llm learning stages failed"
+                    );
+                    failed += 1;
+                } else if !stage_failures.is_empty() || outcome.persistence_degraded() {
+                    tracing::warn!(
+                        stages = ?stage_failures
+                            .iter()
+                            .map(|failure| failure.stage.as_str())
+                            .collect::<Vec<_>>(),
+                        "self_improvement_cycle: llm cycle degraded (partial stages or persistence failures)"
                     );
                     partial_learning_failures = true;
                 }

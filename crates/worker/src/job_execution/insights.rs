@@ -128,8 +128,21 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
                 }
             };
 
-            // Load POIs associated with this company for stakeholder mapping
-            let company_pois = load_company_pois(store, company_id).await;
+            // Load POIs associated with this company for stakeholder mapping.
+            // A failed load is a skip with a recorded reason, never an empty
+            // stakeholder list that reads as "no personnel tracked".
+            let company_pois = match load_company_pois(store, company_id).await {
+                Ok(pois) => pois,
+                Err(error) => {
+                    tracing::warn!(
+                        company_id = %company_id,
+                        error = %error,
+                        "insight_generation: failed to load company POIs"
+                    );
+                    companies_skipped += 1;
+                    continue;
+                }
+            };
 
             match generate_insights_for_company(
                 store,
@@ -260,8 +273,22 @@ struct CompanyPoiRef {
 }
 
 #[cfg(feature = "llm")]
-async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<CompanyPoiRef> {
-    let rows = sqlx::query(
+async fn load_company_pois(
+    store: &PgStore,
+    company_id: &uuid::Uuid,
+) -> Result<Vec<CompanyPoiRef>, sqlx::Error> {
+    use sqlx::FromRow;
+
+    #[derive(FromRow)]
+    struct CompanyPoiRow {
+        id: uuid::Uuid,
+        name: String,
+        role: String,
+        role_family: String,
+        org: String,
+    }
+
+    let rows = sqlx::query_as::<_, CompanyPoiRow>(
         r#"SELECT
                p.id,
                p.name,
@@ -276,25 +303,13 @@ async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<Comp
     )
     .bind(*company_id)
     .fetch_all(&store.pool)
-    .await
-    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-    .unwrap_or_default();
+    .await?;
 
-    rows.iter()
+    Ok(rows
+        .into_iter()
         .map(|row| {
-            use sqlx::Row;
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let name: String = row.try_get("name").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let role: String = row.try_get("role").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let role_family: String = row.try_get("role_family").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let org: String = row.try_get("org").unwrap_or_default();
-            let role_lower = role.to_lowercase();
-            let family_lower = role_family.to_lowercase();
+            let role_lower = row.role.to_lowercase();
+            let family_lower = row.role_family.to_lowercase();
             let is_buyer_relevant = family_lower.contains("procurement")
                 || family_lower.contains("supply")
                 || family_lower.contains("quality")
@@ -309,15 +324,15 @@ async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<Comp
                 || role_lower.contains("manager");
 
             CompanyPoiRef {
-                id,
-                name,
-                role,
-                role_family,
-                org,
+                id: row.id,
+                name: row.name,
+                role: row.role,
+                role_family: row.role_family,
+                org: row.org,
                 is_buyer_relevant,
             }
         })
-        .collect()
+        .collect())
 }
 
 /// Build a buying-center-aware contact recommendation block from the POIs
@@ -853,10 +868,17 @@ async fn generate_insights_for_company(
                 .await
                 {
                     if let Ok(person_id) = row.try_get::<uuid::Uuid, _>("id") {
-                        // false-success-classification: best-effort — supplemental person link alongside the persisted company link
-                        let _ = store
+                        // Authoritative link: a failed write must surface as an
+                        // error instead of an insight that silently claims a
+                        // person linkage it never persisted.
+                        store
                             .link_insight_to_entity(insight_id, &person_id, "person")
-                            .await;
+                            .await
+                            .map_err(|e| {
+                                format!(
+                                    "failed to link insight {insight_id} to person {person_id}: {e}"
+                                )
+                            })?;
                     }
                 }
             }

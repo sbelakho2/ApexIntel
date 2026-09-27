@@ -8,21 +8,65 @@
 //! These endpoints surface data from the adversarial pipeline
 //! which analyzes source entropy, token similarity, and placement patterns.
 //! Data is populated by the worker AdversarialAnalysis job.
+//!
+//! Rows are decoded with typed `query_as` structs: a column that cannot be
+//! decoded is an error, never a nil UUID / zero / empty-string default that
+//! would silently fabricate an identity or a measurement.
 
 use std::sync::Arc;
 
 use axum::{extract::Query, Extension, Json};
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use apex_api::responses::ApiError;
 use apex_shared::{PlacementAlert, QuarantineItem, SourceReliabilityHistory, SourceReliabilityTier};
 use apex_store::postgres::PgStore;
-use chrono::Utc;
 
 #[derive(Debug, Deserialize)]
 pub struct AdversarialQueryParams {
     pub domain: Option<String>,
     pub limit: Option<i64>,
+}
+
+/// One `pattern_candidates` row for an adversarial placement cluster.
+///
+/// `pattern_candidates.id` is a `BIGSERIAL`, and the worker stores the
+/// measured cluster detail as JSON in `pattern_label` (the table has no
+/// metadata column).
+#[derive(Debug, sqlx::FromRow)]
+struct PlacementCandidateRow {
+    id: i64,
+    pattern_label: Option<String>,
+    confidence: f64,
+    created_at: DateTime<Utc>,
+}
+
+/// Measured detail written by the worker into `pattern_label`.
+#[derive(Debug, Deserialize, Serialize)]
+struct PlacementDetail {
+    placement_id: String,
+    source_count: u32,
+    time_window_hours: u32,
+    token_jaccard: f64,
+    signal_ids: Vec<String>,
+    source_domains: Vec<String>,
+    detected_at: String,
+}
+
+/// Decode the measured placement detail the worker persisted.
+///
+/// A label that cannot be decoded is a data-integrity error: returning a
+/// fabricated alert (or constants standing in for a measurement) would be
+/// worse than failing the request. Rows written before the JSON detail format
+/// are excluded by the query rather than served with invented values.
+fn decode_placement_detail(label: Option<&str>) -> Result<PlacementDetail, String> {
+    let Some(label) = label else {
+        return Err("adversarial placement row has no pattern_label".to_string());
+    };
+
+    serde_json::from_str::<PlacementDetail>(label)
+        .map_err(|error| format!("adversarial placement row has an undecodable pattern_label: {error}"))
 }
 
 /// GET /api/adversarial/placements
@@ -34,14 +78,14 @@ pub async fn get_placements(
 ) -> Result<Json<Vec<PlacementAlert>>, ApiError> {
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
 
-    let rows = sqlx::query(
+    let rows = sqlx::query_as::<_, PlacementCandidateRow>(
         r#"SELECT
                id,
-               metadata,
+               pattern_label,
                confidence,
                created_at
            FROM pattern_candidates
-           WHERE pattern_type = 'adversarial_placement'
+           WHERE recipe_code = 'adversarial_placement'
            ORDER BY created_at DESC
            LIMIT $1"#,
     )
@@ -50,57 +94,49 @@ pub async fn get_placements(
     .await
     .map_err(|e| ApiError::internal(format!("failed to query placements: {e}")))?;
 
-    let mut placements = Vec::new();
+    let mut placements = Vec::with_capacity(rows.len());
     for row in &rows {
-        use sqlx::Row;
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-        let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-        let metadata: serde_json::Value = row.try_get("metadata").unwrap_or_default();
-        let confidence: f64 = row.try_get("confidence").unwrap_or(0.0);
-        let created_at: chrono::DateTime<Utc> = row.try_get("created_at").unwrap_or_else(|_| Utc::now());
-
-        let source_count = metadata
-            .get("source_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        let time_window_hours = metadata
-            .get("time_window_hours")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(6) as u32;
-        let token_jaccard = metadata
-            .get("token_jaccard")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let signal_ids: Vec<String> = metadata
-            .get("signal_ids")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default();
+        let detail = decode_placement_detail(row.pattern_label.as_deref()).map_err(|error| {
+            ApiError::internal(format!(
+                "failed to decode placement candidate {}: {error}",
+                row.id
+            ))
+        })?;
 
         // Filter by domain if requested
         if let Some(ref domain) = params.domain {
-            let source_domains: Vec<String> = metadata
-                .get("source_domains")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            if !source_domains.iter().any(|d| d.contains(domain.as_str())) {
+            if !detail
+                .source_domains
+                .iter()
+                .any(|candidate| candidate.contains(domain.as_str()))
+            {
                 continue;
             }
         }
 
         placements.push(PlacementAlert {
-            id: id.to_string(),
-            source_count,
-            time_window_hours,
-            token_jaccard,
-            signal_ids,
-            created_at,
+            id: if detail.placement_id.is_empty() {
+                row.id.to_string()
+            } else {
+                detail.placement_id
+            },
+            source_count: detail.source_count,
+            time_window_hours: detail.time_window_hours,
+            token_jaccard: detail.token_jaccard,
+            signal_ids: detail.signal_ids,
+            created_at: row.created_at,
         });
     }
 
     Ok(Json(placements))
+}
+
+/// One quarantined observation row.
+#[derive(Debug, sqlx::FromRow)]
+struct QuarantineRow {
+    id: uuid::Uuid,
+    value: serde_json::Value,
+    created_at: DateTime<Utc>,
 }
 
 /// GET /api/adversarial/quarantine
@@ -112,7 +148,7 @@ pub async fn get_quarantine(
 ) -> Result<Json<Vec<QuarantineItem>>, ApiError> {
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
 
-    let rows = sqlx::query(
+    let rows = sqlx::query_as::<_, QuarantineRow>(
         r#"SELECT
                id,
                value,
@@ -128,31 +164,29 @@ pub async fn get_quarantine(
     .await
     .map_err(|e| ApiError::internal(format!("failed to query quarantine: {e}")))?;
 
-    let mut items = Vec::new();
+    let mut items = Vec::with_capacity(rows.len());
     for row in &rows {
-        use sqlx::Row;
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-        let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-        let value: serde_json::Value = row.try_get("value").unwrap_or_default();
-        let created_at: chrono::DateTime<Utc> = row.try_get("created_at").unwrap_or_else(|_| Utc::now());
-
-        let reason = value
+        let reason = row
+            .value
             .get("reason")
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown")
             .to_string();
-        let source_domain = value
+        let source_domain = row
+            .value
             .get("source_domain")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let release_at = value
+        // The 24h window is the quarantine policy (what the worker writes on
+        // insert), used only when the persisted value predates release_at.
+        let release_at = row
+            .value
             .get("release_at")
             .and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|| created_at + chrono::Duration::hours(24));
+            .unwrap_or_else(|| row.created_at + chrono::Duration::hours(24));
 
         // Filter by domain if requested
         if let Some(ref domain) = params.domain {
@@ -162,15 +196,26 @@ pub async fn get_quarantine(
         }
 
         items.push(QuarantineItem {
-            id: id.to_string(),
+            id: row.id.to_string(),
             reason,
             source_domain,
-            quarantined_at: created_at,
+            quarantined_at: row.created_at,
             release_at,
         });
     }
 
     Ok(Json(items))
+}
+
+/// One `source_reliability_stats` row (columns from migration 014 + 037).
+#[derive(Debug, sqlx::FromRow)]
+struct SourceReliabilityRow {
+    source_domain: String,
+    reliability_tier: String,
+    observation_count: i64,
+    false_positive_rate: f64,
+    last_updated: DateTime<Utc>,
+    metadata: serde_json::Value,
 }
 
 /// GET /api/adversarial/source-reliability
@@ -183,7 +228,7 @@ pub async fn get_source_reliability(
     let domain = params.domain.as_deref().unwrap_or("aggregate");
 
     // Try to get stats for the specific domain
-    let row = sqlx::query(
+    let row = sqlx::query_as::<_, SourceReliabilityRow>(
         r#"SELECT
                source_domain,
                reliability_tier,
@@ -201,22 +246,7 @@ pub async fn get_source_reliability(
     .map_err(|e| ApiError::internal(format!("failed to query source reliability: {e}")))?;
 
     if let Some(row) = row {
-        use sqlx::Row;
-        let source_domain: String = row
-            .try_get("source_domain")
-            .unwrap_or_else(|_| domain.to_string());
-        let tier_str: String = row
-            .try_get("reliability_tier")
-            .unwrap_or_else(|_| "Unknown".to_string());
-        let obs_count: i32 = row.try_get("observation_count").unwrap_or(0);
-        let false_pos_rate: f64 = row.try_get("false_positive_rate").unwrap_or(0.0);
-        let last_updated: chrono::DateTime<Utc> = row
-            .try_get("last_updated")
-            .unwrap_or_else(|_| Utc::now());
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-        let metadata: serde_json::Value = row.try_get("metadata").unwrap_or_default();
-
-        let tier = match tier_str.as_str() {
+        let tier = match row.reliability_tier.as_str() {
             "Official" => SourceReliabilityTier::Official,
             "Established" => SourceReliabilityTier::Established,
             "TradePress" => SourceReliabilityTier::TradePress,
@@ -225,21 +255,28 @@ pub async fn get_source_reliability(
             _ => SourceReliabilityTier::Unknown,
         };
 
-        let flagged_by = metadata
+        let flagged_by = row
+            .metadata
             .get("flagged_by")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
         let history_entry = format!(
-            "Tier: {tier_str} | Observations: {obs_count} | False Positive Rate: {:.0}% | Flagged by: {flagged_by}",
-            false_pos_rate * 100.0
+            "Tier: {} | Observations: {} | False Positive Rate: {:.0}% | Flagged by: {flagged_by}",
+            row.reliability_tier,
+            row.observation_count,
+            row.false_positive_rate * 100.0
         );
 
         Ok(Json(SourceReliabilityHistory {
-            domain: source_domain,
+            domain: row.source_domain,
             tier,
-            promotion_candidate: tier == SourceReliabilityTier::Established || tier == SourceReliabilityTier::Official,
-            history: vec![history_entry, format!("Last updated: {}", last_updated.format("%Y-%m-%d %H:%M UTC"))],
+            promotion_candidate: tier == SourceReliabilityTier::Established
+                || tier == SourceReliabilityTier::Official,
+            history: vec![
+                history_entry,
+                format!("Last updated: {}", row.last_updated.format("%Y-%m-%d %H:%M UTC")),
+            ],
         }))
     } else {
         // No stats for this domain - return unknown

@@ -86,6 +86,20 @@ steps:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_warning_ingress.sh
 
+  # False-success + identifier-decode guards.
+  # The suppression rule is semantic and asymmetric: an authoritative store
+  # call that discards or defaults its error fails with "authoritative
+  # operation still suppresses error" regardless of comments; only a reasoned
+  # entry in scripts/ci/false_success_allowlist.txt permits a telemetry-only
+  # discard. Identifier decodes may never fall back to the nil UUID / a fresh
+  # UUID / zero/empty defaults for id-like fields.
+  - name: false-success-guard
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache bash python3
+      - bash scripts/ci/check_false_success.sh
+      - bash scripts/ci/check_identifier_decode.sh
+
   # Fails if a migration header or body comment describes a different revision
   # than its filename (audit #40 + stale body numbering). Production-applied
   # migrations (000..065, 068) are frozen and explicitly allowlisted in
@@ -257,7 +271,7 @@ steps:
   # injected by Woodpecker and feed /api/version via the printed exports.
   - name: release-evidence
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys]
     when:
       - event: [pull_request]
     commands:
@@ -275,14 +289,12 @@ steps:
         --record migration-bootstrap=passed
         --record browser-integration=passed
         --record ui-journey=passed
-        --record tailwind-assets=passed
-        --record wasm-shared=passed
 
   # Release-event evidence additionally records the container browser gate,
   # which only runs on trusted events (push/tag/manual).
   - name: release-evidence-release
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared, browser-container]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, browser-container]
     when:
       - event: [push, tag, manual]
     commands:
@@ -300,6 +312,4 @@ steps:
         --record migration-bootstrap=passed
         --record browser-integration=passed
         --record ui-journey=passed
-        --record tailwind-assets=passed
-        --record wasm-shared=passed
         --record container-browser=passed

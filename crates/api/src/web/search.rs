@@ -8,7 +8,7 @@ use std::sync::Arc;
 use askama::Template;
 use axum::{
     extract::{Form, Path},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
     Extension,
 };
@@ -324,7 +324,7 @@ pub async fn save_search(
     let name = form.name.trim();
     let query = form.q.trim();
     if name.is_empty() || query.is_empty() {
-        return Redirect::to(&format!("/search?q={}", urlencode(query)));
+        return Redirect::to(&format!("/search?q={}", urlencode(query))).into_response();
     }
     let entity_type = normalize_entity_type(form.entity_type.as_deref().unwrap_or("all"));
     let filters = serde_json::json!({ "entity_type": entity_type });
@@ -340,13 +340,17 @@ pub async fn save_search(
         )
         .await
     {
-        tracing::warn!(%error, "failed to save search (web search page)");
+        tracing::error!(%error, "failed to save search (web search page)");
+        // Authoritative persistence: do not redirect as if the search was
+        // saved when the write failed.
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save search").into_response();
     }
     Redirect::to(&format!(
         "/search?q={}&entity_type={}",
         urlencode(query),
         urlencode(&entity_type)
     ))
+    .into_response()
 }
 
 /// POST /search/saved-searches/:id/delete — delete one of the caller's saved
@@ -357,15 +361,26 @@ pub async fn delete_saved_search(
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        if let Err(error) = store
-            .delete_saved_search_scoped(&session.user_id, session.role.as_str(), uuid)
-            .await
-        {
-            tracing::warn!(%error, "failed to delete saved search (web search page)");
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid saved search ID").into_response();
         }
+    };
+    if let Err(error) = store
+        .delete_saved_search_scoped(&session.user_id, session.role.as_str(), uuid)
+        .await
+    {
+        tracing::error!(%error, "failed to delete saved search (web search page)");
+        // Authoritative persistence: do not redirect as if the search was
+        // deleted when the write failed.
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to delete saved search",
+        )
+            .into_response();
     }
-    Redirect::to("/search")
+    Redirect::to("/search").into_response()
 }
 
 /// Map plural/singular/unknown facet slugs onto the singular entity types
