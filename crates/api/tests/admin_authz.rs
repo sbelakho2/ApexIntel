@@ -13,19 +13,37 @@ use std::sync::Arc;
 use apex_api::auth::{hash_api_key, ApiKey, ApiRole};
 use apex_api::middleware::session::{
     create_session_token, require_admin, require_api_auth, require_session, require_web_admin,
-    session_cookie_name, validate_session, ApiAuthState, SessionClaims, SESSION_TTL_MS,
-    SESSION_VERSION,
+    session_cookie_name, validate_session, ApiAuthState, SessionAuthority, SessionAuthorityError,
+    SessionClaims, WebSession, SESSION_TTL_MS, SESSION_VERSION,
 };
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware;
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Extension, Router};
 use chrono::Utc;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 const TEST_SECRET: &str = "integration-test-session-secret";
+
+/// Hermetic session authority: trusts the signed session as-is. Production
+/// resolves the canonical `app_users` row (covered by
+/// `session_authority_integration.rs`); these tests exercise the middleware
+/// wiring around the authority port.
+struct StaticSessionAuthority;
+
+#[async_trait]
+impl SessionAuthority for StaticSessionAuthority {
+    async fn authorize(&self, session: &WebSession) -> Result<WebSession, SessionAuthorityError> {
+        Ok(session.clone())
+    }
+}
+
+fn session_authority() -> Arc<dyn SessionAuthority> {
+    Arc::new(StaticSessionAuthority)
+}
 
 fn ensure_session_secret() {
     std::env::set_var("SESSION_SECRET", TEST_SECRET);
@@ -106,6 +124,7 @@ fn admin_api_router() -> Router {
         .route_layer(middleware::from_fn_with_state(
             ApiAuthState {
                 api_keys: Arc::new(test_api_keys()),
+                session_authority: Some(session_authority()),
             },
             require_api_auth,
         ))
@@ -118,6 +137,7 @@ fn admin_page_router() -> Router {
         .route("/admin", get(ok_handler))
         .route_layer(middleware::from_fn(require_web_admin))
         .route_layer(middleware::from_fn(require_session))
+        .layer(Extension(session_authority()))
 }
 
 fn login_router() -> Router {

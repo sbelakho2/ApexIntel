@@ -19,6 +19,17 @@
 //! canonical (`lower(username)`, migration 070) and a configured user whose
 //! role is missing or unknown is rejected — never silently downgraded to a
 //! default role.
+//!
+//! ## Browser-login policy
+//!
+//! Logging in only establishes identity; it grants no capability by itself.
+//! All four canonical roles may authenticate, and the browser router
+//! (`crate::web::routes`) then enforces the role on every request:
+//! `require_session` on all pages, `require_web_write` on every mutating page
+//! and `require_web_admin` on `/admin`. A Viewer or Service session can read
+//! but never mutate, and an Analyst can mutate but never administer. The role
+//! is re-resolved from `app_users` on each request, so the session cookie's
+//! claims never outlive a role change or a disabled account.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -16,6 +16,7 @@ pub mod memos;
 pub mod notifications;
 pub mod persons;
 pub mod recipes;
+pub mod routes;
 pub mod search;
 pub mod security;
 pub mod settings;

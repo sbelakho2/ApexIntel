@@ -10,6 +10,7 @@
 use apex_api::routes::{all_endpoints, openapi_spec, paths, HttpMethod};
 
 const APP_ROUTER_RS: &str = include_str!("../src/app_router.rs");
+const WEB_ROUTES_RS: &str = include_str!("../src/web/routes.rs");
 const COLLABORATION_HANDLERS_RS: &str = include_str!("../src/api_handlers/collaboration.rs");
 const COLLABORATION_STORE_RS: &str = include_str!("../../store/src/postgres/collaboration.rs");
 const SEARCH_WEB_RS: &str = include_str!("../src/web/search.rs");
@@ -103,8 +104,13 @@ fn saved_search_handlers_are_identity_scoped() {
 fn saved_search_ui_is_part_of_the_server_rendered_page() {
     assert!(
         APP_ROUTER_RS.contains("\"/search/saved-searches\"")
-            && APP_ROUTER_RS.contains("\"/search/saved-searches/:id/delete\""),
-        "the server-rendered saved-search form targets must be registered"
+            || WEB_ROUTES_RS.contains("\"/search/saved-searches\""),
+        "the server-rendered saved-search form target must be registered"
+    );
+    assert!(
+        APP_ROUTER_RS.contains("\"/search/saved-searches/:id/delete\"")
+            || WEB_ROUTES_RS.contains("\"/search/saved-searches/:id/delete\""),
+        "the server-rendered saved-search delete target must be registered"
     );
     assert!(SEARCH_WEB_RS.contains("save_search"));
     assert!(SEARCH_WEB_RS.contains("delete_saved_search"));
