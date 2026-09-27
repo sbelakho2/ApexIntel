@@ -38,10 +38,11 @@
 #   logs/<gate>.log         captured output for executed gates
 #   tailwind.css            rebuilt stylesheet from the tailwind-assets gate
 #
-# Environment (first non-empty wins):
-#   APEX_GIT_SHA / CI_COMMIT_SHA                 commit to evidence
+# Environment (first non-empty wins; keep in sync with
+# scripts/ops/record_deployment.sh and crates/api/src/provenance.rs):
+#   APEX_GIT_SHA / GIT_SHA / CI_COMMIT_SHA       commit to evidence
 #   APEX_CI_PIPELINE_ID / CI_PIPELINE_ID / CI_PIPELINE_NUMBER
-#   APEX_BUILD_TIMESTAMP / CI_PIPELINE_CREATED
+#   APEX_BUILD_TIMESTAMP / BUILD_TIMESTAMP / CI_PIPELINE_CREATED
 #   APEX_ARTIFACT_DIGEST / ARTIFACT_DIGEST
 #   APEX_EVIDENCE_DIR                            default --out
 set -euo pipefail
@@ -143,7 +144,10 @@ recorded_status() { # <gate> -> prints passed/failed or nothing
 }
 
 json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+  # Values are single-line JSON strings: collapse control characters and
+  # escape backslashes/quotes, so an env-provided field can never produce an
+  # unparsable evidence bundle.
+  printf '%s' "$1" | tr '\n\r\t' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
 digest_file() {
@@ -157,7 +161,7 @@ digest_file() {
 }
 
 # ─── Resolve the release identity ────────────────────────────────────────────
-sha="${sha:-${APEX_GIT_SHA:-${CI_COMMIT_SHA:-}}}"
+sha="${sha:-${APEX_GIT_SHA:-${GIT_SHA:-${CI_COMMIT_SHA:-}}}}"
 if [ -z "${sha}" ]; then
   sha="$(git rev-parse HEAD 2>/dev/null || true)"
 fi
@@ -165,9 +169,14 @@ if [ -z "${sha}" ]; then
   echo "release-evidence: cannot resolve the commit SHA (pass --sha)" >&2
   exit 2
 fi
+if ! printf '%s' "${sha}" | grep -Eq '^[0-9a-fA-F]{7,40}$'; then
+  echo "release-evidence: invalid commit SHA '${sha}' (expected 7-40 hex characters)" >&2
+  exit 2
+fi
+sha="$(printf '%s' "${sha}" | tr 'A-F' 'a-f')"
 
 pipeline_id="${APEX_CI_PIPELINE_ID:-${CI_PIPELINE_ID:-${CI_PIPELINE_NUMBER:-unknown}}}"
-build_timestamp="${APEX_BUILD_TIMESTAMP:-${CI_PIPELINE_CREATED:-unknown}}"
+build_timestamp="${APEX_BUILD_TIMESTAMP:-${BUILD_TIMESTAMP:-${CI_PIPELINE_CREATED:-unknown}}}"
 
 if [ -z "${artifact_digest}" ]; then
   artifact_digest="${APEX_ARTIFACT_DIGEST:-${ARTIFACT_DIGEST:-}}"
@@ -201,11 +210,17 @@ if [ -z "${out_dir}" ]; then
 fi
 mkdir -p "${out_dir}/logs"
 
+# Gate commands read the request identity from the environment instead of
+# having it interpolated into the executed command string, so a crafted --sha
+# or --out cannot inject shell syntax.
+export APEX_EVIDENCE_SHA="${sha}"
+export APEX_EVIDENCE_TAILWIND="${out_dir}/tailwind.css"
+
 # ─── Gate commands ───────────────────────────────────────────────────────────
 gate_command() { # <gate> -> the exact release command
   case "$1" in
     exact-sha)
-      printf 'test "$(git rev-parse HEAD)" = "%s" && test -z "$(git status --porcelain)"' "${sha}"
+      printf 'test "$(git rev-parse HEAD)" = "${APEX_EVIDENCE_SHA}" && test -z "$(git status --porcelain)"'
       ;;
     rustfmt) printf 'cargo fmt --all -- --check' ;;
     clippy-default) printf 'cargo clippy --workspace --all-targets --locked -- -D warnings' ;;
@@ -221,8 +236,7 @@ gate_command() { # <gate> -> the exact release command
     browser-integration) printf 'node scripts/ci/e2e_server_ui.mjs' ;;
     ui-journey) printf 'npm run test:server-ui:journeys' ;;
     tailwind-assets)
-      printf 'npx tailwindcss -i crates/api/static/css/globals.css -o "%s/tailwind.css" --minify' \
-        "${out_dir}"
+      printf 'npx tailwindcss -i crates/api/static/css/globals.css -o "${APEX_EVIDENCE_TAILWIND}" --minify'
       ;;
     wasm-shared)
       printf 'cargo check -p apex-shared --target wasm32-unknown-unknown --locked'
@@ -400,10 +414,14 @@ printf '{\n  "schema_version": %d,\n  "generated_at": "%s",\n  "git_sha": "%s",\
 } >"${out_dir}/release-evidence.txt"
 
 # Digest the bundle files themselves, so the JSON can be matched to its
-# sidecar without trusting the JSON's self-description.
+# sidecar without trusting the JSON's self-description. The sidecar uses the
+# standard "<hex>  <name>" checksum format, consumable by `sha256sum -c` /
+# `shasum -a 256 -c`.
 {
-  digest_file "${out_dir}/release-evidence.json" | awk '{print $1"  release-evidence.json"}'
-  digest_file "${out_dir}/release-evidence.txt" | awk '{print $1"  release-evidence.txt"}'
+  printf '%s  release-evidence.json\n' \
+    "$(digest_file "${out_dir}/release-evidence.json" | sed 's/^sha256://')"
+  printf '%s  release-evidence.txt\n' \
+    "$(digest_file "${out_dir}/release-evidence.txt" | sed 's/^sha256://')"
 } >"${out_dir}/release-evidence.sha256"
 
 echo

@@ -30,12 +30,15 @@ usage() {
 }
 
 ledger="${APEX_DEPLOYMENT_LEDGER:-deployments.jsonl}"
-git_sha="${APEX_GIT_SHA:-${CI_COMMIT_SHA:-}}"
-pipeline_id="${APEX_CI_PIPELINE_ID:-${CI_PIPELINE_NUMBER:-${CI_PIPELINE_ID:-}}}"
-build_timestamp="${APEX_BUILD_TIMESTAMP:-${CI_PIPELINE_CREATED:-}}"
+# Keep the env fallbacks byte-identical to crates/api/src/provenance.rs and
+# scripts/ci/release_evidence.sh, so the ledger, the evidence bundle and
+# /api/version cannot disagree about one deployment.
+git_sha="${APEX_GIT_SHA:-${GIT_SHA:-${CI_COMMIT_SHA:-}}}"
+pipeline_id="${APEX_CI_PIPELINE_ID:-${CI_PIPELINE_ID:-${CI_PIPELINE_NUMBER:-}}}"
+build_timestamp="${APEX_BUILD_TIMESTAMP:-${BUILD_TIMESTAMP:-${CI_PIPELINE_CREATED:-}}}"
 tests="${APEX_TEST_RESULT:-}"
 migrations="${APEX_MIGRATION_TEST_RESULT:-}"
-artifact_digest="${APEX_ARTIFACT_DIGEST:-}"
+artifact_digest="${APEX_ARTIFACT_DIGEST:-${ARTIFACT_DIGEST:-}}"
 deployed_at="${APEX_DEPLOYED_AT:-}"
 artifact_path=""
 recorded_by="${APEX_DEPLOY_RECORDED_BY:-$(id -un 2>/dev/null || echo unknown)}"
@@ -98,7 +101,9 @@ if [[ -z "${deployed_at}" ]]; then
 fi
 
 json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+  # JSONL entries are single-line JSON objects: collapse control characters
+  # and escape backslashes/quotes so a value can never split the record.
+  printf '%s' "$1" | tr '\n\r\t' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
 mkdir -p "$(dirname "${ledger}")"

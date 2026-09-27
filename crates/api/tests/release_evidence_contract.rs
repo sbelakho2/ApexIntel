@@ -133,7 +133,50 @@ fn release_evidence_fails_when_a_gate_fails_and_records_every_field() {
     assert_eq!(failed["exit_code"], 1);
 
     assert!(dir.join("release-evidence.txt").is_file());
-    assert!(dir.join("release-evidence.sha256").is_file());
+    let sidecar =
+        std::fs::read_to_string(dir.join("release-evidence.sha256")).expect("sha256 sidecar");
+    assert_eq!(
+        sidecar.lines().count(),
+        2,
+        "sidecar covers both bundle files"
+    );
+    for line in sidecar.lines() {
+        let mut fields = line.split_whitespace();
+        let digest = fields.next().expect("digest field");
+        assert_eq!(digest.len(), 64, "sidecar digest must be bare hex: {line}");
+        assert!(
+            digest.chars().all(|c| c.is_ascii_hexdigit()),
+            "sidecar digest must be hex without a prefix: {line}"
+        );
+        assert!(
+            fields
+                .next()
+                .is_some_and(|name| name.starts_with("release-evidence.")),
+            "sidecar must name the bundle file: {line}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn release_evidence_rejects_an_invalid_sha() {
+    let dir = temp_dir("bad-sha");
+    let output = run(&[
+        "--sha".to_string(),
+        "not a sha; id".to_string(),
+        "--out".to_string(),
+        dir.to_string_lossy().to_string(),
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an invalid SHA must be rejected before any gate runs"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid commit SHA"),
+        "the rejection must explain the expected SHA shape"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

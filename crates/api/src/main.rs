@@ -148,7 +148,7 @@ pub(crate) use apex_api::destructive_actions::ApiAuthContext;
 pub(crate) use apex_core::data_state::DataState;
 pub(crate) use apex_store::autocomplete::AutocompleteIndex;
 pub(crate) use apex_store::postgres::{
-    CompanyDossier, CompetitorChange, PersonDossier, PersonEngagement,
+    CompanyDossier, CompetitorChange, PersonDossier, PersonEngagement, SchemaLineage,
 };
 pub(crate) use chrono::TimeZone;
 pub(crate) use mappings::*;
@@ -699,7 +699,11 @@ fn process_instance_id() -> String {
 /// Resolve the capability probe context from process state. `nats_url` is
 /// `None` when the profile does not require NATS, so optional probes stay
 /// side-effect free.
-fn probe_context<'a>(state: &'a AppState, nats_url: Option<&'a str>) -> ProbeContext<'a> {
+fn probe_context<'a>(
+    state: &'a AppState,
+    nats_url: Option<&'a str>,
+    schema_lineage: Option<&'a SchemaLineage>,
+) -> ProbeContext<'a> {
     ProbeContext {
         pool: &state.store.pool,
         search_index: &state.search_index,
@@ -708,6 +712,7 @@ fn probe_context<'a>(state: &'a AppState, nats_url: Option<&'a str>) -> ProbeCon
         llm: state.llm_probe_target.as_ref(),
         browser: &state.browser_probe,
         embedding_generator: state.embedding_generator.as_deref(),
+        schema_lineage,
     }
 }
 
@@ -728,7 +733,7 @@ fn start_status_heartbeat(state: AppState) {
             } else {
                 None
             };
-            let capabilities = probe_capabilities(&probe_context(&state, nats_probe)).await;
+            let capabilities = probe_capabilities(&probe_context(&state, nats_probe, None)).await;
             apex_api::system_status::StatusStrip::publish(capabilities.status_strip());
 
             if let Err(error) = state
@@ -753,7 +758,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         .unwrap_or(0);
 
     let nats_url = nats_url_from_env();
-    let capabilities = probe_capabilities(&probe_context(&state, Some(&nats_url))).await;
+    let capabilities = probe_capabilities(&probe_context(&state, Some(&nats_url), None)).await;
     let checks = capabilities.health_checks();
     let overall = aggregate_health(&checks);
 
@@ -769,7 +774,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 /// dashboards, and operational tooling.
 async fn health_capabilities(State(state): State<AppState>) -> Json<Capabilities> {
     let nats_url = nats_url_from_env();
-    Json(probe_capabilities(&probe_context(&state, Some(&nats_url))).await)
+    Json(probe_capabilities(&probe_context(&state, Some(&nats_url), None)).await)
 }
 
 async fn health_live() -> StatusCode {
@@ -789,19 +794,23 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Readin
         .unwrap_or(0);
 
     // Probe only the capabilities this profile requires; optional capabilities
-    // are not measured, keeping the frequently polled probe cheap.
+    // are not measured, keeping the frequently polled probe cheap. The schema
+    // lineage is measured once and reused by both the `schema` capability and
+    // the readiness report, so the two always describe the same snapshot.
     let nats_url = nats_url_from_env();
-    let capabilities =
-        probe_capabilities_for_profile(&probe_context(&state, Some(&nats_url)), state.profile)
-            .await;
-    let checks = capabilities.readiness_checks(state.profile);
-    let surfaces = capabilities.surface_reports(state.profile);
-    let overall = aggregate_health(&checks);
     let schema_lineage = state
         .store
         .schema_lineage()
         .await
         .map_err(|error| error.to_string());
+    let capabilities = probe_capabilities_for_profile(
+        &probe_context(&state, Some(&nats_url), schema_lineage.as_ref().ok()),
+        state.profile,
+    )
+    .await;
+    let checks = capabilities.readiness_checks(state.profile);
+    let surfaces = capabilities.surface_reports(state.profile);
+    let overall = aggregate_health(&checks);
 
     (
         readiness_http_status(&overall),
@@ -830,7 +839,8 @@ async fn surface_health(
 ) -> (StatusCode, Json<SurfaceHealth>) {
     let nats_url = nats_url_from_env();
     let capabilities =
-        probe_capabilities_for_profile(&probe_context(state, Some(&nats_url)), state.profile).await;
+        probe_capabilities_for_profile(&probe_context(state, Some(&nats_url), None), state.profile)
+            .await;
     let report =
         SurfaceHealth::from_checks(surface, capabilities.surface_checks(surface, state.profile));
     (report.http_status(), Json(report))

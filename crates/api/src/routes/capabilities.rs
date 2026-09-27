@@ -70,6 +70,10 @@ pub struct ProbeContext<'a> {
     pub llm: Option<&'a LlmProbeTarget>,
     pub browser: &'a BrowserProbeState,
     pub embedding_generator: Option<&'a dyn EmbeddingGenerator>,
+    /// Schema lineage already measured for this request. When set, the
+    /// `schema` probe reuses it instead of querying again, so readiness never
+    /// evaluates the lineage contract twice from different snapshots.
+    pub schema_lineage: Option<&'a SchemaLineage>,
 }
 
 /// Full capability report.
@@ -448,7 +452,7 @@ async fn probe_capabilities_plan(
 
     let database = probe_database(ctx.pool).await;
     let schema = if required("schema") {
-        probe_schema_lineage(&store).await
+        probe_schema_lineage(&store, ctx.schema_lineage).await
     } else {
         not_required()
     };
@@ -542,9 +546,18 @@ async fn probe_database(pool: &sqlx::PgPool) -> CapabilityStatus {
 /// Schema-lineage health: the applied migration head must equal the head
 /// embedded in this binary AND the applied history must checksum-verify. A
 /// stale or divergent schema is `unavailable`, so full readiness can never
-/// claim a running service whose database lineage it cannot prove.
-async fn probe_schema_lineage(store: &PgStore) -> CapabilityStatus {
-    match store.schema_lineage().await {
+/// claim a running service whose database lineage it cannot prove. A lineage
+/// already measured for the current request is reused, so the readiness
+/// response and the capability always describe the same snapshot.
+async fn probe_schema_lineage(
+    store: &PgStore,
+    measured: Option<&SchemaLineage>,
+) -> CapabilityStatus {
+    let lineage = match measured {
+        Some(lineage) => Ok(lineage.clone()),
+        None => store.schema_lineage().await,
+    };
+    match lineage {
         Ok(lineage) => {
             let expected = lineage
                 .expected_head

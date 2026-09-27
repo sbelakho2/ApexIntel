@@ -18,9 +18,12 @@
 # `_sqlx_migrations`) are FROZEN: their bytes are the sqlx checksums every
 # deployed database has on record, so editing one would make production refuse
 # to start. They are allowlisted explicitly in scripts/ci/frozen_migrations.txt
-# and skipped; several of them still describe an older revision (054, 055,
-# 063, 064, 065, 068), which is exactly why the allowlist is explicit rather
-# than a silent numeric threshold.
+# as `<sha256>  <filename>` entries. The gate verifies each frozen file against
+# its recorded digest and requires every allowlisted file to exist, so a
+# frozen revision can neither be edited nor deleted/renumbered silently.
+# Several frozen files still describe an older revision number (054, 055, 063,
+# 064, 065, 068) — that stale text is deliberately left byte-identical, which
+# is exactly why the allowlist is explicit rather than a numeric threshold.
 #
 # Usage: scripts/ci/check_migration_headers.sh [migrations_dir]
 #
@@ -52,12 +55,64 @@ if [ ! -f "${FROZEN_MANIFEST}" ]; then
   echo "MIGRATION-HEADER: frozen allowlist not found: ${FROZEN_MANIFEST}" >&2
   exit 1
 fi
-frozen_names="$(
-  sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  echo "MIGRATION-HEADER: sha256sum or shasum is required to verify frozen migrations" >&2
+  exit 1
+fi
+
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+# Allowlist entries: "<64-hex sha256>  <filename>", optional trailing comment.
+frozen_entries="$(
+  sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' \
+    -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
     "${FROZEN_MANIFEST}"
 )"
+frozen_names=()
+frozen_digests=()
+manifest_entries=0
+while IFS= read -r entry; do
+  [ -z "${entry}" ] && continue
+  if ! printf '%s' "${entry}" | grep -Eq '^[0-9a-f]{64}[[:space:]]+[A-Za-z0-9_]+\.sql$'; then
+    echo "MIGRATION-HEADER: malformed frozen allowlist entry: '${entry}' (expected '<sha256>  <filename>')" >&2
+    failed=1
+    continue
+  fi
+  frozen_digests[${#frozen_digests[@]}]="$(printf '%s' "${entry}" | awk '{print $1}')"
+  frozen_names[${#frozen_names[@]}]="$(printf '%s' "${entry}" | awk '{print $2}')"
+  manifest_entries=$((manifest_entries + 1))
+done <<< "${frozen_entries}"
+if [ "${failed}" -ne 0 ]; then
+  echo "migration header check FAILED (allowlist format is '<sha256>  <filename>')" >&2
+  exit 1
+fi
+
 is_frozen() {
-  printf '%s\n' "${frozen_names}" | grep -Fxq -- "$1"
+  local candidate="$1" index=0
+  while [ "${index}" -lt "${#frozen_names[@]}" ]; do
+    [ "${frozen_names[${index}]}" = "${candidate}" ] && return 0
+    index=$((index + 1))
+  done
+  return 1
+}
+
+frozen_digest_for() {
+  local candidate="$1" index=0
+  while [ "${index}" -lt "${#frozen_names[@]}" ]; do
+    if [ "${frozen_names[${index}]}" = "${candidate}" ]; then
+      echo "${frozen_digests[${index}]}"
+      return 0
+    fi
+    index=$((index + 1))
+  done
+  return 1
 }
 
 # normalize <digits> -> base-10 integer without leading zeros.
@@ -122,6 +177,13 @@ for f in "${files[@]}"; do
       failed=1
       continue
     fi
+    expected_digest="$(frozen_digest_for "${base}")"
+    actual_digest="$(file_sha256 "$f")"
+    if [ "${actual_digest}" != "${expected_digest}" ]; then
+      echo "MIGRATION-HEADER: ${base}: bytes differ from the frozen allowlist digest; production-applied migrations are immutable" >&2
+      failed=1
+      continue
+    fi
     frozen=$((frozen + 1))
     continue
   fi
@@ -155,6 +217,19 @@ for f in "${files[@]}"; do
       failed=1
     fi
   done < <(body_identity_claims "$f")
+done
+
+# A frozen entry that no longer exists in the tree means an applied migration
+# was deleted or renamed away; production would then hold a version this
+# binary does not embed and refuse to boot, so fail the gate here instead.
+index=0
+while [ "${index}" -lt "${#frozen_names[@]}" ]; do
+  name="${frozen_names[${index}]}"
+  if [ ! -f "${DIR}/${name}" ]; then
+    echo "MIGRATION-HEADER: ${name}: allowlisted as production-applied but missing from ${DIR}" >&2
+    failed=1
+  fi
+  index=$((index + 1))
 done
 
 if [ "${failed}" -ne 0 ]; then
