@@ -11,7 +11,10 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use sqlx::Connection;
 
-use apex_store::postgres::{latest_service_instance_heartbeat, PgStore, ServiceHeartbeatRow};
+use apex_store::postgres::{
+    latest_service_instance_heartbeat, notification_delivery_backlog_on, outbox_backlog_on,
+    NotificationBacklog, OutboxPublisherBacklog, PgStore, ServiceHeartbeatRow,
+};
 
 pub use apex_store::postgres::WORKER_HEARTBEAT_STALE_AFTER_SECS;
 
@@ -83,8 +86,96 @@ pub fn evaluate_heartbeat(
     })
 }
 
+/// Readiness thresholds for the notification delivery backlog.
+///
+/// `NOTIFICATION_DELIVERY_MAX_OVERDUE` (default 250) bounds due-but-unclaimed
+/// rows; `NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED` (default 25) bounds terminal
+/// failures awaiting operator replay. Exceeding either makes the readiness
+/// probe fail so a stuck delivery pipeline is not reported healthy.
+pub fn backlog_readiness_thresholds_from_env() -> (i64, i64) {
+    fn parse(key: &str, default: i64) -> i64 {
+        std::env::var(key)
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .filter(|value| *value >= 0)
+            .unwrap_or(default)
+    }
+    (
+        parse("NOTIFICATION_DELIVERY_MAX_OVERDUE", 250),
+        parse("NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED", 25),
+    )
+}
+
+/// Evaluate the notification delivery backlog against readiness thresholds.
+pub fn evaluate_delivery_backlog(
+    backlog: NotificationBacklog,
+    max_overdue: i64,
+    max_dead_lettered: i64,
+) -> Result<()> {
+    if backlog.overdue > max_overdue {
+        bail!(
+            "notification delivery backlog overdue: {} due rows (threshold {}), {} pending total",
+            backlog.overdue,
+            max_overdue,
+            backlog.pending
+        );
+    }
+    if backlog.dead_lettered > max_dead_lettered {
+        bail!(
+            "notification delivery dead-lettered: {} rows await operator replay (threshold {})",
+            backlog.dead_lettered,
+            max_dead_lettered
+        );
+    }
+    Ok(())
+}
+
+/// Readiness thresholds for the alert outbox backlog.
+///
+/// A healthy drain keeps `unpublished` near zero; `overdue` counts rows that
+/// have been claimable for more than five minutes. Dead-lettered rows await an
+/// operator replay (admin UI).
+pub fn outbox_readiness_thresholds_from_env() -> (i64, i64) {
+    fn parse(key: &str, default: i64) -> i64 {
+        std::env::var(key)
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .filter(|value| *value >= 0)
+            .unwrap_or(default)
+    }
+    (
+        parse("OUTBOX_MAX_OVERDUE", 250),
+        parse("OUTBOX_MAX_DEAD_LETTERED", 25),
+    )
+}
+
+/// Evaluate the alert outbox backlog against readiness thresholds.
+pub fn evaluate_outbox_backlog(
+    backlog: OutboxPublisherBacklog,
+    max_overdue: i64,
+    max_dead_lettered: i64,
+) -> Result<()> {
+    if backlog.overdue > max_overdue {
+        bail!(
+            "alert outbox backlog overdue: {} events unpublished (threshold {}), {} total unpublished",
+            backlog.overdue,
+            max_overdue,
+            backlog.unpublished
+        );
+    }
+    if backlog.dead_lettered > max_dead_lettered {
+        bail!(
+            "alert outbox dead-lettered: {} events await operator replay (threshold {})",
+            backlog.dead_lettered,
+            max_dead_lettered
+        );
+    }
+    Ok(())
+}
+
 /// Connect to the database with a single short-lived connection and evaluate
-/// this instance's newest worker heartbeat.
+/// this instance's newest worker heartbeat plus the notification delivery
+/// backlog readiness thresholds.
 pub async fn check_worker_heartbeat(
     database_url: &str,
     now: DateTime<Utc>,
@@ -93,8 +184,26 @@ pub async fn check_worker_heartbeat(
     let mut conn = sqlx::postgres::PgConnection::connect(database_url).await?;
     PgStore::assume_service_identity(&mut conn).await?;
     let row = latest_service_instance_heartbeat(&mut conn, WORKER_SERVICE, &instance_id).await?;
-    evaluate_heartbeat(row, now, WORKER_HEARTBEAT_STALE_AFTER_SECS)
-        .with_context(|| format!("worker heartbeat check failed for instance '{instance_id}'"))
+    let health = evaluate_heartbeat(row, now, WORKER_HEARTBEAT_STALE_AFTER_SECS)
+        .with_context(|| format!("worker heartbeat check failed for instance '{instance_id}'"))?;
+
+    let backlog = notification_delivery_backlog_on(&mut conn, now)
+        .await
+        .context("failed to read the notification delivery backlog")?;
+    let (max_overdue, max_dead_lettered) = backlog_readiness_thresholds_from_env();
+    evaluate_delivery_backlog(backlog, max_overdue, max_dead_lettered)
+        .context("notification delivery readiness check failed")?;
+
+    // The alert outbox: an unpublished row older than five minutes means the
+    // canonical publisher is not keeping up (or is dead).
+    let outbox = outbox_backlog_on(&mut conn, now - chrono::Duration::minutes(5))
+        .await
+        .context("failed to read the alert outbox backlog")?;
+    let (max_overdue, max_dead_lettered) = outbox_readiness_thresholds_from_env();
+    evaluate_outbox_backlog(outbox, max_overdue, max_dead_lettered)
+        .context("alert outbox readiness check failed")?;
+
+    Ok(health)
 }
 
 #[cfg(test)]
@@ -174,5 +283,64 @@ mod tests {
     #[test]
     fn instance_id_defaults_when_nothing_is_set() {
         assert_eq!(instance_id_from_env(None, None), "worker");
+    }
+
+    #[test]
+    fn delivery_backlog_within_thresholds_is_ready() {
+        let backlog = NotificationBacklog {
+            pending: 10,
+            overdue: 2,
+            dead_lettered: 1,
+        };
+        assert!(evaluate_delivery_backlog(backlog, 250, 25).is_ok());
+    }
+
+    #[test]
+    fn delivery_backlog_over_threshold_is_not_ready() {
+        let overdue = NotificationBacklog {
+            pending: 1000,
+            overdue: 400,
+            dead_lettered: 0,
+        };
+        let error = evaluate_delivery_backlog(overdue, 250, 25)
+            .expect_err("an overdue backlog must fail readiness");
+        assert!(error.to_string().contains("backlog overdue"));
+
+        let dead = NotificationBacklog {
+            pending: 0,
+            overdue: 0,
+            dead_lettered: 30,
+        };
+        let error = evaluate_delivery_backlog(dead, 250, 25)
+            .expect_err("dead letters above threshold must fail readiness");
+        assert!(error.to_string().contains("dead-lettered"));
+    }
+
+    #[test]
+    fn outbox_backlog_over_threshold_is_not_ready() {
+        let healthy = OutboxPublisherBacklog {
+            unpublished: 3,
+            overdue: 1,
+            dead_lettered: 0,
+        };
+        assert!(evaluate_outbox_backlog(healthy, 250, 25).is_ok());
+
+        let overdue = OutboxPublisherBacklog {
+            unpublished: 900,
+            overdue: 300,
+            dead_lettered: 0,
+        };
+        let error = evaluate_outbox_backlog(overdue, 250, 25)
+            .expect_err("an overdue outbox must fail readiness");
+        assert!(error.to_string().contains("outbox backlog overdue"));
+
+        let dead = OutboxPublisherBacklog {
+            unpublished: 0,
+            overdue: 0,
+            dead_lettered: 26,
+        };
+        let error = evaluate_outbox_backlog(dead, 250, 25)
+            .expect_err("outbox dead letters above threshold must fail readiness");
+        assert!(error.to_string().contains("outbox dead-lettered"));
     }
 }

@@ -225,6 +225,10 @@ pub enum JobKind {
     /// authors, news mentions) into real `persons` rows. Bridges the gap between
     /// thousands of observed people and zero persons created.
     PersonMentionMaterialization,
+    /// Notification delivery — claims due per-channel notification rows with a
+    /// lease, attempts the webhook/email send outside any transaction, and
+    /// schedules the backoff retry or dead-letters exhausted rows.
+    NotificationDelivery,
     Custom(String),
 }
 
@@ -272,6 +276,7 @@ impl JobKind {
             Self::EngagementRefresh => "engagement_refresh",
             Self::BuyingCenterDerivation => "buying_center_derivation",
             Self::PersonMentionMaterialization => "person_mention_materialization",
+            Self::NotificationDelivery => "notification_delivery",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -320,6 +325,7 @@ impl JobKind {
             "engagement_refresh" => Self::EngagementRefresh,
             "buying_center_derivation" => Self::BuyingCenterDerivation,
             "person_mention_materialization" => Self::PersonMentionMaterialization,
+            "notification_delivery" => Self::NotificationDelivery,
             other => Self::Custom(other.to_string()),
         }
     }
@@ -1504,6 +1510,16 @@ pub fn default_scheduler() -> Scheduler {
         .with_timeout(1800),
     );
 
+    // ─── Notification delivery ─────────────────────────────────────────────
+    // Durable retry processor: every minute, claim due per-channel deliveries
+    // with a lease, attempt the send outside any transaction, and apply
+    // exponential backoff or the dead-letter state.
+    s.register(
+        JobDef::new(JobKind::NotificationDelivery, Schedule::IntervalSecs(60))
+            .with_jitter(0)
+            .with_timeout(120),
+    );
+
     s
 }
 
@@ -2060,6 +2076,7 @@ mod tests {
             "engagement_refresh",
             "buying_center_derivation",
             "person_mention_materialization",
+            "notification_delivery",
         ];
 
         assert_eq!(s.jobs.len(), expected_jobs.len());

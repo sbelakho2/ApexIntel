@@ -389,55 +389,48 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
         .filter(|alert| alert.category == "sla_breach")
         .count() as u64;
 
+    let mut channel_deliveries = 0usize;
     if !pending_alerts.is_empty() {
-        let dispatcher = NotificationDispatcher::from_env();
-        let dispatched = dispatcher.dispatch_batch(pending_alerts).await;
-        for notification in &dispatched {
-            let status = if notification.dispatch_success.unwrap_or(false) {
-                "delivered"
-            } else {
-                "failed"
-            };
-            #[allow(clippy::unwrap_used, clippy::expect_used)]
-            let payload = serde_json::json!({
-                "alert_id": notification.alert.source_id,
-                "subject": notification.subject,
-                "body": notification.formatted_body,
-                "category": notification.alert.category,
-            });
-            let next_retry_at = if status == "failed" {
-                Some(Utc::now() + chrono::Duration::minutes(5))
-            } else {
-                None
-            };
-            let _ = store
-                .record_notification_delivery_attempt(
-                    &notification.id,
-                    &notification.channel,
-                    notification
-                        .destination
-                        .as_deref()
-                        .unwrap_or(&notification.channel),
-                    &payload,
-                    status,
-                    notification.error_message.as_deref(),
-                    next_retry_at,
-                )
-                .await;
+        // Same durable pipeline as every other alert: persist the domain
+        // alert/event and its alert outbox row, then persist one
+        // `notification_delivery_state` row per configured channel BEFORE any
+        // attempt. The retry-processor job owns the channel sends, backoff and
+        // dead-lettering — this job never publishes or sends directly.
+        let channels =
+            apex_worker::notification_delivery::ConfiguredChannelRouter::from_env().channels();
+        match apex_worker::notification_delivery::enqueue_sla_alerts(
+            store.as_ref(),
+            pending_alerts,
+            &channels,
+        )
+        .await
+        {
+            Ok(summary) => {
+                channel_deliveries = summary.channel_deliveries;
+                tracing::warn!(
+                    violations = violation_count,
+                    alerts_enqueued = summary.alerts_enqueued,
+                    already_enqueued = summary.alerts_already_enqueued,
+                    channel_deliveries = summary.channel_deliveries,
+                    "sla_enforcement: SLA alerts queued into the durable notification pipeline"
+                );
+            }
+            Err(error) => {
+                run.fail(&format!(
+                    "sla_enforcement: failed to enqueue SLA alerts into the outbox: {error}"
+                ));
+                return run;
+            }
         }
-        tracing::warn!(
-            violations = violation_count,
-            dispatched = dispatched.len(),
-            "sla_enforcement: escalated SLA breaches"
-        );
     }
 
     run.succeed(
         violation_count,
         &format!(
-            "checked {} unacknowledged warnings: {} SLA breaches escalated",
+            "checked {} unacknowledged warnings: {} SLA breaches queued ({} channel deliveries)",
             records.len(),
-            violation_count
+            violation_count,
+            channel_deliveries
         ),
     );
     run

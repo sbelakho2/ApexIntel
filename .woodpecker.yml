@@ -80,6 +80,14 @@ steps:
     commands:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_migration_headers.sh
+  # Fails if alert publication bypasses the transactional outbox (a direct
+  # `publish_alert(...)` call from a job/pipeline loses the crash/retry/
+  # dead-letter guarantees).
+  - name: alert-publish-guard
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache bash grep
+      - bash scripts/ci/check_alert_publish.sh
 
   - name: rust
     image: rust:bookworm
@@ -123,6 +131,9 @@ steps:
     commands:
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
       - bash scripts/ci/run_pg_integration_suites.sh
+      - cargo test -p apex-store --test migrations_integration --test alert_subscriptions_integration --test alert_subscription_crud_integration --test rls_scoped_integration --test event_outbox_integration --test notification_delivery_integration --locked -- --ignored --test-threads=1
+      # Canonical `app_users` login contract against the same migrated database.
+      - cargo test -p apex-api --test app_users_login_integration --locked -- --ignored --test-threads=1
 
   - name: wasm-shared
     image: rust:bookworm

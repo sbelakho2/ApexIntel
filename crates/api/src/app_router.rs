@@ -598,6 +598,14 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
     // `require_session` (registered on `web_pages` below).
     let admin_pages = Router::new()
         .route("/admin", get(apex_api::web::admin::admin_page))
+        .route(
+            "/admin/notifications/delivery/replay",
+            post(apex_api::web::admin::admin_replay_delivery),
+        )
+        .route(
+            "/admin/notifications/outbox/replay",
+            post(apex_api::web::admin::admin_replay_outbox),
+        )
         .route_layer(middleware::from_fn(require_web_admin));
 
     let web_pages = Router::new()

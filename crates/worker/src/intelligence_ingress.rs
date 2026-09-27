@@ -452,8 +452,8 @@ pub trait AlertSink: Send + Sync {
     /// Claim and deliver the outbox event committed with a warning, awaiting
     /// the broker ACK before reporting success.
     ///
-    /// * `Ok(true)` — this call held the row lock and delivered the event.
-    /// * `Ok(false)` — another publisher owns the row, it is already
+    /// * `Ok(true)` — this call held the lease and delivered the event.
+    /// * `Ok(false)` — another publisher holds the lease, it is already
     ///   published, or the alert backend is optional and unavailable; delivery
     ///   is left to the outbox drain.
     /// * `Err` — delivery was attempted and failed (or is required and
@@ -680,9 +680,11 @@ impl AlertSink for AlertPublisher {
             self.publisher.clone(),
             self.evaluator.clone(),
         );
+        let owner = crate::alert_pipeline::claim_owner();
         crate::alert_pipeline::deliver_outbox_event(
             self.store.as_ref(),
             &event_publisher,
+            &owner,
             outbox_id,
         )
         .await

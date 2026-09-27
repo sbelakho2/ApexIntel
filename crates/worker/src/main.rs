@@ -101,7 +101,7 @@ use apex_worker::nightly::{
 };
 #[cfg(feature = "llm")]
 use apex_worker::nightly::{process_hypothesis_generation_stage, HypothesisGenerationStageResult};
-use apex_worker::notifications::{NotificationDispatcher, SlaEnforcer, SlaWarningRecord};
+use apex_worker::notifications::{SlaEnforcer, SlaWarningRecord};
 use apex_worker::recipe_loader::load_default_seed_recipes;
 use apex_worker::scheduler::{
     default_scheduler, validate_custom_command, JobKind, JobRun, JobStatus, Scheduler,
@@ -186,6 +186,7 @@ struct WeeklyInputs {
 
 mod alert_evaluator;
 mod alert_pipeline;
+mod alert_transport;
 mod artifacts;
 mod bootstrap;
 mod continuous_improvement;
@@ -519,6 +520,19 @@ async fn main() -> Result<()> {
         Err(e) => tracing::warn!(
             error = %e,
             "worker startup: could not verify event_outbox presence; continuing"
+        ),
+    }
+    // The claim/lease publisher and the dead-letter state depend on migration
+    // 069 columns; fail fast instead of running an unhardened drain.
+    match store.event_outbox_lease_columns_present().await {
+        Ok(true) => {}
+        Ok(false) => anyhow::bail!(
+            "worker startup: event_outbox lease/dead-letter columns are missing; apply \
+             migration 076_notification_delivery.sql before starting this worker"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "worker startup: could not verify event_outbox lease columns; continuing"
         ),
     }
 

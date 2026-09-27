@@ -222,4 +222,79 @@
   </div>
 </div>
 {% endif %}
+
+{# Durable notification delivery: dead-lettered rows wait for operator replay. #}
+<div class="apex-card mb-6" id="notification-dead-letters">
+  <div class="border-b border-rams-line px-4 py-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Notification Delivery Dead Letters</h2>
+    <p class="text-[11px] text-rams-muted mt-1">Rows that exhausted their channel attempt budget or hit a permanent error. Replay re-queues them with a fresh budget.</p>
+  </div>
+  {% if delivery_dead_letters.is_empty() && outbox_dead_letters.is_empty() %}
+  <div class="px-4 py-3 text-xs text-rams-muted">No dead-lettered notifications.</div>
+  {% endif %}
+  {% if !delivery_dead_letters.is_empty() %}
+  <div class="overflow-x-auto">
+  <table class="w-full min-w-[48rem]">
+    <thead>
+      <tr class="border-b border-rams-line">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Channel</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Destination</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Attempts</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Last Error</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Dead-lettered</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Action</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-rams-line">
+      {% for d in delivery_dead_letters %}
+      <tr>
+        <td class="px-4 py-2 text-xs font-semibold">{{ d.channel }}</td>
+        <td class="px-4 py-2 text-xs text-rams-muted break-all">{{ d.destination }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ d.attempts }}</td>
+        <td class="px-4 py-2 text-xs text-rams-muted break-all">{{ d.error }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-rams-muted">{{ d.dead_lettered_at }}</td>
+        <td class="px-4 py-2 text-right">
+          <form method="post" action="/admin/notifications/delivery/replay">
+            <input type="hidden" name="delivery_key" value="{{ d.delivery_key }}">
+            <button type="submit" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-black uppercase tracking-[0.08em] hover:bg-rams-hover">Replay</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  {% if !outbox_dead_letters.is_empty() %}
+  <div class="overflow-x-auto border-t border-rams-line">
+  <table class="w-full min-w-[44rem]">
+    <thead>
+      <tr class="border-b border-rams-line">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Outbox Event</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Attempts</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Last Error</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Dead-lettered</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Action</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-rams-line">
+      {% for o in outbox_dead_letters %}
+      <tr>
+        <td class="px-4 py-2 text-xs font-semibold">{{ o.event_type }} <span class="text-rams-muted">{{ o.id }}</span></td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ o.attempts }}</td>
+        <td class="px-4 py-2 text-xs text-rams-muted break-all">{{ o.error }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-rams-muted">{{ o.dead_lettered_at }}</td>
+        <td class="px-4 py-2 text-right">
+          <form method="post" action="/admin/notifications/outbox/replay">
+            <input type="hidden" name="outbox_id" value="{{ o.id }}">
+            <button type="submit" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-black uppercase tracking-[0.08em] hover:bg-rams-hover">Replay</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
 {% endblock %}

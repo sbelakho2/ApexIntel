@@ -10,6 +10,15 @@
 //! - Max age: 7 days
 //! - Storage: file
 //! - Retention: interest-based (auto-cleanup when consumers acknowledge)
+//! - Duplicate window: 2 hours (declared via the `Nats-Msg-Id` header)
+//!
+//! # Delivery guarantee
+//! Publishing is **at-least-once**: the outbox publisher retries a row until
+//! the JetStream ACK resolves, so a crash after the broker accepted a message
+//! but before the ACK was recorded can republish it. Passing the stable outbox
+//! row id as `Nats-Msg-Id` lets JetStream suppress that duplicate inside the
+//! duplicate window; consumers must still be idempotent. This is not
+//! exactly-once delivery.
 
 use std::sync::Arc;
 
@@ -192,9 +201,14 @@ pub trait PendingPublishAck: Send {
 pub trait JetStreamTransport: Send + Sync {
     /// Start a publish. The returned ACK handle must be awaited before the
     /// caller reports success.
+    ///
+    /// `msg_id` is sent as the JetStream `Nats-Msg-Id` header: the broker
+    /// deduplicates republishes of the same id inside the stream's duplicate
+    /// window (at-least-once transport, not exactly-once).
     async fn publish(
         &self,
         subject: String,
+        msg_id: Option<String>,
         payload: Vec<u8>,
     ) -> Result<Box<dyn PendingPublishAck>>;
 }
@@ -228,11 +242,16 @@ impl JetStreamTransport for NatsJetStreamTransport {
     async fn publish(
         &self,
         subject: String,
+        msg_id: Option<String>,
         payload: Vec<u8>,
     ) -> Result<Box<dyn PendingPublishAck>> {
+        let mut headers = async_nats::HeaderMap::new();
+        if let Some(msg_id) = msg_id {
+            headers.insert("Nats-Msg-Id".to_string(), msg_id);
+        }
         let ack = self
             .jetstream
-            .publish(subject, payload.into())
+            .publish_with_headers(subject, headers, payload.into())
             .await
             .context("failed to publish to NATS JetStream")?;
         Ok(Box::new(NatsPendingAck(ack)))
@@ -342,6 +361,11 @@ impl NatsPublisher {
                 .unwrap_or(std::time::Duration::from_secs(604800)),
             storage: async_nats::jetstream::stream::StorageType::File,
             retention: async_nats::jetstream::stream::RetentionPolicy::Interest,
+            // A crashed publisher republishes its last claimed outbox rows on
+            // restart; the stable `Nats-Msg-Id` (outbox row id) is suppressed
+            // for this window, which must comfortably exceed any realistic
+            // retry cadence (drain polls every 5s, backoff spans hours).
+            duplicate_window: std::time::Duration::from_secs(2 * 60 * 60),
             ..Config::default()
         };
 
@@ -370,7 +394,24 @@ impl NatsPublisher {
     ///
     /// If NATS is unavailable: an error when NATS is required, otherwise a
     /// logged warning and `Ok(())` (graceful degradation).
+    ///
+    /// Reachable from production code only through the alert transport module
+    /// (`crates/worker/src/alert_transport.rs`); CI enforces this with
+    /// `scripts/ci/check_alert_publish.sh`.
     pub async fn publish_alert(&self, alert: &AlertEvent) -> Result<()> {
+        self.publish_alert_with_msg_id(alert, None).await
+    }
+
+    /// Publish an alert event with a stable transport message id.
+    ///
+    /// The id is sent as the JetStream `Nats-Msg-Id` header so a republish of
+    /// the same at-least-once event is deduplicated inside the stream's
+    /// duplicate window.
+    pub async fn publish_alert_with_msg_id(
+        &self,
+        alert: &AlertEvent,
+        msg_id: Option<&str>,
+    ) -> Result<()> {
         let Some(ref transport) = self.transport else {
             if self.required {
                 anyhow::bail!(
@@ -391,7 +432,7 @@ impl NatsPublisher {
             serde_json::to_vec(alert).context("failed to serialize AlertEvent to JSON")?;
 
         let ack = transport
-            .publish(subject.clone(), payload)
+            .publish(subject.clone(), msg_id.map(str::to_string), payload)
             .await
             .context(format!(
                 "failed to publish alert to NATS subject '{subject}'"
@@ -445,6 +486,7 @@ mod tests {
         acks: AtomicUsize,
         fail_ack: AtomicBool,
         order: Mutex<Vec<&'static str>>,
+        msg_ids: Mutex<Vec<Option<String>>>,
     }
 
     impl AckRecording {
@@ -456,6 +498,10 @@ mod tests {
 
         fn order(&self) -> Vec<&'static str> {
             self.order.lock().map(|o| o.clone()).unwrap_or_default()
+        }
+
+        fn msg_ids(&self) -> Vec<Option<String>> {
+            self.msg_ids.lock().map(|m| m.clone()).unwrap_or_default()
         }
     }
 
@@ -485,11 +531,15 @@ mod tests {
         async fn publish(
             &self,
             _subject: String,
+            msg_id: Option<String>,
             _payload: Vec<u8>,
         ) -> Result<Box<dyn PendingPublishAck>> {
             self.recording.calls.fetch_add(1, Ordering::SeqCst);
             self.recording.publishes.fetch_add(1, Ordering::SeqCst);
             self.recording.push("publish");
+            if let Ok(mut ids) = self.recording.msg_ids.lock() {
+                ids.push(msg_id);
+            }
             Ok(Box::new(MockAck {
                 recording: self.recording.clone(),
             }))
@@ -532,6 +582,31 @@ mod tests {
             "publish_alert must await the JetStream ACK before reporting success"
         );
         assert_eq!(recording.order(), vec!["publish", "ack"]);
+    }
+
+    #[tokio::test]
+    async fn publish_alert_with_msg_id_sends_the_stable_transport_id() {
+        // The outbox publisher passes the outbox row id; JetStream's
+        // `Nats-Msg-Id` dedupe depends on this header being set.
+        let recording = Arc::new(AckRecording::default());
+        let publisher = NatsPublisher::with_transport(
+            Arc::new(MockTransport {
+                recording: recording.clone(),
+            }),
+            false,
+        );
+
+        publisher
+            .publish_alert_with_msg_id(&test_alert(), Some("outbox-row-123"))
+            .await
+            .unwrap();
+        publisher.publish_alert(&test_alert()).await.unwrap();
+
+        assert_eq!(
+            recording.msg_ids(),
+            vec![Some("outbox-row-123".to_string()), None],
+            "the stable outbox id must be passed as Nats-Msg-Id; publish_alert has no id"
+        );
     }
 
     #[tokio::test]

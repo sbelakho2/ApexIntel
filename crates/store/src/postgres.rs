@@ -239,7 +239,14 @@ mod entity_review;
 mod event_outbox;
 pub use entity_review::EntityReviewRow;
 pub use event_outbox::{
-    EventOutboxRow, OutboxBacklog, OutboxBatch, OutboxDrainOutcome, MAX_OUTBOX_ATTEMPTS,
+    outbox_backlog_on, DeadLetterOutboxRow, EventOutboxRow, OutboxBacklog, OutboxClaim,
+    OutboxDrainOutcome, OutboxPublisherBacklog, DEFAULT_OUTBOX_LEASE_SECS, MAX_OUTBOX_ATTEMPTS,
+};
+mod notification_delivery;
+pub use notification_delivery::{
+    notification_delivery_backlog_on, notification_payload_hash, DeadLetterNotificationRow,
+    DeliveryChannel, NewNotificationEvent, NotificationBacklog, NotificationDeliveryRow,
+    NotificationEnqueueOutcome,
 };
 mod company_assets;
 mod competitors;

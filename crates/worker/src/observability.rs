@@ -168,6 +168,16 @@ pub struct WorkerMetrics {
     insights_rejected: AtomicU64,
     /// Insights with fallback
     insights_fallback: AtomicU64,
+    /// Notification deliveries claimed by the retry processor
+    notification_deliveries_claimed: AtomicU64,
+    /// Notification deliveries accepted by their channel
+    notification_deliveries_delivered: AtomicU64,
+    /// Notification deliveries rescheduled with backoff
+    notification_deliveries_retried: AtomicU64,
+    /// Notification deliveries moved to the terminal dead-letter state
+    notification_deliveries_dead_lettered: AtomicU64,
+    /// Outbox alert events moved to the terminal dead-letter state
+    outbox_events_dead_lettered: AtomicU64,
 }
 
 impl Default for WorkerMetrics {
@@ -187,6 +197,11 @@ impl WorkerMetrics {
             insights_accepted: AtomicU64::new(0),
             insights_rejected: AtomicU64::new(0),
             insights_fallback: AtomicU64::new(0),
+            notification_deliveries_claimed: AtomicU64::new(0),
+            notification_deliveries_delivered: AtomicU64::new(0),
+            notification_deliveries_retried: AtomicU64::new(0),
+            notification_deliveries_dead_lettered: AtomicU64::new(0),
+            outbox_events_dead_lettered: AtomicU64::new(0),
         }
     }
 
@@ -232,6 +247,27 @@ impl WorkerMetrics {
 
     pub fn record_insight_fallback(&self) {
         self.insights_fallback.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one retry-processor cycle's outcome counters.
+    pub fn record_notification_delivery_cycle(
+        &self,
+        outcome: &apex_worker::notification_delivery::DeliveryCycleOutcome,
+    ) {
+        self.notification_deliveries_claimed
+            .fetch_add(outcome.claimed as u64, Ordering::Relaxed);
+        self.notification_deliveries_delivered
+            .fetch_add(outcome.delivered as u64, Ordering::Relaxed);
+        self.notification_deliveries_retried
+            .fetch_add(outcome.retried as u64, Ordering::Relaxed);
+        self.notification_deliveries_dead_lettered
+            .fetch_add(outcome.dead_lettered as u64, Ordering::Relaxed);
+    }
+
+    /// Record an outbox alert event that exhausted its publish attempts.
+    pub fn record_outbox_dead_lettered(&self) {
+        self.outbox_events_dead_lettered
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get gate fire rate (failures / evaluations) for a specific gate.
@@ -326,6 +362,53 @@ impl WorkerMetrics {
         output.push_str(&format!(
             "apexintel_worker_insights_fallback_total {}\n",
             self.insights_fallback.load(Ordering::Relaxed)
+        ));
+
+        // Notification delivery metrics (durable retry processor + outbox).
+        output.push_str(
+            "# HELP apexintel_worker_notification_deliveries_claimed_total Notification deliveries claimed by the retry processor\n",
+        );
+        output.push_str("# TYPE apexintel_worker_notification_deliveries_claimed_total counter\n");
+        output.push_str(&format!(
+            "apexintel_worker_notification_deliveries_claimed_total {}\n",
+            self.notification_deliveries_claimed.load(Ordering::Relaxed)
+        ));
+        output.push_str(
+            "# HELP apexintel_worker_notification_deliveries_delivered_total Notification deliveries accepted by their channel\n",
+        );
+        output
+            .push_str("# TYPE apexintel_worker_notification_deliveries_delivered_total counter\n");
+        output.push_str(&format!(
+            "apexintel_worker_notification_deliveries_delivered_total {}\n",
+            self.notification_deliveries_delivered
+                .load(Ordering::Relaxed)
+        ));
+        output.push_str(
+            "# HELP apexintel_worker_notification_deliveries_retried_total Notification deliveries rescheduled with backoff\n",
+        );
+        output.push_str("# TYPE apexintel_worker_notification_deliveries_retried_total counter\n");
+        output.push_str(&format!(
+            "apexintel_worker_notification_deliveries_retried_total {}\n",
+            self.notification_deliveries_retried.load(Ordering::Relaxed)
+        ));
+        output.push_str(
+            "# HELP apexintel_worker_notification_deliveries_dead_lettered_total Notification deliveries moved to the terminal dead-letter state\n",
+        );
+        output.push_str(
+            "# TYPE apexintel_worker_notification_deliveries_dead_lettered_total counter\n",
+        );
+        output.push_str(&format!(
+            "apexintel_worker_notification_deliveries_dead_lettered_total {}\n",
+            self.notification_deliveries_dead_lettered
+                .load(Ordering::Relaxed)
+        ));
+        output.push_str(
+            "# HELP apexintel_worker_outbox_events_dead_lettered_total Outbox alert events moved to the terminal dead-letter state\n",
+        );
+        output.push_str("# TYPE apexintel_worker_outbox_events_dead_lettered_total counter\n");
+        output.push_str(&format!(
+            "apexintel_worker_outbox_events_dead_lettered_total {}\n",
+            self.outbox_events_dead_lettered.load(Ordering::Relaxed)
         ));
 
         // Gate metrics
