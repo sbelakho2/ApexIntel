@@ -14,6 +14,7 @@ pub mod geospatial;
 pub mod graph_risk;
 pub mod hs_codes;
 pub mod identity;
+pub mod intelligence_profile;
 pub mod measurement;
 pub mod outcomes;
 pub mod person_names;

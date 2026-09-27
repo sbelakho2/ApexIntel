@@ -1327,18 +1327,28 @@ pub async fn unread_count(
         .unwrap_or(0);
     Html(format!("{}", count))
 }
-/// POST /warnings/:id/analyze — trigger AI analysis, return rendered panel.
+/// One rendered claim line: text, its kind label, optional confidence and the
+/// real evidence citations resolved by the analysis service.
 #[derive(Clone, Debug)]
-pub struct AnalysisClaimView {
-    pub indicator: String,
-    pub evidence: String,
+pub struct AnalysisClaimLine {
+    pub text: String,
+    pub kind_label: String,
+    /// Confidence as a percentage (0 when the run emitted none) plus a flag so
+    /// the template can hide unset confidences.
+    pub confidence: i64,
+    pub has_confidence: bool,
+    pub citations: Vec<String>,
+    pub has_citations: bool,
 }
 
-/// HTMX partial rendered by `POST /warnings/:id/analyze`.
+/// HTMX partial rendered by `POST /warnings/:id/analyze` (enqueue) and
+/// `GET /warnings/:id/analysis/:run_id` (poll).
 ///
-/// The panel carries the real analysis result (threat assessment, claims with
-/// their evidence, confidence, limitations, recommendations) or an explicit
-/// unavailable/failed state. It never renders a fake "analysis in progress".
+/// The panel carries the persisted run's structured result — claims/impact/
+/// actions with their per-claim evidence, the reusable `EvidenceQuality`
+/// numbers, sampled coverage (sent vs available) and limitations — or an
+/// explicit queued/running/failed/unavailable state. It never renders a fake
+/// completed analysis, and while a run is in flight it polls its status.
 #[derive(Template)]
 #[template(path = "pages/warnings/_analysis.html")]
 pub struct WarningAnalysisPanel {
@@ -1346,103 +1356,187 @@ pub struct WarningAnalysisPanel {
     pub status_label: String,
     pub warning_id: String,
     pub warning_title: String,
+    pub run_id: String,
+    /// When true the panel re-requests itself until the run is terminal.
+    pub poll: bool,
     pub has_result: bool,
     pub detail: Option<String>,
-    pub threat_assessment: String,
-    pub severity_justification: String,
-    pub impact_assessment: String,
-    pub claims: Vec<AnalysisClaimView>,
+    pub claims: Vec<AnalysisClaimLine>,
     pub has_claims: bool,
-    pub evidence_summary: String,
-    pub confidence_pct: i64,
-    pub data_sufficiency: String,
-    pub source_reliability: String,
+    pub impact: Vec<AnalysisClaimLine>,
+    pub has_impact: bool,
+    pub actions: Vec<AnalysisClaimLine>,
+    pub has_actions: bool,
     pub limitations: Vec<String>,
-    pub recommendations: Vec<String>,
-    pub has_recommendations: bool,
+    pub evidence_summary: String,
+    pub quality_line: String,
+    pub reliability_line: String,
+    pub coverage_line: String,
+    pub provenance_line: String,
+    pub confidence_pct: i64,
     pub entities_line: String,
     pub has_entities: bool,
 }
 
+#[cfg(feature = "llm")]
+fn claim_lines(rendered: &[crate::warning_analysis::RenderedClaim]) -> Vec<AnalysisClaimLine> {
+    rendered
+        .iter()
+        .map(|claim| {
+            let kind = apex_core::claims::ClaimKind::from_db(&claim.claim_kind);
+            let citations = claim
+                .evidence
+                .iter()
+                .map(|evidence| format!("{}: {}", evidence.evidence_kind, evidence.label))
+                .collect::<Vec<_>>();
+            AnalysisClaimLine {
+                text: claim.text.clone(),
+                kind_label: kind.label().to_string(),
+                confidence: claim
+                    .confidence
+                    .map(|confidence| (confidence * 100.0).round() as i64)
+                    .unwrap_or(0),
+                has_confidence: claim.confidence.is_some(),
+                has_citations: !citations.is_empty(),
+                citations,
+            }
+        })
+        .collect()
+}
+
 impl WarningAnalysisPanel {
-    fn unavailable(warning_id: &str, warning_title: &str, detail: &str) -> Self {
+    fn base(warning_id: &str, warning_title: &str) -> Self {
         Self {
             status: "unavailable".to_string(),
             status_label: "Unavailable".to_string(),
             warning_id: warning_id.to_string(),
             warning_title: warning_title.to_string(),
+            run_id: String::new(),
+            poll: false,
             has_result: false,
-            detail: Some(detail.to_string()),
-            threat_assessment: String::new(),
-            severity_justification: String::new(),
-            impact_assessment: String::new(),
+            detail: None,
             claims: Vec::new(),
             has_claims: false,
-            evidence_summary: String::new(),
-            confidence_pct: 0,
-            data_sufficiency: String::new(),
-            source_reliability: String::new(),
+            impact: Vec::new(),
+            has_impact: false,
+            actions: Vec::new(),
+            has_actions: false,
             limitations: Vec::new(),
-            recommendations: Vec::new(),
-            has_recommendations: false,
+            evidence_summary: String::new(),
+            quality_line: String::new(),
+            reliability_line: String::new(),
+            coverage_line: String::new(),
+            provenance_line: String::new(),
+            confidence_pct: 0,
             entities_line: String::new(),
             has_entities: false,
         }
     }
 
+    fn unavailable(warning_id: &str, warning_title: &str, detail: &str) -> Self {
+        let mut panel = Self::base(warning_id, warning_title);
+        panel.status = "unavailable".to_string();
+        panel.status_label = "Unavailable".to_string();
+        panel.detail = Some(detail.to_string());
+        panel
+    }
+
+    pub fn in_flight(warning_id: &str, warning_title: &str, run_id: &str, status: &str) -> Self {
+        let mut panel = Self::base(warning_id, warning_title);
+        panel.status = status.to_string();
+        panel.status_label = match status {
+            "queued" => "Queued".to_string(),
+            "running" => "Running".to_string(),
+            other => other.to_string(),
+        };
+        panel.run_id = run_id.to_string();
+        panel.poll = matches!(status, "queued" | "running");
+        panel
+    }
+
+    fn failed(warning_id: &str, warning_title: &str, run_id: &str, detail: &str) -> Self {
+        let mut panel = Self::base(warning_id, warning_title);
+        panel.status = "failed".to_string();
+        panel.status_label = "Failed".to_string();
+        panel.run_id = run_id.to_string();
+        panel.detail = Some(detail.to_string());
+        panel
+    }
+
     #[cfg(feature = "llm")]
-    fn from_output(
+    pub fn from_output(
         warning_id: &str,
         warning_title: &str,
+        run_id: &str,
         output: &crate::warning_analysis::WarningAnalysisOutput,
     ) -> Self {
-        let claims: Vec<AnalysisClaimView> = output
-            .key_indicators()
-            .into_iter()
-            .map(|claim| AnalysisClaimView {
-                indicator: claim.indicator,
-                evidence: claim.evidence,
-            })
-            .collect();
-        let recommendations = output.recommendations();
-        let limitations = output.limitations();
-        let entities_line = output.entity_names.join(", ");
-        Self {
-            status: "ok".to_string(),
-            status_label: "Analysis complete".to_string(),
-            warning_id: warning_id.to_string(),
-            warning_title: warning_title.to_string(),
-            has_result: true,
-            detail: None,
-            threat_assessment: output.threat_assessment.clone(),
-            severity_justification: output.severity_justification.clone(),
-            impact_assessment: output.impact_assessment.clone(),
-            has_claims: !claims.is_empty(),
-            claims,
-            evidence_summary: format!(
-                "Grounded in {} observations, {} sources, {} related insights.",
-                output.observation_count, output.source_count, output.related_insight_count
-            ),
-            confidence_pct: (output.overall_confidence * 100.0).round() as i64,
-            data_sufficiency: output.data_sufficiency.clone(),
-            source_reliability: output.source_reliability.clone(),
-            limitations,
-            has_recommendations: !recommendations.is_empty(),
-            recommendations,
-            has_entities: !entities_line.is_empty(),
-            entities_line,
-        }
+        let claims = claim_lines(&output.claims);
+        let impact = claim_lines(&output.impact);
+        let actions = claim_lines(&output.actions);
+        let quality = &output.evidence_quality;
+        let distribution = quality
+            .source_reliability_distribution
+            .iter()
+            .map(|(tier, count)| format!("{tier} {count}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let mut panel = Self::base(warning_id, warning_title);
+        panel.status = "succeeded".to_string();
+        panel.status_label = "Analysis complete".to_string();
+        panel.run_id = run_id.to_string();
+        panel.has_result = true;
+        panel.has_claims = !claims.is_empty();
+        panel.has_impact = !impact.is_empty();
+        panel.has_actions = !actions.is_empty();
+        panel.evidence_summary = format!(
+            "{} warning source URL(s) · {} evidence domain(s) · model {} · prompt {}",
+            output.warning_source_count,
+            output.source_domains.len(),
+            output.model,
+            output.prompt_version,
+        );
+        panel.quality_line = format!(
+            "Evidence quality: {} ({:.2}) · {} evidence records · {} independent domain(s) · {} contradiction(s)",
+            quality.quality_label,
+            quality.overall_score,
+            quality.source_count,
+            quality.independent_source_count,
+            quality.contradiction_count,
+        );
+        panel.reliability_line = if distribution.is_empty() {
+            "Source reliability tiers: no measured source quality for these domains.".to_string()
+        } else {
+            format!("Source reliability tiers (measured): {distribution}")
+        };
+        panel.coverage_line = format!(
+            "Evidence sent: {} of {} available observations · {} of {} available related insights (documented caps)",
+            output.observation_count_sent,
+            output.observation_count_available,
+            output.insight_count_sent,
+            output.insight_count_available,
+        );
+        panel.provenance_line = format!(
+            "Direct evidence: {} · derived evidence: {} · freshness {:.2} · completeness {:.2} · domain diversity {:.2}",
+            quality.direct_evidence_count,
+            quality.derived_evidence_count,
+            quality.evidence_freshness,
+            quality.evidence_completeness,
+            quality.source_diversity,
+        );
+        panel.confidence_pct = (output.warning_confidence * 100.0).round() as i64;
+        panel.claims = claims;
+        panel.impact = impact;
+        panel.actions = actions;
+        panel.limitations = output.limitations.clone();
+        panel.entities_line = output.entity_names.join(", ");
+        panel.has_entities = !panel.entities_line.is_empty();
+        panel
     }
 }
 
-/// POST /warnings/:id/analyze — run the real analysis service and return the
-/// rendered panel (audit P0 #40).
-///
-/// The handler runs the same evidence-gathering + LLM analysis as the JSON API
-/// (`POST /api/warnings/:id/analyze`), then renders the structured result:
-/// status, claims, evidence, confidence, limitations and recommendations.
-/// Missing LLM configuration, a disabled build, and LLM/storage failures each
-/// render an explicit unavailable/failed state instead of a placeholder.
+/// POST /warnings/:id/analyze — enqueue the durable analysis run and render the
+/// queued panel (audit P1-5). The panel polls `GET /warnings/:id/analysis/:run_id`
+/// until the run succeeds or fails; the request itself never blocks on the LLM.
 pub async fn analyze_warning_html(
     _session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
@@ -1486,21 +1580,189 @@ pub async fn analyze_warning_html(
             return super::render_template(&panel);
         };
 
-        match crate::warning_analysis::analyze_warning(&store, &model.primary, &warning).await {
-            Ok(output) => {
-                let panel = WarningAnalysisPanel::from_output(&id, &warning.title, &output);
-                super::render_template(&panel)
+        match crate::warning_analysis::enqueue_analysis(
+            &store,
+            &model,
+            &warning,
+            Some(_session.user_id.as_str()),
+        )
+        .await
+        {
+            Ok((run, _deduplicated, context)) => {
+                if run.status == "queued" {
+                    crate::warning_analysis::spawn_analysis_executor(store.clone(), context);
+                }
+                match run.status.as_str() {
+                    "succeeded" => match crate::warning_analysis::output_from_run(&run) {
+                        Ok(Some(output)) => {
+                            let panel = WarningAnalysisPanel::from_output(
+                                &id,
+                                &warning.title,
+                                &run.id.to_string(),
+                                &output,
+                            );
+                            super::render_template(&panel)
+                        }
+                        Ok(None) | Err(_) => {
+                            let panel = WarningAnalysisPanel::failed(
+                                &id,
+                                &warning.title,
+                                &run.id.to_string(),
+                                "The stored analysis result could not be read back; start a new analysis.",
+                            );
+                            super::render_template(&panel)
+                        }
+                    },
+                    "failed" => {
+                        let panel = WarningAnalysisPanel::failed(
+                            &id,
+                            &warning.title,
+                            &run.id.to_string(),
+                            run.error
+                                .as_deref()
+                                .unwrap_or("Analysis failed with no recorded reason."),
+                        );
+                        super::render_template(&panel)
+                    }
+                    status => {
+                        let panel = WarningAnalysisPanel::in_flight(
+                            &id,
+                            &warning.title,
+                            &run.id.to_string(),
+                            status,
+                        );
+                        super::render_template(&panel)
+                    }
+                }
             }
             Err(error) => {
-                tracing::error!(warning_id = %id, error = %error, "warning analysis failed");
+                tracing::error!(warning_id = %id, error = %error, "warning analysis enqueue failed");
                 let panel = WarningAnalysisPanel::unavailable(
                     &id,
                     &warning.title,
-                    &format!("Analysis failed: {error}. The warning is unchanged."),
+                    &format!("Analysis could not be started: {error}. The warning is unchanged."),
                 );
                 super::render_template(&panel)
             }
         }
+    }
+
+    #[cfg(not(feature = "llm"))]
+    {
+        let panel = WarningAnalysisPanel::unavailable(
+            &id,
+            &warning.title,
+            "This build does not include the LLM analysis feature. The warning is unchanged.",
+        );
+        super::render_template(&panel)
+    }
+}
+
+/// GET /warnings/:id/analysis/:run_id — poll one run and re-render the panel.
+pub async fn warning_analysis_status_html(
+    Extension(store): Extension<Arc<PgStore>>,
+    #[cfg(feature = "llm")] _model: Option<
+        Extension<crate::warning_analysis::WarningAnalysisModel>,
+    >,
+    Path((id, _run_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid warning ID".to_string()),
+            )
+                .into_response()
+        }
+    };
+    #[cfg(feature = "llm")]
+    let run_uuid = match Uuid::parse_str(&_run_id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid analysis run ID".to_string()),
+            )
+                .into_response()
+        }
+    };
+
+    let warning = match store.get_warning(uuid).await {
+        Ok(Some(warning)) => warning,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response()
+        }
+        Err(error) => {
+            tracing::error!(warning_id = %id, error = %error, "Failed to fetch warning for analysis poll");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to load analysis".to_string()),
+            )
+                .into_response();
+        }
+    };
+
+    #[cfg(feature = "llm")]
+    {
+        // Housekeeping: resolve runs abandoned by a crashed process so the poll
+        // terminates instead of spinning forever. The stale threshold covers
+        // the configured model timeout plus retries.
+        let stale_seconds = _model
+            .as_ref()
+            .map(|Extension(model)| {
+                crate::warning_analysis::stale_run_seconds(model.primary.timeout_seconds)
+            })
+            .unwrap_or(crate::warning_analysis::DEFAULT_STALE_RUN_SECONDS);
+        crate::warning_analysis::expire_stale_runs(&store, stale_seconds).await;
+
+        let run = match store.get_warning_analysis_run(run_uuid).await {
+            Ok(Some(run)) if run.warning_id == uuid => run,
+            Ok(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Html("Analysis run not found".to_string()),
+                )
+                    .into_response()
+            }
+            Err(error) => {
+                tracing::error!(run_id = %_run_id, error = %error, "Failed to load analysis run");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html("Failed to load analysis run".to_string()),
+                )
+                    .into_response();
+            }
+        };
+
+        let panel = match run.status.as_str() {
+            "succeeded" => match crate::warning_analysis::output_from_run(&run) {
+                Ok(Some(output)) => WarningAnalysisPanel::from_output(
+                    &id,
+                    &warning.title,
+                    &run.id.to_string(),
+                    &output,
+                ),
+                Ok(None) | Err(_) => WarningAnalysisPanel::failed(
+                    &id,
+                    &warning.title,
+                    &run.id.to_string(),
+                    "The stored analysis result could not be read back; start a new analysis.",
+                ),
+            },
+            "failed" => WarningAnalysisPanel::failed(
+                &id,
+                &warning.title,
+                &run.id.to_string(),
+                run.error
+                    .as_deref()
+                    .unwrap_or("Analysis failed with no recorded reason."),
+            ),
+            status => {
+                WarningAnalysisPanel::in_flight(&id, &warning.title, &run.id.to_string(), status)
+            }
+        };
+        super::render_template(&panel)
     }
 
     #[cfg(not(feature = "llm"))]

@@ -600,6 +600,226 @@ pub(crate) async fn delete_all_warnings(
     }
 }
 
+/// POST /api/warnings/:id/analysis — enqueue a durable, evidence-bound
+/// analysis run and return its id immediately (audit P1-5).
+///
+/// The request never runs the model: it gathers the bounded evidence set,
+/// computes its digest, deduplicates identical in-flight/succeeded runs
+/// (migration 079) and returns `202 Accepted` with the run id. Poll
+/// `GET /api/warnings/:id/analysis/:run_id` for status and result.
+#[cfg(feature = "llm")]
+pub(crate) async fn enqueue_warning_analysis(
+    State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+    let uid = match Uuid::parse_str(&id) {
+        Ok(uid) => uid,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid UUID"))),
+            )
+        }
+    };
+
+    let warning = match state.store.get_warning(uid).await {
+        Ok(Some(warning)) => warning,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found("Warning", &id))),
+            )
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "enqueue_warning_analysis: get_warning failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal("Failed to load warning"))),
+            );
+        }
+    };
+
+    let Some(runtime) = state.llm.as_ref() else {
+        return llm_service_unavailable("LLM not configured");
+    };
+    let model = apex_api::warning_analysis::WarningAnalysisModel {
+        primary: runtime.primary.clone(),
+        profile: state.intelligence_profile.clone(),
+    };
+    let requested_by = auth_ctx.user_id.to_string();
+
+    match apex_api::warning_analysis::enqueue_analysis(
+        &state.store,
+        &model,
+        &warning,
+        Some(&requested_by),
+    )
+    .await
+    {
+        Ok((run, deduplicated, context)) => {
+            if run.status == "queued" {
+                apex_api::warning_analysis::spawn_analysis_executor(state.store.clone(), context);
+            }
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_latency("enqueue_warning_analysis", duration_ms);
+            (
+                StatusCode::ACCEPTED,
+                Json(success_with_meta(
+                    serde_json::json!({
+                        "analysis_run_id": run.id,
+                        "warning_id": run.warning_id,
+                        "status": run.status,
+                        "deduplicated": deduplicated,
+                        "model": run.model,
+                        "prompt_version": run.prompt_version,
+                        "evidence_digest": run.evidence_digest,
+                        "observations_available": run.observations_available,
+                        "observations_sent": run.observations_sent,
+                        "insights_available": run.insights_available,
+                        "insights_sent": run.insights_sent,
+                    }),
+                    ResponseMeta::now()
+                        .with_request_id(request_id)
+                        .with_duration(duration_ms),
+                )),
+            )
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "enqueue_warning_analysis failed: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to enqueue warning analysis",
+                ))),
+            )
+        }
+    }
+}
+
+/// GET /api/warnings/:id/analysis/:run_id — run status and, on success, the
+/// persisted claims (with their real evidence ids) plus the rendered output.
+#[cfg(feature = "llm")]
+pub(crate) async fn get_warning_analysis_run(
+    State(state): State<AppState>,
+    Extension(_auth_ctx): Extension<ApiAuthContext>,
+    Path((id, run_id)): Path<(String, String)>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let uid = match Uuid::parse_str(&id) {
+        Ok(uid) => uid,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid warning UUID",
+                ))),
+            )
+        }
+    };
+    let run_uuid = match Uuid::parse_str(&run_id) {
+        Ok(run_uuid) => run_uuid,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid analysis run UUID",
+                ))),
+            )
+        }
+    };
+
+    // Housekeeping before reporting: a run abandoned by a crashed process must
+    // resolve to an explicit failure instead of looking in-progress forever.
+    // The stale threshold covers the configured model timeout plus retries.
+    let stale_seconds = state
+        .llm
+        .as_ref()
+        .map(|runtime| {
+            apex_api::warning_analysis::stale_run_seconds(runtime.primary.timeout_seconds)
+        })
+        .unwrap_or(apex_api::warning_analysis::DEFAULT_STALE_RUN_SECONDS);
+    apex_api::warning_analysis::expire_stale_runs(&state.store, stale_seconds).await;
+
+    let run = match state.store.get_warning_analysis_run(run_uuid).await {
+        Ok(Some(run)) if run.warning_id == uid => run,
+        Ok(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found("Analysis run", &run_id))),
+            )
+        }
+        Err(err) => {
+            tracing::error!("get_warning_analysis_run failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load analysis run",
+                ))),
+            );
+        }
+    };
+
+    let claims = if run.status == "succeeded" {
+        match state.store.list_warning_analysis_claims(run_uuid).await {
+            Ok(claims) => claims,
+            Err(err) => {
+                tracing::error!("list_warning_analysis_claims failed: {err:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Failed to load analysis claims",
+                    ))),
+                );
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    (
+        StatusCode::OK,
+        Json(success_with_meta(
+            serde_json::json!({
+                "analysis_run_id": run.id,
+                "warning_id": run.warning_id,
+                "status": run.status,
+                "model": run.model,
+                "prompt_version": run.prompt_version,
+                "evidence_digest": run.evidence_digest,
+                "observations_available": run.observations_available,
+                "observations_sent": run.observations_sent,
+                "insights_available": run.insights_available,
+                "insights_sent": run.insights_sent,
+                "error": run.error,
+                "output": run.output,
+                "claims": claims,
+                "created_at": run.created_at,
+                "started_at": run.started_at,
+                "finished_at": run.finished_at,
+            }),
+            ResponseMeta::now().with_request_id(Uuid::new_v4().to_string()),
+        )),
+    )
+}
+
+#[cfg(not(feature = "llm"))]
+pub(crate) async fn enqueue_warning_analysis(
+    State(_state): State<AppState>,
+    Path(_id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    llm_service_unavailable("LLM feature disabled")
+}
+
+#[cfg(not(feature = "llm"))]
+pub(crate) async fn get_warning_analysis_run(
+    State(_state): State<AppState>,
+    Path((_id, _run_id)): Path<(String, String)>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    llm_service_unavailable("LLM feature disabled")
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_bulk_delete_ids;

@@ -19,6 +19,15 @@ pub struct EvidenceRecord {
     pub observed_at: Option<DateTime<Utc>>,
     pub relevance: f64,
     pub stance: EvidenceStance,
+    /// Source-quality tier already computed elsewhere (for example
+    /// `source_reliability_stats.tier`). Independent of how many records
+    /// happen to cite the source.
+    #[serde(default)]
+    pub source_reliability_tier: Option<String>,
+    /// True when this record is derived intelligence (a generated insight or
+    /// inference) rather than a directly observed fact.
+    #[serde(default)]
+    pub derived: bool,
 }
 
 impl EvidenceRecord {
@@ -30,6 +39,8 @@ impl EvidenceRecord {
             observed_at: None,
             relevance,
             stance,
+            source_reliability_tier: None,
+            derived: false,
         }
     }
 
@@ -52,20 +63,64 @@ impl EvidenceRecord {
         self.observed_at = Some(observed_at);
         self
     }
+
+    /// Attach source-quality tier data measured independently of this record's
+    /// presence (never derived from corpus counts).
+    pub fn with_source_reliability(mut self, tier: Option<String>) -> Self {
+        self.source_reliability_tier = tier;
+        self
+    }
+
+    pub fn derived(mut self) -> Self {
+        self.derived = true;
+        self
+    }
 }
 
+/// The reusable evidence-quality model (audit P0-4/P1-3).
+///
+/// Every field is an independent measurement: counts are never re-labelled as
+/// "reliability" or "sufficiency", and independence is counted over distinct
+/// registrable domains, not raw source records. `quality_label` is derived from
+/// the weighted sub-scores below, not from any single count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceQuality {
     pub overall_score: f64,
     pub corroboration_score: f64,
     pub diversity_score: f64,
     pub independence_score: f64,
+    /// Mean recency weight. Serialized alias kept for existing consumers;
+    /// always equal to [`Self::evidence_freshness`].
     pub freshness_score: f64,
     pub contradiction_penalty: f64,
     pub source_count: usize,
+    /// Distinct registrable domains / origins among the cited sources.
     pub independent_source_count: usize,
     pub supporting_count: usize,
+    /// Contradicting records. Serialized alias kept for existing consumers;
+    /// always equal to [`Self::contradiction_count`].
     pub contradicting_count: usize,
+    /// Contradicting records (canonical name). Always equal to
+    /// [`Self::contradicting_count`].
+    pub contradiction_count: usize,
+    /// Fraction of records whose source is a distinct registrable domain
+    /// (independence ratio, 0.0–1.0). Distinct from [`Self::diversity_score`],
+    /// which additionally blends source-type diversity.
+    pub source_diversity: f64,
+    /// How many records cite each source-quality tier. Records without
+    /// measured source quality are counted under `unknown`. Sums to
+    /// `source_count`.
+    pub source_reliability_distribution: BTreeMap<String, usize>,
+    /// Fraction of records that carry the minimum provenance for verification:
+    /// a resolvable source group and an observation timestamp (0.0–1.0).
+    pub evidence_completeness: f64,
+    /// Mean recency weight of timestamped records (exp(-age_days/30)); 0.5
+    /// when no record carries a timestamp.
+    pub evidence_freshness: f64,
+    /// Records that are directly observed facts.
+    pub direct_evidence_count: usize,
+    /// Records that are derived intelligence (generated insight/inference).
+    pub derived_evidence_count: usize,
     pub quality_label: String,
 }
 
@@ -82,6 +137,13 @@ impl Default for EvidenceQuality {
             independent_source_count: 0,
             supporting_count: 0,
             contradicting_count: 0,
+            contradiction_count: 0,
+            source_diversity: 0.0,
+            source_reliability_distribution: BTreeMap::new(),
+            evidence_completeness: 0.0,
+            evidence_freshness: 0.0,
+            direct_evidence_count: 0,
+            derived_evidence_count: 0,
             quality_label: "insufficient".to_string(),
         }
     }
@@ -100,6 +162,10 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
     let mut contradict_weight = 0.0;
     let mut support_count = 0usize;
     let mut contradict_count = 0usize;
+    let mut completeness_count = 0usize;
+    let mut direct_count = 0usize;
+    let mut derived_count = 0usize;
+    let mut reliability_distribution: BTreeMap<String, usize> = BTreeMap::new();
 
     for record in records {
         let relevance = record.relevance.clamp(0.0, 1.0);
@@ -117,8 +183,9 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
             }
         }
 
-        if let Some(group) = evidence_source_group(record) {
-            independent_sources.insert(group);
+        let source_group = evidence_source_group(record);
+        if let Some(group) = source_group.as_ref() {
+            independent_sources.insert(group.clone());
         }
         if let Some(source_type) = record.source_type.as_deref() {
             let normalized = source_type.trim().to_ascii_lowercase();
@@ -126,11 +193,27 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
                 source_types.insert(normalized);
             }
         }
+        if source_group.is_some() && record.observed_at.is_some() {
+            completeness_count += 1;
+        }
         if let Some(observed_at) = record.observed_at {
             let age_days = (now - observed_at).num_days().max(0) as f64;
             freshness_total += (-age_days / 30.0).exp();
             freshness_count += 1;
         }
+        if record.derived {
+            derived_count += 1;
+        } else {
+            direct_count += 1;
+        }
+        let tier = record
+            .source_reliability_tier
+            .as_deref()
+            .map(str::trim)
+            .filter(|tier| !tier.is_empty())
+            .unwrap_or("unknown")
+            .to_ascii_lowercase();
+        *reliability_distribution.entry(tier).or_default() += 1;
     }
 
     let source_count = records.len();
@@ -147,8 +230,8 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
         let support_strength = (support_weight / support_count as f64).clamp(0.0, 1.0);
         (0.55 * independent_support + 0.45 * support_strength).clamp(0.0, 1.0)
     };
+    let source_diversity = (independent_source_count as f64 / source_count as f64).clamp(0.0, 1.0);
     let diversity_score = {
-        let source_diversity = independent_source_count as f64 / source_count as f64;
         let type_diversity = if source_types.is_empty() {
             source_diversity
         } else {
@@ -156,8 +239,7 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
         };
         (0.6 * source_diversity + 0.4 * type_diversity).clamp(0.0, 1.0)
     };
-    let independence_score =
-        (independent_source_count as f64 / source_count as f64).clamp(0.0, 1.0);
+    let independence_score = source_diversity;
     let freshness_score = if freshness_count == 0 {
         0.5
     } else {
@@ -168,6 +250,7 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
     } else {
         (contradict_weight / (support_weight + contradict_weight)).clamp(0.0, 1.0)
     };
+    let evidence_completeness = (completeness_count as f64 / source_count as f64).clamp(0.0, 1.0);
 
     let raw = 0.35 * corroboration_score
         + 0.20 * diversity_score
@@ -193,28 +276,115 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
         independent_source_count,
         supporting_count: support_count,
         contradicting_count: contradict_count,
+        contradiction_count: contradict_count,
+        source_diversity,
+        source_reliability_distribution: reliability_distribution,
+        evidence_completeness,
+        evidence_freshness: freshness_score,
+        direct_evidence_count: direct_count,
+        derived_evidence_count: derived_count,
         quality_label,
     }
 }
 
 fn evidence_source_group(record: &EvidenceRecord) -> Option<String> {
+    // Prefer the registrable domain of the source URL: two articles from the
+    // same publisher (or the same publisher's subdomains) are not independent
+    // corroboration. Only fall back to the raw source id when no URL is known.
+    if let Some(source_url) = record.source_url.as_deref() {
+        if let Some(domain) = registrable_domain(source_url) {
+            return Some(domain);
+        }
+    }
     if let Some(source_id) = record.source_id.as_deref() {
         let normalized = source_id.trim().to_ascii_lowercase();
         if !normalized.is_empty() {
             return Some(normalized);
         }
     }
-    if let Some(source_url) = record.source_url.as_deref() {
-        if let Ok(url) = Url::parse(source_url) {
-            if let Some(host) = url.host_str() {
-                let normalized = host.trim().to_ascii_lowercase();
-                if !normalized.is_empty() {
-                    return Some(normalized);
-                }
-            }
-        }
-    }
     None
+}
+
+/// Registrable domain (eTLD+1 approximation) for a URL or bare host.
+///
+/// Independence must count distinct organisations, not distinct URLs or
+/// subdomains: `news.example.com` and `blog.example.com` are one origin. This
+/// strips the scheme/path, lowercases, removes `www.`, and reduces the host to
+/// its last label plus the public suffix when the suffix is a known multi-label
+/// one (for example `co.uk`); otherwise it keeps the last two labels. IP
+/// addresses and single-label hosts are returned as-is (lowercased), because
+/// there is no registrable domain to reduce them to.
+pub fn registrable_domain(url_or_host: &str) -> Option<String> {
+    let raw = url_or_host.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let host = match Url::parse(raw) {
+        Ok(parsed) => parsed.host_str().map(str::to_string),
+        Err(_) => {
+            // Bare host (possibly with port/path): strip everything after the
+            // first `/`, `?`, or `#`, then the port.
+            let cut = raw
+                .find(['/', '?', '#'])
+                .map(|index| &raw[..index])
+                .unwrap_or(raw);
+            Some(
+                cut.rsplit_once(':')
+                    .map(|(host, _)| host)
+                    .unwrap_or(cut)
+                    .to_string(),
+            )
+        }
+    }?;
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host);
+    }
+    let labels: Vec<&str> = host.split('.').filter(|label| !label.is_empty()).collect();
+    if labels.len() < 2 {
+        return Some(host);
+    }
+    let suffix_len = multi_label_suffix_len(&labels);
+    let keep = suffix_len + 1;
+    Some(labels[labels.len() - keep..].join("."))
+}
+
+/// Number of trailing labels forming a known multi-label public suffix.
+fn multi_label_suffix_len(labels: &[&str]) -> usize {
+    const MULTI_LABEL_SUFFIXES: &[&[&str]] = &[
+        &["co", "uk"],
+        &["org", "uk"],
+        &["ac", "uk"],
+        &["gov", "uk"],
+        &["co", "jp"],
+        &["or", "jp"],
+        &["ne", "jp"],
+        &["com", "au"],
+        &["net", "au"],
+        &["org", "au"],
+        &["co", "nz"],
+        &["com", "br"],
+        &["com", "cn"],
+        &["com", "hk"],
+        &["com", "sg"],
+        &["com", "tw"],
+        &["co", "in"],
+        &["com", "mx"],
+        &["co", "za"],
+        &["co", "kr"],
+    ];
+    if labels.len() < 3 {
+        return 1;
+    }
+    let last_two = &labels[labels.len() - 2..];
+    if MULTI_LABEL_SUFFIXES.contains(&last_two) {
+        2
+    } else {
+        1
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -748,5 +918,145 @@ mod tests {
 
         assert_eq!(scorecards[0].hypothesis, "expansion");
         assert_eq!(scorecards[0].assessment, "favored");
+    }
+
+    #[test]
+    fn independence_counts_distinct_domains_not_raw_sources() {
+        let now = Utc::now();
+        // Ten articles, but only two organisations (and three hosts, two of
+        // which belong to the same registrable domain).
+        let mut records = Vec::new();
+        for index in 0..6 {
+            records.push(
+                EvidenceRecord::new(0.8, EvidenceStance::Supports)
+                    .with_source_url(format!("https://news.example.com/article-{index}"))
+                    .with_observed_at(now - Duration::days(1)),
+            );
+        }
+        for index in 0..3 {
+            records.push(
+                EvidenceRecord::new(0.8, EvidenceStance::Supports)
+                    .with_source_url(format!("https://blog.example.com/post-{index}"))
+                    .with_observed_at(now - Duration::days(1)),
+            );
+        }
+        records.push(
+            EvidenceRecord::new(0.8, EvidenceStance::Supports)
+                .with_source_url("https://other.example.org/report")
+                .with_observed_at(now - Duration::days(1)),
+        );
+
+        let quality = assess_evidence_quality(&records, now);
+
+        assert_eq!(quality.source_count, 10);
+        assert_eq!(
+            quality.independent_source_count, 2,
+            "subdomains of one registrable domain are not independent corroboration"
+        );
+        assert!(quality.source_diversity < 0.25);
+    }
+
+    #[test]
+    fn registrable_domain_reduces_hosts_to_etld_plus_one() {
+        assert_eq!(
+            registrable_domain("https://news.example.com/story").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            registrable_domain("www.example.co.uk").as_deref(),
+            Some("example.co.uk")
+        );
+        assert_eq!(
+            registrable_domain("https://sub.example.com:8443/path").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            registrable_domain("http://192.168.0.1/x").as_deref(),
+            Some("192.168.0.1")
+        );
+        assert_eq!(
+            registrable_domain("localhost").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(registrable_domain(""), None);
+    }
+
+    #[test]
+    fn evidence_quality_reports_independent_dimensions() {
+        let now = Utc::now();
+        let quality = assess_evidence_quality(
+            &[
+                EvidenceRecord::new(0.9, EvidenceStance::Supports)
+                    .with_source_url("https://alpha.example.com/a")
+                    .with_source_type("news")
+                    .with_observed_at(now - Duration::days(1))
+                    .with_source_reliability(Some("High".to_string())),
+                EvidenceRecord::new(0.7, EvidenceStance::Contradicts)
+                    .with_source_url("https://beta.example.org/b")
+                    .with_source_type("filing")
+                    .with_observed_at(now - Duration::days(40)),
+                EvidenceRecord::new(0.6, EvidenceStance::Supports)
+                    .with_source_url("https://gamma.example.net/c")
+                    .with_source_type("news")
+                    .with_observed_at(now - Duration::days(2))
+                    .derived(),
+            ],
+            now,
+        );
+
+        assert_eq!(quality.source_count, 3);
+        assert_eq!(quality.independent_source_count, 3);
+        assert_eq!(quality.contradiction_count, 1);
+        assert_eq!(
+            quality.contradiction_count, quality.contradicting_count,
+            "alias fields must stay equal"
+        );
+        assert!(
+            (quality.evidence_freshness - quality.freshness_score).abs() < f64::EPSILON,
+            "alias fields must stay equal"
+        );
+        assert_eq!(quality.direct_evidence_count, 2);
+        assert_eq!(quality.derived_evidence_count, 1);
+        assert!((quality.evidence_completeness - 1.0).abs() < 1e-9);
+        assert!(quality.evidence_freshness > 0.0 && quality.evidence_freshness < 1.0);
+        assert_eq!(
+            quality
+                .source_reliability_distribution
+                .get("high")
+                .copied()
+                .unwrap_or_default(),
+            1
+        );
+        assert_eq!(
+            quality
+                .source_reliability_distribution
+                .get("unknown")
+                .copied()
+                .unwrap_or_default(),
+            2
+        );
+        assert_eq!(
+            quality
+                .source_reliability_distribution
+                .values()
+                .sum::<usize>(),
+            3
+        );
+    }
+
+    #[test]
+    fn evidence_completeness_requires_source_and_timestamp() {
+        let now = Utc::now();
+        let quality = assess_evidence_quality(
+            &[
+                EvidenceRecord::new(0.9, EvidenceStance::Supports)
+                    .with_source_url("https://alpha.example.com/a")
+                    .with_observed_at(now),
+                EvidenceRecord::new(0.9, EvidenceStance::Supports)
+                    .with_source_url("https://alpha.example.com/b"),
+            ],
+            now,
+        );
+        assert!((quality.evidence_completeness - 0.5).abs() < 1e-9);
     }
 }

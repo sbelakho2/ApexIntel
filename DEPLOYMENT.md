@@ -546,6 +546,12 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
+> **Warning-analysis context:** the grounded warning analysis (`POST /api/warnings/:id/analysis`)
+> sends a bounded evidence set plus a 2048-token JSON response. Keep
+> `--ctx-size` at **16384** (the shipped unit default) so the full evidence
+> prompt fits; if you must run a smaller window, lower
+> `APEX_ANALYSIS_MAX_PROMPT_CHARS` accordingly and expect fewer observations per run.
+
 ### 5.6 Enable All Services
 
 ```bash

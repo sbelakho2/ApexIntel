@@ -56,7 +56,8 @@ pub mod paths {
     pub const WARNINGS: &str = "/api/warnings";
     pub const WARNING_DETAIL: &str = "/api/warnings/:id";
     pub const WARNING_ACKNOWLEDGE: &str = "/api/warnings/:id/acknowledge";
-    pub const WARNING_ANALYZE: &str = "/api/warnings/:id/analyze";
+    pub const WARNING_ANALYSIS_ENQUEUE: &str = "/api/warnings/:id/analysis";
+    pub const WARNING_ANALYSIS_RUN: &str = "/api/warnings/:id/analysis/:run_id";
     pub const WARNING_BULK_DELETE: &str = "/api/warnings/bulk-delete";
     pub const INSIGHTS: &str = "/api/insights";
     pub const INSIGHT_DETAIL: &str = "/api/insights/:id";
@@ -279,8 +280,15 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         },
         EndpointDef {
             method: HttpMethod::Post,
-            path: paths::WARNING_ANALYZE,
-            description: "Trigger AI analysis of a warning",
+            path: paths::WARNING_ANALYSIS_ENQUEUE,
+            description: "Enqueue AI analysis of a warning (async run)",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::WARNING_ANALYSIS_RUN,
+            description: "Get warning analysis run status and result",
             auth_required: true,
             min_role: "analyst",
         },
@@ -1054,7 +1062,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 103);
+        assert_eq!(eps.len(), 104);
     }
 
     #[test]

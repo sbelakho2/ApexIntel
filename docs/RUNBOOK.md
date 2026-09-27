@@ -454,7 +454,7 @@ ExecStart=/opt/apexintel/llama-server \
   --host 127.0.0.1 \
   --port 8081 \
   --parallel 4 \           # 4 concurrent requests (needs ~12GB VRAM)
-  --ctx-size 4096 \        # context window
+  --ctx-size 4096 \        # context window (use 16384 for full warning analysis)
   --batch-size 512 \       # batch processing
   --threads 8              # CPU threads for prompt processing
 ```
