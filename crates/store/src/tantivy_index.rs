@@ -179,13 +179,22 @@ impl SearchIndex {
 
     /// Last successful commit checkpoint, if any was recorded.
     ///
-    /// A `None` result means this index has never recorded a commit — an empty
-    /// or freshly recreated index. Readiness must not treat that as healthy.
+    /// For on-disk indexes the checkpoint file is the source of truth and is
+    /// re-read on every call, so the API observes commits recorded by the
+    /// worker's indexer without restarting. A `None` result means this index
+    /// has never recorded a commit — an empty or freshly recreated index.
+    /// Readiness must not treat that as healthy.
     pub fn checkpoint(&self) -> Option<IndexCheckpoint> {
-        match self.checkpoint.lock() {
-            Ok(guard) => guard.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
+        let mut guard = match self.checkpoint.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(path) = self.checkpoint_path.as_deref() {
+            let fresh = read_checkpoint_file(path);
+            *guard = fresh.clone();
+            return fresh;
         }
+        guard.clone()
     }
 
     /// Persist a commit checkpoint after a successful `IndexWriter::commit`.
@@ -475,6 +484,26 @@ mod tests {
 
         let reopened = SearchIndex::open(dir.path()).unwrap();
         assert_eq!(reopened.checkpoint().as_ref(), Some(&checkpoint));
+    }
+
+    #[test]
+    fn checkpoint_is_observed_across_independent_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = SearchIndex::open(dir.path()).unwrap();
+        let reader = SearchIndex::open(dir.path()).unwrap();
+
+        let checkpoint = IndexCheckpoint {
+            last_commit_at: Utc::now(),
+            high_water_ts: Some(Utc::now()),
+            indexed_documents: 3,
+        };
+        writer.record_checkpoint(&checkpoint).unwrap();
+
+        assert_eq!(
+            reader.checkpoint().as_ref(),
+            Some(&checkpoint),
+            "a reader handle must observe commits recorded by another process"
+        );
     }
 
     #[test]

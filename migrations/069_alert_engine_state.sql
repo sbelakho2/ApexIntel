@@ -38,3 +38,11 @@ BEGIN
         GRANT SELECT, INSERT, UPDATE, DELETE ON alert_engine_state TO apexintel;
     END IF;
 END $$;
+
+-- Readiness probes read the outbox publisher backlog on every health poll, and
+-- `event_outbox` is append-only. These partial indexes keep both backlog
+-- queries bounded: pending rows by the existing 061 index, and the last
+-- successful publish by this one, so `MAX(published_at)` never scans history.
+CREATE INDEX IF NOT EXISTS idx_event_outbox_published_at
+    ON event_outbox (published_at)
+    WHERE published_at IS NOT NULL;

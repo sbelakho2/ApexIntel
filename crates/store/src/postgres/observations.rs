@@ -123,6 +123,33 @@ impl PgStore {
         }
     }
 
+    /// Observations to feed the search index, oldest first.
+    ///
+    /// `after` is the index's committed high-water mark: the query re-reads the
+    /// boundary timestamp (`>=`) so a batch boundary can never skip
+    /// observations; the indexer deletes by document id before inserting, so
+    /// re-reading the boundary is idempotent. `None` starts from the beginning.
+    pub async fn observations_for_indexing(
+        &self,
+        after: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<ObservationRow>> {
+        let limit = limit.clamp(1, 5_000);
+        let rows = sqlx::query_as::<_, ObservationRow>(
+            "SELECT id, observation_type, entity_id, entity_type, ts_utc, value, provenance, \
+                    confidence, created_at \
+               FROM observations \
+              WHERE $1::timestamptz IS NULL OR ts_utc >= $1 \
+              ORDER BY ts_utc ASC, id ASC \
+              LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn count_observations(
         &self,
         entity_id: Option<Uuid>,

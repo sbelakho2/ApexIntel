@@ -67,38 +67,26 @@ fn alert_rules_path_from_env() -> String {
     std::env::var("ALERT_RULES_PATH").unwrap_or_else(|_| DEFAULT_ALERT_RULES_PATH.to_string())
 }
 
-/// Load the alert rules, if present. Missing/invalid rules must not stop alert
-/// delivery: the base warning alert still publishes.
-pub fn load_rules_evaluator() -> Option<Arc<AlertEvaluator>> {
-    let path = alert_rules_path_from_env();
-    match AlertEvaluator::load_from_path(&path) {
-        Ok(evaluator) => {
-            info!(rules_path = %path, "outbox publisher: alert rules loaded");
-            Some(Arc::new(evaluator))
-        }
-        Err(e) => {
-            warn!(
-                rules_path = %path,
-                error = %e,
-                "outbox publisher: alert rules unavailable; publishing base alert events only"
-            );
-            None
-        }
-    }
-}
-
-/// Persist a failed reload so readiness can see *why* the engine is degraded
-/// (rather than merely that no state row exists).
-async fn record_engine_failure(store: &PgStore, path: &str, error: &str) {
+/// Persist engine state, preserving the loaded evaluator's identity.
+///
+/// `problem = Some(..)` records a failed/stale reload (`last_reload_success =
+/// false`) while still publishing the loaded engine's rule count and hash, so a
+/// failing refresh never erases what the running engine actually holds.
+async fn persist_engine_state(
+    store: &PgStore,
+    path: &str,
+    evaluator: Option<&AlertEvaluator>,
+    problem: Option<String>,
+) {
     let record = AlertEngineStateRecord {
         rules_path: path.to_string(),
-        rule_count: 0,
-        config_hash: None,
-        last_reload_success: false,
-        last_reload_error: Some(error.to_string()),
+        rule_count: evaluator.map(|e| e.rule_count() as i32).unwrap_or(0),
+        config_hash: evaluator.map(|e| e.config_hash().to_string()),
+        last_reload_success: problem.is_none(),
+        last_reload_error: problem,
     };
-    if let Err(persist_error) = store.record_alert_engine_state(&record).await {
-        warn!(error = %persist_error, "failed to persist alert-engine failure state");
+    if let Err(error) = store.record_alert_engine_state(&record).await {
+        warn!(error = %error, "failed to persist alert-engine state");
     }
 }
 
@@ -106,14 +94,22 @@ async fn record_engine_failure(store: &PgStore, path: &str, error: &str) {
 ///
 /// This is the worker's reload check: run on the heartbeat cadence so a stale
 /// state row genuinely means the worker stopped refreshing (not that it simply
-/// has not restarted). Parse failures are recorded and returned as errors.
-pub async fn refresh_alert_engine_state(store: &PgStore) -> anyhow::Result<AlertEngineStateRecord> {
+/// has not restarted). Crucially, the published state describes the *loaded*
+/// evaluator, not the file: a rules file edited after startup is recorded as a
+/// failed reload (restart required) instead of reporting rules the running
+/// engine does not evaluate.
+pub async fn refresh_alert_engine_state(
+    store: &PgStore,
+    evaluator: Option<&Arc<AlertEvaluator>>,
+) -> anyhow::Result<AlertEngineStateRecord> {
     let path = alert_rules_path_from_env();
+    let loaded = evaluator.map(|arc| arc.as_ref());
+
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) => {
             let message = format!("failed to read alert rules: {error}");
-            record_engine_failure(store, &path, &message).await;
+            persist_engine_state(store, &path, loaded, Some(message.clone())).await;
             anyhow::bail!("{message}");
         }
     };
@@ -121,46 +117,50 @@ pub async fn refresh_alert_engine_state(store: &PgStore) -> anyhow::Result<Alert
         Ok(config) => config,
         Err(error) => {
             let message = format!("failed to parse alert rules: {error}");
-            record_engine_failure(store, &path, &message).await;
+            persist_engine_state(store, &path, loaded, Some(message.clone())).await;
             anyhow::bail!("{message}");
         }
     };
     if config.rules.is_empty() {
         let message = "alert rules file contains no rules".to_string();
-        record_engine_failure(store, &path, &message).await;
+        persist_engine_state(store, &path, loaded, Some(message.clone())).await;
         anyhow::bail!("{message}");
     }
 
-    let record = AlertEngineStateRecord {
-        rules_path: path.clone(),
-        rule_count: config.rules.len() as i32,
-        config_hash: Some(config_hash(&content)),
+    let Some(evaluator) = loaded else {
+        let message =
+            "alert rules file is valid but no evaluator is loaded; restart the worker".to_string();
+        persist_engine_state(store, &path, None, Some(message.clone())).await;
+        anyhow::bail!("{message}");
+    };
+
+    if evaluator.config_hash() != config_hash(&content) {
+        let message =
+            "alert rules file changed since startup; restart the worker to load it".to_string();
+        persist_engine_state(store, &path, Some(evaluator), Some(message.clone())).await;
+        anyhow::bail!("{message}");
+    }
+
+    persist_engine_state(store, &path, Some(evaluator), None).await;
+    Ok(AlertEngineStateRecord {
+        rules_path: path,
+        rule_count: evaluator.rule_count() as i32,
+        config_hash: Some(evaluator.config_hash().to_string()),
         last_reload_success: true,
         last_reload_error: None,
-    };
-    store.record_alert_engine_state(&record).await?;
-    Ok(record)
+    })
 }
 
 /// Load the rules evaluator and publish its state for readiness probes.
 ///
-/// Unlike [`load_rules_evaluator`], this variant records both success and
-/// failure to `alert_engine_state`, so `/api/health/ready` can distinguish a
-/// loaded engine from a missing/unparseable rules file.
+/// Records both success and failure to `alert_engine_state`, so
+/// `/api/health/ready` can distinguish a loaded engine from a
+/// missing/unparseable rules file.
 pub async fn load_rules_evaluator_with_state(store: &PgStore) -> Option<Arc<AlertEvaluator>> {
     let path = alert_rules_path_from_env();
     match AlertEvaluator::load_from_path(&path) {
         Ok(evaluator) => {
-            let record = AlertEngineStateRecord {
-                rules_path: path.clone(),
-                rule_count: evaluator.rule_count() as i32,
-                config_hash: Some(evaluator.config_hash().to_string()),
-                last_reload_success: true,
-                last_reload_error: None,
-            };
-            if let Err(error) = store.record_alert_engine_state(&record).await {
-                warn!(error = %error, "failed to persist alert-engine state");
-            }
+            persist_engine_state(store, &path, Some(&evaluator), None).await;
             info!(
                 rules_path = %path,
                 rules = evaluator.rule_count(),
@@ -170,7 +170,7 @@ pub async fn load_rules_evaluator_with_state(store: &PgStore) -> Option<Arc<Aler
             Some(Arc::new(evaluator))
         }
         Err(e) => {
-            record_engine_failure(store, &path, &e.to_string()).await;
+            persist_engine_state(store, &path, None, Some(e.to_string())).await;
             warn!(
                 rules_path = %path,
                 error = %e,

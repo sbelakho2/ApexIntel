@@ -180,24 +180,38 @@ impl PgStore {
         Ok(present)
     }
 
-    /// Measure the publisher backlog in one indexed aggregate query.
+    /// Measure the publisher backlog with bounded, index-backed queries.
+    ///
+    /// The pending aggregates filter on `published_at IS NULL` so the partial
+    /// `idx_event_outbox_unpublished` index applies, and the last publish is a
+    /// `MAX` over the partial `idx_event_outbox_published_at` index. Health
+    /// probes poll this frequently, and the table is append-only, so neither
+    /// query may scan published history.
     pub async fn outbox_backlog(&self) -> Result<OutboxBacklog> {
-        let row = sqlx::query_as::<_, (i64, i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>(
-            r#"SELECT
-                   COUNT(*) FILTER (WHERE published_at IS NULL AND attempts < $1),
-                   COUNT(*) FILTER (WHERE published_at IS NULL AND attempts >= $1),
-                   MIN(created_at) FILTER (WHERE published_at IS NULL),
-                   MAX(published_at)
-                 FROM event_outbox"#,
+        let (pending, exhausted, oldest_pending_at) =
+            sqlx::query_as::<_, (i64, i64, Option<DateTime<Utc>>)>(
+                r#"SELECT
+                       COUNT(*) FILTER (WHERE attempts < $1),
+                       COUNT(*) FILTER (WHERE attempts >= $1),
+                       MIN(created_at)
+                     FROM event_outbox
+                    WHERE published_at IS NULL"#,
+            )
+            .bind(MAX_OUTBOX_ATTEMPTS)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let last_published_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT MAX(published_at) FROM event_outbox WHERE published_at IS NOT NULL",
         )
-        .bind(MAX_OUTBOX_ATTEMPTS)
         .fetch_one(&self.pool)
         .await?;
+
         Ok(OutboxBacklog {
-            pending: row.0,
-            exhausted: row.1,
-            oldest_pending_at: row.2,
-            last_published_at: row.3,
+            pending,
+            exhausted,
+            oldest_pending_at,
+            last_published_at,
         })
     }
 }

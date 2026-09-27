@@ -5,6 +5,7 @@ mod dark_web;
 mod insights;
 mod intelligence;
 mod nightly;
+mod observation_index;
 mod osint_enrichment;
 mod poi;
 mod psych_profile;
@@ -153,6 +154,7 @@ pub(crate) async fn execute_job(
         JobKind::EmbeddingReindex => {
             apex_worker::embedding_indexer::run_embedding_reindex(kind, store).await
         }
+        JobKind::ObservationIndex => observation_index::run_observation_index(store).await,
         JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store, &ctx.ingress).await,
         JobKind::TriageProcessing => triage::run_triage_processing(kind, store).await,
         JobKind::TrendAggregation => {

@@ -527,6 +527,10 @@ async fn main() -> Result<()> {
     // also publishes the engine state (rule count, config hash, reload result)
     // that readiness probes verify.
     let rules_evaluator = alert_pipeline::load_rules_evaluator_with_state(store.as_ref()).await;
+    // Keep a handle for the heartbeat's reload check: it verifies the loaded
+    // engine still matches the rules file instead of re-reading the file as if
+    // it were the engine.
+    let heartbeat_alert_evaluator = rules_evaluator.clone();
     let ingress =
         Arc::new(intelligence_ingress::build(Arc::clone(&store), rules_evaluator.clone()).await);
     tracing::info!("intelligence ingress initialized");
@@ -601,9 +605,15 @@ async fn main() -> Result<()> {
                 }
                 // Refresh the alert-engine state on the liveness cadence:
                 // readiness requires a recent, successful rules reload, and a
-                // stale row then means this task stopped refreshing it.
-                if let Err(error) =
-                    alert_pipeline::refresh_alert_engine_state(&heartbeat_store).await
+                // stale row then means this task stopped refreshing it. The
+                // check compares the loaded evaluator's hash with the file, so
+                // an edited rules file is reported as a pending restart rather
+                // than as loaded rules.
+                if let Err(error) = alert_pipeline::refresh_alert_engine_state(
+                    &heartbeat_store,
+                    heartbeat_alert_evaluator.as_ref(),
+                )
+                .await
                 {
                     tracing::warn!(error = %error, "alert-engine state refresh failed");
                 }

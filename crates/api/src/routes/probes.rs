@@ -297,7 +297,15 @@ pub struct LlmProbeTarget {
 /// with a single-token completion so "reachable but wrong model" still fails.
 pub async fn probe_llm_endpoint(target: &LlmProbeTarget) -> CapabilityStatus {
     let timeout = Duration::from_secs(target.timeout_secs.max(1));
-    let client = match reqwest::Client::builder().timeout(timeout).build() {
+    // The configured endpoint is trusted infrastructure, but its *responses*
+    // are not: refuse redirects so a 3xx can never steer this server into
+    // fetching arbitrary internal URLs (SSRF), and 307/308 cannot replay the
+    // completion POST to a redirect target.
+    let client = match reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
         Ok(client) => client,
         Err(error) => {
             return CapabilityStatus::new(
@@ -610,6 +618,10 @@ pub trait EmbeddingGenerator: Send + Sync {
 /// Storage + nearest-neighbour half of the embedding canary.
 #[async_trait]
 pub trait EmbeddingCanaryStore: Send + Sync {
+    /// Remove canary rows left behind by a previous crashed, timed-out, or
+    /// failed probe. Called before every round trip so leaks are bounded by
+    /// the probe TTL instead of accumulating forever.
+    async fn sweep_canaries(&self) -> anyhow::Result<u64>;
     async fn store_canary(
         &self,
         canary_id: &str,
@@ -642,11 +654,16 @@ pub struct EmbeddingRoundTrip {
 }
 
 /// Run the full embedding round trip and clean the canary row up afterwards.
+///
+/// A stale sweep runs first: if a previous attempt timed out between insert
+/// and delete (or the delete failed), its row is removed here instead of
+/// accumulating in the `embeddings` table.
 pub async fn embedding_round_trip(
     generator: &dyn EmbeddingGenerator,
     store: &dyn EmbeddingCanaryStore,
 ) -> anyhow::Result<EmbeddingRoundTrip> {
     let started = Instant::now();
+    store.sweep_canaries().await?;
     let canary_id = format!("readiness-canary-{}", uuid::Uuid::new_v4());
     let canary_text = format!("apex readiness embedding canary {canary_id}");
 
@@ -758,6 +775,14 @@ impl EmbeddingGenerator for apex_llm::embeddings::EmbeddingClient {
 
 #[async_trait]
 impl EmbeddingCanaryStore for apex_store::postgres::PgStore {
+    async fn sweep_canaries(&self) -> anyhow::Result<u64> {
+        let result = sqlx::query("DELETE FROM embeddings WHERE entity_type = $1")
+            .bind(CANARY_ENTITY_TYPE)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     async fn store_canary(
         &self,
         canary_id: &str,
@@ -1155,6 +1180,46 @@ mod tests {
         assert_eq!(status.status, "degraded");
     }
 
+    #[tokio::test]
+    async fn llm_probe_does_not_follow_redirects() {
+        let internal_hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&internal_hits);
+        let internal_url = spawn_router(Router::new().route(
+            "/internal-metadata",
+            get(move || {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    "secret"
+                }
+            }),
+        ))
+        .await;
+
+        let redirect_to = format!("{internal_url}/internal-metadata");
+        let base_url = spawn_router(Router::new().route(
+            "/health",
+            get(move || {
+                let location = redirect_to.clone();
+                async move {
+                    (
+                        axum::http::StatusCode::FOUND,
+                        [(axum::http::header::LOCATION, location)],
+                    )
+                }
+            }),
+        ))
+        .await;
+
+        let status = probe_llm_endpoint(&llm_target(base_url)).await;
+        assert_ne!(status.status, "ok", "a redirect must not count as healthy");
+        assert_eq!(
+            internal_hits.load(Ordering::SeqCst),
+            0,
+            "the probe must never follow a redirect to another host"
+        );
+    }
+
     #[cfg(feature = "llm")]
     #[tokio::test]
     async fn llm_probe_is_cached_within_ttl() {
@@ -1381,6 +1446,13 @@ mod tests {
 
     #[async_trait]
     impl EmbeddingCanaryStore for InMemoryCanaryStore {
+        async fn sweep_canaries(&self) -> anyhow::Result<u64> {
+            let mut rows = self.rows.lock().expect("canary store lock");
+            let removed = rows.len() as u64;
+            rows.clear();
+            Ok(removed)
+        }
+
         async fn store_canary(
             &self,
             canary_id: &str,
@@ -1467,6 +1539,31 @@ mod tests {
         assert!(
             store.rows.lock().expect("canary lock").is_empty(),
             "canary row must be cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn embedding_canary_sweeps_rows_left_by_a_previous_probe() {
+        let generator = FakeGenerator {
+            vector: Ok(vec![1.0, 0.0, 0.0]),
+        };
+        let store = InMemoryCanaryStore::default();
+        store
+            .rows
+            .lock()
+            .expect("canary lock")
+            .insert("readiness-canary-stale".to_string(), vec![1.0, 0.0, 0.0]);
+
+        let receipt = embedding_round_trip(&generator, &store)
+            .await
+            .expect("round trip succeeds");
+        assert_eq!(
+            receipt.rank, 1,
+            "stale row must not shadow the fresh canary"
+        );
+        assert!(
+            store.rows.lock().expect("canary lock").is_empty(),
+            "stale canary rows must be swept"
         );
     }
 

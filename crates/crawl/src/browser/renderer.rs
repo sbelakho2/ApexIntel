@@ -420,10 +420,7 @@ impl PersistentChromiumBrowser {
             .context("acquiring browser concurrency slot")?;
 
         let started = Instant::now();
-        let encoded: String =
-            url::form_urlencoded::byte_serialize(SELF_TEST_HTML.as_bytes()).collect();
-        let fixture_url = Url::parse(&format!("data:text/html;charset=utf-8,{encoded}"))
-            .context("building browser self-test fixture URL")?;
+        let fixture_url = self_test_fixture_url()?;
         let policy = RenderPolicy {
             max_scroll_steps: 0,
             ..self.config.policy()
@@ -618,6 +615,17 @@ pub fn persistent_browser_from_env() -> Result<Option<PersistentChromiumBrowser>
     Ok(Some(PersistentChromiumBrowser::new(
         BrowserConfig::from_env()?,
     )))
+}
+
+/// Build the self-test fixture as a `data:` URL.
+///
+/// The payload must be **percent**-encoded: `data:` URLs only percent-decode,
+/// so a form encoder's `+`-for-space substitution would delimit HTML tags and
+/// break the fixture script. `urlencoding` emits `%20`, which round-trips.
+fn self_test_fixture_url() -> Result<Url> {
+    let encoded = urlencoding::encode(SELF_TEST_HTML);
+    Url::parse(&format!("data:text/html;charset=utf-8,{encoded}"))
+        .context("building browser self-test fixture URL")
 }
 
 /// Whether a render failure requires discarding the persistent process.
@@ -909,6 +917,27 @@ mod tests {
         assert!(SELF_TEST_HTML.contains("document.getElementById('apex-probe')"));
         assert!(SELF_TEST_HTML.contains("String(6 * 7)"));
         assert_eq!(SELF_TEST_MARKER, "rendered-42");
+    }
+
+    #[test]
+    fn self_test_fixture_url_percent_encodes_spaces_and_round_trips() {
+        let encoded = urlencoding::encode(SELF_TEST_HTML);
+        assert!(
+            !encoded.contains('+'),
+            "form-style '+' spaces corrupt data: URL payloads"
+        );
+        assert!(encoded.contains("%20"), "spaces must be %20-encoded");
+        let decoded = urlencoding::decode(&encoded).expect("payload decodes");
+        assert_eq!(decoded.as_ref(), SELF_TEST_HTML);
+
+        let url = self_test_fixture_url().expect("fixture url");
+        assert!(url.as_str().starts_with("data:text/html;charset=utf-8,"));
+        assert!(url.as_str().contains("%20"));
+        assert!(
+            url.as_str().contains("apex-probe"),
+            "the fixture marker must survive encoding: {}",
+            url.as_str()
+        );
     }
 
     #[tokio::test]
