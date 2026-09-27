@@ -335,7 +335,7 @@ async fn find_app_user_by_username_refuses_ambiguous_rows() {
         .unwrap();
     run_migration_sql(
         &url,
-        include_str!("../../../migrations/070_app_users_unique_username.sql"),
+        include_str!("../../../migrations/072_app_users_unique_username.sql"),
     )
     .await
     .expect("restore the unique login-name index");
@@ -347,7 +347,7 @@ async fn find_app_user_by_username_refuses_ambiguous_rows() {
 async fn migration_070_refuses_ambiguity_and_renames_resolvable_duplicates() {
     let url = database_url();
     let pool = migrated_pool(&url).await;
-    let migration_sql = include_str!("../../../migrations/070_app_users_unique_username.sql");
+    let migration_sql = include_str!("../../../migrations/072_app_users_unique_username.sql");
     let suffix = Uuid::new_v4();
 
     // Stage a credential row plus two non-credential duplicates: the
@@ -513,7 +513,7 @@ async fn migration_071_downgrades_unknown_roles_and_enforces_check() {
 
     run_migration_sql(
         &url,
-        include_str!("../../../migrations/071_app_users_role_check.sql"),
+        include_str!("../../../migrations/073_app_users_role_check.sql"),
     )
     .await
     .expect("migration 071 applies");

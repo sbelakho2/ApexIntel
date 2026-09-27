@@ -120,13 +120,21 @@ async fn cleanup(admin: &PgPool, users: &[&str]) {
 /// Migration 059 gives `user_preferences`/`watchlists` an
 /// `app_users(id) ON DELETE CASCADE` foreign key, so direct inserts in this
 /// test must have a canonical identity row first.
+///
+/// The rows carry a password hash on purpose: `find_app_user_by_username` is
+/// credential-scoped (it is the login lookup), and migration 072's unique
+/// index covers credential-bearing rows only. A bare identity row without
+/// credentials is not a login principal and must not resolve as one.
 async fn seed_app_users(admin: &PgPool, users: &[&str]) {
+    // Syntactically valid Argon2id PHC string; never used to log in here.
+    const SEED_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2VlZC1zYWx0LXNlZWQ$0000000000000000000000000000000000000000000";
     for user in users {
         sqlx::query(
-            "INSERT INTO app_users (id, username, display_name, role) \
-             VALUES ($1, $1, $1, 'analyst') ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO app_users (id, username, display_name, role, password_hash) \
+             VALUES ($1, $1, $1, 'analyst', $2) ON CONFLICT (id) DO NOTHING",
         )
         .bind(user)
+        .bind(SEED_HASH)
         .execute(admin)
         .await
         .unwrap();

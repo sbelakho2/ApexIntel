@@ -196,7 +196,7 @@ async fn unknown_role_fails_authentication_and_is_reported() {
         .expect("cleanup unknown-role row");
     // Restore the constraint for the shared test database.
     sqlx::raw_sql(include_str!(
-        "../../../migrations/071_app_users_role_check.sql"
+        "../../../migrations/073_app_users_role_check.sql"
     ))
     .execute(&pool)
     .await
