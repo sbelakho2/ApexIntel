@@ -1475,6 +1475,7 @@ impl WarningAnalysisPanel {
         let actions = claim_lines(&output.actions);
         let quality = &output.evidence_quality;
         let distribution = quality
+            .corpus
             .source_reliability_distribution
             .iter()
             .map(|(tier, count)| format!("{tier} {count}"))
@@ -1496,12 +1497,14 @@ impl WarningAnalysisPanel {
             output.prompt_version,
         );
         panel.quality_line = format!(
-            "Evidence quality: {} ({:.2}) · {} evidence records · {} independent domain(s) · {} contradiction(s)",
-            quality.quality_label,
-            quality.overall_score,
-            quality.source_count,
-            quality.independent_source_count,
-            quality.contradiction_count,
+            "Evidence quality: {} ({:.2}) · {} evidence records · {} independent domain(s) · {} contradiction(s) · measured {}/{} dimension(s)",
+            quality.quality_label(),
+            quality.composite_score(),
+            quality.corpus.evidence_count,
+            quality.corpus.independent_origin_count,
+            quality.claim.contradicting_count,
+            quality.completeness.measured_dimensions,
+            quality.completeness.total_dimensions,
         );
         panel.reliability_line = if distribution.is_empty() {
             "Source reliability tiers: no measured source quality for these domains.".to_string()
@@ -1516,12 +1519,13 @@ impl WarningAnalysisPanel {
             output.insight_count_available,
         );
         panel.provenance_line = format!(
-            "Direct evidence: {} · derived evidence: {} · freshness {:.2} · completeness {:.2} · domain diversity {:.2}",
-            quality.direct_evidence_count,
-            quality.derived_evidence_count,
-            quality.evidence_freshness,
-            quality.evidence_completeness,
-            quality.source_diversity,
+            "Direct evidence: {} · derived evidence: {} · freshness {} · parser confidence {} · completeness {:.2} · domain diversity {:.2}",
+            quality.corpus.direct_evidence_count,
+            quality.corpus.derived_evidence_count,
+            quality.corpus.freshness.display_fixed(2),
+            quality.corpus.parser_confidence.display_fixed(2),
+            quality.corpus.provenance_completeness,
+            quality.corpus.independence_ratio,
         );
         panel.confidence_pct = (output.warning_confidence * 100.0).round() as i64;
         panel.claims = claims;

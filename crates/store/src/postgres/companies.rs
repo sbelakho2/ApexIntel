@@ -1,9 +1,9 @@
 use super::*;
 use apex_core::analysis::{
-    assess_evidence_quality, compare_temporal_windows, fuse_weak_signals,
-    score_competing_hypotheses, source_group_from_url, EvidenceRecord, EvidenceStance,
+    compare_temporal_windows, fuse_weak_signals, score_competing_hypotheses, source_group_from_url,
     HypothesisInput, SignalFrame,
 };
+use apex_core::evidence_quality::{assess_evidence_quality, EvidenceItem, EvidenceStance};
 
 fn normalize_company_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
@@ -50,11 +50,11 @@ fn build_company_dossier_analysis(
     recent_changes: &[CompanyChangeRow],
 ) -> DossierAnalysis {
     let now = Utc::now();
-    let mut evidence_records: Vec<EvidenceRecord> = certifications
+    let mut evidence_records: Vec<EvidenceItem> = certifications
         .iter()
         .filter_map(|cert| {
             cert.evidence_url.as_ref().map(|url| {
-                let mut record = EvidenceRecord::new(
+                let mut record = EvidenceItem::new(
                     cert.status
                         .as_deref()
                         .map(|status| {
@@ -83,8 +83,10 @@ fn build_company_dossier_analysis(
             .unwrap_or_default()
             .into_iter()
             .map(move |url| {
+                // Missing confidence stays missing: the record still counts,
+                // but no synthesized 0.6 weight is attributed to it.
                 let mut record =
-                    EvidenceRecord::new(entry.confidence.unwrap_or(0.6), EvidenceStance::Supports)
+                    EvidenceItem::new_optional(entry.confidence, EvidenceStance::Supports)
                         .with_source_url(url)
                         .with_source_type(entry.category.clone());
                 if let Some(created_at) = entry.created_at {
@@ -96,7 +98,7 @@ fn build_company_dossier_analysis(
     evidence_records.extend(recent_changes.iter().filter_map(|change| {
         change.source_url.as_ref().map(|url| {
             let mut record =
-                EvidenceRecord::new(change.confidence.unwrap_or(0.6), EvidenceStance::Supports)
+                EvidenceItem::new_optional(change.confidence, EvidenceStance::Supports)
                     .with_source_url(url.clone())
                     .with_source_type(change.change_type.clone());
             if let Some(detected_at) = change.detected_at.or(change.created_at) {
@@ -105,7 +107,7 @@ fn build_company_dossier_analysis(
             record
         })
     }));
-    let evidence_quality = assess_evidence_quality(&evidence_records, now);
+    let evidence_quality = assess_evidence_quality(&evidence_records, &[], now);
 
     let temporal_delta = company_temporal_delta(recent_changes, dossier_entries);
 
@@ -176,9 +178,9 @@ fn build_company_dossier_analysis(
 
     let summary = format!(
         "Evidence posture is {} ({:.2}) with {} independent sources. Activity is {} and {} correlated weak-signal cluster(s) remain under watch.",
-        evidence_quality.quality_label,
-        evidence_quality.overall_score,
-        evidence_quality.independent_source_count,
+        evidence_quality.quality_label(),
+        evidence_quality.composite_score(),
+        evidence_quality.corpus.independent_origin_count,
         temporal_delta.label,
         correlated_signals.len(),
     );

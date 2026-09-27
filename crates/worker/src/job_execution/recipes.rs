@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use apex_core::analysis::{assess_evidence_quality, EvidenceRecord, EvidenceStance};
+use apex_core::evidence_quality::{assess_evidence_quality, EvidenceItem, EvidenceStance};
 use apex_core::quality_score::{build_source_reliability_stats, SourceReliability};
 #[cfg(feature = "llm")]
 use apex_insights::insight_feedback::{
@@ -27,14 +27,14 @@ fn evidence_quality_from_signals(
     source_reliability_scores: &HashMap<String, f64>,
 ) -> f64 {
     let now = Utc::now();
-    let records: Vec<EvidenceRecord> = evidence_signals
+    let records: Vec<EvidenceItem> = evidence_signals
         .iter()
         .map(|signal| {
             let relevance = blended_evidence_relevance(
                 signal.relevance_score as f64,
                 source_reliability_for_url(&signal.source_url, source_reliability_scores),
             );
-            let mut record = EvidenceRecord::new(relevance, EvidenceStance::Supports)
+            let mut record = EvidenceItem::new(relevance, EvidenceStance::Supports)
                 .with_source_url(signal.source_url.clone())
                 .with_source_type(signal.signal_type.clone());
             if let Some(date_context) = signal.date_context.as_deref() {
@@ -45,7 +45,7 @@ fn evidence_quality_from_signals(
             record
         })
         .collect();
-    assess_evidence_quality(&records, now).overall_score
+    assess_evidence_quality(&records, &[], now).composite_score()
 }
 
 #[cfg(feature = "llm")]
@@ -220,17 +220,17 @@ fn evidence_quality_from_urls(
     source_reliability_scores: &HashMap<String, f64>,
 ) -> f64 {
     let now = Utc::now();
-    let records: Vec<EvidenceRecord> = urls
+    let records: Vec<EvidenceItem> = urls
         .iter()
         .map(|url| {
             let relevance = blended_evidence_relevance(
                 0.6,
                 source_reliability_for_url(url, source_reliability_scores),
             );
-            EvidenceRecord::new(relevance, EvidenceStance::Supports).with_source_url(url.clone())
+            EvidenceItem::new(relevance, EvidenceStance::Supports).with_source_url(url.clone())
         })
         .collect();
-    assess_evidence_quality(&records, now).overall_score
+    assess_evidence_quality(&records, &[], now).composite_score()
 }
 
 fn normalized_source_domain(value: &str) -> Option<String> {

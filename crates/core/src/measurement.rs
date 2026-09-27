@@ -50,6 +50,14 @@ pub enum Measurement<T> {
     InsufficientEvidence,
 }
 
+impl<T> Default for Measurement<T> {
+    /// Defaults to [`Measurement::NotMeasured`]: a defaulted value must never
+    /// imply that a measurement happened.
+    fn default() -> Self {
+        Self::NotMeasured
+    }
+}
+
 impl<T> Measurement<T> {
     /// Wrap a real value. A genuine zero must use this variant, not a default.
     pub const fn measured(value: T) -> Self {
@@ -160,6 +168,14 @@ mod tests {
             assert_eq!(state.value_copied(), None);
             assert_ne!(state, zero);
         }
+    }
+
+    #[test]
+    fn default_is_not_measured_never_a_midpoint() {
+        let default: Measurement<f64> = Measurement::default();
+        assert_eq!(default, Measurement::NotMeasured);
+        assert!(!default.is_measured());
+        assert_eq!(default.value_copied(), None);
     }
 
     #[test]

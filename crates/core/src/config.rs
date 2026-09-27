@@ -1,6 +1,7 @@
 use crate::env;
 use crate::errors::{ApexError, Result};
 use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 
 /// Global application configuration, loaded from environment variables.
 ///
@@ -231,6 +232,117 @@ impl AppConfig {
     }
 }
 
+/// One malformed configuration value.
+///
+/// Resolution code collects these instead of silently substituting a default:
+/// an operator who typo'd `APEX_COVERAGE_PROCUREMENT_FETCH_SUCCESS_PCT=banana`
+/// must see a configuration error, not a readiness verdict computed from the
+/// fallback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigError {
+    /// Environment variable (or field path) that failed to parse.
+    pub variable: String,
+    /// Raw value as supplied by the environment.
+    pub value: String,
+    /// Short description of the accepted values.
+    pub expected: String,
+}
+
+impl ConfigError {
+    pub fn new(
+        variable: impl Into<String>,
+        value: impl Into<String>,
+        expected: impl Into<String>,
+    ) -> Self {
+        Self {
+            variable: variable.into(),
+            value: value.into(),
+            expected: expected.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}={:?} is invalid; expected {}",
+            self.variable, self.value, self.expected
+        )
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// Collected configuration errors from one resolution pass.
+///
+/// Every threshold resolver keeps its defaults for absent variables, but a
+/// *present and malformed* value is recorded here and the resolver returns
+/// `Err(ConfigErrors)` so startup (or the readiness probe) fails loudly instead
+/// of applying a silent default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ConfigErrors {
+    pub errors: Vec<ConfigError>,
+}
+
+impl ConfigErrors {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A single-error set, for resolvers that parse one variable at a time.
+    pub fn single(
+        variable: impl Into<String>,
+        value: impl Into<String>,
+        expected: impl Into<String>,
+    ) -> Self {
+        let mut errors = Self::new();
+        errors.push(variable, value, expected);
+        errors
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    pub fn push(
+        &mut self,
+        variable: impl Into<String>,
+        value: impl Into<String>,
+        expected: impl Into<String>,
+    ) {
+        self.errors
+            .push(ConfigError::new(variable, value, expected));
+    }
+
+    /// Collect errors from `other` into `self`.
+    pub fn extend(&mut self, other: ConfigErrors) {
+        self.errors.extend(other.errors);
+    }
+
+    pub fn into_result(self) -> std::result::Result<(), Self> {
+        if self.is_empty() {
+            Ok(())
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let rendered = self
+            .errors
+            .iter()
+            .map(ConfigError::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        write!(f, "configuration errors: {rendered}")
+    }
+}
+
+impl std::error::Error for ConfigErrors {}
+
 /// Deprecated environment keys and their replacement keys (B298).
 const DEPRECATED_ENV_KEYS: [(&str, &str); 7] = [
     ("DB_URL", env::DATABASE_URL),
@@ -394,6 +506,39 @@ mod tests {
         std::env::set_var("__APEX_DEFAULT__", "override");
         assert_eq!(env_or("__APEX_DEFAULT__", "fallback"), "override");
         std::env::remove_var("__APEX_DEFAULT__");
+    }
+
+    #[test]
+    fn config_errors_render_and_fail_loudly() {
+        let errors = ConfigErrors::single(
+            "APEX_COVERAGE_PROCUREMENT_FETCH_SUCCESS_PCT",
+            "banana",
+            "an integer percentage in 0..=100",
+        );
+        assert!(!errors.is_empty());
+        let rendered = errors.to_string();
+        assert!(rendered.contains("APEX_COVERAGE_PROCUREMENT_FETCH_SUCCESS_PCT"));
+        assert!(rendered.contains("banana"));
+
+        let error = errors.errors[0].clone();
+        assert_eq!(
+            error.variable,
+            "APEX_COVERAGE_PROCUREMENT_FETCH_SUCCESS_PCT"
+        );
+        assert_eq!(error.value, "banana");
+        assert!(error.to_string().contains("expected"));
+    }
+
+    #[test]
+    fn empty_config_errors_convert_to_ok() {
+        let mut errors = ConfigErrors::new();
+        errors.push("A", "b", "c");
+        let mut other = ConfigErrors::new();
+        other.push("D", "e", "f");
+        errors.extend(other);
+        assert_eq!(errors.errors.len(), 2);
+        assert!(errors.into_result().is_err());
+        assert!(ConfigErrors::new().into_result().is_ok());
     }
 
     #[test]

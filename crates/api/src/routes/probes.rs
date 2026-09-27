@@ -27,6 +27,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use apex_core::config::ConfigErrors;
 use apex_crawl::sources_registry::SourceCoverageSummary;
 use apex_store::postgres::{
     AlertEngineStateRow, NotificationDeliveryHealth, OutboxBacklog, WorkerJobStateRecord,
@@ -142,93 +143,131 @@ impl Default for ReadinessPolicy {
 }
 
 impl ReadinessPolicy {
-    /// Resolve the policy from the environment, falling back to defaults for
-    /// unset/invalid values (a malformed threshold must not take readiness
-    /// probes down).
-    pub fn from_env() -> Self {
+    /// Resolve the policy from the environment.
+    ///
+    /// Unset variables keep their default. A present-but-malformed threshold
+    /// is a configuration error instead of a silent fallback: readiness must
+    /// not report a verdict computed from a value the operator never chose.
+    /// All errors are collected so one startup pass reports every problem.
+    pub fn from_env() -> std::result::Result<Self, ConfigErrors> {
         let defaults = Self::default();
-        Self {
-            llm_probe_ttl_secs: env_u64("APEX_LLM_PROBE_TTL_SECS", defaults.llm_probe_ttl_secs),
+        let mut errors = ConfigErrors::new();
+        let coverage =
+            apex_crawl::coverage::CoveragePolicy::from_env().unwrap_or_else(|coverage_errors| {
+                errors.extend(coverage_errors);
+                apex_crawl::coverage::CoveragePolicy::default()
+            });
+        let policy = Self {
+            llm_probe_ttl_secs: env_u64(
+                "APEX_LLM_PROBE_TTL_SECS",
+                defaults.llm_probe_ttl_secs,
+                &mut errors,
+            ),
             llm_probe_timeout_secs: env_u64(
                 "APEX_LLM_PROBE_TIMEOUT_SECS",
                 defaults.llm_probe_timeout_secs,
+                &mut errors,
             ),
             browser_probe_ttl_secs: env_u64(
                 "APEX_BROWSER_PROBE_TTL_SECS",
                 defaults.browser_probe_ttl_secs,
+                &mut errors,
             ),
             browser_probe_timeout_secs: env_u64(
                 "APEX_BROWSER_PROBE_TIMEOUT_SECS",
                 defaults.browser_probe_timeout_secs,
+                &mut errors,
             ),
             embedding_canary_ttl_secs: env_u64(
                 "APEX_EMBEDDING_CANARY_TTL_SECS",
                 defaults.embedding_canary_ttl_secs,
+                &mut errors,
             ),
             embedding_canary_timeout_secs: env_u64(
                 "APEX_EMBEDDING_CANARY_TIMEOUT_SECS",
                 defaults.embedding_canary_timeout_secs,
+                &mut errors,
             ),
             search_index_max_lag_secs: env_i64(
                 "APEX_SEARCH_INDEX_MAX_LAG_SECS",
                 defaults.search_index_max_lag_secs,
+                &mut errors,
             ),
             crawl_freshness_max_age_secs: env_i64(
                 "APEX_CRAWL_FRESHNESS_MAX_AGE_SECS",
                 defaults.crawl_freshness_max_age_secs,
+                &mut errors,
             ),
-            coverage: apex_crawl::coverage::CoveragePolicy::from_env(),
+            coverage,
             alert_engine_max_age_secs: env_i64(
                 "APEX_ALERT_ENGINE_MAX_AGE_SECS",
                 defaults.alert_engine_max_age_secs,
+                &mut errors,
             ),
-            outbox_max_pending: env_i64("APEX_OUTBOX_MAX_PENDING", defaults.outbox_max_pending),
+            outbox_max_pending: env_i64(
+                "APEX_OUTBOX_MAX_PENDING",
+                defaults.outbox_max_pending,
+                &mut errors,
+            ),
             outbox_max_oldest_pending_secs: env_i64(
                 "APEX_OUTBOX_MAX_OLDEST_PENDING_SECS",
                 defaults.outbox_max_oldest_pending_secs,
+                &mut errors,
             ),
             notification_delivery_max_processor_age_secs: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_PROCESSOR_AGE_SECS",
                 defaults.notification_delivery_max_processor_age_secs,
+                &mut errors,
             ),
             notification_delivery_max_overdue: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE",
                 defaults.notification_delivery_max_overdue,
+                &mut errors,
             ),
             notification_delivery_max_overdue_age_secs: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE_AGE_SECS",
                 defaults.notification_delivery_max_overdue_age_secs,
+                &mut errors,
             ),
             notification_delivery_max_dead_lettered: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED",
                 defaults.notification_delivery_max_dead_lettered,
+                &mut errors,
             ),
             notification_delivery_max_dead_letter_rate: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTER_RATE",
                 defaults.notification_delivery_max_dead_letter_rate,
+                &mut errors,
             ),
             notification_delivery_max_stuck_leases: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_STUCK_LEASES",
                 defaults.notification_delivery_max_stuck_leases,
+                &mut errors,
             ),
             notification_delivery_success_window_secs: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_SUCCESS_WINDOW_SECS",
                 defaults.notification_delivery_success_window_secs,
+                &mut errors,
             ),
             notification_delivery_min_recent_attempts: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MIN_RECENT_ATTEMPTS",
                 defaults.notification_delivery_min_recent_attempts,
+                &mut errors,
             ),
-            notification_delivery_min_success_percent: env_i64(
+            notification_delivery_min_success_percent: env_percentage(
                 "APEX_NOTIFICATION_DELIVERY_MIN_SUCCESS_PERCENT",
                 defaults.notification_delivery_min_success_percent,
+                &mut errors,
             ),
             critical_jobs: env_csv("APEX_CRITICAL_JOBS", &defaults.critical_jobs),
             critical_job_max_age_secs: env_i64(
                 "APEX_CRITICAL_JOB_MAX_AGE_SECS",
                 defaults.critical_job_max_age_secs,
+                &mut errors,
             ),
-        }
+        };
+        errors.into_result()?;
+        Ok(policy)
     }
 
     pub fn llm_probe_ttl(&self) -> Duration {
@@ -256,18 +295,47 @@ impl ReadinessPolicy {
     }
 }
 
-fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(default)
+fn env_u64(name: &str, default: u64, errors: &mut ConfigErrors) -> u64 {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(name, raw, "a non-negative integer");
+                default
+            }
+        },
+    }
 }
 
-fn env_i64(name: &str, default: i64) -> i64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(default)
+fn env_i64(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(name, raw, "an integer");
+                default
+            }
+        },
+    }
+}
+
+fn env_percentage(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<i64>() {
+            Ok(value) if (0..=100).contains(&value) => value,
+            Ok(_) => {
+                errors.push(name, raw, "an integer percentage in 0..=100");
+                default
+            }
+            Err(_) => {
+                errors.push(name, raw, "an integer percentage in 0..=100");
+                default
+            }
+        },
+    }
 }
 
 fn env_csv(name: &str, default: &[String]) -> Vec<String> {
@@ -2259,5 +2327,25 @@ mod tests {
         assert!(families.iter().any(|row| {
             row["family"] == json!("procurement") && row["min_operational_sources"] == json!(3)
         }));
+    }
+
+    #[test]
+    fn malformed_readiness_threshold_is_a_configuration_error() {
+        use std::sync::{LazyLock, Mutex};
+        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let name = "APEX_LLM_PROBE_TTL_SECS";
+        std::env::set_var(name, "soon");
+        let result = ReadinessPolicy::from_env();
+        std::env::remove_var(name);
+
+        let errors = result.expect_err("'soon' is not a TTL in seconds");
+        assert!(
+            errors.errors.iter().any(|error| error.variable == name),
+            "the configuration error must name the malformed variable: {errors}"
+        );
     }
 }

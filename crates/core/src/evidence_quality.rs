@@ -1,31 +1,49 @@
-//! Reusable evidence-quality model (audit P1-10).
+//! Canonical evidence-quality model (audit P1 measurement).
 //!
-//! The ten dimensions below are the shared semantics for "how good is this
-//! evidence set?", so consumers (source-coverage reporting, insight memos,
-//! warning grounding) stop inventing per-feature thresholds:
+//! This module is the single answer to "how does ApexIntel calculate evidence
+//! quality". `crate::analysis` re-exports it; there is no second
+//! implementation.
 //!
-//! * `evidence_count` — number of evidence records in the set.
-//! * `independent_origin_count` — distinct origins (source id or URL host);
-//!   two records from the same domain never count as corroboration.
-//! * `primary_source_count` — records whose source is a primary/official one
-//!   (filings, registries, courts) rather than commentary.
-//! * `source_type_diversity` — distinct source types / evidence count.
-//! * `geographic_diversity` — distinct regions / evidence count.
-//! * `freshness` — mean exponential age decay (`exp(-age_days / 30)`), so a
-//!   set of month-old records scores ~0.37 regardless of who collected it.
-//! * `contradiction_ratio` — relevance-weighted contradicting share.
-//! * `corroboration_score` — independent support relative to the full set.
-//! * `coverage_completeness` — share of the caller's expected coverage
-//!   dimensions that the evidence set covers.
-//! * `parser_confidence` — mean parser confidence of the records that carry
-//!   one (0.5, a neutral prior, when none do).
+//! The assessment is split into two layers that are never conflated:
+//!
+//! * [`CorpusQuality`] — properties of the evidence set itself: evidence
+//!   count, independent origins, primary-source share, provenance
+//!   completeness, source-type and geographic diversity, freshness, parser
+//!   confidence and coverage completeness.
+//! * [`ClaimAssessment`] — how the evidence bears on an *actual claim*
+//!   (supports / contradicts / neutral, corroboration, contradiction ratio).
+//!   Without a claim there is nothing to contradict, so
+//!   `contradiction_ratio` stays [`Measurement::NotMeasured`] — it is never
+//!   reported as "no contradictions" merely because every record was created
+//!   with `Supports`.
+//!
+//! Every derived metric is a [`Measurement`]: an absent timestamp does not
+//! become `0.5`, and a family with no parser results does not become a neutral
+//! prior. [`EvidenceQuality::composite_score`] scores only the dimensions that
+//! were actually measured, re-normalizing the weights, and
+//! [`EvidenceQuality::completeness`] reports separately how much of the model
+//! was measurable. It never synthesizes a midpoint for an unknown dimension.
+//!
+//! `parser_confidence` and `freshness` are the dimensions most often missing
+//! in practice, so they are typed rather than defaulted; a caller that really
+//! wants a prior must state it explicitly and it will be visible as a measured
+//! input.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use url::Url;
 
-pub use crate::analysis::EvidenceStance;
+use crate::measurement::Measurement;
+
+/// Knowledge stance of one evidence record relative to a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceStance {
+    Supports,
+    Contradicts,
+    Neutral,
+}
 
 /// Source types treated as primary/official even when the caller did not set
 /// [`EvidenceItem::primary`].
@@ -42,29 +60,38 @@ const PRIMARY_SOURCE_TYPES: &[&str] = &[
     "tender_award",
 ];
 
-/// One evidence record fed to [`assess_evidence_quality`].
+/// One evidence record fed to the assessment functions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceItem {
-    /// Stable origin: a source id when known, otherwise a URL. Only the
-    /// origin (URL host) is used for independence, never the path.
+    /// Stable origin: a source id, URL or host. Independence is counted over
+    /// the registrable domain (eTLD+1 approximation) of URLs and hosts.
     pub origin: Option<String>,
     pub source_type: Option<String>,
     pub region: Option<String>,
     /// Caller-asserted primary/official source.
     pub primary: bool,
     pub observed_at: Option<DateTime<Utc>>,
-    /// Relevance weight in `[0, 1]`; clamped during assessment.
-    pub relevance: f64,
+    /// Relevance weight in `[0, 1]` used for claim-level weighting.
+    /// [`Measurement::NotMeasured`] means the producer had no measured
+    /// relevance/confidence for this record: it still counts for corpus
+    /// dimensions, but never contributes a synthesized weight.
+    pub relevance: Measurement<f64>,
     pub stance: EvidenceStance,
-    /// Parser confidence for this record when the producing parser reports
-    /// one (e.g. parse contract checks).
-    pub parser_confidence: Option<f64>,
+    /// Parser confidence for this record when the producing parser reports one
+    /// (e.g. parse contract checks). Missing stays missing.
+    pub parser_confidence: Measurement<f64>,
+    /// Source-quality tier already computed elsewhere.
+    pub source_reliability_tier: Option<String>,
+    /// True when this record is derived intelligence (a generated insight or
+    /// inference) rather than a directly observed fact.
+    pub derived: bool,
     /// Coverage dimensions this record is evidence for (e.g. capability
     /// families). Compared case-insensitively against the expected set.
     pub coverage_tags: Vec<String>,
 }
 
 impl EvidenceItem {
+    /// A record with a measured relevance weight.
     pub fn new(relevance: f64, stance: EvidenceStance) -> Self {
         Self {
             origin: None,
@@ -72,15 +99,61 @@ impl EvidenceItem {
             region: None,
             primary: false,
             observed_at: None,
-            relevance,
+            relevance: Measurement::measured(relevance),
             stance,
-            parser_confidence: None,
+            parser_confidence: Measurement::not_measured(),
+            source_reliability_tier: None,
+            derived: false,
             coverage_tags: Vec::new(),
         }
     }
 
+    /// A record whose relevance/confidence was never measured.
+    pub fn new_unmeasured(stance: EvidenceStance) -> Self {
+        Self {
+            relevance: Measurement::not_measured(),
+            ..Self::new(0.0, stance)
+        }
+    }
+
+    /// A record whose relevance is the optional measured confidence of the
+    /// producing observation/insight: `None` stays `NotMeasured`.
+    pub fn new_optional(relevance: Option<f64>, stance: EvidenceStance) -> Self {
+        match relevance {
+            Some(value) => Self::new(value, stance),
+            None => Self::new_unmeasured(stance),
+        }
+    }
+
+    /// Override the relevance weight with an explicit measurement state.
+    pub fn with_relevance(mut self, relevance: Measurement<f64>) -> Self {
+        self.relevance = relevance;
+        self
+    }
+
+    /// Set the relevance weight from an optional measured value.
+    pub fn with_optional_relevance(mut self, relevance: Option<f64>) -> Self {
+        self.relevance = match relevance {
+            Some(value) => Measurement::measured(value),
+            None => Measurement::not_measured(),
+        };
+        self
+    }
+
     pub fn with_origin(mut self, origin: impl Into<String>) -> Self {
         self.origin = Some(origin.into());
+        self
+    }
+
+    /// Alias for [`Self::with_origin`] for source-id call sites.
+    pub fn with_source_id(mut self, source_id: impl Into<String>) -> Self {
+        self.origin = Some(source_id.into());
+        self
+    }
+
+    /// Alias for [`Self::with_origin`] for URL call sites.
+    pub fn with_source_url(mut self, source_url: impl Into<String>) -> Self {
+        self.origin = Some(source_url.into());
         self
     }
 
@@ -105,7 +178,27 @@ impl EvidenceItem {
     }
 
     pub fn with_parser_confidence(mut self, parser_confidence: f64) -> Self {
-        self.parser_confidence = Some(parser_confidence);
+        self.parser_confidence = Measurement::measured(parser_confidence);
+        self
+    }
+
+    /// Parser confidence from an optional measured value; `None` stays
+    /// `NotMeasured`.
+    pub fn with_optional_parser_confidence(mut self, parser_confidence: Option<f64>) -> Self {
+        self.parser_confidence = match parser_confidence {
+            Some(value) => Measurement::measured(value),
+            None => Measurement::not_measured(),
+        };
+        self
+    }
+
+    pub fn with_source_reliability(mut self, tier: Option<String>) -> Self {
+        self.source_reliability_tier = tier;
+        self
+    }
+
+    pub fn derived(mut self) -> Self {
+        self.derived = true;
         self
     }
 
@@ -128,70 +221,199 @@ impl EvidenceItem {
             .unwrap_or(false)
     }
 
-    /// Normalized independence origin: explicit origin (lowercased) when
-    /// present, otherwise the URL host; `None` when neither yields one.
+    /// Normalized independence origin (registrable domain for URLs/hosts,
+    /// lowercased origin otherwise); `None` when no origin is known.
     pub fn independence_origin(&self) -> Option<String> {
         let origin = self.origin.as_deref()?;
         let origin = origin.trim();
         if origin.is_empty() {
             return None;
         }
-        if let Ok(url) = Url::parse(origin) {
-            if let Some(host) = url.host_str() {
-                let host = host.trim().to_ascii_lowercase();
-                if !host.is_empty() {
-                    return Some(host);
-                }
-            }
+        if let Some(domain) = registrable_domain(origin) {
+            return Some(domain);
         }
         Some(origin.to_ascii_lowercase())
     }
 }
 
-/// The shared ten-dimension evidence-quality assessment.
+/// Corpus-level metrics: what the evidence set is, independent of any claim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct EvidenceQuality {
+#[serde(default)]
+pub struct CorpusQuality {
     pub evidence_count: usize,
     pub independent_origin_count: usize,
+    /// Independent origins / evidence count.
+    pub independence_ratio: f64,
     pub primary_source_count: usize,
+    /// Primary/official sources / evidence count.
+    pub primary_source_share: f64,
+    /// Share of records carrying the minimum provenance (an origin and an
+    /// observation timestamp).
+    pub provenance_completeness: f64,
+    /// Distinct source types / evidence count.
     pub source_type_diversity: f64,
+    /// Distinct regions / evidence count.
     pub geographic_diversity: f64,
-    pub freshness: f64,
-    pub contradiction_ratio: f64,
-    pub corroboration_score: f64,
-    pub coverage_completeness: f64,
-    pub parser_confidence: f64,
+    /// Mean exponential age decay (`exp(-age_days / 30)`). `NotMeasured` when
+    /// no record carries a timestamp.
+    pub freshness: Measurement<f64>,
+    /// Mean parser confidence of the records that report one. `NotMeasured`
+    /// when none do.
+    pub parser_confidence: Measurement<f64>,
+    /// Share of the caller's expected coverage dimensions that are covered.
+    /// `NotMeasured` when the caller declared no coverage contract.
+    pub coverage_completeness: Measurement<f64>,
+    /// Records that are directly observed facts.
+    pub direct_evidence_count: usize,
+    /// Records that are derived intelligence (generated insight/inference).
+    pub derived_evidence_count: usize,
+    /// How many records cite each source-quality tier; records without
+    /// measured source quality are counted under `unknown`.
+    pub source_reliability_distribution: BTreeMap<String, usize>,
+}
+
+/// Claim-level assessment: how the evidence bears on an actual claim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ClaimAssessment {
+    /// The claim the evidence was evaluated against. `None` means no claim was
+    /// assessed: corroboration and contradiction stay unmeasured.
+    pub claim: Option<String>,
+    pub supporting_count: usize,
+    pub neutral_count: usize,
+    pub contradicting_count: usize,
+    /// Independent support relative to the set. Measured only when a claim was
+    /// assessed; `InsufficientEvidence` when supporting records exist but none
+    /// carried a measured relevance weight.
+    pub corroboration_score: Measurement<f64>,
+    /// Relevance-weighted contradicting share. Measured only when a claim was
+    /// assessed and at least one stance-bearing record carried a measured
+    /// weight; never `Measured(0.0)` merely because records were created as
+    /// `Supports`.
+    pub contradiction_ratio: Measurement<f64>,
+}
+
+/// How much of the quality model could actually be measured.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MeasurementCompleteness {
+    pub measured_dimensions: usize,
+    pub total_dimensions: usize,
+    /// `measured_dimensions / total_dimensions`.
+    pub ratio: f64,
+    /// Names of the tracked dimensions that stayed unmeasured.
+    pub missing_dimensions: Vec<String>,
+}
+
+impl Default for MeasurementCompleteness {
+    fn default() -> Self {
+        Self {
+            measured_dimensions: 0,
+            total_dimensions: TRACKED_DIMENSIONS.len(),
+            ratio: 0.0,
+            missing_dimensions: TRACKED_DIMENSIONS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        }
+    }
+}
+
+/// Dimensions tracked by [`MeasurementCompleteness`]. Six are scored by
+/// [`EvidenceQuality::composite_score`]; `parser_confidence` is reported but
+/// not scored.
+pub const TRACKED_DIMENSIONS: [&str; 7] = [
+    "independence_ratio",
+    "source_type_diversity",
+    "geographic_diversity",
+    "freshness",
+    "parser_confidence",
+    "coverage_completeness",
+    "corroboration",
+];
+
+/// The full evidence-quality assessment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct EvidenceQuality {
+    pub corpus: CorpusQuality,
+    pub claim: ClaimAssessment,
+    pub completeness: MeasurementCompleteness,
 }
 
 impl EvidenceQuality {
-    /// Independent origins as a share of the evidence set.
-    pub fn independence_ratio(&self) -> f64 {
-        if self.evidence_count == 0 {
-            0.0
-        } else {
-            (self.independent_origin_count as f64 / self.evidence_count as f64).clamp(0.0, 1.0)
-        }
-    }
-
-    /// Single composite score in `[0, 1]` for ranking/UI, derived from the ten
-    /// shared dimensions rather than feature-local weights.
+    /// Single composite score in `[0, 1]` over the **measured** dimensions
+    /// only. Weights are re-normalized over what was measurable, so a missing
+    /// freshness timestamp or parser confidence removes that term instead of
+    /// substituting a midpoint. When a claim was assessed, the measured
+    /// contradiction ratio applies a `1 - 0.6 * ratio` penalty.
     pub fn composite_score(&self) -> f64 {
-        if self.evidence_count == 0 {
+        if self.corpus.evidence_count == 0 {
             return 0.0;
         }
-        let raw = 0.30 * self.corroboration_score
-            + 0.15 * self.source_type_diversity
-            + 0.15 * self.geographic_diversity
-            + 0.15 * self.independence_ratio()
-            + 0.15 * self.freshness
-            + 0.10 * self.coverage_completeness;
-        (raw * (1.0 - 0.6 * self.contradiction_ratio)).clamp(0.0, 1.0)
+        let dimensions = self.scored_dimensions();
+        let weight_total: f64 = dimensions.iter().map(|(_, weight, _)| weight).sum();
+        if weight_total <= f64::EPSILON {
+            return 0.0;
+        }
+        let weighted: f64 = dimensions
+            .iter()
+            .map(|(_, weight, value)| weight * value.clamp(0.0, 1.0))
+            .sum();
+        let base = weighted / weight_total;
+        let penalty = self
+            .claim
+            .contradiction_ratio
+            .value_copied()
+            .map(|ratio| 1.0 - 0.6 * ratio.clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+        (base * penalty).clamp(0.0, 1.0)
     }
 
-    /// Shared quality label used by UI badges.
+    /// The measured score dimensions as `(name, weight, value)`.
+    fn scored_dimensions(&self) -> Vec<(&'static str, f64, f64)> {
+        let mut dimensions = vec![
+            (
+                "independence_ratio",
+                INDEPENDENCE_WEIGHT,
+                self.corpus.independence_ratio,
+            ),
+            (
+                "source_type_diversity",
+                DIVERSITY_WEIGHT,
+                self.corpus.source_type_diversity,
+            ),
+            (
+                "geographic_diversity",
+                DIVERSITY_WEIGHT,
+                self.corpus.geographic_diversity,
+            ),
+        ];
+        if let Some(freshness) = self.corpus.freshness.value_copied() {
+            dimensions.push(("freshness", FRESHNESS_WEIGHT, freshness));
+        }
+        if let Some(coverage) = self.corpus.coverage_completeness.value_copied() {
+            dimensions.push(("coverage_completeness", COVERAGE_WEIGHT, coverage));
+        }
+        if self.claim.claim.is_some() {
+            if let Some(corroboration) = self.claim.corroboration_score.value_copied() {
+                dimensions.push(("corroboration", CORROBORATION_WEIGHT, corroboration));
+            }
+        }
+        dimensions
+    }
+
+    /// Shared quality label used by UI badges. The "high" gate only applies
+    /// the contradiction rule when the ratio was actually measured.
     pub fn quality_label(&self) -> &'static str {
         let score = self.composite_score();
-        if score >= 0.8 && self.contradiction_ratio < 0.15 {
+        let contradiction_blocks_high = self
+            .claim
+            .contradiction_ratio
+            .value_copied()
+            .map(|ratio| ratio >= 0.15)
+            .unwrap_or(false);
+        if score >= 0.8 && !contradiction_blocks_high {
             "high"
         } else if score >= 0.6 {
             "moderate"
@@ -201,24 +423,35 @@ impl EvidenceQuality {
             "insufficient"
         }
     }
+
+    pub fn independence_ratio(&self) -> f64 {
+        self.corpus.independence_ratio
+    }
 }
+
+const CORROBORATION_WEIGHT: f64 = 0.30;
+const INDEPENDENCE_WEIGHT: f64 = 0.15;
+const DIVERSITY_WEIGHT: f64 = 0.15;
+const FRESHNESS_WEIGHT: f64 = 0.15;
+const COVERAGE_WEIGHT: f64 = 0.10;
 
 fn normalized_tag(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-/// Assess an evidence set against the caller's expected coverage dimensions.
+/// Assess the corpus-level quality of an evidence set.
 ///
-/// `expected_coverage` is the set of dimensions the caller needs evidence
-/// for (regions, capability families, claim types); pass an empty slice when
-/// no completeness contract applies and `coverage_completeness` is `1.0`.
-pub fn assess_evidence_quality(
+/// `expected_coverage` is the set of dimensions the caller needs evidence for
+/// (regions, capability families, claim types); pass an empty slice when no
+/// completeness contract applies and `coverage_completeness` stays
+/// `NotMeasured`.
+pub fn assess_corpus_quality(
     items: &[EvidenceItem],
     expected_coverage: &[String],
     now: DateTime<Utc>,
-) -> EvidenceQuality {
+) -> CorpusQuality {
     if items.is_empty() {
-        return EvidenceQuality::default();
+        return CorpusQuality::default();
     }
 
     let mut origins = HashSet::new();
@@ -229,28 +462,19 @@ pub fn assess_evidence_quality(
     let mut freshness_count = 0usize;
     let mut parser_total = 0.0;
     let mut parser_count = 0usize;
-    let mut support_weight = 0.0;
-    let mut contradiction_weight = 0.0;
-    let mut support_count = 0usize;
     let mut primary_count = 0usize;
+    let mut provenance_count = 0usize;
+    let mut direct_count = 0usize;
+    let mut derived_count = 0usize;
+    let mut reliability_distribution: BTreeMap<String, usize> = BTreeMap::new();
 
     for item in items {
-        let relevance = item.relevance.clamp(0.0, 1.0);
-        match item.stance {
-            EvidenceStance::Supports => {
-                support_weight += relevance.max(0.2);
-                support_count += 1;
-            }
-            EvidenceStance::Contradicts => {
-                contradiction_weight += relevance.max(0.2);
-            }
-            EvidenceStance::Neutral => {
-                support_weight += relevance * 0.35;
-            }
-        }
-        if let Some(origin) = item.independence_origin() {
+        let has_origin = if let Some(origin) = item.independence_origin() {
             origins.insert(origin);
-        }
+            true
+        } else {
+            false
+        };
         if let Some(source_type) = item.source_type.as_deref() {
             let normalized = normalized_tag(source_type);
             if !normalized.is_empty() {
@@ -274,13 +498,29 @@ pub fn assess_evidence_quality(
             freshness_total += (-age_days / 30.0).exp();
             freshness_count += 1;
         }
-        if let Some(parser_confidence) = item.parser_confidence {
+        if let Some(parser_confidence) = item.parser_confidence.value_copied() {
             parser_total += parser_confidence.clamp(0.0, 1.0);
             parser_count += 1;
         }
         if item.is_primary() {
             primary_count += 1;
         }
+        if has_origin && item.observed_at.is_some() {
+            provenance_count += 1;
+        }
+        if item.derived {
+            derived_count += 1;
+        } else {
+            direct_count += 1;
+        }
+        let tier = item
+            .source_reliability_tier
+            .as_deref()
+            .map(str::trim)
+            .filter(|tier| !tier.is_empty())
+            .unwrap_or("unknown")
+            .to_ascii_lowercase();
+        *reliability_distribution.entry(tier).or_default() += 1;
     }
 
     let evidence_count = items.len();
@@ -288,59 +528,299 @@ pub fn assess_evidence_quality(
     let source_type_diversity = (source_types.len() as f64 / evidence_count as f64).clamp(0.0, 1.0);
     let geographic_diversity = (regions.len() as f64 / evidence_count as f64).clamp(0.0, 1.0);
     let freshness = if freshness_count == 0 {
-        0.5
+        Measurement::not_measured()
     } else {
-        freshness_total / freshness_count as f64
+        Measurement::measured((freshness_total / freshness_count as f64).clamp(0.0, 1.0))
     };
-    let contradiction_ratio = if support_weight + contradiction_weight <= f64::EPSILON {
-        0.0
+    let parser_confidence = if parser_count == 0 {
+        Measurement::not_measured()
     } else {
-        (contradiction_weight / (support_weight + contradiction_weight)).clamp(0.0, 1.0)
+        Measurement::measured((parser_total / parser_count as f64).clamp(0.0, 1.0))
     };
-    let corroboration_score = if support_count == 0 {
-        0.0
-    } else {
-        let independent_support = (independent_origin_count.min(support_count) as f64
-            / evidence_count as f64)
-            .clamp(0.0, 1.0);
-        let support_strength = (support_weight / support_count as f64).clamp(0.0, 1.0);
-        (0.55 * independent_support + 0.45 * support_strength).clamp(0.0, 1.0)
-    };
-    let coverage_completeness = if expected_coverage.is_empty() {
-        1.0
-    } else {
+    let coverage_completeness = {
         let expected: HashSet<String> = expected_coverage
             .iter()
             .map(|tag| normalized_tag(tag))
             .filter(|tag| !tag.is_empty())
             .collect();
         if expected.is_empty() {
-            1.0
+            Measurement::not_measured()
         } else {
             let covered = expected
                 .iter()
                 .filter(|tag| covered_tags.contains(*tag))
                 .count();
-            (covered as f64 / expected.len() as f64).clamp(0.0, 1.0)
+            Measurement::measured((covered as f64 / expected.len() as f64).clamp(0.0, 1.0))
         }
     };
-    let parser_confidence = if parser_count == 0 {
-        0.5
-    } else {
-        (parser_total / parser_count as f64).clamp(0.0, 1.0)
-    };
 
-    EvidenceQuality {
+    CorpusQuality {
         evidence_count,
         independent_origin_count,
+        independence_ratio: if evidence_count == 0 {
+            0.0
+        } else {
+            (independent_origin_count as f64 / evidence_count as f64).clamp(0.0, 1.0)
+        },
         primary_source_count: primary_count,
+        primary_source_share: if evidence_count == 0 {
+            0.0
+        } else {
+            (primary_count as f64 / evidence_count as f64).clamp(0.0, 1.0)
+        },
+        provenance_completeness: (provenance_count as f64 / evidence_count as f64).clamp(0.0, 1.0),
         source_type_diversity,
         geographic_diversity,
         freshness,
-        contradiction_ratio,
-        corroboration_score,
-        coverage_completeness,
         parser_confidence,
+        coverage_completeness,
+        direct_evidence_count: direct_count,
+        derived_evidence_count: derived_count,
+        source_reliability_distribution: reliability_distribution,
+    }
+}
+
+/// Assess how an evidence set bears on `claim`.
+///
+/// `claim = None` produces count-only output: corroboration and contradiction
+/// stay `NotMeasured` because there is no claim to support or contradict.
+pub fn assess_claim(claim: Option<&str>, items: &[EvidenceItem]) -> ClaimAssessment {
+    if items.is_empty() {
+        return ClaimAssessment {
+            claim: claim.map(str::to_string),
+            ..ClaimAssessment::default()
+        };
+    }
+
+    let mut support_weight = 0.0;
+    let mut contradiction_weight = 0.0;
+    let mut weighted_support_count = 0usize;
+    let mut weighted_contradiction_count = 0usize;
+    let mut support_count = 0usize;
+    let mut contradiction_count = 0usize;
+    let mut neutral_count = 0usize;
+    let mut independent_origins = HashSet::new();
+
+    for item in items {
+        if let Some(origin) = item.independence_origin() {
+            independent_origins.insert(origin);
+        }
+        let relevance = item.relevance.value_copied();
+        match item.stance {
+            EvidenceStance::Supports => {
+                support_count += 1;
+                if let Some(relevance) = relevance {
+                    support_weight += relevance.clamp(0.0, 1.0).max(0.2);
+                    weighted_support_count += 1;
+                }
+            }
+            EvidenceStance::Contradicts => {
+                contradiction_count += 1;
+                if let Some(relevance) = relevance {
+                    contradiction_weight += relevance.clamp(0.0, 1.0).max(0.2);
+                    weighted_contradiction_count += 1;
+                }
+            }
+            EvidenceStance::Neutral => {
+                neutral_count += 1;
+                if let Some(relevance) = relevance {
+                    support_weight += relevance.clamp(0.0, 1.0) * 0.35;
+                    weighted_support_count += 1;
+                }
+            }
+        }
+    }
+
+    let claim_present = claim.is_some();
+    let corroboration_score = if !claim_present {
+        Measurement::not_measured()
+    } else if support_count == 0 {
+        Measurement::measured(0.0)
+    } else if weighted_support_count == 0 {
+        Measurement::insufficient_evidence()
+    } else {
+        let independent_support = (independent_origins.len().min(support_count) as f64
+            / items.len() as f64)
+            .clamp(0.0, 1.0);
+        let support_strength = (support_weight / support_count as f64).clamp(0.0, 1.0);
+        Measurement::measured(
+            (0.55 * independent_support + 0.45 * support_strength).clamp(0.0, 1.0),
+        )
+    };
+
+    let contradiction_ratio = if !claim_present {
+        Measurement::not_measured()
+    } else if weighted_support_count + weighted_contradiction_count == 0 {
+        Measurement::insufficient_evidence()
+    } else {
+        let total_weight = support_weight + contradiction_weight;
+        if total_weight <= f64::EPSILON {
+            Measurement::insufficient_evidence()
+        } else {
+            Measurement::measured((contradiction_weight / total_weight).clamp(0.0, 1.0))
+        }
+    };
+
+    ClaimAssessment {
+        claim: claim.map(str::to_string),
+        supporting_count: support_count,
+        neutral_count,
+        contradicting_count: contradiction_count,
+        corroboration_score,
+        contradiction_ratio,
+    }
+}
+
+/// Measure how much of the model was actually measurable.
+pub fn measurement_completeness(
+    corpus: &CorpusQuality,
+    claim: &ClaimAssessment,
+) -> MeasurementCompleteness {
+    if corpus.evidence_count == 0 {
+        return MeasurementCompleteness::default();
+    }
+    let states: [(&'static str, bool); 7] = [
+        ("independence_ratio", true),
+        ("source_type_diversity", true),
+        ("geographic_diversity", true),
+        ("freshness", corpus.freshness.is_measured()),
+        ("parser_confidence", corpus.parser_confidence.is_measured()),
+        (
+            "coverage_completeness",
+            corpus.coverage_completeness.is_measured(),
+        ),
+        ("corroboration", claim.corroboration_score.is_measured()),
+    ];
+    let measured_dimensions = states.iter().filter(|(_, measured)| *measured).count();
+    let missing_dimensions = states
+        .iter()
+        .filter(|(_, measured)| !measured)
+        .map(|(name, _)| (*name).to_string())
+        .collect();
+    MeasurementCompleteness {
+        measured_dimensions,
+        total_dimensions: TRACKED_DIMENSIONS.len(),
+        ratio: measured_dimensions as f64 / TRACKED_DIMENSIONS.len() as f64,
+        missing_dimensions,
+    }
+}
+
+/// Assess an evidence set without a claim: corpus quality plus stance counts.
+/// Corroboration and contradiction are unmeasured.
+pub fn assess_evidence_quality(
+    items: &[EvidenceItem],
+    expected_coverage: &[String],
+    now: DateTime<Utc>,
+) -> EvidenceQuality {
+    build_assessment(items, expected_coverage, None, now)
+}
+
+/// Assess an evidence set against an actual claim so corroboration and the
+/// contradiction ratio are measured.
+pub fn assess_evidence_quality_for_claim(
+    items: &[EvidenceItem],
+    expected_coverage: &[String],
+    claim: &str,
+    now: DateTime<Utc>,
+) -> EvidenceQuality {
+    build_assessment(items, expected_coverage, Some(claim), now)
+}
+
+fn build_assessment(
+    items: &[EvidenceItem],
+    expected_coverage: &[String],
+    claim: Option<&str>,
+    now: DateTime<Utc>,
+) -> EvidenceQuality {
+    let corpus = assess_corpus_quality(items, expected_coverage, now);
+    let claim_assessment = assess_claim(claim, items);
+    let completeness = measurement_completeness(&corpus, &claim_assessment);
+    EvidenceQuality {
+        corpus,
+        claim: claim_assessment,
+        completeness,
+    }
+}
+
+/// Registrable domain (eTLD+1 approximation) for a URL or bare host.
+///
+/// Independence must count distinct organisations, not distinct URLs or
+/// subdomains: `news.example.com` and `blog.example.com` are one origin. This
+/// strips the scheme/path, lowercases, removes `www.`, and reduces the host to
+/// its last label plus the public suffix when the suffix is a known multi-label
+/// one (for example `co.uk`); otherwise it keeps the last two labels. IP
+/// addresses and single-label hosts are returned as-is (lowercased), because
+/// there is no registrable domain to reduce them to.
+pub fn registrable_domain(url_or_host: &str) -> Option<String> {
+    let raw = url_or_host.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let host = match Url::parse(raw) {
+        Ok(parsed) => parsed.host_str().map(str::to_string),
+        Err(_) => {
+            // Bare host (possibly with port/path): strip everything after the
+            // first `/`, `?`, or `#`, then the port.
+            let cut = raw
+                .find(['/', '?', '#'])
+                .map(|index| &raw[..index])
+                .unwrap_or(raw);
+            Some(
+                cut.rsplit_once(':')
+                    .map(|(host, _)| host)
+                    .unwrap_or(cut)
+                    .to_string(),
+            )
+        }
+    }?;
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host);
+    }
+    let labels: Vec<&str> = host.split('.').filter(|label| !label.is_empty()).collect();
+    if labels.len() < 2 {
+        return Some(host);
+    }
+    let suffix_len = multi_label_suffix_len(&labels);
+    let keep = suffix_len + 1;
+    Some(labels[labels.len() - keep..].join("."))
+}
+
+/// Number of trailing labels forming a known multi-label public suffix.
+fn multi_label_suffix_len(labels: &[&str]) -> usize {
+    const MULTI_LABEL_SUFFIXES: &[&[&str]] = &[
+        &["co", "uk"],
+        &["org", "uk"],
+        &["ac", "uk"],
+        &["gov", "uk"],
+        &["co", "jp"],
+        &["or", "jp"],
+        &["ne", "jp"],
+        &["com", "au"],
+        &["net", "au"],
+        &["org", "au"],
+        &["co", "nz"],
+        &["com", "br"],
+        &["com", "cn"],
+        &["com", "hk"],
+        &["com", "sg"],
+        &["com", "tw"],
+        &["co", "in"],
+        &["com", "mx"],
+        &["co", "za"],
+        &["co", "kr"],
+    ];
+    if labels.len() < 3 {
+        return 1;
+    }
+    let last_two = &labels[labels.len() - 2..];
+    if MULTI_LABEL_SUFFIXES.contains(&last_two) {
+        2
+    } else {
+        1
     }
 }
 
@@ -358,9 +838,9 @@ mod tests {
         let quality = assess_evidence_quality(
             &[
                 EvidenceItem::new(0.9, EvidenceStance::Supports)
-                    .with_origin("https://alpha.example.com/report-a"),
+                    .with_origin("https://news.example.com/report-a"),
                 EvidenceItem::new(0.9, EvidenceStance::Supports)
-                    .with_origin("https://alpha.example.com/report-b"),
+                    .with_origin("https://blog.example.com/report-b"),
                 EvidenceItem::new(0.8, EvidenceStance::Supports)
                     .with_origin("https://beta.example.org/report"),
             ],
@@ -368,10 +848,10 @@ mod tests {
             now(),
         );
 
-        assert_eq!(quality.evidence_count, 3);
+        assert_eq!(quality.corpus.evidence_count, 3);
         assert_eq!(
-            quality.independent_origin_count, 2,
-            "two records from alpha.example.com must count as one origin"
+            quality.corpus.independent_origin_count, 2,
+            "subdomains of one registrable domain are not independent corroboration"
         );
 
         let unsourced = assess_evidence_quality(
@@ -380,13 +860,56 @@ mod tests {
             now(),
         );
         assert_eq!(
-            unsourced.independent_origin_count, 0,
+            unsourced.corpus.independent_origin_count, 0,
             "an unsourced record must not earn independence credit"
         );
     }
 
     #[test]
-    fn evidence_quality_carries_all_ten_dimensions() {
+    fn missing_freshness_and_parser_stay_not_measured() {
+        let quality = assess_evidence_quality(
+            &[
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://alpha.example.com/a"),
+                EvidenceItem::new(0.8, EvidenceStance::Supports)
+                    .with_origin("https://beta.example.org/b"),
+            ],
+            &[],
+            now(),
+        );
+
+        assert_eq!(
+            quality.corpus.freshness,
+            Measurement::not_measured(),
+            "no timestamp must not synthesize a 0.5 freshness midpoint"
+        );
+        assert_eq!(
+            quality.corpus.parser_confidence,
+            Measurement::not_measured(),
+            "no parser results must not synthesize a 0.5 confidence midpoint"
+        );
+        assert!(
+            quality
+                .completeness
+                .missing_dimensions
+                .iter()
+                .any(|name| name == "freshness"),
+            "freshness must be reported as a missing measurement"
+        );
+        assert!(
+            quality
+                .completeness
+                .missing_dimensions
+                .iter()
+                .any(|name| name == "parser_confidence"),
+            "parser confidence must be reported as a missing measurement"
+        );
+        assert!(quality.completeness.ratio < 1.0);
+        assert!(quality.composite_score() > 0.0);
+    }
+
+    #[test]
+    fn measured_freshness_and_parser_are_reported() {
         let quality = assess_evidence_quality(
             &[
                 EvidenceItem::new(0.9, EvidenceStance::Supports)
@@ -409,17 +932,114 @@ mod tests {
             now(),
         );
 
-        assert_eq!(quality.evidence_count, 2);
-        assert_eq!(quality.independent_origin_count, 2);
-        assert_eq!(quality.primary_source_count, 1);
-        assert!((quality.source_type_diversity - 1.0).abs() < f64::EPSILON);
-        assert!((quality.geographic_diversity - 1.0).abs() < f64::EPSILON);
-        assert!(quality.freshness > 0.5);
-        assert!(quality.contradiction_ratio > 0.0);
-        assert!(quality.corroboration_score > 0.0);
-        assert!((quality.coverage_completeness - 1.0).abs() < f64::EPSILON);
-        assert!((quality.parser_confidence - 0.875).abs() < 1e-9);
+        assert_eq!(quality.corpus.evidence_count, 2);
+        assert_eq!(quality.corpus.independent_origin_count, 2);
+        assert_eq!(quality.corpus.primary_source_count, 1);
+        assert!((quality.corpus.primary_source_share - 0.5).abs() < f64::EPSILON);
+        assert!((quality.corpus.source_type_diversity - 1.0).abs() < f64::EPSILON);
+        assert!((quality.corpus.geographic_diversity - 1.0).abs() < f64::EPSILON);
+        assert!(quality.corpus.freshness.value_copied().unwrap_or_default() > 0.5);
+        assert!(
+            (quality
+                .corpus
+                .parser_confidence
+                .value_copied()
+                .unwrap_or_default()
+                - 0.875)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (quality
+                .corpus
+                .coverage_completeness
+                .value_copied()
+                .unwrap_or_default()
+                - 1.0)
+                .abs()
+                < 1e-9
+        );
         assert!(quality.composite_score() > 0.0);
+    }
+
+    #[test]
+    fn contradiction_ratio_is_undefined_without_a_claim() {
+        let items = [
+            EvidenceItem::new(0.9, EvidenceStance::Supports)
+                .with_origin("https://alpha.example.com/a"),
+            EvidenceItem::new(0.9, EvidenceStance::Supports)
+                .with_origin("https://beta.example.org/b"),
+        ];
+
+        let unclaimed = assess_evidence_quality(&items, &[], now());
+        assert!(unclaimed.claim.claim.is_none());
+        assert_eq!(
+            unclaimed.claim.contradiction_ratio,
+            Measurement::not_measured(),
+            "no claim means there is nothing to contradict; a Supports-only set \
+             must not report a measured zero ratio"
+        );
+        assert_eq!(
+            unclaimed.claim.corroboration_score,
+            Measurement::not_measured()
+        );
+
+        let claimed = assess_evidence_quality_for_claim(&items, &[], "alpha grows", now());
+        assert_eq!(claimed.claim.claim.as_deref(), Some("alpha grows"));
+        assert_eq!(
+            claimed.claim.contradiction_ratio,
+            Measurement::measured(0.0)
+        );
+        assert!(claimed.claim.corroboration_score.is_measured());
+    }
+
+    #[test]
+    fn claim_assessment_measures_contradiction_weight() {
+        let quality = assess_evidence_quality_for_claim(
+            &[
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://alpha.example.com/a"),
+                EvidenceItem::new(0.9, EvidenceStance::Contradicts)
+                    .with_origin("https://beta.example.org/b"),
+                EvidenceItem::new(0.5, EvidenceStance::Neutral)
+                    .with_origin("https://gamma.example.net/c"),
+            ],
+            &[],
+            "alpha grows",
+            now(),
+        );
+
+        assert_eq!(quality.claim.supporting_count, 1);
+        assert_eq!(quality.claim.contradicting_count, 1);
+        assert_eq!(quality.claim.neutral_count, 1);
+        let ratio = quality
+            .claim
+            .contradiction_ratio
+            .value_copied()
+            .expect("claim present, weighted records present");
+        assert!(ratio > 0.0 && ratio < 1.0);
+        assert!(quality.composite_score() < 1.0);
+    }
+
+    #[test]
+    fn claim_without_measured_weights_is_insufficient_evidence() {
+        let quality = assess_evidence_quality_for_claim(
+            &[EvidenceItem::new_unmeasured(EvidenceStance::Supports)
+                .with_origin("https://alpha.example.com/a")],
+            &[],
+            "alpha grows",
+            now(),
+        );
+
+        assert_eq!(
+            quality.claim.corroboration_score,
+            Measurement::insufficient_evidence(),
+            "supporting records with no measured weight cannot produce a strength score"
+        );
+        assert_eq!(
+            quality.claim.contradiction_ratio,
+            Measurement::insufficient_evidence()
+        );
     }
 
     #[test]
@@ -437,11 +1057,67 @@ mod tests {
             now(),
         );
 
-        assert!((quality.coverage_completeness - 0.25).abs() < 1e-9);
         assert!(
-            quality.composite_score() < 0.6,
-            "missing three of four coverage dimensions must not score as moderate: {}",
-            quality.composite_score()
+            (quality
+                .corpus
+                .coverage_completeness
+                .value_copied()
+                .unwrap_or_default()
+                - 0.25)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn no_coverage_contract_stays_not_measured() {
+        let quality = assess_evidence_quality(
+            &[EvidenceItem::new(0.8, EvidenceStance::Supports)
+                .with_origin("https://alpha.example.com/a")],
+            &[],
+            now(),
+        );
+
+        assert_eq!(
+            quality.corpus.coverage_completeness,
+            Measurement::not_measured(),
+            "no declared coverage contract means coverage completeness was not measured"
+        );
+        assert!(quality
+            .completeness
+            .missing_dimensions
+            .iter()
+            .any(|name| name == "coverage_completeness"));
+    }
+
+    #[test]
+    fn composite_skips_unmeasured_dimensions_instead_of_substituting() {
+        // Two corpora identical except the second has no timestamp and no
+        // parser confidence. The first scores freshness/parser into the
+        // composite; the second renormalizes over the remaining dimensions
+        // rather than injecting a 0.5.
+        let measured = assess_evidence_quality(
+            &[EvidenceItem::new(1.0, EvidenceStance::Supports)
+                .with_origin("https://alpha.example.com/a")
+                .with_observed_at(now())
+                .with_parser_confidence(1.0)],
+            &[],
+            now(),
+        );
+        let unmeasured = assess_evidence_quality(
+            &[EvidenceItem::new(1.0, EvidenceStance::Supports)
+                .with_origin("https://alpha.example.com/a")],
+            &[],
+            now(),
+        );
+
+        assert!(measured.composite_score() > 0.0);
+        assert!(unmeasured.composite_score() > 0.0);
+        assert!(measured.completeness.ratio > unmeasured.completeness.ratio);
+        assert_eq!(unmeasured.completeness.measured_dimensions, 3);
+        assert_eq!(
+            unmeasured.completeness.total_dimensions,
+            TRACKED_DIMENSIONS.len()
         );
     }
 
@@ -451,5 +1127,61 @@ mod tests {
         assert_eq!(quality, EvidenceQuality::default());
         assert_eq!(quality.quality_label(), "insufficient");
         assert_eq!(quality.composite_score(), 0.0);
+        assert_eq!(quality.completeness.ratio, 0.0);
+    }
+
+    #[test]
+    fn registrable_domain_reduces_hosts_to_etld_plus_one() {
+        assert_eq!(
+            registrable_domain("https://news.example.com/story").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            registrable_domain("www.example.co.uk").as_deref(),
+            Some("example.co.uk")
+        );
+        assert_eq!(
+            registrable_domain("https://sub.example.com:8443/path").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            registrable_domain("http://192.168.0.1/x").as_deref(),
+            Some("192.168.0.1")
+        );
+        assert_eq!(
+            registrable_domain("localhost").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(registrable_domain(""), None);
+    }
+
+    #[test]
+    fn corpus_reports_provenance_and_derived_counts() {
+        let quality = assess_evidence_quality(
+            &[
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://alpha.example.com/a")
+                    .with_observed_at(now()),
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://beta.example.org/b"),
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://gamma.example.net/c")
+                    .with_observed_at(now())
+                    .derived(),
+            ],
+            &[],
+            now(),
+        );
+
+        assert!((quality.corpus.provenance_completeness - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(quality.corpus.direct_evidence_count, 2);
+        assert_eq!(quality.corpus.derived_evidence_count, 1);
+        assert_eq!(
+            quality
+                .corpus
+                .source_reliability_distribution
+                .get("unknown"),
+            Some(&3)
+        );
     }
 }
