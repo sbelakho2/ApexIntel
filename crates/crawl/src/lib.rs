@@ -5,6 +5,7 @@ pub mod change_detection;
 pub mod client;
 pub mod concurrency;
 pub mod contact_enrichment;
+pub mod coverage;
 pub mod ct;
 pub mod cve;
 pub mod dark_web;

@@ -259,6 +259,7 @@ mod history;
 mod insights;
 pub use insights::InsightClaimRow;
 mod learning_eval;
+mod lineage;
 pub use learning_eval::{
     LearningEvalExampleInput, LearningEvalMetricInput, LearningEvalMetricRow, LearningEvalRunInput,
     LearningEvalRunRow,

@@ -29,7 +29,7 @@ pub const CAPABILITIES_PATH: &str = "/api/health/capabilities";
 const NATS_PROBE_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 
 /// One capability probe result.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CapabilityStatus {
     /// `ok` | `degraded` | `unavailable` | `disabled`.
     pub status: String,
@@ -41,6 +41,11 @@ pub struct CapabilityStatus {
     /// Search-index lag (database high-water minus indexed high-water).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lag_seconds: Option<i64>,
+    /// Full multidimensional coverage report (source-coverage capability
+    /// only): the published policy matrix plus every family's measured
+    /// dimensions and the aggregate evidence-quality summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<apex_crawl::coverage::SourceCoverageReport>,
 }
 
 impl CapabilityStatus {
@@ -51,7 +56,14 @@ impl CapabilityStatus {
             last_seen_at: None,
             age_seconds: None,
             lag_seconds: None,
+            coverage: None,
         }
+    }
+
+    /// Attach the published source-coverage matrix report.
+    pub fn with_coverage(mut self, coverage: apex_crawl::coverage::SourceCoverageReport) -> Self {
+        self.coverage = Some(coverage);
+        self
     }
 
     pub fn is_ok(&self) -> bool {
@@ -73,7 +85,7 @@ pub struct ProbeContext<'a> {
 }
 
 /// Full capability report.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Capabilities {
     pub llm: CapabilityStatus,
     pub embeddings: CapabilityStatus,
@@ -576,13 +588,28 @@ async fn probe_source_coverage(store: &PgStore, policy: &ReadinessPolicy) -> Cap
     };
     let registry = apex_crawl::sources_registry::all_sources();
     let deployment_caps = apex_crawl::sources_registry::DeploymentCapabilities::from_env();
+    let now = Utc::now();
     let summary = apex_crawl::sources_registry::source_coverage_summary(
         &registry,
         &states,
         &deployment_caps,
-        Utc::now(),
+        now,
     );
-    probes::evaluate_source_coverage(&summary, policy)
+    let window_start =
+        now - chrono::Duration::seconds(policy.coverage.priority_company_window_secs.max(0));
+    let priority_companies = match store.priority_company_coverage(window_start).await {
+        Ok((total, covered)) => apex_crawl::coverage::PriorityCompanyCoverage {
+            total: total.max(0) as usize,
+            covered: covered.max(0) as usize,
+        },
+        Err(error) => {
+            return CapabilityStatus::new(
+                "unavailable",
+                format!("priority-company coverage query failed: {error}"),
+            )
+        }
+    };
+    probes::evaluate_source_coverage(&summary, policy, priority_companies, now)
 }
 
 async fn probe_alert_engine(store: &PgStore, policy: &ReadinessPolicy) -> CapabilityStatus {

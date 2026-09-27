@@ -68,8 +68,12 @@ pub struct ReadinessPolicy {
     pub search_index_max_lag_secs: i64,
     /// Maximum age of the newest observation before crawl freshness degrades.
     pub crawl_freshness_max_age_secs: i64,
-    /// Minimum number of validated, non-degraded sources for source coverage.
-    pub min_operational_sources: usize,
+    /// Multidimensional capability-family coverage matrix. Replaces the old
+    /// single `min_operational_sources` gate: a required family with zero
+    /// operational sources fails readiness even when the deployment-wide
+    /// total is high.
+    #[serde(default)]
+    pub coverage: apex_crawl::coverage::CoveragePolicy,
     /// Maximum age of the worker-refreshed alert-engine state row.
     pub alert_engine_max_age_secs: i64,
     /// Maximum unpublished outbox events before the publisher degrades.
@@ -95,7 +99,7 @@ impl Default for ReadinessPolicy {
             embedding_canary_timeout_secs: 10,
             search_index_max_lag_secs: 3_600,
             crawl_freshness_max_age_secs: crate::system_status::DATA_FRESH_WITHIN_SECS,
-            min_operational_sources: 25,
+            coverage: apex_crawl::coverage::CoveragePolicy::default(),
             alert_engine_max_age_secs: 900,
             outbox_max_pending: 100,
             outbox_max_oldest_pending_secs: 300,
@@ -144,10 +148,7 @@ impl ReadinessPolicy {
                 "APEX_CRAWL_FRESHNESS_MAX_AGE_SECS",
                 defaults.crawl_freshness_max_age_secs,
             ),
-            min_operational_sources: env_usize(
-                "APEX_MIN_OPERATIONAL_SOURCES",
-                defaults.min_operational_sources,
-            ),
+            coverage: apex_crawl::coverage::CoveragePolicy::from_env(),
             alert_engine_max_age_secs: env_i64(
                 "APEX_ALERT_ENGINE_MAX_AGE_SECS",
                 defaults.alert_engine_max_age_secs,
@@ -201,13 +202,6 @@ fn env_i64(name: &str, default: i64) -> i64 {
     std::env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(default)
-}
-
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(default)
 }
 
@@ -1012,37 +1006,23 @@ pub fn evaluate_scheduled_jobs(
 // Operational source coverage
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Evaluate operational source coverage against the configured minimum.
+/// Evaluate the multidimensional source-coverage matrix.
+///
+/// The single deployment-wide minimum is gone: every required capability
+/// family must meet its own operational-source count, freshness, fetch and
+/// parser ratios and independent-domain minimum, and priority companies must
+/// be covered by recent observations. The full matrix — policy rows plus
+/// measured dimensions — is published on the capability status so the UI and
+/// operators can see which dimension failed.
 pub fn evaluate_source_coverage(
     summary: &SourceCoverageSummary,
     policy: &ReadinessPolicy,
+    priority_companies: apex_crawl::coverage::PriorityCompanyCoverage,
+    now: DateTime<Utc>,
 ) -> CapabilityStatus {
-    let detail = format!(
-        "{} operational of {} registered ({} validated, {} never crawled, {} degraded)",
-        summary.operational,
-        summary.registered,
-        summary.validated,
-        summary.never_crawled,
-        summary.temporarily_degraded
-    );
-
-    if summary.operational >= policy.min_operational_sources {
-        CapabilityStatus::new(
-            "ok",
-            format!(
-                "{detail}; minimum {} satisfied",
-                policy.min_operational_sources
-            ),
-        )
-    } else {
-        CapabilityStatus::new(
-            "degraded",
-            format!(
-                "{detail}; below minimum {} operational sources",
-                policy.min_operational_sources
-            ),
-        )
-    }
+    let report =
+        apex_crawl::coverage::evaluate_coverage(summary, &policy.coverage, priority_companies, now);
+    CapabilityStatus::new(&report.status, report.detail.clone()).with_coverage(report)
 }
 
 #[cfg(test)]
@@ -1773,47 +1753,122 @@ mod tests {
 
     // ── Source coverage ─────────────────────────────────────────────────────
 
-    #[test]
-    fn source_coverage_below_minimum_is_degraded() {
-        let summary = SourceCoverageSummary {
-            declared: 680,
-            registered: 500,
-            operational: 3,
-            validated: 20,
-            never_crawled: 400,
-            temporarily_degraded: 10,
-            ..SourceCoverageSummary::default()
-        };
-        let status = evaluate_source_coverage(&summary, &ReadinessPolicy::default());
-        assert_eq!(status.status, "degraded");
-        assert!(status.detail.contains("below minimum"));
+    fn family_snapshot(
+        family: apex_crawl::coverage::CoverageFamily,
+        operational: usize,
+    ) -> apex_crawl::coverage::FamilyCoverage {
+        apex_crawl::coverage::FamilyCoverage {
+            family,
+            declared: 5,
+            registered: 5,
+            operational,
+            validated: operational,
+            independent_domains: 5,
+            attempted: 5,
+            parser_success_pct: Some(100),
+            fetch_success_pct: Some(100),
+            latest_success_at: Some(now()),
+            ..apex_crawl::coverage::FamilyCoverage::default()
+        }
     }
 
-    #[test]
-    fn source_coverage_meeting_minimum_is_ok() {
-        let summary = SourceCoverageSummary {
+    fn healthy_matrix() -> SourceCoverageSummary {
+        SourceCoverageSummary {
             declared: 680,
             registered: 500,
             operational: 60,
             validated: 120,
             never_crawled: 300,
             temporarily_degraded: 10,
+            families: apex_crawl::coverage::CoverageFamily::ALL
+                .into_iter()
+                .map(|family| family_snapshot(family, 5))
+                .collect(),
             ..SourceCoverageSummary::default()
-        };
-        let status = evaluate_source_coverage(&summary, &ReadinessPolicy::default());
-        assert_eq!(status.status, "ok");
-        assert!(status.detail.contains("minimum 25 satisfied"));
+        }
+    }
+
+    #[test]
+    fn source_coverage_required_family_with_zero_sources_is_degraded() {
+        // 60 operational sources overall, but procurement has none: the
+        // deployment-wide total must not mask the family gap.
+        let mut summary = healthy_matrix();
+        for entry in &mut summary.families {
+            if entry.family == apex_crawl::coverage::CoverageFamily::Procurement {
+                entry.operational = 0;
+            }
+        }
+        let status = evaluate_source_coverage(
+            &summary,
+            &ReadinessPolicy::default(),
+            apex_crawl::coverage::PriorityCompanyCoverage::default(),
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("procurement"));
+        let report = status
+            .coverage
+            .as_ref()
+            .expect("coverage matrix is published in the detail");
+        let procurement = report
+            .families
+            .iter()
+            .find(|row| row.family == apex_crawl::coverage::CoverageFamily::Procurement)
+            .expect("procurement row published");
+        assert_eq!(procurement.status, "degraded");
+    }
+
+    #[test]
+    fn source_coverage_meeting_the_matrix_is_ok() {
+        let status = evaluate_source_coverage(
+            &healthy_matrix(),
+            &ReadinessPolicy::default(),
+            apex_crawl::coverage::PriorityCompanyCoverage {
+                total: 20,
+                covered: 15,
+            },
+            now(),
+        );
+        assert_eq!(status.status, "ok", "detail: {}", status.detail);
+        let report = status.coverage.as_ref().expect("coverage report");
+        assert_eq!(
+            report.families.len(),
+            apex_crawl::coverage::CoverageFamily::ALL.len()
+        );
+        assert_eq!(report.satisfied_required_families, report.required_families);
+        assert_eq!(report.priority_company_pct, Some(75));
+    }
+
+    #[test]
+    fn source_coverage_uncovered_priority_companies_degrade() {
+        let status = evaluate_source_coverage(
+            &healthy_matrix(),
+            &ReadinessPolicy::default(),
+            apex_crawl::coverage::PriorityCompanyCoverage {
+                total: 20,
+                covered: 1,
+            },
+            now(),
+        );
+        assert_eq!(status.status, "degraded");
+        assert!(status.detail.contains("priority-company coverage"));
     }
 
     #[test]
     fn policy_defaults_are_serializable() {
         let policy = ReadinessPolicy::default();
         let json = serde_json::to_value(&policy).expect("policy serializes");
-        assert_eq!(json["min_operational_sources"], 25);
         assert_eq!(json["search_index_max_lag_secs"], 3_600);
         assert!(json["critical_jobs"]
             .as_array()
             .expect("critical_jobs array")
             .contains(&json!("crawl_cycle")));
+        let families = json["coverage"]["families"]
+            .as_array()
+            .expect("coverage matrix is published as policy");
+        assert_eq!(families.len(), 11);
+        assert!(families.iter().any(|row| {
+            row["family"] == json!("procurement") && row["min_operational_sources"] == json!(3)
+        }));
     }
 }

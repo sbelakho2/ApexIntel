@@ -7,6 +7,40 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — Multidimensional coverage + shared evidence quality + lineage (P1-9/P1-10)
+
+Audit P1-9 (source-coverage readiness), P1-10 (reusable evidence quality)
+and the evidence-graph lineage item.
+
+### Backend
+- **P1-9** Source-coverage readiness is now a policy-driven matrix over
+  capability families (procurement, patents, regulatory, hiring, financial,
+  tenders, certifications, executive changes, trade/customs,
+  product/competitive signals, supply-chain/factories). Each family declares
+  whether it is required plus minimum operational sources, freshness,
+  successful-fetch ratio, parser-success ratio and independent-domain
+  minimums; the deployment also tracks priority-company coverage. The single
+  `APEX_MIN_OPERATIONAL_SOURCES` gate is gone: a required family with zero
+  operational sources fails readiness even when the deployment-wide total is
+  high. The resolved matrix and every family's measured dimensions are
+  published on the `source_coverage` capability (`CapabilityStatus.coverage`).
+- **P1-10** `apex_core::evidence_quality::EvidenceQuality` is the shared
+  ten-dimension model (evidence count, independent origins, primary sources,
+  source-type/geographic diversity, freshness, contradiction ratio,
+  corroboration, coverage completeness, parser confidence) with a composite
+  score and label. Adopted by source-coverage reporting and by the weekly memo
+  evidence posture, so independence/contradiction semantics are shared.
+- **Lineage** Migration 079 adds `evidence_lineage_nodes` /
+  `evidence_lineage_edges` for the canonical chain (`source_document ->
+  extraction -> observation -> claim -> insight -> ... -> outcome`); nodes
+  record producer, producer_version, created_at, input_digest, confidence and
+  stage. The real insight pipeline records observation -> claim -> insight and
+  document -> observation edges on every `insert_insight_claims`, and
+  `GET /api/insights/:id/lineage` returns the trace back to the source
+  document.
+
+---
+
 ## [Unreleased] — Source-capability truth + browser hardening (B402–B405)
 
 Audit items 10, 11, 18, 34 (source/crawl capability truth + browser hardening).

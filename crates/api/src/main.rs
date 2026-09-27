@@ -426,7 +426,8 @@ async fn build_state() -> Result<AppState> {
     tracing::info!(
         search_index_max_lag_secs = policy.search_index_max_lag_secs,
         crawl_freshness_max_age_secs = policy.crawl_freshness_max_age_secs,
-        min_operational_sources = policy.min_operational_sources,
+        coverage_families = policy.coverage.families.len(),
+        priority_company_coverage_min_pct = policy.coverage.min_priority_company_coverage_pct,
         critical_jobs = ?policy.critical_jobs,
         "readiness policy resolved"
     );

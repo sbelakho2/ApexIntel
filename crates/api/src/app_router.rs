@@ -101,6 +101,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(details_handlers::get_insight_detail),
         )
         .route(
+            "/api/insights/:id/lineage",
+            get(details_handlers::get_insight_lineage),
+        )
+        .route(
             "/api/insights/:id/bookmark",
             post(insights_handlers::bookmark_insight).delete(insights_handlers::unbookmark_insight),
         )

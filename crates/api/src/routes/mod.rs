@@ -60,6 +60,7 @@ pub mod paths {
     pub const WARNING_BULK_DELETE: &str = "/api/warnings/bulk-delete";
     pub const INSIGHTS: &str = "/api/insights";
     pub const INSIGHT_DETAIL: &str = "/api/insights/:id";
+    pub const INSIGHT_LINEAGE: &str = "/api/insights/:id/lineage";
     pub const INSIGHT_ANALYZE: &str = "/api/insights/:id/analyze";
     pub const INSIGHT_BOOKMARK: &str = "/api/insights/:id/bookmark";
     pub const INSIGHT_FEEDBACK: &str = "/api/insights/:id/feedback";
@@ -303,6 +304,13 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             method: HttpMethod::Get,
             path: paths::INSIGHT_DETAIL,
             description: "Get a single insight by ID",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::INSIGHT_LINEAGE,
+            description: "Trace an insight's evidence lineage back to its source documents",
             auth_required: true,
             min_role: "viewer",
         },
@@ -1054,7 +1062,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 103);
+        assert_eq!(eps.len(), 104);
     }
 
     #[test]

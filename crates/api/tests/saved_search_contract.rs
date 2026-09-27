@@ -116,5 +116,5 @@ fn saved_search_ui_is_part_of_the_server_rendered_page() {
 fn endpoint_count_matches_the_catalogued_surface() {
     // Verified after wiring the saved-search handlers (unchanged then) and
     // after adding the public `/api/version` provenance endpoint.
-    assert_eq!(all_endpoints().len(), 103);
+    assert_eq!(all_endpoints().len(), 104);
 }

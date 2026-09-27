@@ -257,6 +257,29 @@ impl PgStore {
         Ok(row)
     }
 
+    /// Coverage of priority companies (competitors) by recent observations,
+    /// returned as `(total, covered)`. A priority company is covered when at
+    /// least one observation linked to it falls inside the window. Feeds the
+    /// coverage matrix's priority-company dimension (audit P1-9).
+    pub async fn priority_company_coverage(&self, since: DateTime<Utc>) -> Result<(i64, i64)> {
+        let row: (i64, i64) = sqlx::query_as(
+            r#"SELECT
+                   COUNT(*) FILTER (WHERE COALESCE(c.is_competitor, FALSE))::bigint AS total,
+                   COUNT(*) FILTER (
+                       WHERE COALESCE(c.is_competitor, FALSE)
+                         AND EXISTS (
+                             SELECT 1 FROM observations o
+                             WHERE o.entity_id = c.id AND o.ts_utc >= $1
+                         )
+                   )::bigint AS covered
+               FROM companies c"#,
+        )
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     pub async fn get_company_by_domain(&self, domain: &str) -> Result<Option<CompanyRow>> {
         let Some(normalized) = normalize_company_domain(domain) else {
             return Ok(None);

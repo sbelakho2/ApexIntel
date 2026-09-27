@@ -68,6 +68,7 @@ run cargo test -p apex-store \
   --test rls_scoped_integration \
   --test auth_hardening_integration \
   --test insight_claim_evidence_integration \
+  --test evidence_lineage_integration \
   --test notification_delivery_integration \
   --test event_outbox_integration \
   --test source_runtime_state_integration \
