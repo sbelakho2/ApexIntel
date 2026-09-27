@@ -1516,7 +1516,7 @@ impl WarningAnalysisPanel {
             output.insight_count_available,
         );
         panel.provenance_line = format!(
-            "Direct evidence: {} · derived evidence: {} · freshness {:.2} · completeness {:.2} · diversity {:.2}",
+            "Direct evidence: {} · derived evidence: {} · freshness {:.2} · completeness {:.2} · domain diversity {:.2}",
             quality.direct_evidence_count,
             quality.derived_evidence_count,
             quality.evidence_freshness,
@@ -1706,13 +1706,15 @@ pub async fn warning_analysis_status_html(
     #[cfg(feature = "llm")]
     {
         // Housekeeping: resolve runs abandoned by a crashed process so the poll
-        // terminates instead of spinning forever.
-        if let Err(error) = store
-            .expire_stale_warning_analysis_runs(crate::warning_analysis::STALE_RUN_SECONDS)
-            .await
-        {
-            tracing::warn!(%error, "expire_stale_warning_analysis_runs failed; run status unchanged");
-        }
+        // terminates instead of spinning forever. The stale threshold covers
+        // the configured model timeout plus retries.
+        let stale_seconds = _model
+            .as_ref()
+            .map(|Extension(model)| {
+                crate::warning_analysis::stale_run_seconds(model.primary.timeout_seconds)
+            })
+            .unwrap_or(crate::warning_analysis::DEFAULT_STALE_RUN_SECONDS);
+        crate::warning_analysis::expire_stale_runs(&store, stale_seconds).await;
 
         let run = match store.get_warning_analysis_run(run_uuid).await {
             Ok(Some(run)) if run.warning_id == uuid => run,

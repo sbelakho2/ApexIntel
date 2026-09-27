@@ -732,13 +732,15 @@ pub(crate) async fn get_warning_analysis_run(
 
     // Housekeeping before reporting: a run abandoned by a crashed process must
     // resolve to an explicit failure instead of looking in-progress forever.
-    if let Err(error) = state
-        .store
-        .expire_stale_warning_analysis_runs(apex_api::warning_analysis::STALE_RUN_SECONDS)
-        .await
-    {
-        tracing::warn!(%error, "expire_stale_warning_analysis_runs failed; run status unchanged");
-    }
+    // The stale threshold covers the configured model timeout plus retries.
+    let stale_seconds = state
+        .llm
+        .as_ref()
+        .map(|runtime| {
+            apex_api::warning_analysis::stale_run_seconds(runtime.primary.timeout_seconds)
+        })
+        .unwrap_or(apex_api::warning_analysis::DEFAULT_STALE_RUN_SECONDS);
+    apex_api::warning_analysis::expire_stale_runs(&state.store, stale_seconds).await;
 
     let run = match state.store.get_warning_analysis_run(run_uuid).await {
         Ok(Some(run)) if run.warning_id == uid => run,

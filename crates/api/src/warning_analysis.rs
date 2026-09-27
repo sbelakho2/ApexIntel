@@ -66,11 +66,41 @@ pub const MAX_LIMITATIONS: usize = 8;
 pub const MAX_CLAIM_TEXT_CHARS: usize = 1200;
 pub const MAX_LIMITATION_CHARS: usize = 500;
 
-/// A queued/running run with no progress for this long is failed by the next
-/// status poll or enqueue, so a process crash cannot leave it "running" forever.
-/// This is longer than any supported model timeout (default 300 s) plus
-/// retries, so a healthy run is never expired underneath itself.
-pub const STALE_RUN_SECONDS: i64 = 1800;
+/// Total prompt budget (system prompt + user prompt, characters) for one
+/// analysis request. The evidence block is truncated to fit; the shipped
+/// llama-server unit runs with `--ctx-size 16384` (~4 chars/token), and the
+/// configured output cap is 2048 tokens, so ~20k input characters (~5k
+/// tokens) stays well inside the window. Override with
+/// `APEX_ANALYSIS_MAX_PROMPT_CHARS` when running a different context size.
+pub const DEFAULT_MAX_PROMPT_CHARS: usize = 20_000;
+pub const MAX_PROMPT_CHARS_ENV_VAR: &str = "APEX_ANALYSIS_MAX_PROMPT_CHARS";
+
+/// The OpenAI-compatible client makes one attempt plus three retries.
+const MODEL_MAX_ATTEMPTS: i64 = 4;
+
+/// Fallback stale threshold when the model timeout is unknown.
+pub const DEFAULT_STALE_RUN_SECONDS: i64 = 1800;
+
+/// Stale threshold derived from the model timeout: a healthy run may take
+/// `attempts × timeout` plus backoff, so the threshold must clear that.
+pub fn stale_run_seconds(model_timeout_secs: u32) -> i64 {
+    (model_timeout_secs as i64 * MODEL_MAX_ATTEMPTS + 300).max(DEFAULT_STALE_RUN_SECONDS)
+}
+
+/// Best-effort stale-run housekeeping shared by enqueue and both status
+/// surfaces: a crash must not leave a run "in progress" forever, but a
+/// housekeeping failure must never block enqueueing or reporting.
+pub async fn expire_stale_runs(store: &PgStore, stale_seconds: i64) {
+    if let Err(error) = store
+        .expire_stale_warning_analysis_runs(stale_seconds)
+        .await
+    {
+        tracing::warn!(
+            %error,
+            "warning analysis: failed to expire stale runs; run statuses unchanged"
+        );
+    }
+}
 
 /// Model configuration plus domain profile used for warning analysis, injected
 /// as an axum extension by the binary when the LLM runtime is configured.
@@ -303,8 +333,8 @@ pub struct EvidenceBundle {
     /// Distinct registrable domains across the warning's own sources and the
     /// observation corpus.
     pub source_domains: Vec<String>,
-    /// `(domain, tier, effective_reliability)` from `source_reliability_stats`.
-    pub source_reliability: Vec<(String, String, f64)>,
+    /// `(domain, tier)` from `source_reliability_stats`.
+    pub source_reliability: Vec<(String, String)>,
 }
 
 impl EvidenceBundle {
@@ -428,19 +458,13 @@ fn observation_source_domain(observation: &ObservationRow) -> Option<String> {
     observation_source_url(observation).and_then(|url| registrable_domain(&url))
 }
 
-fn source_reliability_for(
-    bundle: &EvidenceBundle,
-    domain: Option<&str>,
-) -> (Option<f64>, Option<String>) {
-    let Some(domain) = domain else {
-        return (None, None);
-    };
+fn source_reliability_tier(bundle: &EvidenceBundle, domain: Option<&str>) -> Option<String> {
+    let domain = domain?;
     bundle
         .source_reliability
         .iter()
-        .find(|(known_domain, _, _)| known_domain == domain)
-        .map(|(_, tier, reliability)| (Some(*reliability), Some(tier.clone())))
-        .unwrap_or((None, None))
+        .find(|(known_domain, _)| known_domain == domain)
+        .map(|(_, tier)| tier.clone())
 }
 
 /// Reusable evidence-quality assessment over the exact evidence set the model
@@ -449,14 +473,14 @@ pub fn assess_bundle_quality(bundle: &EvidenceBundle, now: DateTime<Utc>) -> Evi
     let mut records: Vec<EvidenceRecord> = Vec::new();
     for observation in &bundle.observations {
         let domain = observation_source_domain(observation);
-        let (reliability, tier) = source_reliability_for(bundle, domain.as_deref());
+        let tier = source_reliability_tier(bundle, domain.as_deref());
         let mut record = EvidenceRecord::new(
             observation.confidence.unwrap_or(0.6),
             EvidenceStance::Supports,
         )
         .with_source_type(observation.observation_type.clone())
         .with_observed_at(observation.ts_utc)
-        .with_source_reliability(reliability, tier);
+        .with_source_reliability(tier);
         if let Some(url) = observation_source_url(observation) {
             record = record.with_source_url(url);
         } else if let Some(domain) = domain {
@@ -484,27 +508,34 @@ pub fn assess_bundle_quality(bundle: &EvidenceBundle, now: DateTime<Utc>) -> Evi
 // Evidence digest (dedupe/caching key)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Stable digest of the exact evidence set and warning revision. Two requests
-/// with the same digest may reuse the same run; any evidence or warning change
-/// produces a different digest.
+/// Stable digest of the exact evidence set and the model-visible warning
+/// fields. Two requests with the same digest may reuse the same run; any
+/// evidence or prompt-content change produces a different digest.
+///
+/// Deliberately excludes bookkeeping timestamps (`warnings.updated_at` is
+/// bumped by acknowledge/review and by no-op merges), which do not change what
+/// the model sees and must not defeat dedupe on repeated clicks.
 pub fn evidence_digest(warning: &WarningRow, bundle: &EvidenceBundle) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"warning-analysis-digest-v1\n");
+    hasher.update(b"warning-analysis-digest-v2\n");
     hasher.update(format!(
-        "warning|{}|{}|{}|{}|{}|{}\n",
+        "warning|{}|{}|{}|{}|{}|{}|{:.6}\n",
         warning.id,
         warning.warning_type,
         warning.severity,
         warning.title,
         warning.description.as_deref().unwrap_or(""),
-        warning
-            .updated_at
-            .or(warning.created_at)
-            .map(|ts| ts.timestamp())
-            .unwrap_or_default(),
+        warning.region.as_deref().unwrap_or(""),
+        warning.confidence.unwrap_or(0.0),
     ));
     for url in warning.source_urls.as_deref().unwrap_or_default() {
         hasher.update(format!("source|{url}\n"));
+    }
+    let mut entity_ids: Vec<Uuid> = warning.entity_ids.clone().unwrap_or_default();
+    entity_ids.sort();
+    entity_ids.dedup();
+    for entity_id in entity_ids {
+        hasher.update(format!("entity|{entity_id}\n"));
     }
     for observation in &bundle.observations {
         hasher.update(format!(
@@ -659,7 +690,7 @@ pub fn build_prompts(
     let entity_names_str = if bundle.entity_names.is_empty() {
         "unspecified entities".to_string()
     } else {
-        bundle.entity_names.join(", ")
+        single_line(&bundle.entity_names.join(", "), 600)
     };
     let region = warning.region.as_deref().unwrap_or("Global");
     let confidence_pct = (warning.confidence.unwrap_or(0.0) * 100.0).round();
@@ -673,13 +704,13 @@ pub fn build_prompts(
          Produce 3-{max_claims} claims grounded in the evidence above, up to {max_impact} impact \
          items, up to {max_actions} recommended actions, and up to {max_limitations} limitations. \
          Prefer specific facts (companies, products, dates) exactly as they appear in the evidence.",
-        title = warning.title,
+        title = single_line(&warning.title, 300),
         severity = warning.severity,
         warning_type = warning.warning_type,
         region = region,
         confidence = confidence_pct,
         entities = entity_names_str,
-        description = warning.description.as_deref().unwrap_or("(none)"),
+        description = single_line(warning.description.as_deref().unwrap_or("(none)"), 2000),
         evidence = evidence_block(bundle),
         max_claims = MAX_CLAIMS,
         max_impact = MAX_IMPACT_ITEMS,
@@ -687,6 +718,65 @@ pub fn build_prompts(
         max_limitations = MAX_LIMITATIONS,
     );
     (system, user)
+}
+
+fn prompt_budget_chars() -> usize {
+    std::env::var(MAX_PROMPT_CHARS_ENV_VAR)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value >= 4_000)
+        .unwrap_or(DEFAULT_MAX_PROMPT_CHARS)
+}
+
+/// Fit the evidence set to the prompt budget, newest evidence first.
+///
+/// The documented evidence caps bound the *count* of items; this bounds the
+/// rendered *size* against the model's context window, so the prompt can never
+/// be silently truncated by the server (which would drop the system prompt and
+/// citation rules). Observations and insights dropped here are reflected in
+/// the run's sent counts and the prompt header ("showing X of Y available"),
+/// and the `send only newest` order means the freshest evidence survives.
+pub fn apply_prompt_budget(
+    profile: &IntelligenceProfile,
+    warning: &WarningRow,
+    bundle: EvidenceBundle,
+) -> EvidenceBundle {
+    apply_prompt_budget_with(profile, warning, bundle, prompt_budget_chars())
+}
+
+fn apply_prompt_budget_with(
+    profile: &IntelligenceProfile,
+    warning: &WarningRow,
+    mut bundle: EvidenceBundle,
+    budget: usize,
+) -> EvidenceBundle {
+    let (system, user) = build_prompts(profile, warning, &bundle);
+    if system.len() + user.len() <= budget {
+        return bundle;
+    }
+
+    // Drop oldest observations in chunks first (the list is newest-first).
+    while !bundle.observations.is_empty() {
+        let drop = bundle.observations.len().div_ceil(10).max(1);
+        bundle
+            .observations
+            .truncate(bundle.observations.len() - drop);
+        let (system, user) = build_prompts(profile, warning, &bundle);
+        if system.len() + user.len() <= budget {
+            return bundle;
+        }
+    }
+
+    // Then shed derived insights, least-recent first (also newest-first).
+    while !bundle.insights.is_empty() {
+        bundle.insights.truncate(bundle.insights.len() - 1);
+        let (system, user) = build_prompts(profile, warning, &bundle);
+        if system.len() + user.len() <= budget {
+            return bundle;
+        }
+    }
+
+    bundle
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -817,12 +907,18 @@ pub async fn enqueue_analysis(
     requested_by: Option<&str>,
 ) -> Result<(WarningAnalysisRunRow, bool, AnalysisRunContext)> {
     // A crashed process must not leave a run looking "in progress" forever.
-    store
-        .expire_stale_warning_analysis_runs(STALE_RUN_SECONDS)
-        .await
-        .context("warning analysis: failed to expire stale runs")?;
+    // Best-effort: housekeeping failure must not block new analysis. The
+    // threshold covers the configured timeout plus retries.
+    expire_stale_runs(store, stale_run_seconds(model.primary.timeout_seconds)).await;
 
-    let bundle = gather_evidence(store, warning).await?;
+    // Bound the evidence to the prompt budget before hashing: the digest and
+    // the persisted sent-vs-available counts must describe exactly what the
+    // model will see.
+    let bundle = apply_prompt_budget(
+        &model.profile,
+        warning,
+        gather_evidence(store, warning).await?,
+    );
     let digest = evidence_digest(warning, &bundle);
 
     let (run, deduplicated) = store
@@ -865,8 +961,9 @@ pub fn spawn_analysis_executor(store: Arc<PgStore>, context: AnalysisRunContext)
 }
 
 /// Run the LLM outside the request and persist the validated result. Any
-/// failure marks the run failed with an explicit reason — never a silent
-/// success.
+/// failure — model, validation, serialization, or persistence — marks the run
+/// failed with an explicit reason; never a silent success or a run stuck in
+/// `running`.
 pub async fn execute_analysis_run(store: &PgStore, context: &AnalysisRunContext) -> Result<()> {
     let claimed = store
         .start_warning_analysis_run(context.run_id)
@@ -877,37 +974,54 @@ pub async fn execute_analysis_run(store: &PgStore, context: &AnalysisRunContext)
         return Ok(());
     }
 
-    match run_analysis(context).await {
-        Ok(finished) => {
-            let output_json = serde_json::to_value(&finished.output)
-                .context("warning analysis: failed to serialize output")?;
-            store
-                .complete_warning_analysis_run(context.run_id, &output_json, &finished.records)
-                .await
-                .context("warning analysis: failed to persist result")?;
-            tracing::info!(
-                run_id = %context.run_id,
-                warning_id = %context.warning.id,
-                claims = finished.output.claims.len(),
-                "warning analysis completed"
-            );
-            Ok(())
-        }
+    let finished = match run_analysis(context).await {
+        Ok(finished) => finished,
         Err(error) => {
-            let message = format!("{error:#}");
-            tracing::error!(
-                run_id = %context.run_id,
-                warning_id = %context.warning.id,
-                error = %message,
-                "warning analysis run failed"
-            );
-            store
-                .fail_warning_analysis_run(context.run_id, &message)
-                .await
-                .context("warning analysis: failed to record failure")?;
-            Ok(())
+            return fail_run(store, context, &error).await;
         }
+    };
+
+    let persist = async {
+        let output_json = serde_json::to_value(&finished.output)
+            .context("warning analysis: failed to serialize output")?;
+        store
+            .complete_warning_analysis_run(context.run_id, &output_json, &finished.records)
+            .await
+            .context("warning analysis: failed to persist result")?;
+        Ok::<(), anyhow::Error>(())
     }
+    .await;
+
+    if let Err(error) = persist {
+        return fail_run(store, context, &error).await;
+    }
+
+    tracing::info!(
+        run_id = %context.run_id,
+        warning_id = %context.warning.id,
+        claims = finished.output.claims.len(),
+        "warning analysis completed"
+    );
+    Ok(())
+}
+
+async fn fail_run(
+    store: &PgStore,
+    context: &AnalysisRunContext,
+    error: &anyhow::Error,
+) -> Result<()> {
+    let message = format!("{error:#}");
+    tracing::error!(
+        run_id = %context.run_id,
+        warning_id = %context.warning.id,
+        error = %message,
+        "warning analysis run failed"
+    );
+    store
+        .fail_warning_analysis_run(context.run_id, &message)
+        .await
+        .context("warning analysis: failed to record failure")?;
+    Ok(())
 }
 
 struct FinishedAnalysis {
@@ -1164,6 +1278,79 @@ mod tests {
             first,
             evidence_digest(&warning, &changed),
             "different evidence must produce a different digest"
+        );
+    }
+
+    #[test]
+    fn digest_ignores_bookkeeping_changes_but_tracks_prompt_content() {
+        let warning = test_warning();
+        let bundle = test_bundle(vec![test_observation(Uuid::new_v4())], 1);
+        let first = evidence_digest(&warning, &bundle);
+
+        // Acknowledge/review bump `updated_at` without changing what the model
+        // sees: repeated clicks must still deduplicate.
+        let mut bookkeeping = warning.clone();
+        bookkeeping.updated_at = warning.updated_at.map(|ts| ts + chrono::Duration::hours(1));
+        bookkeeping.acknowledged = true;
+        bookkeeping.review_outcome = Some("reviewed".to_string());
+        assert_eq!(
+            first,
+            evidence_digest(&bookkeeping, &bundle),
+            "bookkeeping-only changes must not defeat dedupe"
+        );
+
+        // Prompt-visible content still changes the digest.
+        let mut content = warning.clone();
+        content.title = "Different title".to_string();
+        assert_ne!(first, evidence_digest(&content, &bundle));
+    }
+
+    #[test]
+    fn stale_threshold_covers_retries_of_configured_timeout() {
+        assert_eq!(stale_run_seconds(300), DEFAULT_STALE_RUN_SECONDS);
+        assert_eq!(stale_run_seconds(600), 2700);
+        assert!(stale_run_seconds(900) > 4 * 900);
+    }
+
+    #[test]
+    fn prompt_budget_truncates_evidence_and_counts_only_what_is_sent() {
+        let profile = IntelligenceProfile {
+            name: "Test".to_string(),
+            system_prompt: "You are a test analyst.".to_string(),
+            focus_areas: vec!["supply chains".to_string()],
+        };
+        let observations: Vec<ObservationRow> =
+            (0..40).map(|_| test_observation(Uuid::new_v4())).collect();
+        let newest_id = observations[0].id;
+        let bundle = test_bundle(observations, 40);
+
+        let bounded = apply_prompt_budget_with(&profile, &test_warning(), bundle, 6_000);
+        let (system, user) = build_prompts(&profile, &test_warning(), &bounded);
+
+        assert!(
+            system.len() + user.len() <= 6_000,
+            "prompt must fit the budget ({} chars)",
+            system.len() + user.len()
+        );
+        assert!(
+            bounded.observations.len() < 40,
+            "budget must have dropped evidence"
+        );
+        assert_eq!(
+            bounded
+                .observations
+                .first()
+                .map(|observation| observation.id),
+            Some(newest_id),
+            "newest evidence is kept first"
+        );
+        assert!(
+            user.contains(&format!(
+                "showing {} of {} available",
+                bounded.observations.len(),
+                40
+            )),
+            "prompt header must reflect the truncated sent count"
         );
     }
 

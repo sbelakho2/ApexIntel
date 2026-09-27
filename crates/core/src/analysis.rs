@@ -19,13 +19,9 @@ pub struct EvidenceRecord {
     pub observed_at: Option<DateTime<Utc>>,
     pub relevance: f64,
     pub stance: EvidenceStance,
-    /// Source-quality score already computed elsewhere (for example
-    /// `source_reliability_stats.effective_reliability`), when available.
-    /// Independent of how many records happen to cite the source.
-    #[serde(default)]
-    pub source_reliability: Option<f64>,
     /// Source-quality tier already computed elsewhere (for example
-    /// `source_reliability_stats.tier`).
+    /// `source_reliability_stats.tier`). Independent of how many records
+    /// happen to cite the source.
     #[serde(default)]
     pub source_reliability_tier: Option<String>,
     /// True when this record is derived intelligence (a generated insight or
@@ -43,7 +39,6 @@ impl EvidenceRecord {
             observed_at: None,
             relevance,
             stance,
-            source_reliability: None,
             source_reliability_tier: None,
             derived: false,
         }
@@ -69,14 +64,9 @@ impl EvidenceRecord {
         self
     }
 
-    /// Attach source-quality data measured independently of this record's
+    /// Attach source-quality tier data measured independently of this record's
     /// presence (never derived from corpus counts).
-    pub fn with_source_reliability(
-        mut self,
-        reliability: Option<f64>,
-        tier: Option<String>,
-    ) -> Self {
-        self.source_reliability = reliability;
+    pub fn with_source_reliability(mut self, tier: Option<String>) -> Self {
         self.source_reliability_tier = tier;
         self
     }
@@ -99,18 +89,23 @@ pub struct EvidenceQuality {
     pub corroboration_score: f64,
     pub diversity_score: f64,
     pub independence_score: f64,
+    /// Mean recency weight. Serialized alias kept for existing consumers;
+    /// always equal to [`Self::evidence_freshness`].
     pub freshness_score: f64,
     pub contradiction_penalty: f64,
     pub source_count: usize,
     /// Distinct registrable domains / origins among the cited sources.
     pub independent_source_count: usize,
     pub supporting_count: usize,
+    /// Contradicting records. Serialized alias kept for existing consumers;
+    /// always equal to [`Self::contradiction_count`].
     pub contradicting_count: usize,
-    /// Alias of `contradicting_count`, named for consumers that want the
-    /// contradiction count on its own.
+    /// Contradicting records (canonical name). Always equal to
+    /// [`Self::contradicting_count`].
     pub contradiction_count: usize,
     /// Fraction of records whose source is a distinct registrable domain
-    /// (independence ratio, 0.0–1.0).
+    /// (independence ratio, 0.0–1.0). Distinct from [`Self::diversity_score`],
+    /// which additionally blends source-type diversity.
     pub source_diversity: f64,
     /// How many records cite each source-quality tier. Records without
     /// measured source quality are counted under `unknown`. Sums to
@@ -995,7 +990,7 @@ mod tests {
                     .with_source_url("https://alpha.example.com/a")
                     .with_source_type("news")
                     .with_observed_at(now - Duration::days(1))
-                    .with_source_reliability(Some(0.9), Some("High".to_string())),
+                    .with_source_reliability(Some("High".to_string())),
                 EvidenceRecord::new(0.7, EvidenceStance::Contradicts)
                     .with_source_url("https://beta.example.org/b")
                     .with_source_type("filing")
@@ -1012,6 +1007,14 @@ mod tests {
         assert_eq!(quality.source_count, 3);
         assert_eq!(quality.independent_source_count, 3);
         assert_eq!(quality.contradiction_count, 1);
+        assert_eq!(
+            quality.contradiction_count, quality.contradicting_count,
+            "alias fields must stay equal"
+        );
+        assert!(
+            (quality.evidence_freshness - quality.freshness_score).abs() < f64::EPSILON,
+            "alias fields must stay equal"
+        );
         assert_eq!(quality.direct_evidence_count, 2);
         assert_eq!(quality.derived_evidence_count, 1);
         assert!((quality.evidence_completeness - 1.0).abs() < 1e-9);

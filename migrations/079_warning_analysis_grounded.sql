@@ -101,11 +101,20 @@ ALTER TABLE warning_analysis_claims
     );
 
 -- ── Citation join (FK integrity per evidence kind) ───────────────────────────
+--
+-- The evidence FKs cascade rather than restrict: production deletes
+-- observations (DNS-posture / lookalike delete-then-insert scans and the
+-- `cleanup_old_observations` retention function), and blocking those deletes
+-- would break existing cleanup paths. Instead, deleting cited evidence
+-- cascades its citation rows and the count trigger below downgrades any
+-- observed/inference claim that loses its last citation to `unknown` — an
+-- explicit "provenance no longer verifiable" state rather than a stale claim
+-- or a failed delete.
 CREATE TABLE IF NOT EXISTS warning_analysis_claim_evidence (
     claim_id       UUID NOT NULL
         REFERENCES warning_analysis_claims(id) ON DELETE CASCADE,
-    observation_id UUID REFERENCES observations(id) ON DELETE RESTRICT,
-    insight_id     UUID REFERENCES insights(id) ON DELETE RESTRICT,
+    observation_id UUID REFERENCES observations(id) ON DELETE CASCADE,
+    insight_id     UUID REFERENCES insights(id) ON DELETE CASCADE,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT warning_analysis_claim_evidence_exactly_one CHECK (
         (observation_id IS NOT NULL) <> (insight_id IS NOT NULL)
@@ -129,18 +138,27 @@ CREATE INDEX IF NOT EXISTS idx_warning_analysis_claim_evidence_insight
 
 -- Keep evidence_count consistent with the join table. Recompute (rather than
 -- increment) so the count cannot drift under retries or concurrent inserts.
+-- A claim whose last citation disappears (evidence deleted, or a re-run that
+-- no longer cites it) is downgraded to `unknown`: its provenance can no
+-- longer be vouched for, and the policy CHECK forbids observed/inference
+-- claims with zero evidence.
 CREATE OR REPLACE FUNCTION refresh_warning_analysis_claim_evidence_count()
 RETURNS trigger AS $$
 DECLARE
     target_id UUID;
+    link_count INTEGER;
 BEGIN
     target_id := COALESCE(NEW.claim_id, OLD.claim_id);
+    SELECT COUNT(*)::int INTO link_count
+    FROM warning_analysis_claim_evidence
+    WHERE claim_id = target_id;
     UPDATE warning_analysis_claims
-    SET evidence_count = (
-        SELECT COUNT(*)::int
-        FROM warning_analysis_claim_evidence e
-        WHERE e.claim_id = target_id
-    )
+    SET evidence_count = link_count,
+        claim_kind = CASE
+            WHEN link_count = 0 AND claim_kind IN ('observed', 'inference')
+                THEN 'unknown'
+            ELSE claim_kind
+        END
     WHERE id = target_id;
     RETURN NULL;
 END $$ LANGUAGE plpgsql;

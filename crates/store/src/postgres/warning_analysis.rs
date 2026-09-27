@@ -243,19 +243,10 @@ impl PgStore {
         Ok(inserted)
     }
 
-    /// Insert validated claims for a run outside of the completion path (used
-    /// by tests and repair tooling). Idempotent per `(run_id, claim_hash)`.
-    pub async fn insert_warning_analysis_claims(
-        &self,
-        run_id: Uuid,
-        claims: &[AnalysisClaimRecord],
-    ) -> Result<u64> {
-        let mut tx = self.pool.begin().await?;
-        let inserted = Self::insert_warning_analysis_claims_on(&mut tx, run_id, claims).await?;
-        tx.commit().await?;
-        Ok(inserted)
-    }
-
+    /// Insert validated claims for a run as part of the run's completion
+    /// transaction (private entry point used by
+    /// [`PgStore::complete_warning_analysis_run`]). Idempotent per
+    /// `(run_id, section, claim)`.
     async fn insert_warning_analysis_claims_on(
         conn: &mut sqlx::PgConnection,
         run_id: Uuid,
@@ -299,18 +290,22 @@ impl PgStore {
 
             let kind = claim.kind.as_str();
             let text = claim.claim.trim();
+            let section = claim.section.as_str();
+            // Claim identity includes the section: the same wording can appear
+            // in two sections (e.g. an impact statement and an action), and a
+            // text-only key would collapse them with last-writer-wins.
             // New rows start as `unknown` with zero evidence so they are
             // policy-valid before links exist; the row is promoted to its real
             // kind once the join table state is settled.
             let claim_id: Uuid = match sqlx::query_scalar::<_, Uuid>(
                 r#"INSERT INTO warning_analysis_claims
                        (run_id, section, claim, confidence, claim_kind, claim_hash)
-                   VALUES ($1, $2, $3, $4, 'unknown', md5($3))
+                   VALUES ($1, $2, $3, $4, 'unknown', md5($2 || ':' || $3))
                    ON CONFLICT (run_id, claim_hash) DO NOTHING
                    RETURNING id"#,
             )
             .bind(run_id)
-            .bind(claim.section.as_str())
+            .bind(section)
             .bind(text)
             .bind(claim.confidence)
             .fetch_optional(&mut *conn)
@@ -323,9 +318,10 @@ impl PgStore {
                 None => {
                     sqlx::query_scalar::<_, Uuid>(
                         "SELECT id FROM warning_analysis_claims \
-                     WHERE run_id = $1 AND claim_hash = md5($2)",
+                     WHERE run_id = $1 AND claim_hash = md5($2 || ':' || $3)",
                     )
                     .bind(run_id)
+                    .bind(section)
                     .bind(text)
                     .fetch_one(&mut *conn)
                     .await?
@@ -448,18 +444,18 @@ impl PgStore {
     }
 
     /// Source-quality data measured elsewhere (migration 014), keyed by
-    /// registrable domain: `(source_domain, tier, effective_reliability)`.
-    /// Used to expose reliability as independent data rather than deriving it
-    /// from how many sources happen to be present.
+    /// registrable domain: `(source_domain, tier)`. Used to expose reliability
+    /// as independent data rather than deriving it from how many sources
+    /// happen to be present.
     pub async fn get_source_reliability_stats_for_domains(
         &self,
         domains: &[String],
-    ) -> Result<Vec<(String, String, f64)>> {
+    ) -> Result<Vec<(String, String)>> {
         if domains.is_empty() {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query_as::<_, (String, String, f64)>(
-            "SELECT source_domain, tier, effective_reliability \
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT source_domain, tier \
              FROM source_reliability_stats WHERE source_domain = ANY($1)",
         )
         .bind(domains)

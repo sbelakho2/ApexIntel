@@ -360,6 +360,127 @@ async fn fabricated_provenance_is_rejected_and_fails_the_run() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
+async fn same_wording_in_two_sections_persists_two_claims() {
+    let pool = connect().await;
+    migrate(&pool).await;
+    let store = PgStore { pool: pool.clone() };
+    let warning_id = new_warning(&pool).await;
+    let observation_id = new_observation(&pool).await;
+
+    let (run, _) = store
+        .enqueue_warning_analysis_run(&request(warning_id, "digest-sections", "v2"))
+        .await
+        .expect("enqueue");
+    store
+        .start_warning_analysis_run(run.id)
+        .await
+        .expect("start run");
+
+    // The same wording is deliberately used in two sections; a text-only
+    // claim identity would collapse these into one row with last-writer-wins.
+    let shared = "Qualify a second supplier";
+    let claims = vec![
+        AnalysisClaimRecord::new(
+            shared,
+            vec![EvidenceRef::Observation(observation_id)],
+            Some(0.7),
+            ClaimKind::Inference,
+        )
+        .with_section(ClaimSection::Claim),
+        AnalysisClaimRecord::new(shared, Vec::new(), Some(0.6), ClaimKind::Recommendation)
+            .with_section(ClaimSection::Action),
+    ];
+    let inserted = store
+        .complete_warning_analysis_run(run.id, &serde_json::json!({}), &claims)
+        .await
+        .expect("complete run");
+    assert_eq!(inserted, 2, "both sections must persist independently");
+
+    let rows = store
+        .list_warning_analysis_claims(run.id)
+        .await
+        .expect("list claims");
+    assert_eq!(rows.len(), 2);
+    let claim = rows
+        .iter()
+        .find(|row| row.section == "claim")
+        .expect("claim section row");
+    assert_eq!(claim.claim_kind, "inference");
+    assert_eq!(
+        claim.evidence,
+        vec![EvidenceRef::Observation(observation_id)]
+    );
+    let action = rows
+        .iter()
+        .find(|row| row.section == "action")
+        .expect("action section row");
+    assert_eq!(action.claim_kind, "recommendation");
+    assert!(action.evidence.is_empty());
+
+    cleanup(&pool, warning_id, &[observation_id]).await;
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn deleting_cited_evidence_downgrades_claim_instead_of_blocking() {
+    let pool = connect().await;
+    migrate(&pool).await;
+    let store = PgStore { pool: pool.clone() };
+    let warning_id = new_warning(&pool).await;
+    let observation_id = new_observation(&pool).await;
+
+    let (run, _) = store
+        .enqueue_warning_analysis_run(&request(warning_id, "digest-delete", "v2"))
+        .await
+        .expect("enqueue");
+    store
+        .start_warning_analysis_run(run.id)
+        .await
+        .expect("start run");
+    let claims = vec![AnalysisClaimRecord::new(
+        "Observed fact tied to a deletable observation",
+        vec![EvidenceRef::Observation(observation_id)],
+        None,
+        ClaimKind::Observed,
+    )];
+    store
+        .complete_warning_analysis_run(run.id, &serde_json::json!({}), &claims)
+        .await
+        .expect("complete run");
+
+    // Production cleanup (DNS-posture scans, retention) deletes observations.
+    // That must not be blocked by citations; the claim is downgraded to an
+    // explicit "provenance no longer verifiable" state instead.
+    sqlx::query("DELETE FROM observations WHERE id = $1")
+        .bind(observation_id)
+        .execute(&pool)
+        .await
+        .expect("deleting cited evidence must not be blocked");
+
+    let rows = store
+        .list_warning_analysis_claims(run.id)
+        .await
+        .expect("list claims");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].claim_kind, "unknown");
+    assert_eq!(rows[0].evidence_count, 0);
+    assert!(rows[0].evidence.is_empty());
+
+    // The run's result stays available and the claim text is preserved.
+    let stored = store
+        .get_warning_analysis_run(run.id)
+        .await
+        .expect("load run")
+        .expect("run exists");
+    assert_eq!(stored.status, "succeeded");
+
+    cleanup(&pool, warning_id, &[]).await;
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
 async fn stale_runs_expire_instead_of_hanging() {
     let pool = connect().await;
     migrate(&pool).await;
