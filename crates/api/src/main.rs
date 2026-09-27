@@ -168,6 +168,9 @@ struct AppState {
     login_throttle: Arc<apex_api::login_throttle::LoginThrottle>,
     config: Arc<ApiRuntimeConfig>,
     profile: DeploymentProfile,
+    /// Configurable intelligence profile for LLM analysis prompts
+    /// (`APEX_INTELLIGENCE_PROFILE` / `APEX_INTELLIGENCE_PROFILE_PATH`).
+    intelligence_profile: apex_core::intelligence_profile::IntelligenceProfile,
     /// Configurable readiness policy (thresholds + probe budgets).
     policy: Arc<ReadinessPolicy>,
     /// Real browser render self-test capability, or why it is unavailable.
@@ -284,6 +287,17 @@ async fn build_state() -> Result<AppState> {
         profile = %profile,
         llm_build = apex_api::BUILD_LLM_ENABLED,
         "deployment profile resolved"
+    );
+
+    // Domain framing for LLM analysis is deployment configuration (audit
+    // P1-2): APEX_INTELLIGENCE_PROFILE / APEX_INTELLIGENCE_PROFILE_PATH, with
+    // the embedded profile set as the documented default. Invalid
+    // configuration fails startup rather than falling back to an empty prompt.
+    let intelligence_profile = apex_core::intelligence_profile::IntelligenceProfileSet::from_env()
+        .context("invalid intelligence profile configuration")?;
+    tracing::info!(
+        intelligence_profile = %intelligence_profile.name,
+        "intelligence profile resolved"
     );
 
     let store = Arc::new(PgStore::connect(config.app.database_url.expose_secret()).await?);
@@ -466,6 +480,7 @@ async fn build_state() -> Result<AppState> {
         login_throttle,
         config: Arc::new(config),
         profile,
+        intelligence_profile,
         policy,
         browser_probe,
         llm_probe_target,

@@ -1,5 +1,11 @@
-{# ── HTMX partial: real warning analysis panel (audit P0 #40) ─────────── #}
-<div class="apex-card p-4" id="analysis-panel" data-status="{{ status }}">
+{# ── HTMX partial: durable, evidence-bound warning analysis (audit P0-3/P1-5) ──
+   The panel polls itself while a run is queued/running and renders only the
+   persisted structured result (claims with per-claim evidence, impact, actions,
+   limitations, and the reusable EvidenceQuality numbers). It never invents a
+   "completed" state and never labels evidence volume as reliability. #}
+<div class="apex-card p-4" id="analysis-panel" data-status="{{ status }}"
+     {% if poll %}hx-get="/warnings/{{ warning_id }}/analysis/{{ run_id }}"
+     hx-trigger="load delay:2s" hx-swap="outerHTML"{% endif %}>
   <div class="mb-3 flex items-center justify-between gap-3">
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
     <span class="rounded-sm border border-border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{{ status_label }}</span>
@@ -8,35 +14,61 @@
   {% if has_result %}
   <div class="space-y-4">
     <div>
-      <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Threat assessment</h3>
-      <p class="text-sm leading-relaxed">{{ threat_assessment }}</p>
-    </div>
-
-    <div>
       <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Claims &amp; evidence</h3>
       {% if !has_claims %}
-      <p class="text-sm text-muted-foreground">The model produced no evidence-grounded claim paragraphs.</p>
+      <p class="text-sm text-muted-foreground">The model produced no evidence-grounded claims; see limitations.</p>
       {% else %}
       <ul class="space-y-2">
         {% for claim in claims %}
         <li class="rounded-sm border border-border p-3">
-          <p class="text-sm leading-relaxed">{{ claim.indicator }}</p>
-          <p class="mt-1 text-[10px] text-muted-foreground">Evidence: {{ claim.evidence }} · Confidence: {{ confidence_pct }}% · Data sufficiency: {{ data_sufficiency }}</p>
+          <div class="flex items-center gap-2">
+            <span class="rounded-sm border border-border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-muted-foreground" data-claim-kind="{{ claim.kind_label }}">{{ claim.kind_label }}</span>
+            {% if claim.has_confidence %}<span class="text-[10px] text-muted-foreground tabular-nums">{{ claim.confidence }}% confidence</span>{% endif %}
+          </div>
+          <p class="mt-1 text-sm leading-relaxed">{{ claim.text }}</p>
+          {% if claim.has_citations %}
+          <ul class="mt-1 space-y-0.5">
+            {% for citation in claim.citations %}
+            <li class="text-[10px] text-muted-foreground">Evidence: {{ citation }}</li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="mt-1 text-[10px] text-muted-foreground">No direct evidence cited (recommendation).</p>
+          {% endif %}
         </li>
         {% endfor %}
       </ul>
       {% endif %}
-      <p class="mt-2 text-[10px] text-muted-foreground">{{ evidence_summary }}</p>
+      <p class="mt-2 text-[10px] text-muted-foreground">{{ quality_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ reliability_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ coverage_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ provenance_line }}</p>
+      <p class="mt-1 text-[10px] text-muted-foreground">{{ evidence_summary }}</p>
     </div>
 
+    {% if has_impact %}
     <div>
       <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Impact</h3>
-      <p class="text-sm leading-relaxed">{{ impact_assessment }}</p>
+      <ul class="space-y-2">
+        {% for item in impact %}
+        <li class="rounded-sm border border-border p-3">
+          <p class="text-sm leading-relaxed">{{ item.text }}</p>
+          {% if item.has_citations %}
+          <ul class="mt-1 space-y-0.5">
+            {% for citation in item.citations %}
+            <li class="text-[10px] text-muted-foreground">Evidence: {{ citation }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
     </div>
+    {% endif %}
 
     <div>
       <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Confidence</h3>
-      <p class="text-sm leading-relaxed">{{ confidence_pct }}% ({{ source_reliability }} source reliability · {{ data_sufficiency }} data sufficiency)</p>
+      <p class="text-sm leading-relaxed">{{ confidence_pct }}% warning confidence</p>
       {% if has_entities %}
       <p class="mt-1 text-[10px] text-muted-foreground">Entities assessed: {{ entities_line }}</p>
       {% endif %}
@@ -44,29 +76,46 @@
 
     <div>
       <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Limitations</h3>
+      {% if limitations.is_empty() %}
+      <p class="text-sm text-muted-foreground">The analysis reported no explicit limitations.</p>
+      {% else %}
       <ul class="list-disc space-y-1 pl-5 text-sm leading-relaxed">
         {% for limitation in limitations %}
         <li>{{ limitation }}</li>
         {% endfor %}
       </ul>
+      {% endif %}
     </div>
 
     <div>
       <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Recommendations</h3>
-      {% if !has_recommendations %}
+      {% if !has_actions %}
       <p class="text-sm text-muted-foreground">No response actions were generated.</p>
       {% else %}
-      <ul class="list-disc space-y-1 pl-5 text-sm leading-relaxed">
-        {% for recommendation in recommendations %}
-        <li>{{ recommendation }}</li>
+      <ul class="space-y-2">
+        {% for action in actions %}
+        <li class="rounded-sm border border-border p-3">
+          <span class="rounded-sm border border-border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-muted-foreground">{{ action.kind_label }}</span>
+          <p class="mt-1 text-sm leading-relaxed">{{ action.text }}</p>
+          {% if action.has_citations %}
+          <ul class="mt-1 space-y-0.5">
+            {% for citation in action.citations %}
+            <li class="text-[10px] text-muted-foreground">Evidence: {{ citation }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </li>
         {% endfor %}
       </ul>
       {% endif %}
     </div>
   </div>
   {% else %}
-  <p class="text-sm leading-relaxed text-muted-foreground">
-    {% if let Some(detail) = detail %}{{ detail }}{% else %}Analysis is unavailable. The warning is unchanged.{% endif %}
-  </p>
+  <div class="flex items-center gap-3">
+    {% if poll %}<span class="apex-spinner-sm" aria-hidden="true"></span>{% endif %}
+    <p class="text-sm leading-relaxed text-muted-foreground">
+      {% if let Some(detail) = detail %}{{ detail }}{% else %}Analysis is unavailable. The warning is unchanged.{% endif %}
+    </p>
+  </div>
   {% endif %}
 </div>

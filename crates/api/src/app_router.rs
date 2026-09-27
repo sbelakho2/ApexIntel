@@ -121,8 +121,12 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(exports_handlers::export_insight_pdf),
         )
         .route(
-            "/api/warnings/:id/analyze",
-            post(insights_handlers::analyze_warning),
+            "/api/warnings/:id/analysis",
+            post(warnings_handlers::enqueue_warning_analysis),
+        )
+        .route(
+            "/api/warnings/:id/analysis/:run_id",
+            get(warnings_handlers::get_warning_analysis_run),
         )
         .route("/api/memos", get(memos_handlers::list_memos))
         .route("/api/companies", get(entities_handlers::list_companies))
@@ -629,6 +633,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             post(apex_api::web::warnings::analyze_warning_html),
         )
         .route(
+            "/warnings/:id/analysis/:run_id",
+            get(apex_api::web::warnings::warning_analysis_status_html),
+        )
+        .route(
             "/warnings/:id/review",
             post(apex_api::web::warnings::review_warning_html),
         )
@@ -846,6 +854,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         Some(llm) => web_pages.layer(Extension(
             apex_api::warning_analysis::WarningAnalysisModel {
                 primary: llm.primary.clone(),
+                profile: state.intelligence_profile.clone(),
             },
         )),
         None => web_pages,

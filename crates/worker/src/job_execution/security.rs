@@ -311,11 +311,13 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
                         title: title?,
                         severity: severity?,
                         warning_type: warning_type?,
+                        // false-success-classification: best-effort — optional display metadata; a decode failure renders the row with no linked entities
                         entity_ids: entity_ids
                             .unwrap_or_default()
                             .into_iter()
                             .map(|entity_id| entity_id.to_string())
                             .collect(),
+                        // false-success-classification: best-effort — optional broadcast flag; a decode failure renders the row as non-broadcast
                         is_system_broadcast: is_system_broadcast.unwrap_or(false),
                         created_at: created_at?,
                         acknowledged: acknowledged?,

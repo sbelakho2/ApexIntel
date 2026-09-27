@@ -258,6 +258,7 @@ pub use heartbeats::{latest_service_instance_heartbeat, WORKER_HEARTBEAT_STALE_A
 mod history;
 mod insights;
 pub use insights::InsightClaimRow;
+pub use warning_analysis::{NewWarningAnalysisRun, WarningAnalysisClaimRow, WarningAnalysisRunRow};
 mod learning_eval;
 pub use learning_eval::{
     LearningEvalExampleInput, LearningEvalMetricInput, LearningEvalMetricRow, LearningEvalRunInput,
@@ -279,6 +280,7 @@ mod sales;
 mod security;
 mod sources;
 pub mod trends;
+mod warning_analysis;
 mod warnings;
 pub use warnings::WarningInsertOutcome;
 
