@@ -97,7 +97,9 @@ steps:
     image: alpine:3.20
     commands:
       - apk add --no-cache bash python3
+      - bash scripts/ci/check_false_success.sh --self-test
       - bash scripts/ci/check_false_success.sh
+      - bash scripts/ci/check_identifier_decode.sh --self-test
       - bash scripts/ci/check_identifier_decode.sh
 
   # Fails if a migration header or body comment describes a different revision
