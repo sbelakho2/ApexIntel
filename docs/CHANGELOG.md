@@ -32,8 +32,12 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
   never labelled `0`.
 - The 7/30/90-day chips now fetch `/api/charts/entity/:id/activity/svg?days=N`
   (previously they swapped the JSON endpoint), the SVG records `data-days` and
-  `data-point-count`, and the HTMX fragment updates the card's window label
-  out-of-band. Series length and point count track the selected window.
+  `data-point-count`, and the HTMX fragment refreshes the day count in the
+  card header out-of-band. Series length and point count track the selected
+  window. Count-axis ticks are integer-floored, so range-1 windows (including
+  all-zero counts) no longer print a duplicate `0` label. The now-unreferenced
+  JSON activity route was removed: the SVG fragment is the only
+  activity-chart surface.
 
 ### Acquisition single-source (P1-7, P2)
 - Archived the legacy Python crawl daemon (`scripts/crawl_daemon.py`, its tests
@@ -46,9 +50,10 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ### Tests
 - Axis-tick unit tests (non-zero minimum, empty data, single point), score-vs-
-  count axis separation, truthful count-axis labels, days-window series
-  filtering (unit) and an e2e check that the 7d/90d chips change the rendered
-  point count and header (not just a label).
+  count axis separation, integer-only count ticks (no duplicate labels on
+  range-1 windows), days-window series filtering (unit) and an e2e check that
+  the 7d/90d chips change the rendered point count and header (not just a
+  label).
 - Fixed the server-UI seed fixtures for migration 078's evidence policy: the
   seeded insight now links a real observation via `insight_claim_evidence`
   (claim created as `unknown`, then promoted), so the smoke/journey/a11y

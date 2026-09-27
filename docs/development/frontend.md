@@ -198,8 +198,11 @@ components:
   data range, so a non-zero minimum is labelled with its real value instead of
   a hard-coded `0`. The macro's `7d/30d/90d` chips HTMX-swap this fragment into
   the card body.
-- **JSON twin** — `GET /api/charts/entity/:id/activity?days=N` returns the same
-  `dates` / `observations` / `insights` / `scores` arrays for API consumers.
+- **JSON observation buckets** — `GET /api/charts/entity/:id/observations?days=N&bucket=week`
+  returns bucketed counts for API consumers. The entity *activity* JSON twin
+  (`/api/charts/entity/:id/activity`) was removed with the WASM SPA cleanup:
+  the SVG fragment is the only activity-chart surface, so there is no
+  second, unverified rendering path to drift.
 - **Macro bar charts** — dashboard trend and crawl-activity charts are Askama
   macros over precomputed per-bucket heights (`warning_trend_chart`,
   `insight_trend_chart`, `crawl_activity_chart`, `observation_trend_chart`).
