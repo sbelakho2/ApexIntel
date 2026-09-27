@@ -9,11 +9,12 @@
 //!
 //! Note: This uses the Tor proxy for anonymous access. Requires Tor daemon running.
 
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 use crate::sources::dark_web::tor_proxy::TorProxy;
-use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// A marketplace listing/listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,29 +184,57 @@ impl MarketplaceMonitor {
     }
 
     /// Monitor a specific onion site for listings.
+    ///
+    /// An unreachable Tor daemon is [`AcquisitionOutcome::Unavailable`], not an
+    /// empty success: the deployment cannot execute the adapter at all.
     pub async fn scan_onion(
         &mut self,
         onion_url: &str,
         category: &str,
-    ) -> Result<Vec<MarketplaceListing>> {
+    ) -> AcquisitionOutcome<MarketplaceListing> {
         if !self.is_tor_available() {
-            warn!("Tor not reachable, dark web scan skipped");
-            return Ok(Vec::new());
+            return AcquisitionOutcome::unavailable(
+                "Tor not reachable: dark-web marketplace scan unavailable",
+            );
         }
 
-        let client = self.tor_proxy.create_tor_client()?;
-        let resp = client
-            .get(onion_url)
-            .send()
-            .await
-            .with_context(|| format!("onion site request: {}", onion_url))?;
+        let client = match self.tor_proxy.create_tor_client() {
+            Ok(client) => client,
+            Err(error) => {
+                return AcquisitionOutcome::unavailable(format!(
+                    "create Tor client failed: {error}"
+                ));
+            }
+        };
+        let resp = match client.get(onion_url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("onion site request {onion_url} failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), url = %onion_url, "Marketplace onion returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "Marketplace onion",
+            );
         }
 
-        let body = resp.text().await.context("read marketplace HTML")?;
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("read marketplace HTML failed: {error}"),
+                    None,
+                );
+            }
+        };
         self.parse_listings(&body, onion_url, category)
     }
 
@@ -214,7 +243,7 @@ impl MarketplaceMonitor {
         html: &str,
         source: &str,
         category: &str,
-    ) -> Result<Vec<MarketplaceListing>> {
+    ) -> AcquisitionOutcome<MarketplaceListing> {
         use regex::Regex;
 
         let title_re = Regex::new(r"<title>([^<]+)</title>").ok();
@@ -243,7 +272,7 @@ impl MarketplaceMonitor {
 
         self.listings.push(listing.clone());
         debug!(marketplace = %source, "Marketplace listing parsed");
-        Ok(vec![listing])
+        AcquisitionOutcome::success_now(vec![listing])
     }
 
     /// Get all cached listings.
@@ -262,9 +291,50 @@ impl MarketplaceMonitor {
     }
 }
 
+/// Request for one marketplace onion scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketplaceScanRequest {
+    pub onion_url: String,
+    pub category: String,
+}
+
+#[async_trait]
+impl SourceAdapter for MarketplaceMonitor {
+    type Item = MarketplaceListing;
+    type Request = MarketplaceScanRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "dark_web_marketplace"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::TOR
+    }
+
+    async fn acquire(
+        &self,
+        request: MarketplaceScanRequest,
+    ) -> AcquisitionOutcome<MarketplaceListing> {
+        // `scan_onion` needs `&mut self` for its listing cache; clone the
+        // monitor so the adapter contract stays `&self`.
+        let mut monitor = self.clone();
+        monitor
+            .scan_onion(&request.onion_url, &request.category)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marketplace_adapter_declares_its_prerequisite() {
+        let monitor = MarketplaceMonitor::with_tor(TorProxy::default());
+        assert_eq!(monitor.adapter_id(), "dark_web_marketplace");
+        assert!(monitor.prerequisite().requires_tor);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
+    }
 
     #[test]
     fn marketplace_price_crypto() {

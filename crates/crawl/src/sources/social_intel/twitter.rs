@@ -11,11 +11,14 @@
 //! Falls back to public HTML scraping when absent (rate-limited and limited).
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 
 /// A normalised tweet from Twitter/X.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,17 +140,21 @@ impl TwitterMonitor {
     }
 
     /// Search recent tweets by keyword.
-    pub async fn search_tweets(&self, query: &str) -> Result<Vec<Tweet>> {
-        if let Some(ref token) = self.config.bearer_token {
-            self.search_tweets_api(token, query).await
-        } else {
-            warn!("TWITTER_BEARER_TOKEN not set — keyword search unavailable");
-            Ok(Vec::new())
+    ///
+    /// Without a bearer token the adapter is explicitly
+    /// [`AcquisitionOutcome::AuthenticationRequired`], never an empty success.
+    pub async fn search_tweets(&self, query: &str) -> AcquisitionOutcome<Tweet> {
+        match self.config.bearer_token.as_deref() {
+            Some(token) => self.search_tweets_api(token, query).await,
+            None => {
+                warn!("TWITTER_BEARER_TOKEN not set — keyword search unavailable");
+                AcquisitionOutcome::AuthenticationRequired
+            }
         }
     }
 
     /// Search using Twitter v2 API.
-    async fn search_tweets_api(&self, token: &str, query: &str) -> Result<Vec<Tweet>> {
+    async fn search_tweets_api(&self, token: &str, query: &str) -> AcquisitionOutcome<Tweet> {
         let url = "https://api.twitter.com/2/tweets/search/recent";
 
         let params = [
@@ -158,17 +165,30 @@ impl TwitterMonitor {
             ("user.fields", "name,username,verified,public_metrics"),
         ];
 
-        let resp = self
+        let resp = match self
             .client
             .get(url)
             .header("Authorization", format!("Bearer {}", token))
             .query(&params)
             .send()
             .await
-            .context("Twitter v2 search request")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("Twitter v2 search request failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
-            anyhow::bail!("Twitter API returned {}", resp.status());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "Twitter v2 search",
+            );
         }
 
         #[derive(Deserialize)]
@@ -177,7 +197,15 @@ impl TwitterMonitor {
             includes: Option<serde_json::Value>,
         }
 
-        let api_resp: ApiResponse = resp.json().await.context("parse Twitter API response")?;
+        let api_resp: ApiResponse = match resp.json().await {
+            Ok(api_resp) => api_resp,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse Twitter API response failed: {error}"),
+                    "",
+                );
+            }
+        };
 
         let tweets = api_resp
             .data
@@ -186,7 +214,7 @@ impl TwitterMonitor {
             .map(|v| self.parse_tweet_json(&v))
             .collect();
 
-        Ok(tweets)
+        AcquisitionOutcome::success_now(tweets)
     }
 
     /// Parse a Twitter v2 tweet JSON object.
@@ -280,13 +308,16 @@ impl TwitterMonitor {
     }
 
     /// Fetch recent tweets from a specific account.
-    pub async fn fetch_account_tweets(&self, handle: &str) -> Result<Vec<Tweet>> {
-        if let Some(ref token) = self.config.bearer_token {
-            let query = format!("from:{}", handle.trim_start_matches('@'));
-            self.search_tweets_api(token, &query).await
-        } else {
-            warn!("TWITTER_BEARER_TOKEN not set — account fetch unavailable");
-            Ok(Vec::new())
+    pub async fn fetch_account_tweets(&self, handle: &str) -> AcquisitionOutcome<Tweet> {
+        match self.config.bearer_token.as_deref() {
+            Some(token) => {
+                let query = format!("from:{}", handle.trim_start_matches('@'));
+                self.search_tweets_api(token, &query).await
+            }
+            None => {
+                warn!("TWITTER_BEARER_TOKEN not set — account fetch unavailable");
+                AcquisitionOutcome::AuthenticationRequired
+            }
         }
     }
 
@@ -296,15 +327,23 @@ impl TwitterMonitor {
 
         for kw in &self.config.keywords {
             match self.search_tweets(kw).await {
-                Ok(tweets) => all_tweets.extend(tweets),
-                Err(e) => warn!(keyword = %kw, error = %e, "Keyword search failed"),
+                AcquisitionOutcome::Success { items, .. } => all_tweets.extend(items),
+                other => warn!(
+                    keyword = %kw,
+                    outcome = other.as_label(),
+                    "Twitter keyword search did not succeed"
+                ),
             }
         }
 
         for handle in &self.config.account_handles {
             match self.fetch_account_tweets(handle).await {
-                Ok(tweets) => all_tweets.extend(tweets),
-                Err(e) => warn!(handle = %handle, error = %e, "Account fetch failed"),
+                AcquisitionOutcome::Success { items, .. } => all_tweets.extend(items),
+                other => warn!(
+                    handle = %handle,
+                    outcome = other.as_label(),
+                    "Twitter account fetch did not succeed"
+                ),
             }
         }
 
@@ -317,9 +356,66 @@ impl TwitterMonitor {
     }
 }
 
+/// Request for one Twitter/X keyword search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TwitterSearchRequest {
+    pub query: String,
+}
+
+#[async_trait]
+impl SourceAdapter for TwitterMonitor {
+    type Item = Tweet;
+    type Request = TwitterSearchRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "twitter"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::CREDENTIALS
+    }
+
+    fn credentials_configured(&self) -> bool {
+        self.config.bearer_token.is_some()
+    }
+
+    async fn acquire(&self, request: TwitterSearchRequest) -> AcquisitionOutcome<Tweet> {
+        self.search_tweets(&request.query).await
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn twitter_without_token_is_authentication_required() {
+        let monitor = TwitterMonitor::new(Default::default()).expect("Twitter monitor");
+        assert!(!monitor.credentials_configured());
+
+        let outcome = monitor.search_tweets("acme").await;
+        assert_eq!(
+            outcome.disposition(),
+            crate::acquisition::AcquisitionDisposition::AuthenticationBlocked
+        );
+        assert!(!outcome.is_success());
+        assert!(outcome.records_failure());
+
+        let account = monitor.fetch_account_tweets("@acme").await;
+        assert_eq!(
+            account.disposition(),
+            crate::acquisition::AcquisitionDisposition::AuthenticationBlocked
+        );
+    }
+
+    #[test]
+    fn twitter_adapter_declares_its_prerequisite() {
+        let monitor = TwitterMonitor::new(Default::default()).expect("Twitter monitor");
+        assert_eq!(monitor.adapter_id(), "twitter");
+        assert!(monitor.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
+    }
 
     #[test]
     fn twitter_monitor_config_defaults() {

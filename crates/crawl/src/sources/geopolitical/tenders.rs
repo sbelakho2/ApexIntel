@@ -1,11 +1,14 @@
 //! Government Tender Portal Module
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
+
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 
 /// A tender/contract opportunity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,39 +144,17 @@ impl TenderMonitor {
         Ok(Self { client, config })
     }
 
-    pub async fn scan(&self) -> Vec<Tender> {
-        let mut all_tenders = Vec::new();
-
-        match self.scan_sam_gov().await {
-            Ok(tenders) => {
-                debug!(
-                    source = "sam_gov",
-                    count = tenders.len(),
-                    "SAM.gov scan complete"
-                );
-                all_tenders.extend(tenders);
-            }
-            Err(e) => warn!(error = %e, "SAM.gov scan failed"),
+    pub async fn scan(&self) -> AcquisitionOutcome<Tender> {
+        let outcomes = vec![self.scan_sam_gov().await, self.scan_ted_eu().await];
+        let mut combined = crate::acquisition::aggregate(outcomes);
+        if let AcquisitionOutcome::Success { items, .. } = &mut combined {
+            items.sort_by_key(|t| std::cmp::Reverse(t.publication_date));
+            info!(total = items.len(), "Tender monitoring scan complete");
         }
-
-        match self.scan_ted_eu().await {
-            Ok(tenders) => {
-                debug!(
-                    source = "ted_eu",
-                    count = tenders.len(),
-                    "TED EU scan complete"
-                );
-                all_tenders.extend(tenders);
-            }
-            Err(e) => warn!(error = %e, "TED EU scan failed"),
-        }
-
-        all_tenders.sort_by_key(|t| std::cmp::Reverse(t.publication_date));
-        info!(total = all_tenders.len(), "Tender monitoring scan complete");
-        all_tenders
+        combined
     }
 
-    async fn scan_sam_gov(&self) -> Result<Vec<Tender>> {
+    async fn scan_sam_gov(&self) -> AcquisitionOutcome<Tender> {
         let keywords = self.config.keywords.join(" OR ");
         let url = "https://sam.gov/api/prod/sgs/v1/search/";
         let params = [
@@ -182,19 +163,34 @@ impl TenderMonitor {
             ("size", &self.config.max_results.to_string()),
         ];
 
-        let resp = self
-            .client
-            .get(url)
-            .query(&params)
-            .send()
-            .await
-            .context("SAM.gov API request")?;
+        let resp = match self.client.get(url).query(&params).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("SAM.gov API request failed: {error}"),
+                    None,
+                );
+            }
+        };
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "SAM.gov returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "SAM.gov",
+            );
         }
 
-        let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
+        let json: serde_json::Value = match resp.json().await {
+            Ok(json) => json,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse SAM.gov response failed: {error}"),
+                    "",
+                );
+            }
+        };
         let items = json
             .get("response_data")
             .and_then(|v| v.as_array())
@@ -205,7 +201,7 @@ impl TenderMonitor {
             .iter()
             .filter_map(|v| self.parse_sam_gov_tender(v))
             .collect();
-        Ok(tenders)
+        AcquisitionOutcome::success_now(tenders)
     }
 
     fn parse_sam_gov_tender(&self, value: &serde_json::Value) -> Option<Tender> {
@@ -251,26 +247,37 @@ impl TenderMonitor {
         })
     }
 
-    async fn scan_ted_eu(&self) -> Result<Vec<Tender>> {
+    async fn scan_ted_eu(&self) -> AcquisitionOutcome<Tender> {
         let url = "https://ted.europa.eu/api/v1/search/notice";
         let params = [
             ("q", &self.config.keywords.join(" ")),
             ("limit", &self.config.max_results.to_string()),
         ];
 
-        let resp = self
-            .client
-            .get(url)
-            .query(&params)
-            .send()
-            .await
-            .context("TED EU API request")?;
+        let resp = match self.client.get(url).query(&params).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("TED EU API request failed: {error}"),
+                    None,
+                );
+            }
+        };
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "TED EU returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(resp.status().as_u16(), retry_after, "TED EU");
         }
 
-        let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
+        let json: serde_json::Value = match resp.json().await {
+            Ok(json) => json,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse TED EU response failed: {error}"),
+                    "",
+                );
+            }
+        };
         let notices = json
             .get("result")
             .and_then(|v| v.as_array())
@@ -312,7 +319,7 @@ impl TenderMonitor {
                 })
             })
             .collect();
-        Ok(tenders)
+        AcquisitionOutcome::success_now(tenders)
     }
 
     pub fn relevant_tenders<'a>(&self, tenders: &'a [Tender]) -> Vec<&'a Tender> {
@@ -320,9 +327,39 @@ impl TenderMonitor {
     }
 }
 
+/// Request for one tender-portal scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TenderScanRequest;
+
+#[async_trait]
+impl SourceAdapter for TenderMonitor {
+    type Item = Tender;
+    type Request = TenderScanRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "tenders"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, _request: TenderScanRequest) -> AcquisitionOutcome<Tender> {
+        self.scan().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenders_adapter_declares_its_prerequisite() {
+        let monitor = TenderMonitor::new(Default::default()).expect("tender monitor");
+        assert_eq!(monitor.adapter_id(), "tenders");
+        assert!(!monitor.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
+    }
 
     #[test]
     fn tender_monitor_config_defaults() {

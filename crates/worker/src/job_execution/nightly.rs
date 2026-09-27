@@ -193,6 +193,18 @@ async fn fetch_source(
     }
 }
 
+/// Prefix a crawl failure message with its acquisition-outcome class so the
+/// persisted runtime state is self-describing: the coverage/readiness matrix
+/// classifies a stored `rate_limited:`/`authentication_required:` error as the
+/// explicit non-success outcome instead of a generic transport failure.
+fn classify_failure_message(message: &str, http_status: Option<i32>) -> String {
+    match http_status {
+        Some(429) => format!("rate_limited: {message}"),
+        Some(401) | Some(403) => format!("authentication_required: {message}"),
+        _ => message.to_string(),
+    }
+}
+
 /// Persist the failure state of one source.
 ///
 /// Returns the persistence result instead of swallowing it: a failed write
@@ -207,8 +219,9 @@ async fn persist_source_failure(
     min_interval: chrono::Duration,
     now: chrono::DateTime<Utc>,
 ) -> anyhow::Result<()> {
+    let classified = classify_failure_message(message, http_status);
     store
-        .record_source_attempt_failure(source_slug, message, http_status, min_interval, now)
+        .record_source_attempt_failure(source_slug, &classified, http_status, min_interval, now)
         .await
         .map(|_state| ())
         .map_err(|error| {
@@ -1048,7 +1061,12 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                     chrono::Duration::minutes(30)
                 };
                 if let Err(error) = store
-                    .mark_source_unavailable(&src.slug, &failure.message, retry_after, Utc::now())
+                    .mark_source_unavailable(
+                        &src.slug,
+                        &format!("unavailable: {}", failure.message),
+                        retry_after,
+                        Utc::now(),
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -2146,6 +2164,36 @@ mod pattern_mining_tests {
         );
         assert_eq!(seed.signals.len(), 2);
         assert_eq!(seed.transforms.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod failure_classification_tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_and_auth_statuses_are_persisted_as_explicit_outcomes() {
+        assert_eq!(
+            classify_failure_message("upstream error", Some(429)),
+            "rate_limited: upstream error"
+        );
+        assert_eq!(
+            classify_failure_message("forbidden", Some(403)),
+            "authentication_required: forbidden"
+        );
+        assert_eq!(
+            classify_failure_message("unauthorized", Some(401)),
+            "authentication_required: unauthorized"
+        );
+        assert_eq!(
+            classify_failure_message("timeout", Some(504)),
+            "timeout",
+            "non-rate-limit transport failures keep their message"
+        );
+        assert_eq!(
+            classify_failure_message("connect refused", None),
+            "connect refused"
+        );
     }
 }
 

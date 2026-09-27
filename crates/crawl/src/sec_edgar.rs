@@ -32,13 +32,17 @@
 //! reports (material events) feed the insight engine; 10-K annual reports feed
 //! company enrichment.
 
-use anyhow::Result;
+use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::warn;
 
+use crate::acquisition::{
+    http_failure, propagate_failure, retry_after_secs, AcquisitionOutcome, AdapterPrerequisite,
+    SourceAdapter,
+};
 use apex_core::entities::{Observation, ObservationType};
 
 /// SEC EDGAR contact email embedded in the User-Agent (required by SEC fair-use policy).
@@ -141,46 +145,87 @@ impl SecEdgarClient {
 
     /// Look up a company's CIK by its ticker symbol via the SEC tickers map.
     ///
-    /// Returns the zero-padded 10-digit CIK string, or `None` if not found.
-    pub async fn lookup_cik_by_ticker(&self, ticker: &str) -> Result<Option<String>> {
-        let resp = self
+    /// A ticker absent from the map is [`AcquisitionOutcome::NotApplicable`]
+    /// (the adapter does not apply to that company), never an empty success.
+    pub async fn lookup_cik_by_ticker(&self, ticker: &str) -> AcquisitionOutcome<String> {
+        let resp = match self
             .client
             .get("https://www.sec.gov/files/company_tickers.json")
             .send()
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("sec_edgar: tickers map request failed: {error}"),
+                    None,
+                );
+            }
+        };
         if !resp.status().is_success() {
+            let retry_after = retry_after_secs(resp.headers());
             warn!(status = %resp.status(), "sec_edgar: tickers map fetch failed");
-            return Ok(None);
+            return http_failure(resp.status().as_u16(), retry_after, "sec_edgar tickers map");
         }
-        let map: HashMap<String, TickerEntry> = resp.json().await?;
+        let map: HashMap<String, TickerEntry> = match resp.json().await {
+            Ok(map) => map,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("sec_edgar: failed to parse tickers map: {error}"),
+                    "",
+                );
+            }
+        };
         let ticker_upper = ticker.to_uppercase();
         for entry in map.values() {
             if entry.ticker == ticker_upper {
-                return Ok(Some(format_cik(entry.cik)));
+                return AcquisitionOutcome::success_now(vec![format_cik(entry.cik)]);
             }
         }
-        Ok(None)
+        AcquisitionOutcome::NotApplicable
     }
 
     /// Fetch recent filings for a company by its CIK.
     ///
     /// `cik` may be with or without leading zeros. Returns only filings of the
     /// tracked form types (8-K, 10-K, 10-Q, DEF 14A, Form 3/4/5), limited to
-    /// `limit` most recent filings.
-    pub async fn fetch_recent_filings(&self, cik: &str, limit: usize) -> Result<Vec<SecFiling>> {
+    /// `limit` most recent filings. A 404 is [`AcquisitionOutcome::NotApplicable`]
+    /// (company not in EDGAR); every other failure is explicit.
+    pub async fn fetch_recent_filings(
+        &self,
+        cik: &str,
+        limit: usize,
+    ) -> AcquisitionOutcome<SecFiling> {
         let padded_cik = format_cik(cik.parse::<u64>().unwrap_or(0));
         let url = format!("https://data.sec.gov/submissions/CIK{padded_cik}.json");
 
-        let resp = self.client.get(&url).send().await?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("sec_edgar: submissions request failed: {error}"),
+                    None,
+                );
+            }
+        };
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(Vec::new()); // company not in EDGAR (non-US or private)
+            return AcquisitionOutcome::NotApplicable; // company not in EDGAR
         }
         if !resp.status().is_success() {
+            let retry_after = retry_after_secs(resp.headers());
             warn!(cik = %padded_cik, status = %resp.status(), "sec_edgar: submissions fetch failed");
-            return Ok(Vec::new());
+            return http_failure(resp.status().as_u16(), retry_after, "sec_edgar submissions");
         }
 
-        let submission: SubmissionsResponse = resp.json().await?;
+        let submission: SubmissionsResponse = match resp.json().await {
+            Ok(submission) => submission,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("sec_edgar: failed to parse submissions: {error}"),
+                    "",
+                );
+            }
+        };
         let company_name = submission.name.unwrap_or_default();
 
         // The filings are split into a "recent" array and (optionally) older
@@ -230,7 +275,7 @@ impl SecEdgarClient {
             }
         }
 
-        Ok(filings)
+        AcquisitionOutcome::success_now(filings)
     }
 
     /// Fetch filings for a company identified by ticker, then return them
@@ -241,19 +286,57 @@ impl SecEdgarClient {
         ticker: &str,
         entity_id: Option<uuid::Uuid>,
         limit: usize,
-    ) -> Result<Vec<Observation>> {
-        let cik = match self.lookup_cik_by_ticker(ticker).await? {
-            Some(c) => c,
-            None => {
-                warn!(ticker = %ticker, "sec_edgar: ticker not found in SEC map");
-                return Ok(Vec::new());
+    ) -> AcquisitionOutcome<Observation> {
+        let cik = match self.lookup_cik_by_ticker(ticker).await {
+            AcquisitionOutcome::Success { items, .. } => match items.into_iter().next() {
+                Some(cik) => cik,
+                // A success with no CIK is a not-applicable lookup, not an
+                // empty success: the adapter cannot serve this company.
+                None => return AcquisitionOutcome::NotApplicable,
+            },
+            other => {
+                if let Some(failure) = propagate_failure(other) {
+                    return failure;
+                }
+                return AcquisitionOutcome::NotApplicable;
             }
         };
-        let filings = self.fetch_recent_filings(&cik, limit).await?;
-        Ok(filings
-            .into_iter()
-            .map(|f| f.to_observation(entity_id))
-            .collect())
+        match self.fetch_recent_filings(&cik, limit).await {
+            AcquisitionOutcome::Success { items, fetched_at } => AcquisitionOutcome::Success {
+                items: items
+                    .into_iter()
+                    .map(|f| f.to_observation(entity_id))
+                    .collect(),
+                fetched_at,
+            },
+            other => propagate_failure(other).unwrap_or(AcquisitionOutcome::NotApplicable),
+        }
+    }
+}
+
+/// Request for one SEC EDGAR filing acquisition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecEdgarRequest {
+    pub ticker: String,
+    pub limit: usize,
+}
+
+#[async_trait]
+impl SourceAdapter for SecEdgarClient {
+    type Item = Observation;
+    type Request = SecEdgarRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "sec_edgar"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, request: SecEdgarRequest) -> AcquisitionOutcome<Observation> {
+        self.fetch_filings_as_observations(&request.ticker, None, request.limit)
+            .await
     }
 }
 
@@ -299,6 +382,14 @@ struct RecentFilings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sec_edgar_adapter_declares_its_prerequisite() {
+        let client = SecEdgarClient::new();
+        assert_eq!(client.adapter_id(), "sec_edgar");
+        assert!(!client.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(client.adapter_id()).is_some());
+    }
 
     #[test]
     fn format_cik_pads_to_10_digits() {

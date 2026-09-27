@@ -1,4 +1,5 @@
 pub mod academic;
+pub mod acquisition;
 pub mod breach;
 pub mod browser;
 pub mod change_detection;
@@ -39,6 +40,11 @@ pub mod tor_client;
 pub mod trade_shows;
 
 // Re-export commonly used types for convenience
+pub use acquisition::{
+    adapter_descriptor, adapter_descriptor_for_slug, source_prerequisite, AcquisitionDisposition,
+    AcquisitionFailure, AcquisitionOutcome, AdapterDescriptor, AdapterPrerequisite, SourceAdapter,
+    ADAPTER_PREREQUISITES,
+};
 pub use browser::{
     from_env as browser_from_env, host_from_url, is_private_host, supports_url,
     validate_browser_url, BrowserConfig, BrowserFetcher, BrowserPage, BrowserRequest, PageSample,

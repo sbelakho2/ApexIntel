@@ -10,11 +10,14 @@
 //! - Ownership correlation
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 
 /// GitHub API credentials.
 pub type GithubToken = String;
@@ -191,7 +194,7 @@ impl GithubMonitor {
     }
 
     /// List repositories for an organization.
-    pub async fn org_repos(&self, org: &str) -> Result<Vec<GithubRepo>> {
+    pub async fn org_repos(&self, org: &str) -> AcquisitionOutcome<GithubRepo> {
         let url = format!(
             "https://api.github.com/orgs/{}/repos",
             urlencoding::encode(org)
@@ -206,11 +209,19 @@ impl GithubMonitor {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.send().await.context("GitHub org repos request")?;
+        let resp = match req.send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("GitHub org repos request failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), org = %org, "GitHub org repos returned non-success");
-            return Ok(Vec::new());
+            return github_failure(resp);
         }
 
         #[derive(Deserialize)]
@@ -237,54 +248,64 @@ impl GithubMonitor {
             pushed_at: Option<String>,
         }
 
-        let repos: Vec<GithubApiRepo> = resp.json().await.context("parse GitHub repos response")?;
+        let repos: Vec<GithubApiRepo> = match resp.json().await {
+            Ok(repos) => repos,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse GitHub repos response failed: {error}"),
+                    "",
+                );
+            }
+        };
         let now = Utc::now();
-        Ok(repos
-            .into_iter()
-            .map(|r| GithubRepo {
-                repo_id: r.id,
-                name: r.name,
-                full_name: r.full_name,
-                description: r.description,
-                html_url: r.html_url,
-                clone_url: r.clone_url,
-                homepage: r.homepage,
-                language: r.language,
-                stargazers_count: r.stargazers_count,
-                watchers_count: r.watchers_count,
-                forks_count: r.forks_count,
-                open_issues_count: r.open_issues_count,
-                license: r
-                    .license
-                    .as_ref()
-                    .and_then(|l| l.get("name"))
-                    .and_then(|n| n.as_str())
-                    .map(|s| s.to_string()),
-                topics: r.topics.unwrap_or_default(),
-                default_branch: r.default_branch,
-                visibility: match r.visibility.as_deref() {
-                    Some("private") => RepoVisibility::Private,
-                    Some("internal") => RepoVisibility::Internal,
-                    _ => RepoVisibility::Public,
-                },
-                created_at: DateTime::parse_from_rfc3339(&r.created_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or(now),
-                updated_at: DateTime::parse_from_rfc3339(&r.updated_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or(now),
-                pushed_at: r.pushed_at.and_then(|p| {
-                    DateTime::parse_from_rfc3339(&p)
+        AcquisitionOutcome::success_now(
+            repos
+                .into_iter()
+                .map(|r| GithubRepo {
+                    repo_id: r.id,
+                    name: r.name,
+                    full_name: r.full_name,
+                    description: r.description,
+                    html_url: r.html_url,
+                    clone_url: r.clone_url,
+                    homepage: r.homepage,
+                    language: r.language,
+                    stargazers_count: r.stargazers_count,
+                    watchers_count: r.watchers_count,
+                    forks_count: r.forks_count,
+                    open_issues_count: r.open_issues_count,
+                    license: r
+                        .license
+                        .as_ref()
+                        .and_then(|l| l.get("name"))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string()),
+                    topics: r.topics.unwrap_or_default(),
+                    default_branch: r.default_branch,
+                    visibility: match r.visibility.as_deref() {
+                        Some("private") => RepoVisibility::Private,
+                        Some("internal") => RepoVisibility::Internal,
+                        _ => RepoVisibility::Public,
+                    },
+                    created_at: DateTime::parse_from_rfc3339(&r.created_at)
                         .map(|dt| dt.with_timezone(&Utc))
-                        .ok()
-                }),
-                fetched_at: now,
-            })
-            .collect())
+                        .unwrap_or(now),
+                    updated_at: DateTime::parse_from_rfc3339(&r.updated_at)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or(now),
+                    pushed_at: r.pushed_at.and_then(|p| {
+                        DateTime::parse_from_rfc3339(&p)
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .ok()
+                    }),
+                    fetched_at: now,
+                })
+                .collect(),
+        )
     }
 
     /// Search code by keyword.
-    pub async fn search_code(&self, query: &str) -> Result<Vec<GithubCodeResult>> {
+    pub async fn search_code(&self, query: &str) -> AcquisitionOutcome<GithubCodeResult> {
         let url = "https://api.github.com/search/code";
         let mut req = self
             .client
@@ -297,11 +318,19 @@ impl GithubMonitor {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.send().await.context("GitHub code search")?;
+        let resp = match req.send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("GitHub code search failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), query = %query, "GitHub code search returned non-success");
-            return Ok(Vec::new());
+            return github_failure(resp);
         }
 
         #[derive(Deserialize)]
@@ -319,10 +348,15 @@ impl GithubMonitor {
             repository: Option<serde_json::Value>,
         }
 
-        let code_resp: GithubCodeSearch = resp
-            .json()
-            .await
-            .unwrap_or(GithubCodeSearch { items: None });
+        let code_resp: GithubCodeSearch = match resp.json().await {
+            Ok(code_resp) => code_resp,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse GitHub code search response failed: {error}"),
+                    "",
+                );
+            }
+        };
         let results = code_resp
             .items
             .unwrap_or_default()
@@ -343,11 +377,11 @@ impl GithubMonitor {
             })
             .collect();
 
-        Ok(results)
+        AcquisitionOutcome::success_now(results)
     }
 
     /// Search commits by keyword.
-    pub async fn search_commits(&self, query: &str) -> Result<Vec<GithubCommit>> {
+    pub async fn search_commits(&self, query: &str) -> AcquisitionOutcome<GithubCommit> {
         let url = "https://api.github.com/search/commits";
         let mut req = self
             .client
@@ -361,10 +395,18 @@ impl GithubMonitor {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.send().await.context("GitHub commit search")?;
+        let resp = match req.send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("GitHub commit search failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return github_failure(resp);
         }
 
         #[derive(Deserialize)]
@@ -373,10 +415,15 @@ impl GithubMonitor {
             items: Option<Vec<serde_json::Value>>,
         }
 
-        let commit_resp: GithubCommitSearch = resp
-            .json()
-            .await
-            .unwrap_or(GithubCommitSearch { items: None });
+        let commit_resp: GithubCommitSearch = match resp.json().await {
+            Ok(commit_resp) => commit_resp,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse GitHub commit search response failed: {error}"),
+                    "",
+                );
+            }
+        };
         let commit_items = commit_resp.items.unwrap_or_default();
         let commits: Vec<GithubCommit> = commit_items
             .into_iter()
@@ -425,7 +472,7 @@ impl GithubMonitor {
             .collect();
 
         debug!(query = %query, count = commits.len(), "GitHub commit search complete");
-        Ok(commits)
+        AcquisitionOutcome::success_now(commits)
     }
 
     /// Monitor all tracked organizations.
@@ -433,17 +480,81 @@ impl GithubMonitor {
         let mut all_repos = Vec::new();
         for org in &self.config.monitored_orgs {
             match self.org_repos(org).await {
-                Ok(repos) => {
-                    debug!(org = %org, count = repos.len(), "GitHub org scan complete");
-                    all_repos.extend(repos);
+                AcquisitionOutcome::Success { items, .. } => {
+                    debug!(org = %org, count = items.len(), "GitHub org scan complete");
+                    all_repos.extend(items);
                 }
-                Err(e) => {
-                    warn!(org = %org, error = %e, "GitHub org scan failed");
+                other => {
+                    warn!(
+                        org = %org,
+                        outcome = other.as_label(),
+                        "GitHub org scan did not succeed"
+                    );
                 }
             }
         }
         info!(total = all_repos.len(), "GitHub full scan complete");
         all_repos
+    }
+}
+
+/// Map a non-success GitHub response into the correct outcome.
+///
+/// GitHub signals its primary rate limit with HTTP 403 (plus
+/// `x-ratelimit-remaining: 0`) or 429; a 401 is a credential failure.
+fn github_failure<T>(resp: reqwest::Response) -> AcquisitionOutcome<T> {
+    let status = resp.status().as_u16();
+    let headers = resp.headers().clone();
+    let remaining = headers
+        .get("x-ratelimit-remaining")
+        .and_then(|value| value.to_str().ok());
+    let rate_limited = status == 429 || (status == 403 && remaining == Some("0"));
+    if rate_limited {
+        let retry_after = headers
+            .get("x-ratelimit-reset")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .map(|reset_epoch| (reset_epoch - Utc::now().timestamp()).max(0) as u64)
+            .or_else(|| crate::acquisition::retry_after_secs(&headers));
+        return AcquisitionOutcome::rate_limited(retry_after);
+    }
+    match status {
+        401 => AcquisitionOutcome::AuthenticationRequired,
+        403 => AcquisitionOutcome::fetch_failed(
+            "GitHub returned 403 without a rate-limit signal".to_string(),
+            Some(403),
+        ),
+        other => crate::acquisition::http_failure(
+            other,
+            crate::acquisition::retry_after_secs(&headers),
+            "GitHub",
+        ),
+    }
+}
+
+/// Request for one GitHub organization acquisition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubOrgRequest {
+    pub org: String,
+}
+
+#[async_trait]
+impl SourceAdapter for GithubMonitor {
+    type Item = GithubRepo;
+    type Request = GithubOrgRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "github"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        // The public API works unauthenticated (lower rate limits); a token is
+        // optional and only raises the limits.
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, request: GithubOrgRequest) -> AcquisitionOutcome<GithubRepo> {
+        self.org_repos(&request.org).await
     }
 }
 
@@ -462,6 +573,14 @@ pub struct GithubCodeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_adapter_declares_its_prerequisite() {
+        let monitor = GithubMonitor::new(Default::default()).expect("GitHub monitor");
+        assert_eq!(monitor.adapter_id(), "github");
+        assert!(!monitor.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
+    }
 
     #[test]
     fn github_repo_engagement() {

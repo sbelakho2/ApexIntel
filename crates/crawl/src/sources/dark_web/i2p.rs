@@ -10,11 +10,14 @@
 //! - Hosted service cataloging
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
+
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 
 /// An I2P eepsite discovery signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,42 +95,77 @@ impl I2pMonitor {
     }
 
     /// Scan all configured I2P registries for keyword-matching eepsites.
-    pub async fn scan(&self) -> Vec<I2pSignal> {
-        let mut all_signals = Vec::new();
-
-        for registry in &self.config.registries {
-            match self.scan_registry(registry).await {
-                Ok(signals) => {
-                    debug!(registry = %registry, count = signals.len(), "I2P registry scan complete");
-                    all_signals.extend(signals);
-                }
-                Err(e) => {
-                    warn!(registry = %registry, error = %e, "I2P registry scan failed");
-                }
-            }
+    ///
+    /// Per-registry failures are explicit [`AcquisitionOutcome`] variants; a
+    /// registry that is unreachable is never reported as an empty success.
+    pub async fn scan(&self) -> AcquisitionOutcome<I2pSignal> {
+        if self.config.registries.is_empty() {
+            return AcquisitionOutcome::unavailable("no I2P registries configured");
         }
 
-        all_signals.sort_by_key(|a| std::cmp::Reverse(a.observed_at));
-        info!(total = all_signals.len(), "I2P monitoring scan complete");
-        all_signals
+        let mut outcomes = Vec::new();
+        for registry in &self.config.registries {
+            let outcome = self.scan_registry(registry).await;
+            match &outcome {
+                AcquisitionOutcome::Success { items, .. } => {
+                    debug!(registry = %registry, count = items.len(), "I2P registry scan complete");
+                }
+                other => {
+                    debug!(
+                        registry = %registry,
+                        outcome = other.as_label(),
+                        "I2P registry scan did not succeed"
+                    );
+                }
+            }
+            outcomes.push(outcome);
+        }
+
+        let mut combined = crate::acquisition::aggregate(outcomes);
+        if let AcquisitionOutcome::Success { ref mut items, .. } = combined {
+            items.sort_by_key(|a| std::cmp::Reverse(a.observed_at));
+            info!(total = items.len(), "I2P monitoring scan complete");
+        }
+        combined
     }
 
     /// Scan a single I2P registry for eepsite listings.
-    async fn scan_registry(&self, registry_url: &str) -> Result<Vec<I2pSignal>> {
-        let resp = self
+    async fn scan_registry(&self, registry_url: &str) -> AcquisitionOutcome<I2pSignal> {
+        let resp = match self
             .client
             .get(registry_url)
             .header("Accept", "text/html, application/json")
             .send()
             .await
-            .context("I2P registry fetch")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("I2P registry fetch failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), registry = %registry_url, "I2P registry returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "I2P registry",
+            );
         }
 
-        let body = resp.text().await.context("read I2P registry body")?;
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("read I2P registry body failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         // Attempt JSON parsing for structured registry responses
         #[derive(Deserialize)]
@@ -190,7 +228,7 @@ impl I2pMonitor {
                 .collect();
 
             if matched.is_empty() {
-                return Ok(Vec::new());
+                return AcquisitionOutcome::success_now(Vec::new());
             }
 
             vec![I2pSignal {
@@ -210,7 +248,29 @@ impl I2pMonitor {
             }]
         };
 
-        Ok(signals)
+        AcquisitionOutcome::success_now(signals)
+    }
+}
+
+/// Request for one I2P registry scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct I2pScanRequest;
+
+#[async_trait]
+impl SourceAdapter for I2pMonitor {
+    type Item = I2pSignal;
+    type Request = I2pScanRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "dark_web_i2p"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, _request: I2pScanRequest) -> AcquisitionOutcome<I2pSignal> {
+        self.scan().await
     }
 }
 
@@ -229,5 +289,13 @@ mod tests {
     fn i2p_monitor_constructs() {
         let result = I2pMonitor::new(Default::default());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn i2p_adapter_declares_its_prerequisite() {
+        let monitor = I2pMonitor::new(Default::default()).expect("I2P monitor");
+        assert_eq!(monitor.adapter_id(), "dark_web_i2p");
+        assert!(!monitor.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
     }
 }

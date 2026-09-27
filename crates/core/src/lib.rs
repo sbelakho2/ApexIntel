@@ -18,6 +18,7 @@ pub mod identity;
 pub mod intelligence_profile;
 pub mod lineage;
 pub mod measurement;
+pub mod origin_cluster;
 pub mod outcomes;
 pub mod person_names;
 pub mod profile;

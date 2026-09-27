@@ -80,9 +80,10 @@ impl EvidenceRecord {
 /// The reusable evidence-quality model (audit P0-4/P1-3).
 ///
 /// Every field is an independent measurement: counts are never re-labelled as
-/// "reliability" or "sufficiency", and independence is counted over distinct
-/// registrable domains, not raw source records. `quality_label` is derived from
-/// the weighted sub-scores below, not from any single count.
+/// "reliability" or "sufficiency", and independence is counted over origin
+/// clusters (content/publisher/syndication/timestamp), not raw source records
+/// or registrable domains. `quality_label` is derived from the weighted
+/// sub-scores below, not from any single count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceQuality {
     pub overall_score: f64,
@@ -94,7 +95,9 @@ pub struct EvidenceQuality {
     pub freshness_score: f64,
     pub contradiction_penalty: f64,
     pub source_count: usize,
-    /// Distinct registrable domains / origins among the cited sources.
+    /// Distinct origin clusters among the cited sources (content hash,
+    /// near-duplicate text, canonical publisher, syndication upstream, then
+    /// origin host).
     pub independent_source_count: usize,
     pub supporting_count: usize,
     /// Contradicting records. Serialized alias kept for existing consumers;
@@ -103,7 +106,7 @@ pub struct EvidenceQuality {
     /// Contradicting records (canonical name). Always equal to
     /// [`Self::contradicting_count`].
     pub contradiction_count: usize,
-    /// Fraction of records whose source is a distinct registrable domain
+    /// Fraction of records whose source is a distinct origin cluster
     /// (independence ratio, 0.0–1.0). Distinct from [`Self::diversity_score`],
     /// which additionally blends source-type diversity.
     pub source_diversity: f64,
@@ -154,7 +157,6 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
         return EvidenceQuality::default();
     }
 
-    let mut independent_sources = HashSet::new();
     let mut source_types = HashSet::new();
     let mut freshness_total = 0.0;
     let mut freshness_count = 0usize;
@@ -183,17 +185,23 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
             }
         }
 
-        let source_group = evidence_source_group(record);
-        if let Some(group) = source_group.as_ref() {
-            independent_sources.insert(group.clone());
-        }
         if let Some(source_type) = record.source_type.as_deref() {
             let normalized = source_type.trim().to_ascii_lowercase();
             if !normalized.is_empty() {
                 source_types.insert(normalized);
             }
         }
-        if source_group.is_some() && record.observed_at.is_some() {
+        let has_source_identity = record
+            .source_url
+            .as_deref()
+            .map(|url| !url.trim().is_empty())
+            .unwrap_or(false)
+            || record
+                .source_id
+                .as_deref()
+                .map(|id| !id.trim().is_empty())
+                .unwrap_or(false);
+        if has_source_identity && record.observed_at.is_some() {
             completeness_count += 1;
         }
         if let Some(observed_at) = record.observed_at {
@@ -218,9 +226,22 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
 
     let source_count = records.len();
     // Do not inflate independence: records with no source id/url contribute no
-    // independent source (previously `.max(1)` gave a single unsourced record
-    // full independence credit).
-    let independent_source_count = independent_sources.len();
+    // independent origin (previously `.max(1)` gave a single unsourced record
+    // full independence credit). Independence is counted over origin clusters
+    // (content hash, near-duplicate text, canonical publisher, syndication
+    // upstream, then origin host) rather than registrable domains.
+    let origin_records: Vec<crate::origin_cluster::OriginRecord> = records
+        .iter()
+        .map(|record| crate::origin_cluster::OriginRecord {
+            origin: record
+                .source_url
+                .clone()
+                .or_else(|| record.source_id.clone()),
+            observed_at: record.observed_at,
+            ..crate::origin_cluster::OriginRecord::default()
+        })
+        .collect();
+    let independent_source_count = crate::origin_cluster::independent_origin_count(&origin_records);
     let corroboration_score = if support_count == 0 {
         0.0
     } else {
@@ -285,24 +306,6 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
         derived_evidence_count: derived_count,
         quality_label,
     }
-}
-
-fn evidence_source_group(record: &EvidenceRecord) -> Option<String> {
-    // Prefer the registrable domain of the source URL: two articles from the
-    // same publisher (or the same publisher's subdomains) are not independent
-    // corroboration. Only fall back to the raw source id when no URL is known.
-    if let Some(source_url) = record.source_url.as_deref() {
-        if let Some(domain) = registrable_domain(source_url) {
-            return Some(domain);
-        }
-    }
-    if let Some(source_id) = record.source_id.as_deref() {
-        let normalized = source_id.trim().to_ascii_lowercase();
-        if !normalized.is_empty() {
-            return Some(normalized);
-        }
-    }
-    None
 }
 
 /// Registrable domain (eTLD+1 approximation) for a URL or bare host.
@@ -921,10 +924,9 @@ mod tests {
     }
 
     #[test]
-    fn independence_counts_distinct_domains_not_raw_sources() {
+    fn independence_counts_origin_clusters_not_raw_sources() {
         let now = Utc::now();
-        // Ten articles, but only two organisations (and three hosts, two of
-        // which belong to the same registrable domain).
+        // Ten articles across three hosts: each host is its own origin cluster.
         let mut records = Vec::new();
         for index in 0..6 {
             records.push(
@@ -950,10 +952,13 @@ mod tests {
 
         assert_eq!(quality.source_count, 10);
         assert_eq!(
-            quality.independent_source_count, 2,
-            "subdomains of one registrable domain are not independent corroboration"
+            quality.independent_source_count, 3,
+            "each host is its own origin cluster"
         );
-        assert!(quality.source_diversity < 0.25);
+        assert!(
+            (quality.source_diversity - 0.3).abs() < 1e-9,
+            "3 origin clusters over 10 records"
+        );
     }
 
     #[test]

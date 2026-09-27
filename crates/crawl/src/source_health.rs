@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
+use crate::acquisition::{AcquisitionDisposition, AcquisitionOutcome};
 use crate::errors::{CrawlError, CrawlFailureCategory};
 use crate::source_scoring::ScoringConfig;
 use crate::sources_registry::{Category, Region};
@@ -98,6 +99,11 @@ pub struct HealthMetrics {
     pub time_since_last_activity: Duration,
     /// Last check timestamp
     pub last_check: DateTime<Utc>,
+    /// Label of the most recent acquisition outcome
+    /// ([`AcquisitionOutcome::as_label`]). `None` until an outcome has been
+    /// recorded; never updated by [`AcquisitionOutcome::NotApplicable`].
+    #[serde(default)]
+    pub last_outcome: Option<String>,
 }
 
 impl Default for HealthMetrics {
@@ -118,6 +124,7 @@ impl Default for HealthMetrics {
             uptime_percent: 100.0,
             time_since_last_activity: Duration::MAX,
             last_check: Utc::now(),
+            last_outcome: None,
         }
     }
 }
@@ -366,6 +373,56 @@ impl SourceHealthMonitor {
                 self.initiate_retirement(&source_id).await;
             }
         }
+    }
+
+    /// Record one source-adapter acquisition outcome and return the runtime
+    /// disposition it mapped to.
+    ///
+    /// Only [`AcquisitionOutcome::Success`] updates `last_success`. Every
+    /// other non-success outcome records a failure — a 429, an unauthenticated
+    /// adapter, an unavailable transport or a parser incident can never look
+    /// like an operational success. [`AcquisitionOutcome::NotApplicable`] is
+    /// the single neutral outcome: the adapter did not run, so no metric moves.
+    pub async fn record_acquisition_outcome<T>(
+        &self,
+        source_id: &str,
+        url: &str,
+        outcome: &AcquisitionOutcome<T>,
+        response_time_ms: u64,
+    ) -> AcquisitionDisposition {
+        let disposition = outcome.disposition();
+        match disposition {
+            AcquisitionDisposition::NotApplicable => return disposition,
+            AcquisitionDisposition::Operational => {
+                let result = CrawlResult::success(
+                    source_id.to_string(),
+                    url.to_string(),
+                    response_time_ms,
+                    outcome.item_count(),
+                );
+                self.record_success(result).await;
+            }
+            _ => {
+                let result = CrawlResult {
+                    source_id: source_id.to_string(),
+                    url: url.to_string(),
+                    success: false,
+                    status_code: outcome.http_status(),
+                    response_time_ms,
+                    content_length: None,
+                    error_category: Some(acquisition_failure_category(outcome)),
+                    timestamp: Utc::now(),
+                };
+                self.record_failure(result).await;
+            }
+        }
+
+        let mut metrics = self.metrics.write().await;
+        let m = metrics.entry(source_id.to_string()).or_default();
+        m.source_id = source_id.to_string();
+        m.last_outcome = Some(disposition.as_str().to_string());
+        m.last_check = Utc::now();
+        disposition
     }
 
     async fn record_result(&self, result: CrawlResult) {
@@ -666,6 +723,20 @@ impl SourceHealthMonitor {
 // Supporting Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Failure category recorded for an acquisition outcome. Infallible: every
+/// non-success outcome has a category and successes never reach this helper.
+fn acquisition_failure_category<T>(outcome: &AcquisitionOutcome<T>) -> CrawlFailureCategory {
+    match outcome {
+        AcquisitionOutcome::FetchFailed { .. } => CrawlFailureCategory::Network,
+        AcquisitionOutcome::ParseFailed { .. } => CrawlFailureCategory::Parse,
+        AcquisitionOutcome::RateLimited { .. } => CrawlFailureCategory::RateLimited,
+        AcquisitionOutcome::AuthenticationRequired => CrawlFailureCategory::Upstream,
+        AcquisitionOutcome::Unavailable { .. } => CrawlFailureCategory::Upstream,
+        AcquisitionOutcome::NotApplicable => CrawlFailureCategory::Unknown,
+        AcquisitionOutcome::Success { .. } => CrawlFailureCategory::Unknown,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthStatistics {
     pub total_sources: u64,
@@ -897,6 +968,114 @@ mod tests {
         let stats = monitor.get_discovery_stats().await;
         assert_eq!(stats.total_discoveries, 1);
         assert!((stats.avg_confidence - 0.7).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn acquisition_success_is_the_only_operational_outcome() {
+        let monitor = create_monitor();
+        let outcome: AcquisitionOutcome<u32> = AcquisitionOutcome::success_now(vec![]);
+        let disposition = monitor
+            .record_acquisition_outcome("source-a", "https://a.example", &outcome, 120)
+            .await;
+        assert_eq!(disposition, AcquisitionDisposition::Operational);
+
+        let metrics = monitor
+            .get_metrics("source-a")
+            .await
+            .expect("metrics recorded");
+        assert!(metrics.last_success.is_some());
+        assert_eq!(metrics.total_successes, 1);
+        assert_eq!(metrics.consecutive_failures, 0);
+        assert_eq!(metrics.last_outcome.as_deref(), Some("success"));
+    }
+
+    #[tokio::test]
+    async fn acquisition_rate_limited_is_not_a_success() {
+        let monitor = create_monitor();
+        let outcome: AcquisitionOutcome<u32> = AcquisitionOutcome::rate_limited(Some(60));
+        let disposition = monitor
+            .record_acquisition_outcome("source-429", "https://a.example", &outcome, 90)
+            .await;
+        assert_eq!(disposition, AcquisitionDisposition::RateLimited);
+
+        let metrics = monitor
+            .get_metrics("source-429")
+            .await
+            .expect("metrics recorded");
+        assert!(
+            metrics.last_success.is_none(),
+            "a 429 must never update last_success"
+        );
+        assert_eq!(metrics.total_successes, 0);
+        assert_eq!(metrics.total_failures, 1);
+        assert_eq!(metrics.consecutive_failures, 1);
+        assert_eq!(metrics.last_outcome.as_deref(), Some("rate_limited"));
+        assert_ne!(metrics.status, HealthStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn acquisition_authentication_required_degrades_and_never_succeeds() {
+        let monitor = create_monitor();
+        let outcome: AcquisitionOutcome<u32> = AcquisitionOutcome::AuthenticationRequired;
+        let disposition = monitor
+            .record_acquisition_outcome("linkedin", "https://linkedin.example", &outcome, 10)
+            .await;
+        assert_eq!(disposition, AcquisitionDisposition::AuthenticationBlocked);
+
+        let metrics = monitor
+            .get_metrics("linkedin")
+            .await
+            .expect("metrics recorded");
+        assert!(metrics.last_success.is_none());
+        assert_eq!(metrics.total_successes, 0);
+        assert_eq!(
+            metrics.last_outcome.as_deref(),
+            Some("authentication_required")
+        );
+    }
+
+    #[tokio::test]
+    async fn acquisition_unavailable_and_parse_failed_record_failures() {
+        let monitor = create_monitor();
+        let unavailable: AcquisitionOutcome<u32> =
+            AcquisitionOutcome::unavailable("Tor not reachable");
+        monitor
+            .record_acquisition_outcome("marketplace", "http://x.onion", &unavailable, 5)
+            .await;
+        let metrics = monitor
+            .get_metrics("marketplace")
+            .await
+            .expect("metrics recorded");
+        assert!(metrics.last_success.is_none());
+        assert_eq!(metrics.total_failures, 1);
+        assert_eq!(metrics.last_outcome.as_deref(), Some("unavailable"));
+
+        let parse_failed: AcquisitionOutcome<u32> =
+            AcquisitionOutcome::parse_failed("bad json", "{\"a\":");
+        monitor
+            .record_acquisition_outcome("openalex", "https://api.openalex.org", &parse_failed, 5)
+            .await;
+        let metrics = monitor
+            .get_metrics("openalex")
+            .await
+            .expect("metrics recorded");
+        assert!(metrics.last_success.is_none());
+        assert_eq!(metrics.total_failures, 1);
+        assert_eq!(metrics.last_outcome.as_deref(), Some("degraded"));
+    }
+
+    #[tokio::test]
+    async fn acquisition_not_applicable_leaves_metrics_untouched() {
+        let monitor = create_monitor();
+        let outcome: AcquisitionOutcome<u32> = AcquisitionOutcome::NotApplicable;
+        let disposition = monitor
+            .record_acquisition_outcome("sec_edgar", "https://data.sec.gov", &outcome, 0)
+            .await;
+        assert_eq!(disposition, AcquisitionDisposition::NotApplicable);
+        assert!(
+            monitor.get_metrics("sec_edgar").await.is_none(),
+            "NotApplicable must not create or mutate health metrics"
+        );
     }
 
     #[test]
