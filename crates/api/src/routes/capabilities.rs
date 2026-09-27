@@ -15,7 +15,7 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use serde::Serialize;
 
-use apex_store::postgres::{PgStore, ServiceHeartbeatRow};
+use apex_store::postgres::{PgStore, SchemaLineage, ServiceHeartbeatRow};
 use apex_store::tantivy_index::SearchIndex;
 
 use super::probes::{self, BrowserProbeState, EmbeddingGenerator, LlmProbeTarget, ReadinessPolicy};
@@ -82,6 +82,10 @@ pub struct ProbeContext<'a> {
     pub llm: Option<&'a LlmProbeTarget>,
     pub browser: &'a BrowserProbeState,
     pub embedding_generator: Option<&'a dyn EmbeddingGenerator>,
+    /// Schema lineage already measured for this request. When set, the
+    /// `schema` probe reuses it instead of querying again, so readiness never
+    /// evaluates the lineage contract twice from different snapshots.
+    pub schema_lineage: Option<&'a SchemaLineage>,
 }
 
 /// Full capability report.
@@ -92,6 +96,9 @@ pub struct Capabilities {
     pub nats: CapabilityStatus,
     pub browser_renderer: CapabilityStatus,
     pub database: CapabilityStatus,
+    /// Schema lineage: applied migration head == embedded head and the
+    /// applied history checksum-verifies.
+    pub schema: CapabilityStatus,
     pub search_index: CapabilityStatus,
     pub worker_heartbeat: CapabilityStatus,
     pub crawl_freshness: CapabilityStatus,
@@ -105,6 +112,64 @@ pub struct Capabilities {
     pub notification_delivery: CapabilityStatus,
     /// Critical scheduled-job freshness (full profile).
     pub scheduled_jobs: CapabilityStatus,
+}
+
+/// Structured schema-lineage evidence published by `/api/health/ready`: both
+/// migration heads plus the checksum verification result, so an operator can
+/// see exactly which part of the lineage contract passed or failed.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SchemaLineageReport {
+    /// `ok` | `mismatch` | `unavailable`.
+    pub status: String,
+    /// Newest migration embedded in the running binary (expected head).
+    pub expected_head: Option<i64>,
+    /// Newest migration the database has applied.
+    pub applied_head: Option<i64>,
+    pub applied_count: i64,
+    /// True when the applied history checksum-verifies against the embedded
+    /// migrations (independent of head equality).
+    pub checksums_verified: bool,
+    pub detail: String,
+}
+
+impl SchemaLineageReport {
+    /// Build the report from the measured lineage, or from the query error.
+    pub fn from_result(result: Result<SchemaLineage, String>) -> Self {
+        match result {
+            Ok(lineage) => {
+                let status = if lineage.is_current() {
+                    "ok"
+                } else {
+                    "mismatch"
+                };
+                let detail = match &lineage.problem {
+                    Some(problem) => problem.clone(),
+                    None => format!(
+                        "applied migration head {} matches embedded head {} ({} migrations checksum-verified)",
+                        lineage.applied_head.unwrap_or_default(),
+                        lineage.expected_head.unwrap_or_default(),
+                        lineage.applied_count
+                    ),
+                };
+                Self {
+                    status: status.to_string(),
+                    expected_head: lineage.expected_head,
+                    applied_head: lineage.applied_head,
+                    applied_count: lineage.applied_count,
+                    checksums_verified: lineage.checksums_verified,
+                    detail,
+                }
+            }
+            Err(error) => Self {
+                status: "unavailable".to_string(),
+                expected_head: None,
+                applied_head: None,
+                applied_count: 0,
+                checksums_verified: false,
+                detail: error,
+            },
+        }
+    }
 }
 
 /// The product surfaces the five root health endpoints expose, and from which
@@ -138,7 +203,7 @@ impl ProductSurface {
     /// Capabilities that make up this surface.
     pub fn capabilities(self) -> &'static [&'static str] {
         match self {
-            Self::Process => &["database", "worker_heartbeat", "scheduled_jobs"],
+            Self::Process => &["database", "schema", "worker_heartbeat", "scheduled_jobs"],
             Self::Data => &[
                 "crawl_freshness",
                 "source_coverage",
@@ -195,6 +260,8 @@ impl SurfaceHealth {
 
 /// Profile-aware readiness response: the measured checks, the surfaces they
 /// compose, and the required-capability set + thresholds published as policy.
+/// `schema_lineage` publishes the exact migration-lineage proof (embedded head,
+/// applied head, checksum verification) that full readiness requires.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReadinessReport {
     pub status: HealthStatus,
@@ -203,6 +270,7 @@ pub struct ReadinessReport {
     pub profile: String,
     pub required_capabilities: Vec<String>,
     pub thresholds: ReadinessPolicy,
+    pub schema_lineage: SchemaLineageReport,
     pub surfaces: Vec<SurfaceHealth>,
     pub checks: Vec<ComponentHealth>,
 }
@@ -216,6 +284,7 @@ impl Capabilities {
             &self.nats,
             &self.browser_renderer,
             &self.database,
+            &self.schema,
             &self.search_index,
             &self.worker_heartbeat,
             &self.crawl_freshness,
@@ -251,6 +320,7 @@ impl Capabilities {
     pub fn health_checks(&self) -> Vec<ComponentHealth> {
         [
             ("database", &self.database),
+            ("schema", &self.schema),
             ("llm", &self.llm),
             ("embeddings", &self.embeddings),
             ("nats", &self.nats),
@@ -288,6 +358,7 @@ impl Capabilities {
             "nats" => Some(&self.nats),
             "browser_renderer" => Some(&self.browser_renderer),
             "database" => Some(&self.database),
+            "schema" => Some(&self.schema),
             "search_index" => Some(&self.search_index),
             "worker_heartbeat" => Some(&self.worker_heartbeat),
             "crawl_freshness" => Some(&self.crawl_freshness),
@@ -397,6 +468,11 @@ async fn probe_capabilities_plan(
     };
 
     let database = probe_database(ctx.pool).await;
+    let schema = if required("schema") {
+        probe_schema_lineage(&store, ctx.schema_lineage).await
+    } else {
+        not_required()
+    };
     let embeddings = if required("embeddings") {
         probes::probe_embeddings(ctx.embedding_generator, &store, ctx.policy).await
     } else {
@@ -460,6 +536,7 @@ async fn probe_capabilities_plan(
         nats,
         browser_renderer,
         database,
+        schema,
         search_index,
         worker_heartbeat,
         crawl_freshness,
@@ -486,6 +563,57 @@ async fn probe_database(pool: &sqlx::PgPool) -> CapabilityStatus {
             format!("SELECT 1 succeeded in {}ms", started.elapsed().as_millis()),
         ),
         Err(error) => CapabilityStatus::new("unavailable", format!("query failed: {error}")),
+    }
+}
+
+/// Schema-lineage health: the applied migration head must equal the head
+/// embedded in this binary AND the applied history must checksum-verify. A
+/// stale or divergent schema is `unavailable`, so full readiness can never
+/// claim a running service whose database lineage it cannot prove. A lineage
+/// already measured for the current request is reused, so the readiness
+/// response and the capability always describe the same snapshot.
+async fn probe_schema_lineage(
+    store: &PgStore,
+    measured: Option<&SchemaLineage>,
+) -> CapabilityStatus {
+    let lineage = match measured {
+        Some(lineage) => Ok(lineage.clone()),
+        None => store.schema_lineage().await,
+    };
+    match lineage {
+        Ok(lineage) => {
+            let expected = lineage
+                .expected_head
+                .map(|version| version.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let applied = lineage
+                .applied_head
+                .map(|version| version.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            if lineage.is_current() {
+                CapabilityStatus::new(
+                    "ok",
+                    format!(
+                        "applied schema head {applied} matches embedded {expected}; {} migrations checksum-verified",
+                        lineage.applied_count
+                    ),
+                )
+            } else {
+                CapabilityStatus::new(
+                    "unavailable",
+                    format!(
+                        "schema lineage mismatch (embedded head {expected}, applied head {applied}): {}",
+                        lineage
+                            .problem
+                            .unwrap_or_else(|| "unknown mismatch".to_string())
+                    ),
+                )
+            }
+        }
+        Err(error) => CapabilityStatus::new(
+            "unavailable",
+            format!("schema lineage query failed: {error}"),
+        ),
     }
 }
 
@@ -703,6 +831,9 @@ mod tests {
             nats: ok_capability("connected to nats://127.0.0.1:4222"),
             browser_renderer: ok_capability("rendered data: fixture; JS marker verified"),
             database: ok_capability("SELECT 1 succeeded in 1ms"),
+            schema: ok_capability(
+                "applied schema head 78 matches embedded 78; 78 migrations checksum-verified",
+            ),
             search_index: {
                 let mut status = ok_capability("42 documents indexed; lag 600s");
                 status.lag_seconds = Some(600);
@@ -726,8 +857,9 @@ mod tests {
         }
     }
 
-    const ALL_CAPABILITY_NAMES: [&str; 13] = [
+    const ALL_CAPABILITY_NAMES: [&str; 14] = [
         "database",
+        "schema",
         "worker_heartbeat",
         "llm",
         "embeddings",
@@ -811,6 +943,7 @@ mod tests {
             names,
             vec![
                 "database",
+                "schema",
                 "llm",
                 "embeddings",
                 "nats",
@@ -1069,6 +1202,84 @@ mod tests {
     }
 
     #[test]
+    fn readiness_reports_a_schema_head_mismatch_as_unhealthy() {
+        let mut caps = sample_capabilities();
+        caps.schema = CapabilityStatus::new(
+            "unavailable",
+            "schema lineage mismatch (embedded head 79, applied head 78): database schema is stale",
+        );
+
+        for profile in [DeploymentProfile::Core, DeploymentProfile::Full] {
+            let status = readiness_status(&caps, profile);
+            assert_eq!(
+                status,
+                HealthStatus::Unhealthy,
+                "{profile} must gate on schema lineage"
+            );
+            assert_eq!(
+                readiness_http_status(&status),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{profile} must answer 503 on a schema head mismatch"
+            );
+        }
+
+        let checks = caps.health_checks();
+        let schema = checks
+            .iter()
+            .find(|check| check.name == "schema")
+            .expect("schema check is published");
+        assert_eq!(schema.status, HealthStatus::Degraded);
+        assert!(schema
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("embedded head 79"));
+    }
+
+    #[test]
+    fn schema_lineage_report_exposes_both_heads_and_checksum_result() {
+        let current = SchemaLineage {
+            expected_head: Some(78),
+            applied_head: Some(78),
+            applied_count: 78,
+            checksums_verified: true,
+            problem: None,
+        };
+        let report = SchemaLineageReport::from_result(Ok(current));
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.expected_head, Some(78));
+        assert_eq!(report.applied_head, Some(78));
+        assert!(report.checksums_verified);
+        assert!(report.detail.contains("matches embedded head 78"));
+
+        let stale = SchemaLineage {
+            expected_head: Some(79),
+            applied_head: Some(78),
+            applied_count: 78,
+            checksums_verified: true,
+            problem: Some(
+                "database schema is stale: latest applied migration is 78, embedded latest is 79"
+                    .to_string(),
+            ),
+        };
+        let report = SchemaLineageReport::from_result(Ok(stale));
+        assert_eq!(report.status, "mismatch");
+        assert_eq!(report.expected_head, Some(79));
+        assert_eq!(report.applied_head, Some(78));
+        assert!(
+            report.checksums_verified,
+            "the applied rows still verify; the report must say so"
+        );
+        assert!(report.detail.contains("stale"));
+
+        let unavailable = SchemaLineageReport::from_result(Err("connection refused".to_string()));
+        assert_eq!(unavailable.status, "unavailable");
+        assert_eq!(unavailable.expected_head, None);
+        assert!(!unavailable.checksums_verified);
+        assert!(unavailable.detail.contains("connection refused"));
+    }
+
+    #[test]
     fn readiness_report_lists_exactly_the_required_capabilities() {
         let caps = sample_capabilities();
 
@@ -1079,7 +1290,13 @@ mod tests {
             .collect();
         assert_eq!(
             core,
-            vec!["database", "worker_heartbeat", "embeddings", "search_index"]
+            vec![
+                "database",
+                "schema",
+                "worker_heartbeat",
+                "embeddings",
+                "search_index"
+            ]
         );
 
         let full_checks = caps.readiness_checks(DeploymentProfile::Full);
@@ -1091,6 +1308,7 @@ mod tests {
             full,
             vec![
                 "database",
+                "schema",
                 "worker_heartbeat",
                 "llm",
                 "embeddings",
@@ -1202,6 +1420,7 @@ mod tests {
             "nats" => caps.nats = status,
             "browser_renderer" => caps.browser_renderer = status,
             "database" => caps.database = status,
+            "schema" => caps.schema = status,
             "search_index" => caps.search_index = status,
             "worker_heartbeat" => caps.worker_heartbeat = status,
             "crawl_freshness" => caps.crawl_freshness = status,

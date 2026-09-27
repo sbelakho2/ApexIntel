@@ -725,18 +725,29 @@ impl PgStore {
     /// applied latest must be present, successful, and checksum-identical, and
     /// no applied migration may be unknown to this binary.
     pub async fn verify_schema_is_current(&self) -> Result<()> {
-        let migrator = sqlx::migrate!("../../migrations");
-        let embedded: Vec<(i64, Vec<u8>)> = migrator
-            .iter()
-            .map(|migration| (migration.version, migration.checksum.to_vec()))
-            .collect();
-        let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
+        let embedded = embedded_migrations();
+        let applied = self.applied_migrations().await?;
+        ensure_migrations_match(&applied, &embedded)
+    }
+
+    /// Structured schema lineage for readiness: the embedded (expected)
+    /// migration head and the applied head, plus whether the applied history
+    /// checksum-verifies against the embedded migrations. A stale head and a
+    /// checksum mismatch are reported separately, so a probe can say exactly
+    /// which part of the lineage contract failed.
+    pub async fn schema_lineage(&self) -> Result<SchemaLineage> {
+        let embedded = embedded_migrations();
+        let applied = self.applied_migrations().await?;
+        Ok(schema_lineage_from_history(&applied, &embedded))
+    }
+
+    async fn applied_migrations(&self) -> Result<Vec<(i64, Vec<u8>, bool)>> {
+        sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
             "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version ASC",
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|error| anyhow::anyhow!("failed to read _sqlx_migrations: {error}"))?;
-        ensure_migrations_match(&applied, &embedded)
+        .map_err(|error| anyhow::anyhow!("failed to read _sqlx_migrations: {error}"))
     }
 }
 
@@ -747,24 +758,118 @@ fn skip_migrations_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Migration versions and sqlx checksums embedded in this binary.
+fn embedded_migrations() -> Vec<(i64, Vec<u8>)> {
+    sqlx::migrate!("../../migrations")
+        .iter()
+        .map(|migration| (migration.version, migration.checksum.to_vec()))
+        .collect()
+}
+
+/// Schema lineage of one process/database pair, published by the readiness
+/// probe: expected head (embedded), applied head and checksum verification.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct SchemaLineage {
+    /// Newest migration embedded in this binary (the expected head).
+    pub expected_head: Option<i64>,
+    /// Newest migration the database has recorded as applied.
+    pub applied_head: Option<i64>,
+    /// Number of applied rows considered.
+    pub applied_count: i64,
+    /// True when every applied row is a known, successful,
+    /// checksum-identical embedded migration and no embedded migration up to
+    /// the applied head is missing.
+    pub checksums_verified: bool,
+    /// First history mismatch, when the lineage is not current.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+impl SchemaLineage {
+    /// The exact contract readiness proves: the applied head equals the
+    /// embedded head and the applied history checksum-verifies.
+    pub fn is_current(&self) -> bool {
+        self.expected_head.is_some()
+            && self.expected_head == self.applied_head
+            && self.checksums_verified
+    }
+}
+
+fn schema_lineage_from_history(
+    applied: &[(i64, Vec<u8>, bool)],
+    embedded: &[(i64, Vec<u8>)],
+) -> SchemaLineage {
+    SchemaLineage {
+        expected_head: embedded.iter().map(|(version, _)| *version).max(),
+        applied_head: applied.iter().map(|(version, _, _)| *version).max(),
+        applied_count: applied.len() as i64,
+        checksums_verified: applied_history_checksums_verified(applied, embedded),
+        problem: migration_history_problem(applied, embedded),
+    }
+}
+
+/// True when the applied history itself verifies: every applied row is a
+/// known, successful, checksum-identical embedded migration, and every
+/// embedded migration up to the applied head is present. Head equality is
+/// checked separately by `SchemaLineage::is_current`.
+fn applied_history_checksums_verified(
+    applied: &[(i64, Vec<u8>, bool)],
+    embedded: &[(i64, Vec<u8>)],
+) -> bool {
+    let Some(head) = applied.iter().map(|(version, _, _)| *version).max() else {
+        return false;
+    };
+    for (version, checksum, success) in applied {
+        let Some((_, embedded_checksum)) = embedded
+            .iter()
+            .find(|(embedded_version, _)| embedded_version == version)
+        else {
+            return false;
+        };
+        if !success || checksum != embedded_checksum {
+            return false;
+        }
+    }
+    embedded
+        .iter()
+        .filter(|(version, _)| *version <= head)
+        .all(|(version, _)| {
+            applied
+                .iter()
+                .any(|(applied_version, _, _)| applied_version == version)
+        })
+}
+
 /// Fail unless the applied migration history exactly matches the embedded
 /// migrations up to the applied latest version.
 fn ensure_migrations_match(
     applied: &[(i64, Vec<u8>, bool)],
     embedded: &[(i64, Vec<u8>)],
 ) -> Result<()> {
+    match migration_history_problem(applied, embedded) {
+        Some(problem) => Err(anyhow::anyhow!(problem)),
+        None => Ok(()),
+    }
+}
+
+/// The first problem in the applied migration history relative to the
+/// embedded migrations, in the order the migration contract checks it.
+fn migration_history_problem(
+    applied: &[(i64, Vec<u8>, bool)],
+    embedded: &[(i64, Vec<u8>)],
+) -> Option<String> {
     let Some((latest_embedded, _)) = embedded.iter().max_by_key(|(version, _)| *version) else {
-        anyhow::bail!("no embedded migrations found");
+        return Some("no embedded migrations found".to_string());
     };
     let Some((latest_applied, _, _)) = applied.iter().max_by_key(|(version, _, _)| *version) else {
-        anyhow::bail!(
+        return Some(format!(
             "no migrations have been applied to this database (embedded latest is version {latest_embedded})"
-        );
+        ));
     };
     if latest_applied != latest_embedded {
-        anyhow::bail!(
+        return Some(format!(
             "database schema is stale: latest applied migration is {latest_applied}, embedded latest is {latest_embedded}"
-        );
+        ));
     }
 
     for (version, embedded_checksum) in embedded
@@ -775,17 +880,21 @@ fn ensure_migrations_match(
             .iter()
             .find(|(applied_version, _, _)| applied_version == version)
         else {
-            anyhow::bail!("database schema is missing embedded migration {version}");
+            return Some(format!(
+                "database schema is missing embedded migration {version}"
+            ));
         };
         if !success {
-            anyhow::bail!("applied migration {version} did not complete successfully");
+            return Some(format!(
+                "applied migration {version} did not complete successfully"
+            ));
         }
         if applied_checksum != embedded_checksum {
-            anyhow::bail!(
+            return Some(format!(
                 "database schema checksum mismatch for migration {version}: applied {} vs embedded {}",
                 hex::encode(applied_checksum),
                 hex::encode(embedded_checksum)
-            );
+            ));
         }
     }
 
@@ -794,10 +903,12 @@ fn ensure_migrations_match(
             .iter()
             .any(|(embedded_version, _)| embedded_version == version)
         {
-            anyhow::bail!("database schema contains unknown migration {version}");
+            return Some(format!(
+                "database schema contains unknown migration {version}"
+            ));
         }
     }
-    Ok(())
+    None
 }
 
 // ─── Row Types (sqlx::FromRow) ──────────────────────────────────────────────
@@ -2228,5 +2339,74 @@ mod tests {
         )
         .expect_err("must fail");
         assert!(error.to_string().contains("unknown migration 51"));
+    }
+
+    #[test]
+    fn schema_lineage_reports_matching_heads_and_verified_checksums() {
+        let embedded = vec![(52, vec![5u8, 2]), (53, vec![1u8, 2, 3, 4])];
+        let applied = vec![(52, vec![5u8, 2], true), (53, vec![1, 2, 3, 4], true)];
+
+        let lineage = schema_lineage_from_history(&applied, &embedded);
+        assert_eq!(lineage.expected_head, Some(53));
+        assert_eq!(lineage.applied_head, Some(53));
+        assert_eq!(lineage.applied_count, 2);
+        assert!(lineage.checksums_verified, "matching history must verify");
+        assert!(lineage.problem.is_none());
+        assert!(lineage.is_current());
+    }
+
+    #[test]
+    fn schema_lineage_separates_a_stale_head_from_checksum_verification() {
+        let embedded = vec![(52, vec![5, 2]), (53, vec![1, 2, 3, 4])];
+        let applied = vec![(52, vec![5, 2], true)];
+
+        let lineage = schema_lineage_from_history(&applied, &embedded);
+        assert_eq!(lineage.expected_head, Some(53));
+        assert_eq!(lineage.applied_head, Some(52));
+        assert!(
+            lineage.checksums_verified,
+            "the applied rows still verify; only the head is stale"
+        );
+        assert!(lineage
+            .problem
+            .as_deref()
+            .unwrap_or_default()
+            .contains("stale"));
+        assert!(!lineage.is_current());
+    }
+
+    #[test]
+    fn schema_lineage_flags_a_checksum_mismatch_as_unverified() {
+        let embedded = vec![(53, vec![1, 2, 3])];
+        let applied = vec![(53, vec![9, 9, 9], true)];
+
+        let lineage = schema_lineage_from_history(&applied, &embedded);
+        assert_eq!(lineage.expected_head, Some(53));
+        assert_eq!(lineage.applied_head, Some(53));
+        assert!(!lineage.checksums_verified);
+        assert!(lineage
+            .problem
+            .as_deref()
+            .unwrap_or_default()
+            .contains("checksum mismatch"));
+        assert!(!lineage.is_current());
+    }
+
+    #[test]
+    fn schema_lineage_reports_an_empty_database_as_not_current() {
+        let embedded = vec![(53, vec![1, 2, 3])];
+        let applied = vec![];
+
+        let lineage = schema_lineage_from_history(&applied, &embedded);
+        assert_eq!(lineage.expected_head, Some(53));
+        assert_eq!(lineage.applied_head, None);
+        assert_eq!(lineage.applied_count, 0);
+        assert!(!lineage.checksums_verified);
+        assert!(lineage
+            .problem
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no migrations have been applied"));
+        assert!(!lineage.is_current());
     }
 }

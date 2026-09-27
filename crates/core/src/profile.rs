@@ -19,9 +19,11 @@ pub const PROFILE_ENV_VAR: &str = "APEX_PROFILE";
 /// Deployment profile selected by `APEX_PROFILE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeploymentProfile {
-    /// Database, worker heartbeat, embeddings and search index are required;
-    /// NATS, browser rendering, crawl freshness, source coverage, the alert
-    /// engine, the outbox publisher and scheduled-job freshness stay optional.
+    /// Database, schema lineage (applied migration head == embedded head +
+    /// checksum verification), worker heartbeat, embeddings and search index
+    /// are required; NATS, browser rendering, crawl freshness, source
+    /// coverage, the alert engine, the outbox publisher and scheduled-job
+    /// freshness stay optional.
     #[default]
     Core,
     /// The full product contract: every measured capability is required,
@@ -32,10 +34,16 @@ pub enum DeploymentProfile {
 }
 
 impl DeploymentProfile {
-    const CORE_REQUIRED_CAPABILITIES: &'static [&'static str] =
-        &["database", "worker_heartbeat", "embeddings", "search_index"];
+    const CORE_REQUIRED_CAPABILITIES: &'static [&'static str] = &[
+        "database",
+        "schema",
+        "worker_heartbeat",
+        "embeddings",
+        "search_index",
+    ];
     const FULL_REQUIRED_CAPABILITIES: &'static [&'static str] = &[
         "database",
+        "schema",
         "worker_heartbeat",
         "llm",
         "embeddings",
@@ -151,6 +159,7 @@ mod tests {
         let required = DeploymentProfile::Full.required_capabilities();
         for name in [
             "database",
+            "schema",
             "worker_heartbeat",
             "llm",
             "embeddings",
@@ -184,7 +193,13 @@ mod tests {
         ] {
             assert!(!core.requires_capability(name), "core permits {name}");
         }
-        for name in ["database", "worker_heartbeat", "embeddings", "search_index"] {
+        for name in [
+            "database",
+            "schema",
+            "worker_heartbeat",
+            "embeddings",
+            "search_index",
+        ] {
             assert!(core.requires_capability(name), "core requires {name}");
         }
     }

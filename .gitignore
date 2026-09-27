@@ -112,5 +112,8 @@ clippy_*.txt
 # Per-deployment provenance ledger written by scripts/ops/record_deployment.sh
 deployments.jsonl
 
+# Exact-SHA release evidence bundles written by scripts/ci/release_evidence.sh
+release-evidence/
+
 # Local UI audit screenshots
 mobile-*.png

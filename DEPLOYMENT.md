@@ -791,16 +791,37 @@ systemctl start apexintel-api apexintel-worker
 curl -sf http://127.0.0.1:8080/api/health | jq
 EOF
 
-# 5. Record deployment provenance (git SHA + CI pipeline + test results +
-#    migration test result + artifact digest + deploy time) against the exact
-#    artifact uploaded in step 2. The digest is computed locally from the same
-#    bytes that were copied to the server.
+# 5. Record deployment provenance (git SHA + build timestamp + CI pipeline +
+#    test results + migration test result + artifact digest + deploy time)
+#    against the exact artifact uploaded in step 2. The digest is computed
+#    locally from the same bytes that were copied to the server.
 APEX_GIT_SHA="$(git rev-parse HEAD)"
 APEX_CI_PIPELINE_ID="${CI_PIPELINE_NUMBER:-local}"
+APEX_BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 APEX_ARTIFACT_DIGEST="sha256:$(shasum -a 256 target/aarch64-unknown-linux-gnu/release/apex-api | awk '{print $1}')"
 APEX_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# 5a. Release evidence bundle for this exact SHA. CI writes this in the
+#     release-evidence step; locally it fails unless every executed gate
+#     passed, and any gate owned by another run can be recorded with
+#     --record <gate>=passed. The bundle is written to
+#     release-evidence/<sha>/release-evidence.{json,txt}.
+scripts/ci/release_evidence.sh \
+  --sha "${APEX_GIT_SHA}" \
+  --gate exact-sha \
+  --gate rustfmt \
+  --record clippy-default=passed \
+  --record clippy-all-features=passed \
+  --record unit-tests=passed \
+  --record all-features-tests=passed \
+  --record pg-canonical=passed \
+  --record migration-bootstrap=passed \
+  --record browser-integration=passed \
+  --record ui-journey=passed \
+  --record tailwind-assets=passed \
+  --record wasm-shared=passed
 scripts/ops/record_deployment.sh \
   --git-sha "${APEX_GIT_SHA}" \
+  --build-timestamp "${APEX_BUILD_TIMESTAMP}" \
   --pipeline-id "${APEX_CI_PIPELINE_ID}" \
   --tests passed \
   --migrations passed \
@@ -813,6 +834,7 @@ scripts/ops/record_deployment.sh \
 #    is safe because the later value wins.
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "cat >> /opt/apexintel/config/.env <<EOF
 APEX_GIT_SHA=${APEX_GIT_SHA}
+APEX_BUILD_TIMESTAMP=${APEX_BUILD_TIMESTAMP}
 APEX_CI_PIPELINE_ID=${APEX_CI_PIPELINE_ID}
 APEX_ARTIFACT_DIGEST=${APEX_ARTIFACT_DIGEST}
 APEX_DEPLOYED_AT=${APEX_DEPLOYED_AT}
@@ -820,8 +842,9 @@ EOF
 systemctl restart apexintel-api"
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
   'curl -sf http://127.0.0.1:8080/api/version | jq'
-# Expected: git_sha and artifact_digest match the values echoed by the
-# recorder above, and configured is true.
+# Expected: git_sha, build_timestamp and artifact_digest match the values
+# echoed by the recorder and the release-evidence bundle, and configured is
+# true.
 ```
 
 ### Updating Static Assets Only
@@ -851,15 +874,18 @@ curl -s https://starzerp.fi/api/health | jq
 
 # Profile-aware readiness probe (503 when a required capability is not proven)
 curl -s -o /dev/null -w '%{http_code}\n' https://starzerp.fi/api/health/ready
-# APEX_PROFILE=core (default) requires database, worker heartbeat, embeddings
-# and search index. APEX_PROFILE=full composes the product surfaces and
-# additionally requires the LLM endpoint, NATS, browser rendering, crawl
-# freshness, minimum operational source coverage, alert-rule engine state,
-# outbox publisher backlog, durable notification-delivery health (retry
-# processor freshness, backlog/dead-letter policy, stuck leases, recent
-# success ratio) and critical scheduled-job freshness; it refuses to
-# start without a `--features llm` build. The response publishes the exact
-# required set and the resolved thresholds as policy.
+# APEX_PROFILE=core (default) requires database, schema lineage, worker
+# heartbeat, embeddings and search index. APEX_PROFILE=full composes the
+# product surfaces and additionally requires the LLM endpoint, NATS, browser
+# rendering, crawl freshness, minimum operational source coverage, alert-rule
+# engine state, outbox publisher backlog, durable notification-delivery health
+# (retry processor freshness, backlog/dead-letter policy, stuck leases, recent
+# success ratio) and critical scheduled-job freshness; it refuses to start
+# without a `--features llm` build. The response publishes the exact required
+# set and the resolved thresholds as policy, plus the measured
+# `schema_lineage` proof: the embedded (expected) migration head, the applied
+# migration head, whether the applied history checksum-verifies, and a
+# mismatch verdict.
 
 # Product surface probes (same measured capabilities, scoped per surface)
 curl -s https://starzerp.fi/process/live       # 200 while the API serves
@@ -891,14 +917,20 @@ curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher, notific
 #   APEX_NOTIFICATION_DELIVERY_MIN_SUCCESS_PERCENT (90)
 #   APEX_CRITICAL_JOBS (crawl_cycle,triage_processing)
 #   APEX_CRITICAL_JOB_MAX_AGE_SECS (7200)
-# and search index; APEX_PROFILE=full additionally requires LLM, NATS and the
-# browser renderer, and refuses to start without a `--features llm` build.
-# Running deployment provenance (git SHA, CI pipeline, artifact digest, deploy time)
+# Running deployment provenance (git SHA, build timestamp, CI pipeline,
+# artifact digest, deploy time)
 curl -s https://starzerp.fi/api/version | jq
-# Expected: {"service":"apex-api","git_sha":"<sha>","ci_pipeline_id":"<n>",
-#            "artifact_digest":"sha256:<hex>","deployed_at":"<rfc3339>","configured":true}
-# `deployment` inside /api/health/capabilities reports the same values and
-# degrades when APEX_GIT_SHA is missing.
+# Expected: {"service":"apex-api","git_sha":"<sha>",
+#            "build_timestamp":"<rfc3339-or-epoch>","ci_pipeline_id":"<n>",
+#            "artifact_digest":"sha256:<hex>","deployed_at":"<rfc3339>",
+#            "configured":true}
+# Match git_sha + artifact_digest against
+# release-evidence/<sha>/release-evidence.json to prove the deployed binary
+# came from the evidenced build.
+# The `schema` capability in /api/health/capabilities reports the same applied
+# migration head / checksum evidence as `schema_lineage` in
+# /api/health/ready, and degrades when the applied head is not the embedded
+# head.
 ```
 
 Worker containers run `apex-worker healthcheck` as their Docker healthcheck:

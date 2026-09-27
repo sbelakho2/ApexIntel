@@ -74,6 +74,37 @@ async fn migrations_apply_cleanly_to_a_fresh_database() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
+async fn schema_lineage_matches_the_embedded_head_after_migrations() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+
+    // Readiness requires the applied migration head to equal the head the
+    // binary embeds, with the full applied history checksum-verified.
+    let lineage = store.schema_lineage().await.expect("schema lineage query");
+    assert!(lineage.expected_head.is_some(), "embedded head is known");
+    assert_eq!(
+        lineage.applied_head, lineage.expected_head,
+        "applied head must equal the embedded head: {:?}",
+        lineage.problem
+    );
+    assert!(
+        lineage.checksums_verified,
+        "every applied migration must checksum-verify: {:?}",
+        lineage.problem
+    );
+    assert!(lineage.is_current());
+    assert!(
+        lineage.applied_count >= 40,
+        "expected >= 40 applied rows, got {}",
+        lineage.applied_count
+    );
+
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
 async fn core_and_feature_tables_exist() {
     let pool = connect().await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
