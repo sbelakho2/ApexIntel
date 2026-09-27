@@ -7,6 +7,7 @@ use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{BooleanQuery, QueryParser, TermQuery};
 use tantivy::schema::*;
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use uuid::Uuid;
 
 /// File name (inside the index directory) holding the last successful commit
 /// checkpoint. Readiness compares its high-water mark against the database's
@@ -37,6 +38,11 @@ pub struct IndexCheckpoint {
     /// Newest source observation timestamp included in that commit (`None`
     /// when the indexer has never seen source data).
     pub high_water_ts: Option<DateTime<Utc>>,
+    /// Id of the newest source observation included in that commit. Together
+    /// with `high_water_ts` this is a keyset cursor: many observations can
+    /// share one timestamp, so paging on the timestamp alone cannot advance.
+    #[serde(default)]
+    pub high_water_id: Option<Uuid>,
     /// Number of documents committed in that commit.
     pub indexed_documents: u64,
 }
@@ -477,6 +483,7 @@ mod tests {
         let checkpoint = IndexCheckpoint {
             last_commit_at: Utc::now(),
             high_water_ts: Some(Utc::now() - chrono::Duration::minutes(5)),
+            high_water_id: None,
             indexed_documents: 7,
         };
         idx.record_checkpoint(&checkpoint).unwrap();
@@ -495,6 +502,7 @@ mod tests {
         let checkpoint = IndexCheckpoint {
             last_commit_at: Utc::now(),
             high_water_ts: Some(Utc::now()),
+            high_water_id: None,
             indexed_documents: 3,
         };
         writer.record_checkpoint(&checkpoint).unwrap();
@@ -513,6 +521,7 @@ mod tests {
         idx.record_checkpoint(&IndexCheckpoint {
             last_commit_at: Utc::now(),
             high_water_ts: None,
+            high_water_id: None,
             indexed_documents: 1,
         })
         .unwrap();

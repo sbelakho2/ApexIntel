@@ -1368,6 +1368,7 @@ mod tests {
         let checkpoint = IndexCheckpoint {
             last_commit_at: now() - chrono::Duration::minutes(1),
             high_water_ts: Some(now() - chrono::Duration::hours(3)),
+            high_water_id: None,
             indexed_documents: 12,
         };
         let status = evaluate_search_index(12, Some(&checkpoint), Some(now()), 3_600, now());
@@ -1382,6 +1383,7 @@ mod tests {
         let checkpoint = IndexCheckpoint {
             last_commit_at: commit_at,
             high_water_ts: Some(now() - chrono::Duration::minutes(10)),
+            high_water_id: None,
             indexed_documents: 42,
         };
         let status = evaluate_search_index(42, Some(&checkpoint), Some(now()), 3_600, now());
@@ -1400,6 +1402,7 @@ mod tests {
         let checkpoint = IndexCheckpoint {
             last_commit_at: now(),
             high_water_ts: None,
+            high_water_id: None,
             indexed_documents: 3,
         };
         let status = evaluate_search_index(3, Some(&checkpoint), None, 3_600, now());

@@ -129,21 +129,31 @@ impl PgStore {
     /// boundary timestamp (`>=`) so a batch boundary can never skip
     /// observations; the indexer deletes by document id before inserting, so
     /// re-reading the boundary is idempotent. `None` starts from the beginning.
+    /// Observations for the search indexer, oldest first.
+    ///
+    /// Pages by the `(ts_utc, id)` keyset, not by timestamp alone: timestamps
+    /// are not unique (a bulk import can put thousands of observations on one
+    /// timestamp), so a timestamp-only cursor cannot advance past such a group.
+    /// `after_id` defaults to the nil UUID, which makes the predicate
+    /// `ts_utc >= after` for legacy callers that only hold a timestamp.
     pub async fn observations_for_indexing(
         &self,
         after: Option<DateTime<Utc>>,
+        after_id: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<ObservationRow>> {
-        let limit = limit.clamp(1, 5_000);
+        let limit = limit.clamp(1, 50_000);
         let rows = sqlx::query_as::<_, ObservationRow>(
             "SELECT id, observation_type, entity_id, entity_type, ts_utc, value, provenance, \
                     confidence, created_at \
                FROM observations \
-              WHERE $1::timestamptz IS NULL OR ts_utc >= $1 \
+              WHERE $1::timestamptz IS NULL \
+                 OR (ts_utc, id) > ($1, COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)) \
               ORDER BY ts_utc ASC, id ASC \
-              LIMIT $2",
+              LIMIT $3",
         )
         .bind(after)
+        .bind(after_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;

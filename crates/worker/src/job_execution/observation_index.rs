@@ -11,7 +11,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+#[cfg(test)]
+use chrono::DateTime;
+use chrono::Utc;
 
 use apex_store::postgres::{ObservationRow, PgStore};
 use apex_store::tantivy_index::{IndexCheckpoint, SearchIndex};
@@ -29,6 +31,9 @@ const MAX_BODY_CHARS: usize = 4_000;
 /// Writer heap for the per-run index writer.
 const WRITER_HEAP_BYTES: usize = 50_000_000;
 
+/// Wall-clock budget for one catch-up run; keeps the writer lock bounded.
+const INDEX_RUN_BUDGET_SECS: u64 = 25;
+
 /// Incrementally index new observations into the tantivy index.
 pub(crate) async fn run_observation_index(store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(JobKind::ObservationIndex);
@@ -44,40 +49,69 @@ pub(crate) async fn run_observation_index(store: &Arc<PgStore>) -> JobRun {
         }
     };
 
-    let after = index
-        .checkpoint()
-        .and_then(|checkpoint| checkpoint.high_water_ts);
-    let rows = match store
-        .observations_for_indexing(after, INDEX_BATCH_LIMIT)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(error) => {
-            run.fail(&format!("loading observations for indexing: {error}"));
-            return run;
+    let batch_limit: i64 = std::env::var("INDEX_BATCH_LIMIT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(INDEX_BATCH_LIMIT)
+        .clamp(1, 50_000);
+
+    // Catch up in bounded batches inside one run: a large backlog (or a batch
+    // that shares a timestamp) converges instead of advancing 1 000 rows per
+    // five-minute tick. The wall-clock budget keeps the writer lock bounded.
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_secs(INDEX_RUN_BUDGET_SECS);
+    let mut total_indexed: u64 = 0;
+    let mut batches: u32 = 0;
+    let mut high_water_label = "none".to_string();
+
+    loop {
+        let checkpoint = index.checkpoint();
+        let after_ts = checkpoint.as_ref().and_then(|cp| cp.high_water_ts);
+        let after_id = checkpoint.as_ref().and_then(|cp| cp.high_water_id);
+        let rows = match store
+            .observations_for_indexing(after_ts, after_id, batch_limit)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                run.fail(&format!("loading observations for indexing: {error}"));
+                return run;
+            }
+        };
+        if rows.is_empty() {
+            break;
         }
-    };
-    if rows.is_empty() {
+        match index_observation_batch(&index, &rows) {
+            Ok(committed) => {
+                total_indexed += committed.indexed_documents;
+                batches += 1;
+                if let Some(ts) = committed.high_water_ts {
+                    high_water_label = ts.to_rfc3339();
+                }
+                if committed.indexed_documents < batch_limit as u64 {
+                    break; // caught up
+                }
+            }
+            Err(error) => {
+                run.fail(&format!("indexing observations: {error}"));
+                return run;
+            }
+        }
+        if started.elapsed() >= budget {
+            break;
+        }
+    }
+
+    if total_indexed == 0 {
         run.skip("search index is current");
         return run;
     }
-
-    match index_observation_batch(&index, &rows) {
-        Ok(checkpoint) => {
-            let high_water = checkpoint
-                .high_water_ts
-                .map(|ts| ts.to_rfc3339())
-                .unwrap_or_else(|| "none".to_string());
-            run.succeed(
-                checkpoint.indexed_documents,
-                &format!(
-                    "indexed {} observations (high-water {high_water})",
-                    checkpoint.indexed_documents
-                ),
-            );
-        }
-        Err(error) => run.fail(&format!("indexing observations: {error}")),
-    }
+    run.succeed(
+        total_indexed,
+        &format!(
+            "indexed {total_indexed} observations in {batches} batch(es) (high-water {high_water_label})"
+        ),
+    );
     run
 }
 
@@ -91,7 +125,6 @@ pub(crate) fn index_observation_batch(
     rows: &[ObservationRow],
 ) -> Result<IndexCheckpoint> {
     let mut writer = index.writer(WRITER_HEAP_BYTES)?;
-    let mut high_water: Option<DateTime<Utc>> = None;
     for row in rows {
         let entity_id = row
             .entity_id
@@ -110,10 +143,6 @@ pub(crate) fn index_observation_batch(
             &[],
             row.ts_utc.timestamp(),
         )?;
-        high_water = Some(match high_water {
-            Some(previous) => previous.max(row.ts_utc),
-            None => row.ts_utc,
-        });
     }
     writer.commit().context("committing search index batch")?;
     // Reload so the handle that produced the commit observes it immediately
@@ -123,9 +152,13 @@ pub(crate) fn index_observation_batch(
         .reload()
         .context("reloading search index after commit")?;
 
+    // The cursor is the *last* row's keyset (rows are ordered oldest-first),
+    // which is correct even when many observations share one timestamp.
+    let last = rows.last();
     let checkpoint = IndexCheckpoint {
         last_commit_at: Utc::now(),
-        high_water_ts: high_water,
+        high_water_ts: last.map(|row| row.ts_utc),
+        high_water_id: last.map(|row| row.id),
         indexed_documents: rows.len() as u64,
     };
     index.record_checkpoint(&checkpoint)?;
