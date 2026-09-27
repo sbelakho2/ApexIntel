@@ -399,28 +399,30 @@
 
 {# ── Entity activity chart container (HTMX) ──────────────────────────── #}
 {# Renders a placeholder that loads chart SVG via HTMX on connect.      #}
-{# The SVG endpoint returns a full multi-series activity chart.          #}
+{# The /activity/svg endpoint returns the multi-series chart fragment;   #}
+{# chips swap in the 7/30/90-day window (the server filters the series   #}
+{# and the fragment also updates this header out-of-band).              #}
 {% macro entity_activity_chart(entity_id, days) %}
 <div class="apex-card">
   <div class="apex-card-header flex items-center justify-between gap-4">
-    <h3 class="text-xs font-black uppercase tracking-[0.12em]">Activity — Last {{ days }} Days</h3>
+    <h3 id="entity-activity-window-{{ entity_id }}" class="text-xs font-black uppercase tracking-[0.12em]">Activity — Last {{ days }} Days</h3>
     <div class="flex gap-1">
-      <a href="/api/charts/entity/{{ entity_id }}/activity?days=7" class="apex-chip apex-chip-idle text-[10px]"
-         hx-get="/api/charts/entity/{{ entity_id }}/activity?days=7"
+      <a href="/api/charts/entity/{{ entity_id }}/activity/svg?days=7" class="apex-chip apex-chip-idle text-[10px]"
+         hx-get="/api/charts/entity/{{ entity_id }}/activity/svg?days=7"
          hx-target="#entity-activity-chart-{{ entity_id }}"
          hx-swap="innerHTML">7d</a>
-      <a href="/api/charts/entity/{{ entity_id }}/activity?days=30" class="apex-chip apex-chip-active text-[10px]"
-         hx-get="/api/charts/entity/{{ entity_id }}/activity?days=30"
+      <a href="/api/charts/entity/{{ entity_id }}/activity/svg?days=30" class="apex-chip apex-chip-active text-[10px]"
+         hx-get="/api/charts/entity/{{ entity_id }}/activity/svg?days=30"
          hx-target="#entity-activity-chart-{{ entity_id }}"
          hx-swap="innerHTML">30d</a>
-      <a href="/api/charts/entity/{{ entity_id }}/activity?days=90" class="apex-chip apex-chip-idle text-[10px]"
-         hx-get="/api/charts/entity/{{ entity_id }}/activity?days=90"
+      <a href="/api/charts/entity/{{ entity_id }}/activity/svg?days=90" class="apex-chip apex-chip-idle text-[10px]"
+         hx-get="/api/charts/entity/{{ entity_id }}/activity/svg?days=90"
          hx-target="#entity-activity-chart-{{ entity_id }}"
          hx-swap="innerHTML">90d</a>
     </div>
   </div>
   <div class="apex-card-body" id="entity-activity-chart-{{ entity_id }}"
-       hx-get="/api/charts/entity/{{ entity_id }}/activity?days={{ days }}"
+       hx-get="/api/charts/entity/{{ entity_id }}/activity/svg?days={{ days }}"
        hx-trigger="load"
        hx-swap="innerHTML">
     <div class="flex items-center justify-center py-12">

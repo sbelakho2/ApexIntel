@@ -318,7 +318,7 @@ engine require no API keys.
 | WebSocket disconnects | Nginx proxy timeout | Check `proxy_read_timeout` in nginx config | Increase to 300s, reload nginx |
 | Disk full | Logs or MinIO artifacts | `df -h` and `du -sh /var/log/*` | Rotate logs, clean old artifacts |
 | High memory usage | Too many concurrent crawls | `htop` — check worker RSS | Reduce `CRAWL_CONCURRENCY` |
-| Frontend build fails | npm dependency issue | `cd frontend && npm ci` | Delete `node_modules`, reinstall |
+| Compiled stylesheet stale | Tailwind build not re-run after template edits | Diff `crates/api/static/css/tailwind.css` against a fresh build | `npx tailwindcss -i crates/api/static/css/globals.css -o crates/api/static/css/tailwind.css --minify` |
 | Migration fails | Schema already exists | Check `\dt` in psql | Use `IF NOT EXISTS` or skip |
 
 ---
@@ -505,14 +505,14 @@ proxy_busy_buffers_size 256k;
 
 ```
 Phase 1: Single Server (current)
-├── API + Worker + Frontend + PostgreSQL + Redis + NATS
+├── API (serves the web UI) + Worker + PostgreSQL + Redis + NATS
 
 Phase 2: Separate Database (10-50 users)
-├── App Server: API + Worker + Frontend
+├── App Server: API (serves the web UI) + Worker
 └── DB Server: PostgreSQL + Redis
 
 Phase 3: Full Separation (50-200 users)
-├── API Server(s): API + Frontend (behind load balancer)
+├── API Server(s): API (serves the web UI, behind load balancer)
 ├── Worker Server(s): Worker instances (NATS job claiming)
 ├── DB Server: PostgreSQL primary + read replica
 ├── Cache Server: Redis Sentinel
@@ -549,7 +549,7 @@ DATABASE_READ_URL=postgres://user:pass@replica:5432/apexintel
 ### CDN / Static Assets
 
 ```bash
-# Put frontend behind Cloudflare
+# Put the API (which serves the web UI) behind Cloudflare
 # 1. Add domain to Cloudflare
 # 2. Enable "Full (strict)" SSL mode
 # 3. Add page rules for caching static assets

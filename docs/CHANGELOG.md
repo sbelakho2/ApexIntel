@@ -7,6 +7,53 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — One frontend, truthful activity chart, one crawler (P1-5, P1-6, P1-7, P2)
+
+### Frontend architecture (P1-5)
+- Retired the Leptos/WASM SPA from the workspace: the `frontend` crate moved to
+  `experiments/wasm-frontend/` (outside the workspace, no longer built, tested,
+  or shipped). Production has exactly one UI — the server-rendered Askama +
+  HTMX app in `crates/api`.
+- Removed the wasm32 CI step, the `check:shared` wasm script, the trunk-based
+  `playwright.config.cjs` and the WASM parity/chart specs; README,
+  `docs/development/frontend*.md`, and the Sensei-Rams guides now describe the
+  single shipped surface (archived SPA marked unsupported).
+- Added `scripts/ci/check_frontend_removed.sh` (wired into Woodpecker and
+  `npm run test:ci`): fails when the retired WASM package or its crate path
+  reappears in the workspace, CI, package scripts, Docker, or any tracked file
+  outside `experiments/`.
+
+### Entity activity chart (P1-6)
+- The 0–1 activity score now plots on its own right axis with 0/0.5/1 ticks
+  instead of sharing one axis with observation/insight counts that flattened
+  it. The per-window normalization (60% observations, 40% insights) is stated
+  in the SVG description; counts share a left axis whose ticks are derived from
+  the rendered data range (`compute_axis_ticks`), so a non-zero minimum is
+  never labelled `0`.
+- The 7/30/90-day chips now fetch `/api/charts/entity/:id/activity/svg?days=N`
+  (previously they swapped the JSON endpoint), the SVG records `data-days` and
+  `data-point-count`, and the HTMX fragment updates the card's window label
+  out-of-band. Series length and point count track the selected window.
+
+### Acquisition single-source (P1-7, P2)
+- Archived the legacy Python crawl daemon (`scripts/crawl_daemon.py`, its tests
+  and `requirements.txt`) to `experiments/legacy-python-crawl-daemon/` as
+  tooling-only. `crates/crawl` + `crates/worker` is now the single acquisition
+  implementation; the daemon must not be deployed or scheduled. The offline
+  veracity-scoring helpers stay available to
+  `scripts/inspect_prod_veracity_candidates.py`, which now loads them from the
+  archive; the decision is documented in `experiments/README.md`.
+
+### Tests
+- Axis-tick unit tests (non-zero minimum, empty data, single point), score-vs-
+  count axis separation, truthful count-axis labels, days-window series
+  filtering (unit) and an e2e check that the 7d/90d chips change the rendered
+  point count and header (not just a label).
+- Fixed the server-UI seed fixtures for migration 078's evidence policy: the
+  seeded insight now links a real observation via `insight_claim_evidence`
+  (claim created as `unknown`, then promoted), so the smoke/journey/a11y
+  server-UI suites seed successfully again.
+
 ## [Unreleased] — Source-capability truth + browser hardening (B402–B405)
 
 Audit items 10, 11, 18, 34 (source/crawl capability truth + browser hardening).

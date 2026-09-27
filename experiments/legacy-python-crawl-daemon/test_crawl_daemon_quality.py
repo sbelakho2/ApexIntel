@@ -1,6 +1,6 @@
 import unittest
 
-from scripts import crawl_daemon
+import crawl_daemon
 
 
 class CrawlDaemonQualityTests(unittest.TestCase):

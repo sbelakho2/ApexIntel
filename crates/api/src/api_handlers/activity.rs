@@ -1,7 +1,8 @@
 //! Activity feed API handlers.
 //!
 //! Serves the real-time activity feed from the `activity_feed` table (created by
-//! migration 0042). This is the backend for the ActivityFeed page in the WASM frontend.
+//! migration 0042). This is the backend for the ActivityFeed section of the
+//! server-rendered UI.
 //!
 //! - `GET /api/activity` — paginated activity feed with optional type filter
 //! - `POST /api/activity` — insert a system event (worker-driven)

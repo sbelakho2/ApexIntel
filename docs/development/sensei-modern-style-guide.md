@@ -170,21 +170,22 @@ Use imperative labels (`Run`, `Acknowledge`, `Export`) with precise dimensions a
 
 ## 9. Source of Truth in ApexIntel
 
-The Sensei-Rams design is implemented across two frontend surfaces in this repository:
+The Sensei-Rams design is implemented on one shipped surface in this repository:
+the server-rendered Askama/HTMX UI in `crates/api/`. Tailwind utilities are
+configured in [`tailwind.config.js`](../tailwind.config.js:1); global CSS
+variables and Rams tokens are in
+[`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:1).
 
-- **Leptos/WASM frontend** (`crates/frontend/`): The interactive single-page application. Styles are in [`crates/frontend/style.css`](../crates/frontend/style.css:1) with CSS custom properties defining the full token set. Components are in [`crates/frontend/src/components/`](../crates/frontend/src/components/mod.rs:1).
-- **Askama/HTMX server-rendered UI** (`crates/api/`): Classic page-based rendering. Tailwind utilities are configured in [`tailwind.config.js`](../tailwind.config.js:1). Global CSS variables and Rams tokens are in [`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:1).
-- **Shared design tokens**: CSS custom properties (`--rams-*`) are defined in both [`crates/frontend/style.css`](../crates/frontend/style.css:1) and [`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:5) to ensure visual consistency across both frontend surfaces.
+The retired Leptos/WASM SPA lives (unsupported, unbuilt) in
+[`experiments/wasm-frontend/`](../experiments/wasm-frontend/); it is not a
+reference for new work.
 
 ### File Reference Summary
 
 | Token / Concept | Location |
 |---|---|
-| Rams CSS variables (WASM) | [`crates/frontend/style.css`](../crates/frontend/style.css:1) |
 | Rams CSS variables (server-rendered) | [`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:39) |
 | Tailwind configuration | [`tailwind.config.js`](../tailwind.config.js:1) |
-| WASM app shell component | [`crates/frontend/src/app.rs`](../crates/frontend/src/app.rs:72) |
-| WASM shared UI components | [`crates/frontend/src/components/`](../crates/frontend/src/components/mod.rs:1) |
 | Askama base layout template | [`crates/api/templates/base.html`](../crates/api/templates/base.html:1) |
 | Askama shared macros (icons, badges, charts) | [`crates/api/templates/macros.html`](../crates/api/templates/macros.html:1) |
 

@@ -13,21 +13,23 @@
 #   6. a registration guard that fails when a new ignored PostgreSQL test target
 #      is not wired into that runner
 #   7. Tailwind asset build
-#   8. wasm32 check of the shared crate used by the browser UI
-#   9. server-rendered UI end-to-end (Playwright) smoke sweep: logs in and sweeps
+#   8. server-rendered UI end-to-end (Playwright) smoke sweep: logs in and sweeps
 #      EVERY navigation route at mobile + desktop, asserting HTTP 2xx, no
 #      console / page errors, no horizontal overflow (the "vertical text" class
 #      of bug), data-table cells stay on one line on mobile, the styled 404
 #      works, and every rendered link resolves.
-#  10. server-rendered UI journey contracts (Playwright): drives the real UI and
+#   9. server-rendered UI journey contracts (Playwright): drives the real UI and
 #      asserts the resulting PostgreSQL state for create/save/delete/ack/
 #      resolve/dismiss/bookmark/recipe/investigation/export/preferences/
 #      subscription/graph/battlecard/admin journeys.
-#  11. container-level browser integration: builds Dockerfile.worker's
+#  10. container-level browser integration: builds Dockerfile.worker's
 #      browser-check stage (runtime image + Chromium) and renders a JS-only
 #      fixture (late network + lazy-loaded DOM) through that image.
-#  10. migration header check: every pending migration states its own number,
+#  11. migration header check: every pending migration states its own number,
 #      so a renumbered file cannot keep describing an older revision.
+#  12. single-frontend guard: the retired WASM SPA crate (`experiments/wasm-frontend`)
+#      must not reappear in the workspace, CI, or tests — production is the
+#      server-rendered Askama + HTMX UI in `crates/api`.
 #
 # All cargo invocations use `--locked` so a stale Cargo.lock fails the build.
 
@@ -89,6 +91,15 @@ steps:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_alert_publish.sh
 
+  # Fails if the retired WASM SPA crate reappears anywhere: workspace
+  # membership, CI, tests, or docs. Production UI is the server-rendered
+  # Askama + HTMX application in `crates/api`.
+  - name: single-frontend-guard
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache git bash grep
+      - bash scripts/ci/check_frontend_removed.sh
+
   - name: rust
     image: rust:bookworm
     environment:
@@ -109,7 +120,7 @@ steps:
       # Release build of the deployable binaries (the Docker images ship these)
       - cargo build --release --bins -p apex-api -p apex-worker --features llm --locked
 
-  - name: frontend-assets
+  - name: ui-assets
     image: node:20-bookworm
     commands:
       - npm ci
@@ -134,15 +145,6 @@ steps:
       - cargo test -p apex-store --test migrations_integration --test alert_subscriptions_integration --test alert_subscription_crud_integration --test rls_scoped_integration --test event_outbox_integration --test notification_delivery_integration --locked -- --ignored --test-threads=1
       # Canonical `app_users` login contract against the same migrated database.
       - cargo test -p apex-api --test app_users_login_integration --locked -- --ignored --test-threads=1
-
-  - name: wasm-shared
-    image: rust:bookworm
-    # Compile-heavy steps run sequentially: concurrent cargo builds on a small
-    # runner caused intermittent failures in the api test suite.
-    depends_on: [rust]
-    commands:
-      - rustup target add wasm32-unknown-unknown
-      - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
 
   # SMOKE STAGE — server-rendered UI route sweep only. Builds the API (rust
   # image also has Node), starts it against the database service, and drives a

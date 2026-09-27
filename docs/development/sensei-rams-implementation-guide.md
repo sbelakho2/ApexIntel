@@ -27,31 +27,22 @@
 - density modes (`density-compact`, `density-comfortable`, `density-expanded`)
 - reduced motion fallback
 
-### 1.3 WASM Frontend Style Requirements
+### 1.3 Archived WASM Experiment
 
-[`crates/frontend/style.css`](../crates/frontend/style.css:1) defines Rams-compatible CSS custom properties for the Leptos/WASM app. These include:
-
-- All `--rams-*` tokens matching the design system
-- Chart visualization variables (`--chart-series-*`)
-- Bayesian evidence badge colors
-- Component-specific styles (surface-card, stat-card, filter-bar, etc.)
+The Leptos/WASM SPA was retired from the workspace and now lives (unsupported,
+unbuilt) in [`experiments/wasm-frontend/`](../experiments/wasm-frontend/). Its
+chart variables (`--chart-series-*`) and Rams tokens were folded into
+[`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:1),
+which is the single source of truth. Do not build or style against the archive.
 
 ---
 
 ## 2. Layout Infrastructure
 
-The ApexIntel frontend has two rendering surfaces with different layout approaches:
+ApexIntel has one shipped rendering surface: the server-rendered Askama
+template shell at [`crates/api/`](../crates/api/).
 
-### 2.1 Leptos/WASM App Shell (Interactive SPA)
-
-The WASM frontend at [`crates/frontend/`](../crates/frontend/) uses a client-side router with a single app shell defined in [`app.rs`](../crates/frontend/src/app.rs:72):
-
-- Desktop: CSS Grid layout with 260px sidebar + flexible main area
-- Mobile: Single-column layout with sticky topbar and slide-in navigation
-- Navigation: 16 nav items rendered from a `NAV_ITEMS` constant
-- Routes: All defined via `<Routes>` in [`app.rs`](../crates/frontend/src/app.rs:154) with `<Route>` components
-
-### 2.2 Askama Template Shell (Server-Rendered)
+### 2.1 Askama Template Shell (Server-Rendered)
 
 The server-rendered UI at [`crates/api/`](../crates/api/) uses:
 
@@ -63,16 +54,6 @@ The server-rendered UI at [`crates/api/`](../crates/api/) uses:
 ---
 
 ## 3. Shared UI Component Rules
-
-### WASM Components ([`crates/frontend/src/components/`](../crates/frontend/src/components/mod.rs:1))
-
-The WASM frontend uses Leptos components organized into modules:
-
-- [`cards.rs`](../crates/frontend/src/components/cards.rs:1) — SurfaceCard, StatCard components
-- [`filters.rs`](../crates/frontend/src/components/filters.rs:1) — FilterBar, FilterChip components
-- [`panels.rs`](../crates/frontend/src/components/panels.rs:1) — Side panels, toolbars
-- [`badges/`](../crates/frontend/src/components/badges/mod.rs:1) — BayesianBadge, SourceReliabilityBadge, TemporalFlag
-- [`charts/`](../crates/frontend/src/components/charts/mod.rs:1) — SVG chart components (probability gauge, reliability diagram, community graph, sparkline, etc.)
 
 ### Server-Rendered Components ([`crates/api/templates/macros.html`](../crates/api/templates/macros.html:1))
 
@@ -87,7 +68,7 @@ Shared Askama macros providing:
 - `empty_state(message, icon)` — placeholder for empty lists
 - SVG chart helpers (`donut_chart`, `country_flag`, `tier_color_class`)
 
-### Required Characteristics (Both Surfaces)
+### Required Characteristics (Server-Rendered UI)
 
 - Visual hierarchy via borders and section dividers
 - Icon + text pairing for primary headers and empty states
@@ -120,21 +101,6 @@ Use these classes as stable design primitives:
 - `shadow-rams-inset|rams-pressed|rams-focus`
 
 If a new component needs Rams styling, compose from this contract before inventing ad-hoc tokens.
-
-### For the WASM Frontend (CSS Custom Properties)
-
-Use the CSS variables defined in [`crates/frontend/style.css`](../crates/frontend/style.css:1):
-
-| Token | CSS Variable |
-|---|---|
-| Background | `var(--background)` |
-| Foreground | `var(--foreground)` |
-| Card surface | `var(--card)` |
-| Border | `var(--border)` |
-| Muted text | `var(--muted)` |
-| Primary accent | `var(--primary)` |
-| Success | `var(--success)` |
-| Destructive | `var(--destructive)` |
 
 ---
 
@@ -169,29 +135,11 @@ Status indicators must not rely on color alone.
 ### Runtime
 
 - [ ] No console runtime errors
-- [ ] No `500` UI/server response regressions in screenshot tests
+- [ ] No `500` UI/server response regressions in the server-UI visual specs
 
 ---
 
 ## 7. Testing Workflow
-
-### WASM Frontend Tests (Playwright)
-
-Run E2E tests for the Leptos/WASM frontend:
-
-```bash
-# Start trunk dev server first (or use the webServer config in playwright.config.cjs)
-cd crates/frontend && trunk serve --port 8080
-
-# In another terminal, run tests
-npx playwright test -c playwright.config.cjs
-
-# Run specific test file
-npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js
-
-# Update snapshots
-npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js --update-snapshots
-```
 
 ### Server-Rendered UI Verification
 
@@ -199,12 +147,19 @@ npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js --update-snapsh
 # Compile-time template validation
 cargo check -p apex-api
 
-# Build the WASM frontend
-cd crates/frontend && trunk build
+# Route/interaction e2e against a running apex-api
+BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword \
+  node scripts/ci/e2e_server_ui.mjs
+
+# Playwright contract/visual specs (server must already be running)
+npx playwright test -c playwright.server-ui.config.cjs
 
 # Compile Tailwind
-npx tailwindcss -i crates/api/static/css/input.css -o crates/api/static/css/tailwind.css --minify
+npx tailwindcss -i crates/api/static/css/globals.css -o crates/api/static/css/tailwind.css --minify
 ```
+
+There is no WASM build step: `experiments/wasm-frontend/` is archived and is
+not compiled, tested, or shipped.
 
 ---
 
@@ -216,4 +171,4 @@ When converting existing pages:
 2. Move header/body into clear module containers
 3. Replace plain text-only empty states with structured icon + heading + context
 4. Tighten spacing to 4px grid increments
-5. Re-run screenshot tests and compare
+5. Re-run the server-UI visual specs and compare

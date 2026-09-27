@@ -16,9 +16,21 @@ DEFAULT_TARGETS = [
 
 
 def load_crawl_daemon():
-    script_path = "/opt/apexintel/scripts/crawl_daemon.py"
-    if not os.path.exists(script_path):
-        script_path = os.path.join(os.path.dirname(__file__), "crawl_daemon.py")
+    """Load the archived Python scoring helpers (tooling only).
+
+    The daemon itself is retired: `apex-crawl` + `apex-worker` are the only
+    production acquisition implementation. These pure scoring functions are
+    reused by this offline audit, so they live in the archive.
+    """
+    script_path = os.path.normpath(
+        os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "experiments",
+            "legacy-python-crawl-daemon",
+            "crawl_daemon.py",
+        )
+    )
     spec = importlib.util.spec_from_file_location("crawl_daemon", script_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

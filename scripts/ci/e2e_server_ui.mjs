@@ -407,6 +407,66 @@ try {
     }, 2);
   }
 
+  // ── Entity activity chart: the days selector swaps the rendered series ──
+  // Regression guard: the 7/30/90 chips used to hit the JSON endpoint (raw
+  // JSON rendered as text) and the series length never changed. The chips must
+  // now fetch the SVG fragment and the point count must track the window.
+  {
+    const company = SEED.companies[0];
+    const page = await authCtx.newPage();
+    const chartRequests = [];
+    page.on('response', (r) => {
+      if (r.url().includes(`/api/charts/entity/${company.id}/activity`)) {
+        chartRequests.push({ url: r.url(), status: r.status() });
+      }
+    });
+    try {
+      await page.goto(`${BASE}/companies/${company.id}`, { waitUntil: 'domcontentloaded' });
+      const chartSel = `#entity-activity-chart-${company.id}`;
+      const svgSel = `${chartSel} svg`;
+      await page.waitForSelector(svgSel, { state: 'visible', timeout: 20_000 });
+
+      const initialDays = await page.locator(svgSel).getAttribute('data-days');
+      const initialPoints = await page.locator(`${chartSel} circle`).count();
+      if (initialDays !== '30') v(`activity chart initial window data-days=${initialDays} (expected 30)`);
+      if (initialPoints !== 90) v(`activity chart 30d rendered ${initialPoints} points (expected 90)`);
+
+      const chip = (days) =>
+        page.locator(`a[hx-target="${chartSel}"][hx-get*="days=${days}"]`);
+      const waitForWindow = (days) =>
+        page.waitForFunction(
+          ({ sel, d }) => document.querySelector(sel)?.getAttribute('data-days') === d,
+          { sel: svgSel, d: String(days) },
+          { timeout: 15_000 }
+        );
+
+      await chip(7).click();
+      await waitForWindow(7);
+      const weekPoints = await page.locator(`${chartSel} circle`).count();
+      if (weekPoints !== 21) v(`activity chart 7d rendered ${weekPoints} points (expected 21)`);
+      const header = (await page.locator(`#entity-activity-window-${company.id}`).textContent()) || '';
+      if (!header.includes('Last 7 Days')) {
+        v(`activity chart header did not follow the 7d window: "${header.trim()}"`);
+      }
+
+      await chip(90).click();
+      await waitForWindow(90);
+      const quarterPoints = await page.locator(`${chartSel} circle`).count();
+      if (quarterPoints !== 270) v(`activity chart 90d rendered ${quarterPoints} points (expected 270)`);
+
+      if (!chartRequests.some((r) => r.url.includes('/activity/svg?days=7') && r.status === 200)) {
+        v('activity chart 7d did not fetch /activity/svg?days=7');
+      }
+      if (chartRequests.some((r) => /\/activity\?days=/.test(r.url))) {
+        v('activity chart fetched the JSON endpoint instead of the SVG fragment');
+      }
+    } catch (error) {
+      v(`activity chart days filter failed: ${String(error.message || error).slice(0, 200)}`);
+    } finally {
+      await page.close();
+    }
+  }
+
   // ── Link integrity (rendered links from the main pages) ───────────────
   {
     const page = await authCtx.newPage();

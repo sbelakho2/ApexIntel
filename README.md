@@ -43,7 +43,7 @@ reserved for threat-intel suites (Recorded Future, OpenCTI):
         └────────────────────────┘        └──────────────────┘
 ```
 
-**Crates** (18):
+**Crates** (17):
 
 - `core` — entities, validation, analysis primitives
 - `crawl` — HTTP politeness layer, per-source clients (RSS, SEC EDGAR, CVE, OpenAlex, RDAP, DNS, dark web, social, contact enrichment)
@@ -60,8 +60,12 @@ reserved for threat-intel suites (Recorded Future, OpenCTI):
 - `threat_intel` — threat-actor database, MITRE ATT&CK mapping
 - `investigation` — analyst investigation engine (workflows, narratives, threats)
 - `worker` — job scheduler and all pipeline execution
-- `api` — REST API + server-rendered web application
-- `shared`, `frontend` — shared types, WASM frontend experiments
+- `api` — REST API + server-rendered web application (Askama + HTMX; the only shipped UI)
+- `shared` — shared types
+
+The retired Leptos/WASM SPA lives outside the workspace in
+`experiments/wasm-frontend/` and is not built, tested, or shipped; see
+[`experiments/README.md`](experiments/README.md).
 
 ## Quick start
 
