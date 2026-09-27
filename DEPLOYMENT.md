@@ -401,6 +401,11 @@ chown apexintel:apexintel /opt/apexintel/config/.env
 > writes the per-deployment audit record and prints the four `APEX_*` exports
 > for the service `.env`. Without `APEX_GIT_SHA`, the `deployment` capability in
 > `/api/health/capabilities` reports `degraded`.
+>
+> `/api/version` is **public by design** (like `/api/health`) so load balancers
+> and operators can verify the running build without credentials. If your
+> threat model treats exact build identity as sensitive, allowlist the route at
+> nginx or require a session in front of it.
 
 ---
 
@@ -781,21 +786,36 @@ curl -sf http://127.0.0.1:8080/api/health | jq
 EOF
 
 # 5. Record deployment provenance (git SHA + CI pipeline + test results +
-#    migration test result + artifact digest + deploy time). This is the
-#    per-deployment audit trail and the source of the APEX_* variables that
-#    /api/version reports. Run locally against the uploaded artifact, then add
-#    the printed APEX_* exports (or pipe them into the server .env).
-APEX_GIT_SHA="$(git rev-parse HEAD)" \
-CI_PIPELINE_NUMBER="${CI_PIPELINE_NUMBER:-local}" \
-  scripts/ops/record_deployment.sh \
-    --tests passed \
-    --migrations passed \
-    --artifact /tmp/apex-api-new \
-    --ledger deployments.jsonl
+#    migration test result + artifact digest + deploy time) against the exact
+#    artifact uploaded in step 2. The digest is computed locally from the same
+#    bytes that were copied to the server.
+APEX_GIT_SHA="$(git rev-parse HEAD)"
+APEX_CI_PIPELINE_ID="${CI_PIPELINE_NUMBER:-local}"
+APEX_ARTIFACT_DIGEST="sha256:$(shasum -a 256 target/aarch64-unknown-linux-gnu/release/apex-api | awk '{print $1}')"
+APEX_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+scripts/ops/record_deployment.sh \
+  --git-sha "${APEX_GIT_SHA}" \
+  --pipeline-id "${APEX_CI_PIPELINE_ID}" \
+  --tests passed \
+  --migrations passed \
+  --artifact-digest "${APEX_ARTIFACT_DIGEST}" \
+  --deployed-at "${APEX_DEPLOYED_AT}" \
+  --ledger deployments.jsonl
 
-# 6. Verify the running process reports that same deployment
+# 6. Give the running API that identity, then verify it. systemd reads
+#    EnvironmentFile at process start, so the restart is required; appending
+#    is safe because the later value wins.
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "cat >> /opt/apexintel/config/.env <<EOF
+APEX_GIT_SHA=${APEX_GIT_SHA}
+APEX_CI_PIPELINE_ID=${APEX_CI_PIPELINE_ID}
+APEX_ARTIFACT_DIGEST=${APEX_ARTIFACT_DIGEST}
+APEX_DEPLOYED_AT=${APEX_DEPLOYED_AT}
+EOF
+systemctl restart apexintel-api"
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
   'curl -sf http://127.0.0.1:8080/api/version | jq'
+# Expected: git_sha and artifact_digest match the values echoed by the
+# recorder above, and configured is true.
 ```
 
 ### Updating Static Assets Only

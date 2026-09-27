@@ -3,10 +3,10 @@
 #
 # Every deploy must leave a durable record of: the git SHA, the CI pipeline that
 # produced the artifact, the test result, the migration test result, the
-# artifact digest, and the deploy time. The same values are exported into the
-# systemd environment as APEX_GIT_SHA / APEX_CI_PIPELINE_ID /
-# APEX_ARTIFACT_DIGEST / APEX_DEPLOYED_AT so `/api/version` and
-# `/api/health/capabilities` report the exact running deployment.
+# artifact digest, and the deploy time. The script prints the matching
+# APEX_GIT_SHA / APEX_CI_PIPELINE_ID / APEX_ARTIFACT_DIGEST / APEX_DEPLOYED_AT
+# exports; add them to the service environment and restart so `/api/version`
+# and `/api/health/capabilities` report the exact running deployment.
 #
 # Usage:
 #   scripts/ops/record_deployment.sh \

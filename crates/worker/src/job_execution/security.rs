@@ -282,7 +282,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
 
     let pool = store.pool.clone();
     let rows = sqlx::query(
-        "SELECT id::text AS id, title, severity, warning_type, COALESCE(entity_ids, ARRAY[]::uuid[]) AS entity_ids, created_at, acknowledged \
+        "SELECT id::text AS id, title, severity, warning_type, COALESCE(entity_ids, ARRAY[]::uuid[]) AS entity_ids, is_system_broadcast, created_at, acknowledged \
          FROM warnings WHERE acknowledged = false ORDER BY created_at ASC LIMIT 500",
     )
     .fetch_all(&pool)
@@ -298,6 +298,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
                     let severity: Option<String> = r.try_get("severity").ok();
                     let warning_type: Option<String> = r.try_get("warning_type").ok();
                     let entity_ids: Option<Vec<uuid::Uuid>> = r.try_get("entity_ids").ok();
+                    let is_system_broadcast: Option<bool> = r.try_get("is_system_broadcast").ok();
                     let created_at: Option<chrono::DateTime<Utc>> = r.try_get("created_at").ok();
                     let acknowledged: Option<bool> = r.try_get("acknowledged").ok();
                     Some(SlaWarningRecord {
@@ -310,6 +311,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
                             .into_iter()
                             .map(|entity_id| entity_id.to_string())
                             .collect(),
+                        is_system_broadcast: is_system_broadcast.unwrap_or(false),
                         created_at: created_at?,
                         acknowledged: acknowledged?,
                     })

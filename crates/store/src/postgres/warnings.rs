@@ -397,6 +397,7 @@ impl PgStore {
         entity_ids: Option<Vec<Uuid>>,
         source_urls: Option<Vec<String>>,
         confidence: Option<f64>,
+        is_system_broadcast: bool,
     ) -> Result<Uuid> {
         Ok(self
             .insert_warning_with_outcome(
@@ -409,6 +410,7 @@ impl PgStore {
                 entity_ids,
                 source_urls,
                 confidence,
+                is_system_broadcast,
             )
             .await?
             .id)
@@ -432,6 +434,7 @@ impl PgStore {
         entity_ids: Option<Vec<Uuid>>,
         source_urls: Option<Vec<String>>,
         confidence: Option<f64>,
+        is_system_broadcast: bool,
     ) -> Result<WarningInsertOutcome> {
         let mut conn = self.pool.acquire().await?;
         Self::upsert_warning_on(
@@ -445,6 +448,7 @@ impl PgStore {
             entity_ids,
             source_urls,
             confidence,
+            is_system_broadcast,
         )
         .await
     }
@@ -472,6 +476,7 @@ impl PgStore {
         entity_ids: Option<Vec<Uuid>>,
         source_urls: Option<Vec<String>>,
         confidence: Option<f64>,
+        is_system_broadcast: bool,
         aggregate_type: &str,
         event_type: &str,
         build_payload: P,
@@ -491,6 +496,7 @@ impl PgStore {
             entity_ids,
             source_urls,
             confidence,
+            is_system_broadcast,
         )
         .await?;
         let payload = build_payload(outcome);
@@ -521,6 +527,7 @@ impl PgStore {
         entity_ids: Option<Vec<Uuid>>,
         source_urls: Option<Vec<String>>,
         confidence: Option<f64>,
+        is_system_broadcast: bool,
     ) -> Result<WarningInsertOutcome> {
         let normalized_title = title.trim().to_string();
         let warning_title_dedup = normalize_warning_title_for_dedup(&normalized_title);
@@ -597,6 +604,7 @@ impl PgStore {
                                ORDER BY e
                            )
                        ),
+                       is_system_broadcast = warnings.is_system_broadcast OR $5,
                        updated_at = now(),
                        ts_utc = GREATEST(ts_utc, now())
                  WHERE id = $1"#,
@@ -605,6 +613,7 @@ impl PgStore {
             .bind(confidence)
             .bind(&normalized_source_urls)
             .bind(&normalized_entity_ids)
+            .bind(is_system_broadcast)
             .execute(&mut *conn)
             .await?;
             return Ok(WarningInsertOutcome {
@@ -618,9 +627,9 @@ impl PgStore {
             r#"INSERT INTO warnings
                (id, warning_type, title, description, severity, region,
                 recipe_code, entity_ids, source_urls, confidence,
-                ts_utc, acknowledged, created_at, updated_at)
+                is_system_broadcast, ts_utc, acknowledged, created_at, updated_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                       now(), false, now(), now())"#,
+                       $11, now(), false, now(), now())"#,
         )
         .bind(id)
         .bind(warning_type)
@@ -632,6 +641,7 @@ impl PgStore {
         .bind(&normalized_entity_ids)
         .bind(&normalized_source_urls)
         .bind(confidence)
+        .bind(is_system_broadcast)
         .execute(&mut *conn)
         .await?;
         Ok(WarningInsertOutcome { id, created: true })

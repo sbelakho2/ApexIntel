@@ -258,8 +258,12 @@ class ApexIntelSSE {
       const notification = new Notification(title, options);
       notification.onclick = () => {
         window.focus();
-        if (alert.entity_id) {
-          window.location.href = `/warnings/${alert.entity_id}`;
+        // The alert wire carries the warning id in metadata; the old
+        // `alert.entity_id` field no longer exists (alerts now carry
+        // `entity_ids`, which are entity UUIDs, not warning ids).
+        const warningId = alert.metadata && alert.metadata.warning_id;
+        if (typeof warningId === 'string' && warningId) {
+          window.location.href = `/warnings/${warningId}`;
         } else {
           window.location.href = '/warnings';
         }

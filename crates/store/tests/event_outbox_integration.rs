@@ -63,6 +63,7 @@ async fn warning_and_outbox_commit_together_and_crash_recovery_drains_later() {
             Some(vec![Uuid::new_v4()]),
             None,
             Some(0.9),
+            false,
             "warning",
             "new_warning",
             |outcome| {
@@ -183,6 +184,7 @@ async fn locked_and_exhausted_events_are_not_claimable() {
             None,
             None,
             None,
+            false,
             "warning",
             "new_warning",
             |outcome| serde_json::json!({"warning_id": outcome.id}),
@@ -273,6 +275,7 @@ async fn plain_warning_insert_writes_no_outbox_event() {
             None,
             None,
             None,
+            false,
         )
         .await
         .expect("plain warning insert");
@@ -294,5 +297,121 @@ async fn plain_warning_insert_writes_no_outbox_event() {
         .execute(&pool)
         .await
         .unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn system_broadcast_flag_persists_and_merges_with_or() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = PgStore::from_pool(pool.clone());
+    clean_outbox_test_rows(&pool).await;
+
+    let entity = Uuid::new_v4();
+    let flag_of = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            let (flag,): (bool,) =
+                sqlx::query_as("SELECT is_system_broadcast FROM warnings WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            flag
+        }
+    };
+
+    // A deliberate system broadcast persists its flag.
+    let broadcast_title = format!("broadcast {}", Uuid::new_v4());
+    let broadcast = store
+        .insert_warning_with_outcome(
+            "outbox_test",
+            &broadcast_title,
+            None,
+            "low",
+            None,
+            None,
+            Some(vec![entity]),
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect("broadcast insert");
+    assert!(flag_of(broadcast.id).await);
+
+    // A recurring non-broadcast submission merges into it and must not clear
+    // the flag.
+    let recurrence = store
+        .insert_warning_with_outcome(
+            "outbox_test",
+            &broadcast_title,
+            None,
+            "low",
+            None,
+            None,
+            Some(vec![entity]),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("recurrence insert");
+    assert!(!recurrence.created, "same signature must deduplicate");
+    assert_eq!(recurrence.id, broadcast.id);
+    assert!(
+        flag_of(broadcast.id).await,
+        "a non-broadcast recurrence must not demote an existing broadcast"
+    );
+
+    // A broadcast submission merging into a non-broadcast warning promotes it.
+    let plain_title = format!("plain {}", Uuid::new_v4());
+    let plain = store
+        .insert_warning_with_outcome(
+            "outbox_test",
+            &plain_title,
+            None,
+            "low",
+            None,
+            None,
+            Some(vec![entity]),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("plain insert");
+    assert!(!flag_of(plain.id).await);
+
+    let promoted = store
+        .insert_warning_with_outcome(
+            "outbox_test",
+            &plain_title,
+            None,
+            "low",
+            None,
+            None,
+            Some(vec![entity]),
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect("promoting insert");
+    assert_eq!(promoted.id, plain.id);
+    assert!(
+        flag_of(plain.id).await,
+        "a broadcast submission must promote an existing warning"
+    );
+
+    for id in [broadcast.id, plain.id] {
+        sqlx::query("DELETE FROM warnings WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
     pool.close().await;
 }

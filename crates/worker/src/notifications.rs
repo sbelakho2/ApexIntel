@@ -92,7 +92,13 @@ impl From<PendingAlertWire> for PendingAlert {
         let scope = wire
             .scope
             .unwrap_or_else(|| match wire.entity_id.as_deref() {
-                Some("system") | None | Some("") => AlertScope::SystemBroadcast,
+                // The legacy SLA fallback used a fake `"system"` entity id for
+                // warnings with no entities. Those alerts resolved to nobody
+                // (`Users([])`), so replaying them must not silently upgrade
+                // them into a platform-wide broadcast.
+                Some("system") | None | Some("") => AlertScope::Users {
+                    user_ids: Vec::new(),
+                },
                 Some(entity_id) => AlertScope::Entity {
                     entity_id: entity_id.to_string(),
                     entity_name: wire.entity_name.clone(),
@@ -764,6 +770,10 @@ pub struct SlaWarningRecord {
     /// field took `entity_ids[1]`, silently dropping every other entity.
     #[serde(default)]
     pub entity_ids: Vec<String>,
+    /// True only for warnings that producers explicitly marked as system
+    /// broadcasts (`NewWarning::system_broadcast`). Persisted in migration 069.
+    #[serde(default)]
+    pub is_system_broadcast: bool,
     pub created_at: chrono::DateTime<Utc>,
     pub acknowledged: bool,
 }
@@ -789,11 +799,20 @@ impl SlaWarningRecord {
 
     /// Alert scope for this warning.
     ///
-    /// A warning with no entities is an explicit system alert (never the
-    /// `"system"` fake entity); a multi-entity warning carries all of them.
+    /// Only warnings explicitly persisted as system broadcasts become
+    /// [`AlertScope::SystemBroadcast`]. An unscoped warning (no entities, no
+    /// broadcast flag) is [`AlertScope::Users`] with an empty list — explicitly
+    /// nobody — because "no entities" is not the same as "everyone": inferring
+    /// a broadcast here would page the whole platform and bypass per-user
+    /// preferences.
     pub fn scope(&self) -> AlertScope {
+        if self.is_system_broadcast {
+            return AlertScope::SystemBroadcast;
+        }
         match self.entity_ids.as_slice() {
-            [] => AlertScope::SystemBroadcast,
+            [] => AlertScope::Users {
+                user_ids: Vec::new(),
+            },
             [entity_id] => AlertScope::entity(entity_id.clone(), None::<String>),
             entity_ids => AlertScope::entities(entity_ids.iter().cloned()),
         }
@@ -1047,6 +1066,7 @@ mod tests {
             severity: severity.to_string(),
             warning_type: "test_type".into(),
             entity_ids: Vec::new(),
+            is_system_broadcast: false,
             created_at: Utc::now() - chrono::Duration::seconds(age_seconds),
             acknowledged,
         }
@@ -1203,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn sla_alert_without_entities_is_an_explicit_system_broadcast() {
+    fn sla_alert_without_entities_reaches_nobody_not_everyone() {
         let windows = SeveritySlaConfig {
             critical_seconds: 10,
             ..Default::default()
@@ -1212,16 +1232,42 @@ mod tests {
         let record = make_warning("critical", 60, false);
 
         let alert = enforcer.build_breach_alert(&record).expect("breach alert");
-        assert_eq!(alert.scope, AlertScope::SystemBroadcast);
+        // An unscoped warning (no entities, not flagged as a broadcast) must
+        // address nobody. Inferring SystemBroadcast here would page every
+        // connected user and bypass per-user preferences.
+        assert_eq!(
+            alert.scope,
+            AlertScope::Users {
+                user_ids: Vec::new()
+            }
+        );
         assert_eq!(
             alert.scope.audience(),
-            apex_core::alert_config::AlertAudience::Broadcast
+            apex_core::alert_config::AlertAudience::Users(Vec::new())
         );
         assert!(
             !serde_json::to_string(&alert)
                 .expect("serialize")
                 .contains("\"system\""),
             "system alerts must not fabricate a `system` entity id"
+        );
+    }
+
+    #[test]
+    fn sla_alert_for_a_flagged_system_broadcast_stays_a_broadcast() {
+        let windows = SeveritySlaConfig {
+            critical_seconds: 10,
+            ..Default::default()
+        };
+        let enforcer = SlaEnforcer::new(windows);
+        let mut record = make_warning("critical", 60, false);
+        record.is_system_broadcast = true;
+
+        let alert = enforcer.build_breach_alert(&record).expect("breach alert");
+        assert_eq!(alert.scope, AlertScope::SystemBroadcast);
+        assert_eq!(
+            alert.scope.audience(),
+            apex_core::alert_config::AlertAudience::Broadcast
         );
     }
 
@@ -1242,7 +1288,14 @@ mod tests {
         });
         let alert: PendingAlert =
             serde_json::from_value(legacy_system).expect("legacy system alert deserializes");
-        assert_eq!(alert.scope, AlertScope::SystemBroadcast);
+        // Legacy entity-less SLA alerts resolved to nobody; replay must keep
+        // that audience instead of upgrading them into a broadcast.
+        assert_eq!(
+            alert.scope,
+            AlertScope::Users {
+                user_ids: Vec::new()
+            }
+        );
 
         let legacy_entity = serde_json::json!({
             "source_id": "warning-2",

@@ -15,6 +15,11 @@
 # Requirements: TEST_DATABASE_URL (or DATABASE_URL) must point at a database
 # with the `vector`, `pg_trgm`, `btree_gist` and `uuid-ossp` extensions
 # available (the CI service uses timescale/timescaledb:2.30.1-pg16).
+#
+# SAFETY: these suites are destructive (they delete from `event_outbox`,
+# `app_users`, subscriptions and similar tables). The runner refuses to start
+# unless the database name ends in `_ci` or `_test`, or the operator sets
+# `APEX_TEST_PG_DESTRUCTIVE=1` to explicitly accept data loss.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,6 +33,23 @@ if [[ -z "${TEST_DATABASE_URL:-}" ]]; then
     exit 1
   fi
 fi
+
+# Never point the destructive suites at a database that is not obviously
+# disposable. Parse the database name out of the connection URL.
+db_name="${TEST_DATABASE_URL%%\?*}"
+db_name="${db_name%%#*}"
+db_name="${db_name##*/}"
+case "${db_name}" in
+  *_ci | *_test) ;;
+  *)
+    if [[ "${APEX_TEST_PG_DESTRUCTIVE:-0}" != "1" ]]; then
+      echo "refusing to run destructive PostgreSQL suites against '${db_name}':" >&2
+      echo "  use a database whose name ends in _ci or _test, or set" >&2
+      echo "  APEX_TEST_PG_DESTRUCTIVE=1 if you really intend to destroy its data." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 run() {
   echo "+ $*"

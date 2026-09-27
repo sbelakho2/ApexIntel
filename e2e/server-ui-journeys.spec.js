@@ -64,11 +64,41 @@ async function seedJourneyExtras() {
     [JOURNEY.graphEdgeId, COMPANY_ID, PERSON_ID]
   );
 
-  // Deterministic trigger queue state for the admin/security trigger journey.
-  await q("DELETE FROM worker_trigger_queue WHERE job_kind IN ('dns_posture_scan', 'kev_catalog_fetch')");
+  // NOTE: `worker_trigger_queue` is intentionally NOT cleared. The trigger
+  // journeys assert that the UI/API leaves a queued (unclaimed) job of the
+  // requested kind, which holds whether the queue inserted a new row or
+  // deduplicated an existing one. Never wipe a real queue to make a test
+  // deterministic.
+}
+
+/**
+ * Refuse to mutate a database that is not obviously disposable. The suite
+ * seeds and deletes rows (battlecards, graph edges, sessions, preferences),
+ * so pointing it at a shared/production database is a data-loss event, not a
+ * test failure.
+ */
+function assertDisposableDatabase(url) {
+  const parsed = new URL(url);
+  const database = parsed.pathname.replace(/^\//, '');
+  const host = parsed.hostname;
+  const isLocal =
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host === '[::1]' ||
+    host === 'database';
+  const namedDisposable = /(_ci|_test)$/.test(database);
+  if (!isLocal && !namedDisposable && process.env.APEX_E2E_ALLOW_NON_DISPOSABLE !== '1') {
+    throw new Error(
+      `refusing to run destructive journey e2e against '${database}' on '${host}': ` +
+        'use a local database or a name ending in _ci/_test, or set ' +
+        'APEX_E2E_ALLOW_NON_DISPOSABLE=1 if you really intend to mutate it.'
+    );
+  }
 }
 
 test.beforeAll(async () => {
+  assertDisposableDatabase(databaseUrl());
   await seedDatabase();
   pool = new Pool({ connectionString: databaseUrl(), max: 4 });
   await q('SELECT 1');
@@ -477,21 +507,24 @@ test.describe('server UI — journey contracts (DB state)', () => {
     await trigger.click();
     await expect(page.locator('#security-trigger-status')).not.toBeEmpty({ timeout: 15_000 });
 
-    await expectDb(
+    // A queued, unclaimed dns_posture_scan job must exist — whether this click
+    // inserted it or the queue deduplicated a still-pending row.
+    await expect.poll(
       async () =>
         scalar(
-          "SELECT count(*)::int FROM worker_trigger_queue WHERE job_kind = 'dns_posture_scan'"
+          `SELECT count(*)::int FROM worker_trigger_queue
+             WHERE job_kind = 'dns_posture_scan' AND completed_at IS NULL`
         ),
-      1
-    );
+      { timeout: 15_000 }
+    ).toBeGreaterThanOrEqual(1);
     const row = (
       await q(
-        `SELECT job_kind, requested_at, claimed_at FROM worker_trigger_queue
+        `SELECT claimed_at, completed_at FROM worker_trigger_queue
            WHERE job_kind = 'dns_posture_scan' ORDER BY requested_at DESC LIMIT 1`
       )
     )[0];
+    expect(row.completed_at).toBeNull();
     expect(row.claimed_at).toBeNull();
-    expect(Date.now() - new Date(row.requested_at).getTime()).toBeLessThan(60_000);
   });
 
   test('queues a worker job through the admin trigger API', async ({ page, context }) => {
@@ -509,12 +542,17 @@ test.describe('server UI — journey contracts (DB state)', () => {
     expect(payload.success).toBe(true);
     expect(payload.data.queued).toBe(true);
 
-    await expect.poll(
-      async () =>
-        scalar(
-          "SELECT count(*)::int FROM worker_trigger_queue WHERE job_kind = 'kev_catalog_fetch'"
-        ),
-      { timeout: 15_000 }
-    ).toBeGreaterThanOrEqual(1);
+    // The id returned by the admin API must be a real, still-queued row (a new
+    // insert or the deduplicated pending row) — never a fabricated success.
+    const jobId = payload.data.job_id;
+    expect(jobId).toBeTruthy();
+    const rows = await q(
+      `SELECT job_kind, completed_at, claimed_at FROM worker_trigger_queue WHERE id = $1::uuid`,
+      [jobId]
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].job_kind).toBe('kev_catalog_fetch');
+    expect(rows[0].completed_at).toBeNull();
+    expect(rows[0].claimed_at).toBeNull();
   });
 });

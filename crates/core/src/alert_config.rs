@@ -112,11 +112,6 @@ impl AlertScope {
         }
     }
 
-    /// First entity id, used for display and per-entity config lookups.
-    pub fn primary_entity_id(&self) -> Option<&str> {
-        self.entity_ids().into_iter().next()
-    }
-
     /// Human-readable label used in notification bodies.
     pub fn display(&self) -> String {
         match self {
@@ -543,7 +538,6 @@ mod tests {
             vec!["entity-a", "entity-b", "entity-c"],
             "never truncate a multi-entity alert to entity_ids[1]"
         );
-        assert_eq!(scope.primary_entity_id(), Some("entity-a"));
     }
 
     #[test]

@@ -33,7 +33,10 @@ if [[ ! -f "${RUNNER}" ]]; then
   echo "missing canonical runner ${RUNNER}" >&2
   exit 1
 fi
-if ! grep -q 'run_pg_integration_suites.sh' "${PIPELINE}"; then
+# Assert the *executed* command, not any mention of the filename: the header
+# comment names the runner too, so a bare substring match would pass even if
+# the migrations step stopped invoking it.
+if ! grep -Eq '^[[:space:]]*-[[:space:]]*bash[[:space:]]+scripts/ci/run_pg_integration_suites\.sh([[:space:]]|$)' "${PIPELINE}"; then
   echo "${PIPELINE} does not invoke ${RUNNER}" >&2
   exit 1
 fi
@@ -52,16 +55,19 @@ package_name() {
   sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "crates/$1/Cargo.toml" | head -n 1
 }
 
+# token_in_line <logical-line> <ERE-token>: word-boundary match, so
+# `--test foo` does not register `foo_bar`.
+token_in_line() {
+  printf '%s\n' "$1" | grep -Eq -- "(^|[[:space:]])$2([[:space:]]|$)"
+}
+
 registered_test_target() { # <package> <test-target>
   local pkg="$1" target="$2" line
   while IFS= read -r line; do
-    case "${line}" in
-      *"cargo test"*)
-        case "${line}" in *"-p ${pkg}"*) ;; *) continue ;; esac
-        case "${line}" in *"--test ${target}"*) ;; *) continue ;; esac
-        case "${line}" in *"--ignored"*) return 0 ;; esac
-        ;;
-    esac
+    case "${line}" in *"cargo test"*) ;; *) continue ;; esac
+    token_in_line "${line}" "-p[[:space:]]+${pkg}" || continue
+    token_in_line "${line}" "--test[[:space:]]+${target}" || continue
+    token_in_line "${line}" "--ignored" && return 0
   done < <(logical_lines "${RUNNER}")
   return 1
 }
@@ -69,21 +75,19 @@ registered_test_target() { # <package> <test-target>
 registered_unit_target() { # <package>
   local pkg="$1" line
   while IFS= read -r line; do
-    case "${line}" in
-      *"cargo test"*)
-        case "${line}" in *"-p ${pkg}"*) ;; *) continue ;; esac
-        case "${line}" in *"--ignored"*) ;; *) continue ;; esac
-        case "${line}" in *"--test "*) continue ;; esac
-        return 0
-        ;;
-    esac
+    case "${line}" in *"cargo test"*) ;; *) continue ;; esac
+    token_in_line "${line}" "-p[[:space:]]+${pkg}" || continue
+    token_in_line "${line}" "--ignored" || continue
+    token_in_line "${line}" "--test" && continue
+    return 0
   done < <(logical_lines "${RUNNER}")
   return 1
 }
 
 while IFS= read -r file; do
-  # Only files that actually contain an ignored PostgreSQL test attribute.
-  grep -q '#\[ignore = "requires PostgreSQL' "${file}" || continue
+  # Any ignored test whose reason mentions PostgreSQL must be registered; the
+  # match is case-insensitive and allows different reason wording.
+  grep -Eiq '#\[ignore[^]]*postgre' "${file}" || continue
 
   rel="${file#./}"
   crate_dir="$(printf '%s' "${rel}" | cut -d/ -f2)"

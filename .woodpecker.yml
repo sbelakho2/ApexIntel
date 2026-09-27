@@ -185,7 +185,8 @@ steps:
       - cargo build --release --bin apex-api --features llm --locked
       - ./target/release/apex-api & sleep 6
       - curl -sf http://127.0.0.1:9095/api/health
-      - npx playwright test -c playwright.server-ui.config.cjs e2e/server-ui-tasks.spec.js e2e/server-ui-journeys.spec.js
+      # Single definition of the journey spec list lives in package.json.
+      - npm run test:server-ui:journeys
 
   # Container-level browser integration. Builds the worker image's
   # browser-check stage (real runtime image + Chromium) and renders a JS-only
