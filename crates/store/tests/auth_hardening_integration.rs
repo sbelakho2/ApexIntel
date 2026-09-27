@@ -10,6 +10,7 @@
 //! service) and reads `TEST_DATABASE_URL` or `DATABASE_URL`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use apex_store::login_throttle::LOGIN_ADMIN_LOCK_SECS;
 use apex_store::postgres::PgStore;
 use chrono::{Duration, Utc};
 use sqlx::postgres::PgPoolOptions;
@@ -208,6 +209,39 @@ async fn durable_login_throttle_requires_admin_unlock() {
             .expect("clearing absent state is not an error"),
         "clear_lock reports whether state existed"
     );
+
+    // The strongest lock is bounded: it releases on its own and its row is
+    // swept, so unauthenticated failures cannot mint permanent rows.
+    let expiring_key = format!("throttle-admin-expiry-it-{}", Uuid::new_v4());
+    for offset in 0..20 {
+        store
+            .login_throttle_record_failure(&expiring_key, now + Duration::minutes(offset))
+            .await
+            .expect("record failure");
+    }
+    let expiry = now + Duration::minutes(19) + Duration::seconds(LOGIN_ADMIN_LOCK_SECS);
+    assert!(
+        !store
+            .login_throttle_evaluate(&expiring_key, expiry - Duration::seconds(60))
+            .await
+            .expect("evaluate just before the deadline")
+            .allowed
+    );
+    assert!(
+        store
+            .login_throttle_evaluate(&expiring_key, expiry + Duration::seconds(1))
+            .await
+            .expect("evaluate after the deadline")
+            .allowed,
+        "the bounded admin lock must release without manual intervention"
+    );
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM login_attempt_throttle WHERE attempt_key = $1")
+            .bind(&expiring_key)
+            .fetch_one(&pool)
+            .await
+            .expect("count expired admin rows");
+    assert_eq!(remaining, 0, "the expired admin row must be swept");
 
     pool.close().await;
 }
@@ -441,6 +475,7 @@ async fn migration_071_downgrades_unknown_roles_and_enforces_check() {
     let store = PgStore::from_pool(pool.clone());
     let suffix = Uuid::new_v4();
     let id = format!("role-it-{suffix}");
+    let padded_id = format!("role-it-padded-{suffix}");
     let unknown_before = store
         .count_app_users_with_unknown_roles()
         .await
@@ -458,14 +493,22 @@ async fn migration_071_downgrades_unknown_roles_and_enforces_check() {
         .execute(&pool)
         .await
         .unwrap();
+    // A padded but known role: the runtime trims and would honor it, so the
+    // migration must canonicalise it instead of demoting it to viewer.
+    sqlx::query("INSERT INTO app_users (id, username, role) VALUES ($1, $2, 'admin ')")
+        .bind(&padded_id)
+        .bind(format!("role-it-padded-name-{suffix}"))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(
         store
             .count_app_users_with_unknown_roles()
             .await
             .expect("count unknown roles"),
-        unknown_before + 1,
-        "the admin health warning must see the unknown role"
+        unknown_before + 2,
+        "the admin health warning must see both staged roles"
     );
 
     run_migration_sql(
@@ -481,6 +524,15 @@ async fn migration_071_downgrades_unknown_roles_and_enforces_check() {
         .await
         .unwrap();
     assert_eq!(role, "viewer", "unknown roles downgrade to least privilege");
+    let padded_role: String = sqlx::query_scalar("SELECT role FROM app_users WHERE id = $1")
+        .bind(&padded_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        padded_role, "admin",
+        "a padded known role must be canonicalised, not downgraded"
+    );
     assert_eq!(
         store
             .count_app_users_with_unknown_roles()
@@ -500,8 +552,9 @@ async fn migration_071_downgrades_unknown_roles_and_enforces_check() {
         "the CHECK constraint must reject unknown roles"
     );
 
-    sqlx::query("DELETE FROM app_users WHERE id = $1")
+    sqlx::query("DELETE FROM app_users WHERE id IN ($1, $2)")
         .bind(&id)
+        .bind(&padded_id)
         .execute(&pool)
         .await
         .unwrap();

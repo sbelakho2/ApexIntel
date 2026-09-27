@@ -201,7 +201,9 @@ fn bootstrap_seeds() -> Vec<AppUserSeed> {
         };
         seeds.push(AppUserSeed {
             id: user.user_id().to_string(),
-            username: user.username,
+            // Store the canonical (trimmed) name so it always matches the
+            // normalized lookup; a padded configured name cannot authenticate.
+            username: user.username.trim().to_string(),
             password_hash: user.password_hash,
             role: role.as_str().to_string(),
         });
@@ -261,7 +263,7 @@ pub async fn resolve_login(
             return None;
         }
         let user_id = UserId::from(user.user_id());
-        let username = Username::from(user.username);
+        let username = Username::from(user.username.trim());
         return Some(LoginPrincipal {
             user_id,
             username,
@@ -473,12 +475,15 @@ pub async fn login_submit(
 
 /// Build the throttle key for one login attempt.
 ///
-/// The fingerprint combines the trusted client address with the User-Agent:
+/// The key is the normalised login name plus a fingerprint of the trusted
+/// client address only:
 ///   * the TCP peer address from `ConnectInfo` is trusted;
 ///   * `X-Forwarded-For` is only honored under `API_TRUST_PROXY=1`, where the
 ///     deployment's reverse proxy overwrites it (same contract as the API
 ///     rate limiter, B298);
-///   * the hash keeps the durable key fixed-size regardless of header size.
+///   * the User-Agent is deliberately excluded: a client controls that header
+///     and could otherwise rotate it to land in a fresh lockout bucket;
+///   * the hash keeps the durable key fixed-size regardless of input size.
 fn login_attempt_key(username: &str, parts: &axum::http::request::Parts) -> String {
     let peer_ip = parts
         .extensions
@@ -500,14 +505,10 @@ fn login_attempt_key(username: &str, parts: &axum::http::request::Parts) -> Stri
     } else {
         peer_ip
     };
-    let user_agent = parts
-        .headers
-        .get(header::USER_AGENT)
-        .and_then(|value| value.to_str().ok());
     format!(
         "{}|{}",
         normalize_login_name(username),
-        client_fingerprint(trusted_ip.as_deref(), user_agent)
+        client_fingerprint(trusted_ip.as_deref(), None)
     )
 }
 
@@ -516,7 +517,7 @@ fn login_attempt_key(username: &str, parts: &axum::http::request::Parts) -> Stri
 /// password was checked.
 fn locked_response(status: &AuthThrottleStatus) -> Response {
     let message = if status.admin_unlock_required {
-        "Too many failed sign-in attempts. This account is locked and requires an administrator to unlock it."
+        "Too many failed sign-in attempts. This client is locked for security reasons; try again later."
     } else {
         "Too many failed sign-in attempts. Try again later."
     };
@@ -527,8 +528,9 @@ fn locked_response(status: &AuthThrottleStatus) -> Response {
         },
     )
         .into_response();
-    if !status.admin_unlock_required {
-        if let Ok(value) = HeaderValue::from_str(&status.retry_after_secs.max(1).to_string()) {
+    // Admin locks are bounded too, so a known remaining time is advertised.
+    if status.retry_after_secs > 0 {
+        if let Ok(value) = HeaderValue::from_str(&status.retry_after_secs.to_string()) {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
     }
@@ -670,6 +672,16 @@ mod tests {
             "an unknown role must reject the whole configuration"
         );
 
+        // A padded configured name is accepted but bootstrapped trimmed, so
+        // the stored name always matches the normalized lookup.
+        let padded = serde_json::json!([
+            {"id": "u1", "username": " alice ", "password_hash": "h1", "role": "admin"},
+        ]);
+        std::env::set_var("WEB_USERS_JSON", padded.to_string());
+        let seeds = bootstrap_seeds();
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].username, "alice");
+
         std::env::remove_var("WEB_USERS_JSON");
     }
 
@@ -704,16 +716,19 @@ mod tests {
     }
 
     #[test]
-    fn throttle_key_normalizes_username_and_fingerprints_client() {
+    fn throttle_key_normalizes_username_and_trusts_only_the_client_address() {
         let parts = request_parts(Some("test-agent"), None);
         let upper = login_attempt_key(" Alice ", &parts);
         let lower = login_attempt_key("alice", &parts);
         assert_eq!(upper, lower, "case/whitespace variants share one bucket");
 
+        // The User-Agent is client-controlled: rotating it must NOT give a new
+        // lockout bucket.
         let other_agent = request_parts(Some("other-agent"), None);
-        assert_ne!(
+        assert_eq!(
             login_attempt_key("alice", &parts),
-            login_attempt_key("alice", &other_agent)
+            login_attempt_key("alice", &other_agent),
+            "rotating the User-Agent must not reset the lockout bucket"
         );
 
         let peer = std::net::SocketAddr::from(([127, 0, 0, 1], 4040));
@@ -737,17 +752,25 @@ mod tests {
         assert_eq!(temporary.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(temporary.headers().get(header::RETRY_AFTER).unwrap(), "5");
 
+        // The strongest lock is bounded, so its remaining time is advertised.
         let admin = locked_response(&AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 86_400,
+            failure_count_10m: 10,
+            failure_count_1h: 20,
+            admin_unlock_required: true,
+        });
+        assert_eq!(admin.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(admin.headers().get(header::RETRY_AFTER).unwrap(), "86400");
+
+        // State without a known deadline stays generic with no header.
+        let undated = locked_response(&AuthThrottleStatus {
             allowed: false,
             retry_after_secs: 0,
             failure_count_10m: 10,
             failure_count_1h: 20,
             admin_unlock_required: true,
         });
-        assert_eq!(admin.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(
-            admin.headers().get(header::RETRY_AFTER).is_none(),
-            "an admin-unlocked account has no automatic retry"
-        );
+        assert!(undated.headers().get(header::RETRY_AFTER).is_none());
     }
 }

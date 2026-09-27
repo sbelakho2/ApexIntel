@@ -27,6 +27,12 @@ pub const LOGIN_WINDOW_10M_SECS: i64 = 600;
 pub const LOGIN_WINDOW_1H_SECS: i64 = 3600;
 /// Length of the temporary lock, in seconds.
 pub const LOGIN_TEMP_LOCK_SECS: i64 = 600;
+/// Bounded lifetime of the strongest lock (20 failures in 1 hour). An admin
+/// lock is not permanent: after this window the key unlocks and its durable
+/// row/key expires, so unauthenticated failures can never create rows that
+/// outlive the lock. Administrators can still release it earlier through
+/// `clear_lock`.
+pub const LOGIN_ADMIN_LOCK_SECS: i64 = 24 * 3600;
 /// Lazy TTL for durable rows that carry no admin lock: one full long window
 /// plus slack. The next read/write prunes expired rows.
 pub const LOGIN_ROW_TTL_SECS: i64 = LOGIN_WINDOW_1H_SECS + 300;
@@ -68,6 +74,10 @@ pub struct LoginThrottleState {
     pub backoff_until: Option<DateTime<Utc>>,
     pub temp_lock_until: Option<DateTime<Utc>>,
     pub admin_locked: bool,
+    /// When the admin lock releases on its own; `None` only for state that
+    /// predates the bounded lock (it is treated as the full window).
+    #[serde(default)]
+    pub admin_lock_expires_at: Option<DateTime<Utc>>,
 }
 
 impl LoginThrottleState {
@@ -93,12 +103,18 @@ impl LoginThrottleState {
         if self.temp_lock_until.is_some_and(|until| now >= until) {
             self.temp_lock_until = None;
         }
+        if self.admin_locked && self.admin_lock_expires_at.is_some_and(|until| now >= until) {
+            self.admin_locked = false;
+            self.admin_lock_expires_at = None;
+        }
     }
 
     /// Derive the decision for `now` from the current state.
     pub fn status(&self, now: DateTime<Utc>) -> LoginThrottleStatus {
         let retry_after_secs = if self.admin_locked {
-            0
+            self.admin_lock_expires_at
+                .map(|until| (until - now).num_seconds().max(0) as u64)
+                .unwrap_or(0)
         } else if let Some(until) = self.temp_lock_until {
             (until - now).num_seconds().max(0) as u64
         } else if let Some(until) = self.backoff_until {
@@ -133,6 +149,9 @@ impl LoginThrottleState {
 
         if self.failures_1h >= LOGIN_ADMIN_LOCK_THRESHOLD_1H {
             self.admin_locked = true;
+            // Bounded: each fresh failure extends the lock, but it always
+            // releases on its own so a row can never become permanent.
+            self.admin_lock_expires_at = Some(now + Duration::seconds(LOGIN_ADMIN_LOCK_SECS));
             self.backoff_until = None;
             self.temp_lock_until = None;
         } else if self.failures_10m >= LOGIN_TEMP_LOCK_THRESHOLD_10M {
@@ -147,11 +166,15 @@ impl LoginThrottleState {
         self.status(now)
     }
 
-    /// Lazy-TTL deadline for a durable row: `None` for admin locks, which stay
-    /// until explicitly cleared.
+    /// Lazy-TTL deadline for a durable row. Every state has one: admin locks
+    /// expire at their bounded deadline, so no row can outlive its lock and
+    /// unauthenticated traffic cannot mint permanent rows.
     pub fn expires_at(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         if self.admin_locked {
-            None
+            Some(
+                self.admin_lock_expires_at
+                    .unwrap_or(now + Duration::seconds(LOGIN_ADMIN_LOCK_SECS)),
+            )
         } else {
             Some(now + Duration::seconds(LOGIN_ROW_TTL_SECS))
         }
@@ -213,6 +236,35 @@ mod tests {
                 .status(now + Duration::minutes(19))
                 .admin_unlock_required
         );
+    }
+
+    #[test]
+    fn admin_lock_releases_after_the_bounded_window() {
+        let now = Utc::now();
+        let mut state = LoginThrottleState::default();
+        for offset in 0..20 {
+            state.record_failure(now + Duration::minutes(offset));
+        }
+        let locked = state.status(now + Duration::minutes(20));
+        assert!(locked.admin_unlock_required);
+        assert!(!locked.allowed);
+        assert!(
+            locked.retry_after_secs > 0,
+            "the bounded lock reports its remaining time"
+        );
+        assert!(
+            state.expires_at(now + Duration::minutes(20)).is_some(),
+            "admin locks must carry a lazy-TTL deadline"
+        );
+
+        let after = now + Duration::seconds(LOGIN_ADMIN_LOCK_SECS) + Duration::minutes(21);
+        state.prune(after);
+        let released = state.status(after);
+        assert!(
+            released.allowed,
+            "the admin lock must release without manual intervention"
+        );
+        assert!(!released.admin_unlock_required);
     }
 
     #[test]

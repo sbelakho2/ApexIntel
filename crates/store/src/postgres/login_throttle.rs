@@ -35,6 +35,13 @@ impl From<LoginThrottleRow> for LoginThrottleState {
             backoff_until: row.backoff_until,
             temp_lock_until: row.temp_lock_until,
             admin_locked: row.admin_locked,
+            // For admin-locked rows `expires_at` holds the bounded admin-lock
+            // deadline (the lazy sweep deletes the row when it passes).
+            admin_lock_expires_at: if row.admin_locked {
+                row.expires_at
+            } else {
+                None
+            },
         }
     }
 }

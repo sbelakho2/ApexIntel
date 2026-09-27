@@ -13,8 +13,11 @@
 //!   * **in-memory** only when no store is available (unit tests / no-database
 //!     deployments).
 //!
-//! If the configured Redis backend fails at call time the facade degrades to
-//! PostgreSQL (another durable backend) rather than failing open.
+//! Every configured durable backend is consulted and written to: a lockout
+//! recorded in one backend can never be hidden by another backend answering
+//! first (e.g. PostgreSQL during a Redis outage, then Redis after recovery).
+//! When a configured backend errors at call time the facade merges whatever
+//! the other durable backends report rather than failing open.
 
 use std::sync::Arc;
 
@@ -90,53 +93,51 @@ impl LoginThrottle {
 
     /// Check whether an attempt is currently allowed. Must run before the
     /// password is verified.
+    ///
+    /// All configured durable backends are queried and the most restrictive
+    /// answer wins, so state recorded in one backend is never hidden by
+    /// another backend that answers first with "allowed".
     pub async fn evaluate(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
+        let mut statuses: Vec<AuthThrottleStatus> = Vec::new();
         if let Some(redis) = &self.redis {
             match redis_backend::evaluate(redis.clone(), attempt_key, now).await {
-                Ok(status) => return status.into(),
-                Err(error) => tracing::warn!(
-                    %error,
-                    "Redis login throttle read failed; falling back to PostgreSQL"
-                ),
+                Ok(status) => statuses.push(status.into()),
+                Err(error) => tracing::warn!(%error, "Redis login throttle read failed"),
             }
         }
         if let Some(store) = &self.store {
             match store.login_throttle_evaluate(attempt_key, now).await {
-                Ok(status) => return status.into(),
-                Err(error) => tracing::warn!(
-                    %error,
-                    "PostgreSQL login throttle read failed; falling back to in-memory"
-                ),
+                Ok(status) => statuses.push(status.into()),
+                Err(error) => tracing::warn!(%error, "PostgreSQL login throttle read failed"),
             }
         }
-        self.memory.evaluate(attempt_key, now)
+        merge_statuses(statuses).unwrap_or_else(|| self.memory.evaluate(attempt_key, now))
     }
 
     /// Record a failed attempt and return the resulting decision.
+    ///
+    /// The failure is written to every configured durable backend so a later
+    /// fail-over cannot lose the lockout; the most restrictive resulting
+    /// status is reported.
     pub async fn record_failure(
         &self,
         attempt_key: &str,
         now: DateTime<Utc>,
     ) -> AuthThrottleStatus {
+        let mut statuses: Vec<AuthThrottleStatus> = Vec::new();
         if let Some(redis) = &self.redis {
             match redis_backend::record_failure(redis.clone(), attempt_key, now).await {
-                Ok(status) => return status.into(),
-                Err(error) => tracing::warn!(
-                    %error,
-                    "Redis login throttle write failed; falling back to PostgreSQL"
-                ),
+                Ok(status) => statuses.push(status.into()),
+                Err(error) => tracing::warn!(%error, "Redis login throttle write failed"),
             }
         }
         if let Some(store) = &self.store {
             match store.login_throttle_record_failure(attempt_key, now).await {
-                Ok(status) => return status.into(),
-                Err(error) => tracing::warn!(
-                    %error,
-                    "PostgreSQL login throttle write failed; falling back to in-memory"
-                ),
+                Ok(status) => statuses.push(status.into()),
+                Err(error) => tracing::warn!(%error, "PostgreSQL login throttle write failed"),
             }
         }
-        self.memory.record_failure(attempt_key, now)
+        merge_statuses(statuses).unwrap_or_else(|| self.memory.record_failure(attempt_key, now))
     }
 
     /// Clear all state after a successful login.
@@ -179,6 +180,38 @@ impl LoginThrottle {
     }
 }
 
+/// Merge the answers of every configured backend, keeping the most
+/// restrictive one: an admin lock wins, then any blocked status (longest
+/// retry first), then the highest failure counts. `None` when no durable
+/// backend answered.
+fn merge_statuses(mut statuses: Vec<AuthThrottleStatus>) -> Option<AuthThrottleStatus> {
+    let first = statuses.pop()?;
+    Some(statuses.into_iter().fold(first, most_restrictive))
+}
+
+fn most_restrictive(a: AuthThrottleStatus, b: AuthThrottleStatus) -> AuthThrottleStatus {
+    if a.admin_unlock_required != b.admin_unlock_required {
+        return if a.admin_unlock_required { a } else { b };
+    }
+    if a.allowed != b.allowed {
+        return if a.allowed { b } else { a };
+    }
+    if a.retry_after_secs != b.retry_after_secs {
+        return if a.retry_after_secs > b.retry_after_secs {
+            a
+        } else {
+            b
+        };
+    }
+    AuthThrottleStatus {
+        allowed: a.allowed,
+        retry_after_secs: a.retry_after_secs,
+        failure_count_10m: a.failure_count_10m.max(b.failure_count_10m),
+        failure_count_1h: a.failure_count_1h.max(b.failure_count_1h),
+        admin_unlock_required: a.admin_unlock_required,
+    }
+}
+
 /// Redis backend: the whole read-modify-write runs as one Lua script, so
 /// increments are atomic across replicas and the key TTL is refreshed in the
 /// same operation.
@@ -186,9 +219,9 @@ mod redis_backend {
     use chrono::{DateTime, Utc};
 
     use apex_store::login_throttle::{
-        LoginThrottleStatus, LOGIN_ADMIN_LOCK_THRESHOLD_1H, LOGIN_BACKOFF_STEPS_SECS,
-        LOGIN_ROW_TTL_SECS, LOGIN_TEMP_LOCK_SECS, LOGIN_TEMP_LOCK_THRESHOLD_10M,
-        LOGIN_WINDOW_10M_SECS, LOGIN_WINDOW_1H_SECS,
+        LoginThrottleStatus, LOGIN_ADMIN_LOCK_SECS, LOGIN_ADMIN_LOCK_THRESHOLD_1H,
+        LOGIN_BACKOFF_STEPS_SECS, LOGIN_ROW_TTL_SECS, LOGIN_TEMP_LOCK_SECS,
+        LOGIN_TEMP_LOCK_THRESHOLD_10M, LOGIN_WINDOW_10M_SECS, LOGIN_WINDOW_1H_SECS,
     };
 
     pub const KEY_PREFIX: &str = "login_throttle:";
@@ -214,10 +247,12 @@ local window_1h_ms = {window_1h_ms}
 local temp_threshold = {temp_threshold}
 local admin_threshold = {admin_threshold}
 local temp_lock_ms = {temp_lock_ms}
+local admin_lock_ms = {admin_lock_ms}
 local ttl_secs = {ttl_secs}
+local admin_ttl_secs = {admin_ttl_secs}
 local steps = {{{step_1}, {step_2}, {step_3}, {step_4}}}
 
-local fields = redis.call('HMGET', key, 'f10', 'f1h', 'w10', 'w1h', 'backoff', 'lock', 'admin')
+local fields = redis.call('HMGET', key, 'f10', 'f1h', 'w10', 'w1h', 'backoff', 'lock', 'admin', 'a_until')
 local f10 = tonumber(fields[1]) or 0
 local f1h = tonumber(fields[2]) or 0
 local w10 = tonumber(fields[3]) or 0
@@ -225,11 +260,13 @@ local w1h = tonumber(fields[4]) or 0
 local backoff = tonumber(fields[5]) or 0
 local lock = tonumber(fields[6]) or 0
 local admin = fields[7] == '1'
+local a_until = tonumber(fields[8]) or 0
 
 if w10 > 0 and now - w10 >= window_10m_ms then f10 = 0; w10 = 0 end
 if w1h > 0 and now - w1h >= window_1h_ms then f1h = 0; w1h = 0 end
 if backoff > 0 and now >= backoff then backoff = 0 end
 if lock > 0 and now >= lock then lock = 0 end
+if admin and a_until > 0 and now >= a_until then admin = false; a_until = 0 end
 
 if mode == 'record' then
     if f10 == 0 then w10 = now end
@@ -238,6 +275,7 @@ if mode == 'record' then
     f1h = f1h + 1
     if f1h >= admin_threshold then
         admin = true
+        a_until = now + admin_lock_ms
         backoff = 0
         lock = 0
     elseif f10 >= temp_threshold then
@@ -250,21 +288,24 @@ if mode == 'record' then
     end
     redis.call('HSET', key,
         'f10', f10, 'f1h', f1h, 'w10', w10, 'w1h', w1h,
-        'backoff', backoff, 'lock', lock, 'admin', admin and '1' or '0')
+        'backoff', backoff, 'lock', lock, 'admin', admin and '1' or '0',
+        'a_until', a_until)
     if admin then
-        redis.call('PERSIST', key)
+        redis.call('EXPIRE', key, admin_ttl_secs)
     else
         redis.call('EXPIRE', key, ttl_secs)
     end
 end
 
 local retry = 0
-if not admin then
-    if lock > now then
-        retry = math.ceil((lock - now) / 1000)
-    elseif backoff > now then
-        retry = math.ceil((backoff - now) / 1000)
+if admin then
+    if a_until > now then
+        retry = math.ceil((a_until - now) / 1000)
     end
+elseif lock > now then
+    retry = math.ceil((lock - now) / 1000)
+elseif backoff > now then
+    retry = math.ceil((backoff - now) / 1000)
 end
 local allowed = 1
 if admin or lock > now or backoff > now then allowed = 0 end
@@ -275,7 +316,9 @@ return {{allowed, retry, f10, f1h, admin and 1 or 0}}
                     temp_threshold = LOGIN_TEMP_LOCK_THRESHOLD_10M,
                     admin_threshold = LOGIN_ADMIN_LOCK_THRESHOLD_1H,
                     temp_lock_ms = LOGIN_TEMP_LOCK_SECS * 1000,
+                    admin_lock_ms = LOGIN_ADMIN_LOCK_SECS * 1000,
                     ttl_secs = LOGIN_ROW_TTL_SECS,
+                    admin_ttl_secs = LOGIN_ADMIN_LOCK_SECS,
                     step_1 = LOGIN_BACKOFF_STEPS_SECS[0] * 1000,
                     step_2 = LOGIN_BACKOFF_STEPS_SECS[1] * 1000,
                     step_3 = LOGIN_BACKOFF_STEPS_SECS[2] * 1000,
@@ -377,6 +420,10 @@ mod tests {
             .await;
         assert!(locked.admin_unlock_required);
         assert!(!locked.allowed);
+        assert!(
+            locked.retry_after_secs > 0,
+            "the strongest lock is bounded and reports its remaining time"
+        );
 
         assert!(throttle.clear_lock("bob|fp").await);
         assert!(
@@ -384,6 +431,54 @@ mod tests {
                 .evaluate("bob|fp", now + Duration::minutes(21))
                 .await
                 .allowed
+        );
+    }
+
+    #[test]
+    fn merge_statuses_prefers_the_most_restrictive_answer() {
+        let allowed = AuthThrottleStatus {
+            allowed: true,
+            retry_after_secs: 0,
+            failure_count_10m: 0,
+            failure_count_1h: 0,
+            admin_unlock_required: false,
+        };
+        let backoff = AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 2,
+            failure_count_10m: 3,
+            failure_count_1h: 3,
+            admin_unlock_required: false,
+        };
+        let temp_lock = AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 600,
+            failure_count_10m: 10,
+            failure_count_1h: 10,
+            admin_unlock_required: false,
+        };
+        let admin_lock = AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 86_400,
+            failure_count_10m: 10,
+            failure_count_1h: 20,
+            admin_unlock_required: true,
+        };
+
+        assert!(merge_statuses(Vec::new()).is_none());
+
+        let merged = merge_statuses(vec![allowed, backoff.clone()]).expect("merged");
+        assert!(!merged.allowed, "a blocked backend must win over allowed");
+        assert_eq!(merged.retry_after_secs, 2);
+
+        let merged = merge_statuses(vec![backoff, temp_lock.clone()]).expect("merged");
+        assert_eq!(merged.retry_after_secs, 600);
+        assert_eq!(merged.failure_count_10m, 10);
+
+        let merged = merge_statuses(vec![temp_lock, admin_lock]).expect("merged");
+        assert!(
+            merged.admin_unlock_required,
+            "an admin lock is the strongest"
         );
     }
 }

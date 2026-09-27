@@ -58,6 +58,7 @@ async fn redis_login_throttle_requires_admin_unlock() {
         .get_connection_manager()
         .await
         .expect("connect to redis");
+    let mut ttl_connection = connection.clone();
     let throttle = LoginThrottle::new(None, Some(connection));
     let key = format!("redis-admin-it-{}", uuid::Uuid::new_v4());
     let now = chrono::Utc::now();
@@ -70,6 +71,22 @@ async fn redis_login_throttle_requires_admin_unlock() {
     let locked = throttle.evaluate(&key, now + Duration::minutes(20)).await;
     assert!(locked.admin_unlock_required);
     assert!(!locked.allowed);
+    assert!(
+        locked.retry_after_secs > 0,
+        "the bounded admin lock reports its remaining time"
+    );
+
+    // The strongest lock is bounded in Redis too: the key carries a TTL, so it
+    // cannot become a permanent key.
+    let ttl: i64 = redis::cmd("TTL")
+        .arg(format!("login_throttle:{key}"))
+        .query_async(&mut ttl_connection)
+        .await
+        .expect("read admin lock ttl");
+    assert!(
+        ttl > 0,
+        "admin lock keys must expire on their own (ttl={ttl})"
+    );
 
     assert!(throttle.clear_lock(&key).await);
     assert!(

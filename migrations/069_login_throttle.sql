@@ -9,10 +9,11 @@
 -- key (normalised username + trusted client fingerprint). `PgStore` mutates it
 -- under `SELECT ... FOR UPDATE`, so increments are atomic and all replicas
 -- share one view. Windows and locks are time-bounded columns (TTL semantics),
--- `expires_at` is a lazy-GC hint for rows that are no longer security
--- relevant, and `admin_locked` rows never expire (only an explicit
--- `record_success` / `clear_lock` releases them, matching the in-memory
--- tracker's contract).
+-- and `expires_at` is a lazy-GC hint for rows that are no longer security
+-- relevant. Every state is bounded: admin locks expire at their deadline
+-- (24h, refreshed while failures continue), so unauthenticated traffic can
+-- never mint rows that outlive the lock; `clear_lock` still releases one
+-- earlier.
 --
 -- Idempotent: the table, index and grant are all guarded by IF NOT EXISTS /
 -- catalog checks, so re-application is a no-op.
@@ -45,9 +46,9 @@ COMMENT ON COLUMN login_attempt_throttle.backoff_until IS
 COMMENT ON COLUMN login_attempt_throttle.temp_lock_until IS
     'Temporary lock deadline after 10 failures in 10 minutes';
 COMMENT ON COLUMN login_attempt_throttle.admin_locked IS
-    'After 20 failures in 1 hour the key stays locked until cleared by an administrator (never expires on its own)';
+    'After 20 failures in 1 hour the key is locked until an administrator clears it or the bounded 24-hour deadline passes';
 COMMENT ON COLUMN login_attempt_throttle.expires_at IS
-    'Lazy TTL: rows with expires_at < now() are garbage and are pruned by the next read/write; NULL for admin locks';
+    'Lazy TTL: rows with expires_at < now() are garbage and are pruned by the next read/write; for admin-locked rows it holds the bounded lock deadline';
 
 -- Supports the lazy TTL sweep; partial so unlocked (security-relevant) rows
 -- are not indexed.
