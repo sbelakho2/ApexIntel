@@ -59,7 +59,10 @@ pub(crate) async fn seed_recipes_from_yaml(pool: &sqlx::PgPool) {
                 Err(e) => {
                     tracing::error!(
                         error = %e,
-                        "recipe seed sync FAILED: no recipes were inserted this run"
+                        "recipe seed sync FAILED: {} (the sync aborted before completing; \
+                         recipes recorded earlier in this run remain committed, so the \
+                         database may not match config/recipes_seed.yaml)",
+                        e
                     );
                 }
             }

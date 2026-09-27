@@ -1,22 +1,24 @@
 # Telemetry/secondary-write allowlist for scripts/ci/check_false_success.sh.
 #
-# Every entry permits ONE suppressed store call (file + operation token) and
-# MUST state why its failure cannot turn the request/job into a false success.
-# These are not blanket exemptions: an authoritative mutation (create/update/
-# upsert/delete/insert/record of domain state, etc.) must never be listed here.
-# An entry that no longer matches a real suppressed call fails the guard as
-# stale, so the list cannot drift.
+# Each entry permits an EXACT NUMBER of suppressed store calls for one file and
+# operation token (the guard fails when the file has more or fewer suppressed
+# occurrences of that token than the entry declares), and MUST state why the
+# failure cannot turn the request/job into a false success. These are not
+# blanket exemptions: an authoritative mutation of domain state (create/update/
+# upsert/delete/insert/record, etc.) must never be listed here. An entry that
+# no longer matches the real count fails the guard as stale, so the list cannot
+# drift or silently absorb new suppressions.
 #
-# Format: <path> | <token> | <reason>
-crates/api/src/api_handlers/admin.rs | record_audit_event | audit-trail write after the replay job row was persisted; failure cannot change the already-returned request outcome
-crates/api/src/api_handlers/battlecards.rs | sqlx::query:INSERT activity_feed | activity-feed echo after the battlecard sections persisted; failure cannot change the regenerated card
-crates/api/src/api_handlers/exports.rs | record_audit_event | audit-trail write after the export stream was produced; failure cannot change the delivered export
-crates/api/src/api_handlers/exports.rs | record_export_history | export-history bookkeeping after the CSV stream was produced; failure cannot change the delivered export
-crates/api/src/api_handlers/insights.rs | record_audit_event | audit-trail write after the primary insight mutation succeeded
-crates/api/src/api_handlers/insights.rs | record_insight_feedback | secondary bookmark-feedback record after bookmark_insight_scoped persisted
-crates/api/src/api_handlers/preferences.rs | record_audit_event | audit-trail write after the preferences row was persisted
-crates/api/src/api_handlers/recipes.rs | record_audit_event | audit-trail write after the recipe lifecycle mutation persisted
-crates/api/src/api_handlers/warnings.rs | record_audit_event | audit-trail write after the primary warning mutation persisted
-crates/api/src/web/insights.rs | create_notification | notification fan-out after the bookmark/annotation mutation persisted
-crates/api/src/web/insights.rs | record_insight_feedback | secondary bookmark-feedback record after bookmark_insight_scoped persisted
-crates/api/src/web/warnings.rs | create_notification | notification fan-out after the acknowledge/annotation mutation persisted
+# Format: <path> | <token> | <count> | <reason>
+crates/api/src/api_handlers/admin.rs | record_audit_event | 3 | audit-trail write after the replay job row was persisted; failure cannot change the already-returned request outcome
+crates/api/src/api_handlers/battlecards.rs | sqlx::query:INSERT activity_feed | 1 | activity-feed echo after the battlecard sections persisted; failure cannot change the regenerated card
+crates/api/src/api_handlers/exports.rs | record_audit_event | 3 | audit-trail write after the export stream was produced; failure cannot change the delivered export
+crates/api/src/api_handlers/exports.rs | record_export_history | 3 | export-history bookkeeping after the CSV stream was produced; failure cannot change the delivered export
+crates/api/src/api_handlers/insights.rs | record_audit_event | 3 | audit-trail write after the primary insight mutation succeeded
+crates/api/src/api_handlers/insights.rs | record_insight_feedback | 1 | secondary bookmark-feedback record after bookmark_insight_scoped persisted
+crates/api/src/api_handlers/preferences.rs | record_audit_event | 1 | audit-trail write after the preferences row was persisted
+crates/api/src/api_handlers/recipes.rs | record_audit_event | 2 | audit-trail write after the recipe lifecycle mutation persisted
+crates/api/src/api_handlers/warnings.rs | record_audit_event | 4 | audit-trail write after the primary warning mutation persisted
+crates/api/src/web/insights.rs | create_notification | 2 | notification fan-out after the bookmark/annotation mutation persisted
+crates/api/src/web/insights.rs | record_insight_feedback | 1 | secondary bookmark-feedback record after bookmark_insight_scoped persisted
+crates/api/src/web/warnings.rs | create_notification | 3 | notification fan-out after the acknowledge/annotation mutation persisted

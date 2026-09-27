@@ -157,6 +157,15 @@ steps:
       # config and source CSS still produce output.
       - npx tailwindcss -i crates/api/static/css/globals.css -o /tmp/tailwind.css --minify
 
+  # apex-shared is the wasm-compatible boundary crate (serde/chrono only); the
+  # release-evidence `wasm-shared` gate is only truthful if a step actually
+  # compiles it for wasm32.
+  - name: wasm-shared
+    image: rust:bookworm
+    commands:
+      - rustup target add wasm32-unknown-unknown
+      - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
+
   # Bootstraps a real, empty PostgreSQL and applies every migration via sqlx,
   # then runs EVERY ignored PostgreSQL integration suite in the workspace (store
   # RLS/outbox/subscriptions/migrations, triage ingest, insight evidence, API
@@ -273,7 +282,7 @@ steps:
   # injected by Woodpecker and feed /api/version via the printed exports.
   - name: release-evidence
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared]
     when:
       - event: [pull_request]
     commands:
@@ -291,12 +300,14 @@ steps:
         --record migration-bootstrap=passed
         --record browser-integration=passed
         --record ui-journey=passed
+        --record tailwind-assets=passed
+        --record wasm-shared=passed
 
   # Release-event evidence additionally records the container browser gate,
   # which only runs on trusted events (push/tag/manual).
   - name: release-evidence-release
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, browser-container]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared, browser-container]
     when:
       - event: [push, tag, manual]
     commands:
@@ -314,4 +325,6 @@ steps:
         --record migration-bootstrap=passed
         --record browser-integration=passed
         --record ui-journey=passed
+        --record tailwind-assets=passed
+        --record wasm-shared=passed
         --record container-browser=passed

@@ -450,6 +450,9 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
 
     // ── 2. Critique stage ──────────────────────────────────────────────
     let training_examples = loop_runner.export_training_examples();
+    // Serialize the examples once; both the governance artifact preview and
+    // the dataset persistence reuse the same JSONL.
+    let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
     let cycle_report: Option<ImprovementCycleReport> = match loop_runner.run_cycle().await {
         Ok(report) => Some(report),
         Err(error) => {
@@ -496,7 +499,6 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 WORKER_METRICS.record_self_improvement_stage_failure(&failure.stage);
             }
 
-            let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
             let stage_failures: Vec<StructuredFailure> =
                 cycle_report.stage_failures().into_iter().cloned().collect();
             let failed_stages: Vec<String> = cycle_report
@@ -720,7 +722,6 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 "schema": "alpaca_chat_jsonl_v1",
                 "tasks": ["insight_generation", "evidence_chain"],
             });
-            let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
             match store
                 .record_llm_training_dataset(
                     "llm_self_improvement_examples",

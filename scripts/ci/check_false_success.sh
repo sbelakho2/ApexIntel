@@ -9,10 +9,12 @@
 #
 # This guard decides the status from the code itself:
 #
-#   * Suppressed fallible writes (`let _ = <store/sqlx call>.await;` with no
-#     `?` propagation) are AUTHORITATIVE unless the exact call site is on the
-#     explicit telemetry allowlist (scripts/ci/false_success_allowlist.txt,
-#     every entry carries a reason). A suppressed authoritative write fails
+#   * Suppressed fallible writes (`let _ = <store/sqlx call>.await;`,
+#     `let _: <type> = ...await;`, `drop(<store/sqlx call>.await)`, all with no
+#     `?` propagation) are AUTHORITATIVE unless the exact file+operation token
+#     is on the explicit telemetry allowlist
+#     (scripts/ci/false_success_allowlist.txt, every entry carries an expected
+#     occurrence count and a reason). A suppressed authoritative write fails
 #     with:  authoritative operation still suppresses error
 #   * Fallible read defaults (`.unwrap_or_default()` / `.unwrap_or(false)` /
 #     `.unwrap_or(0)` / `.unwrap_or("")` / `.ok().flatten()`) are an approved
@@ -25,17 +27,22 @@
 # scripts/ci/check_identifier_decode.sh.
 #
 # Run from anywhere; operates on the repository tree.
-# Usage: check_false_success.sh [--self-test]
+# Usage: check_false_success.sh [--self-test | --print-counts]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export GUARD_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT}"
 
 python3 - "$@" <<'PY'
+import os
 import pathlib
 import re
 import sys
 import tempfile
+
+sys.path.insert(0, os.environ.get("GUARD_SCRIPTS_DIR", "."))
+from rust_source_mask import mask_noncode  # noqa: E402
 
 SCAN_DIRS = [
     "crates/worker/src/job_execution",
@@ -52,7 +59,10 @@ FALLBACK = re.compile(
 DB_HINT = re.compile(
     r"\bstore\b|\bsqlx\b|\bquery_as\b|\bquery\(|try_get\(|fetch_one|fetch_all|fetch_optional|\.pool\b"
 )
-IGNORED_WRITE = re.compile(r"\blet\s+_\s*=")
+# `let _ = ...` and typed wildcard `let _: Result<..> = ...`.
+IGNORED_WRITE = re.compile(r"\blet\s+_\s*(?::|=)")
+# `drop(store.x().await)` / `std::mem::drop(...)` / `core::mem::drop(...)`.
+DISCARD_CALL = re.compile(r"^\s*(?:(?:std|core)::mem::)?drop\s*\(")
 CFG_TEST = re.compile(r"^\s*#\[cfg\(test\)\]")
 STORE_CALL = re.compile(r"sqlx::query|\bstore\b|\.pool\b|\bstate\b")
 
@@ -83,94 +93,6 @@ WRAPPERS = {
     "or_default", "or_insert", "contains", "trim", "to_lowercase", "to_ascii_lowercase",
 }
 
-MARKER = re.compile(r"false-success-classification:\s*(best-effort|authoritative)")
-
-
-def mask_noncode(text):
-    """Blank out string/char literals and comments, preserving offsets.
-
-    Keeps line structure so statement scanning is not confused by SQL text,
-    format! braces, or `//` comments inside multi-line calls.
-    """
-    out = list(text)
-    i = 0
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c == "/" and i + 1 < n and text[i + 1] == "/":
-            j = text.find("\n", i)
-            j = n if j == -1 else j
-            for k in range(i, j):
-                if out[k] != "\n":
-                    out[k] = " "
-            i = j
-            continue
-        if c == "/" and i + 1 < n and text[i + 1] == "*":
-            depth = 1
-            out[i] = " "
-            out[i + 1] = " "
-            i += 2
-            while i < n and depth:
-                if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
-                    depth += 1
-                    out[i] = out[i + 1] = " "
-                    i += 2
-                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
-                    depth -= 1
-                    out[i] = out[i + 1] = " "
-                    i += 2
-                else:
-                    if out[i] != "\n":
-                        out[i] = " "
-                    i += 1
-            continue
-        if c == "r" and i + 1 < n and (text[i + 1] == '"' or text[i + 1] == "#"):
-            j = i + 1
-            hashes = 0
-            while j < n and text[j] == "#":
-                hashes += 1
-                j += 1
-            if j < n and text[j] == '"':
-                closer = '"' + "#" * hashes
-                end = text.find(closer, j + 1)
-                end = n if end == -1 else end + len(closer)
-                for k in range(i, end):
-                    if out[k] != "\n":
-                        out[k] = " "
-                i = end
-                continue
-        if c == '"':
-            j = i + 1
-            while j < n:
-                if text[j] == "\\":
-                    j += 2
-                    continue
-                if text[j] == '"':
-                    j += 1
-                    break
-                j += 1
-            j = min(j, n)
-            for k in range(i, j):
-                if out[k] != "\n":
-                    out[k] = " "
-            i = j
-            continue
-        if c == "'":
-            # Char literal or lifetime. Only mask a real char literal.
-            j = i + 1
-            if j < n and text[j] == "\\":
-                j += 2
-            else:
-                j += 1
-            if j < n and text[j] == "'":
-                j += 1
-                for k in range(i, j):
-                    out[k] = " "
-                i = j
-                continue
-        i += 1
-    return "".join(out)
-
 
 def statement_end(masked, start):
     """Index just past the `;` terminating the statement starting at `start`."""
@@ -186,12 +108,6 @@ def statement_end(masked, start):
             depth = max(0, depth - 1)
         elif c == ";" and depth == 0:
             return i + 1
-        elif c == "\n" and depth == 0 and i > start:
-            # Continuations never start a fresh top-level statement without a
-            # `;`; bail out defensively if the statement looks broken.
-            tail = masked[start:i]
-            if ".await" in tail or "(" in tail:
-                pass
         i += 1
     return min(n, start + 6000)
 
@@ -203,9 +119,7 @@ def suppressed(statement):
         return False
     tail = statement[last + len(".await"):]
     semi = tail.find(";")
-    if semi == -1:
-        tail = tail
-    else:
+    if semi != -1:
         tail = tail[:semi]
     return "?" not in tail
 
@@ -239,7 +153,11 @@ def method_before(masked_statement, offset):
 
 
 def load_allowlist(path):
-    """Return {(relative_path, token): reason}; validates every entry."""
+    """Return {(relative_path, token): (expected_count, reason)}.
+
+    Every entry must be `path | token | count | reason`; a missing reason or a
+    non-positive/non-integer count is a guard error, not a warning.
+    """
     errors = []
     entries = {}
     if not path.exists():
@@ -248,15 +166,17 @@ def load_allowlist(path):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if "|" not in line:
-            errors.append(f"{path}:{lineno}: expected 'path | token | reason'")
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) != 4 or not all(parts):
+            errors.append(
+                f"{path}:{lineno}: expected 'path | token | count | reason' with all fields"
+            )
             continue
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) != 3 or not all(parts):
-            errors.append(f"{path}:{lineno}: expected 'path | token | reason' with a reason")
+        rel, token, count_text, reason = parts
+        if not count_text.isdigit() or int(count_text) < 1:
+            errors.append(f"{path}:{lineno}: count must be a positive integer")
             continue
-        rel, token, reason = parts
-        entries[(rel, token)] = reason
+        entries[(rel, token)] = (int(count_text), reason)
     return entries, errors
 
 
@@ -267,9 +187,11 @@ def is_authoritative(token):
 
 
 def scan_text(text, allowlist, path_label):
-    """Scan one Rust source text; returns (findings, used_allowlist_entries).
+    """Scan one Rust source text.
 
-    Findings are `(location, source_line, reason)` tuples.
+    Returns `(findings, counts)`: findings are `(location, source_line, reason)`
+    tuples, and counts maps `(path_label, token)` to the number of suppressed
+    occurrences (used to detect stale or exceeded allowlist entries).
     """
     lines = text.splitlines()
     masked = mask_noncode(text)
@@ -282,7 +204,7 @@ def scan_text(text, allowlist, path_label):
             break
 
     findings = []
-    used = set()
+    counts = {}
     offset = 0
     for index in range(len(lines)):
         if index >= cfg_cut:
@@ -292,21 +214,41 @@ def scan_text(text, allowlist, path_label):
         location = f"{path_label}:{index + 1}"
 
         if not stripped.startswith("//"):
-            # Rule 1: suppressed fallible write (`let _ = ...await;`).
-            if IGNORED_WRITE.search(masked_lines[index]):
-                eq = masked_lines[index].find("=")
-                abs_start = offset + (eq if eq != -1 else 0)
-                end = statement_end(masked, abs_start)
-                statement = masked[abs_start:end]
-                original = text[abs_start:end]
+            # Rule 1: suppressed fallible write (discard binding or drop(...)).
+            ignored = IGNORED_WRITE.search(masked_lines[index])
+            dropped = DISCARD_CALL.search(masked_lines[index])
+            if ignored or dropped:
+                if ignored:
+                    eq = masked_lines[index].find("=")
+                    statement_start = offset + (eq if eq != -1 else 0)
+                else:
+                    leading = len(masked_lines[index]) - len(masked_lines[index].lstrip())
+                    statement_start = offset + leading
+                end = statement_end(masked, statement_start)
+                statement = masked[statement_start:end]
+                original = text[statement_start:end]
                 if (
                     ".await" in statement
                     and STORE_CALL.search(statement)
                     and suppressed(statement)
                 ):
                     token = call_token(statement, original)
-                    if (path_label, token) in allowlist:
-                        used.add((path_label, token))
+                    key = (path_label, token)
+                    counts[key] = counts.get(key, 0) + 1
+                    approved = allowlist.get(key)
+                    if approved is not None:
+                        allowed_count, _reason = approved
+                        if counts[key] > allowed_count:
+                            findings.append(
+                                (
+                                    location,
+                                    stripped[:140],
+                                    "suppressed operation exceeds the "
+                                    f"{allowed_count} approved telemetry-only call(s) "
+                                    f"for this file (token: {token}); add a new reasoned "
+                                    "entry or propagate the error",
+                                )
+                            )
                     elif is_authoritative(token):
                         findings.append(
                             (
@@ -356,20 +298,21 @@ def scan_text(text, allowlist, path_label):
                     )
         offset += len(line) + 1
 
-    return findings, used
+    return findings, counts
 
 
 def scan_repo(root, allowlist):
     findings = []
-    used = set()
+    counts = {}
     for directory in SCAN_DIRS:
         for path in sorted(pathlib.Path(root, directory).rglob("*.rs")):
             text = path.read_text(encoding="utf-8", errors="replace")
             rel = str(path.relative_to(root))
-            file_findings, file_used = scan_text(text, allowlist, rel)
+            file_findings, file_counts = scan_text(text, allowlist, rel)
             findings.extend(file_findings)
-            used |= file_used
-    return findings, used
+            for key, value in file_counts.items():
+                counts[key] = counts.get(key, 0) + value
+    return findings, counts
 
 
 def self_test(root, allowlist_path):
@@ -407,6 +350,8 @@ def self_test(root, allowlist_path):
         "    let _ = store.create_pipeline_opportunity(None, \"x\").await?;\n"
         "    let _ = store.create_pipeline_opportunity(None, \"x\").await"
         ".map_err(|e| anyhow::anyhow!(e))?;\n"
+        "    let _: Result<(), _> = store.create_pipeline_opportunity(None, \"x\")\n"
+        "        .await?;\n"
         "    Ok(())\n"
         "}\n",
     )
@@ -431,8 +376,31 @@ def self_test(root, allowlist_path):
         "        .unwrap_or_default();\n"
         "}\n",
     )
+    typed_wildcard = write(
+        "typed_wildcard.rs",
+        "async fn f(store: &Store) {\n"
+        "    let _: Result<(), _> = store.create_pipeline_opportunity(None, \"x\").await;\n"
+        "}\n",
+    )
+    dropped = write(
+        "dropped.rs",
+        "async fn f(store: &Store) {\n"
+        "    drop(store.close_workspace(1).await);\n"
+        "    std::mem::drop(store.create_pipeline_opportunity(None, \"x\").await);\n"
+        "}\n",
+    )
+    over_count = write(
+        "over_count.rs",
+        "async fn f(store: &Store) {\n"
+        "    let _ = store.record_audit_event(\"a\").await;\n"
+        "    let _ = store.record_audit_event(\"b\").await;\n"
+        "}\n",
+    )
 
-    allow = {("best_effort_allowlisted.rs", "record_audit_event"): "self-test fixture"}
+    allow = {
+        ("best_effort_allowlisted.rs", "record_audit_event"): (1, "self-test fixture"),
+        ("over_count.rs", "record_audit_event"): (1, "self-test fixture"),
+    }
     cases = [
         (authoritative_with_comment, 1, "authoritative operation still suppresses error"),
         (
@@ -449,17 +417,16 @@ def self_test(root, allowlist_path):
             1,
             "authoritative operation still suppresses error",
         ),
+        (typed_wildcard, 1, "authoritative operation still suppresses error"),
+        (dropped, 2, "authoritative operation still suppresses error"),
+        (over_count, 1, "exceeds the 1 approved telemetry-only call(s)"),
     ]
 
     failures = []
     for name, expected_count, expected_message in cases:
-        findings, _ = scan_text(
-            (base / name).read_text(encoding="utf-8"), allow, name
-        )
+        findings, _ = scan_text((base / name).read_text(encoding="utf-8"), allow, name)
         if len(findings) != expected_count:
-            failures.append(
-                f"{name}: expected {expected_count} finding(s), got {findings}"
-            )
+            failures.append(f"{name}: expected {expected_count} finding(s), got {findings}")
             continue
         if expected_message and expected_message not in findings[0][2]:
             failures.append(
@@ -474,7 +441,7 @@ def self_test(root, allowlist_path):
         return 1
 
     # The repo allowlist must be well formed.
-    _, allow_errors = load_allowlist(pathlib.Path(root, ALLOWLIST_PATH))
+    _, allow_errors = load_allowlist(pathlib.Path(root, allowlist_path))
     if allow_errors:
         for error in allow_errors:
             print(f"SELF-TEST FAILED: {error}", file=sys.stderr)
@@ -495,20 +462,29 @@ def main():
             print(f"FALSE-SUCCESS: {error}", file=sys.stderr)
         return 1
 
-    findings, used = scan_repo(root, allowlist)
-    stale = sorted(set(allowlist) - used)
-    for entry in stale:
-        print(
-            f"FALSE-SUCCESS: stale allowlist entry (no suppressed operation matched): "
-            f"{entry[0]} | {entry[1]}",
-            file=sys.stderr,
-        )
-    if findings or stale:
+    findings, counts = scan_repo(root, allowlist)
+
+    if "--print-counts" in sys.argv[1:]:
+        for (rel, token), count in sorted(counts.items()):
+            print(f"{rel} | {token} | {count}")
+        return 0
+
+    mismatches = []
+    for (rel, token), (expected, _reason) in allowlist.items():
+        found = counts.get((rel, token), 0)
+        if found != expected:
+            mismatches.append(
+                f"allowlist expects {expected} suppressed '{token}' call(s) in {rel}, "
+                f"found {found}"
+            )
+    for mismatch in mismatches:
+        print(f"FALSE-SUCCESS: {mismatch}", file=sys.stderr)
+    if findings or mismatches:
         for location, text, reason in findings:
             print(f"FALSE-SUCCESS: {reason}: {location}: {text}", file=sys.stderr)
         print(
             f"false-success guard FAILED: {len(findings)} suppression(s); "
-            "propagate the error or add a reasoned entry to "
+            "propagate the error or fix the reasoned entry in "
             f"{ALLOWLIST_PATH}",
             file=sys.stderr,
         )

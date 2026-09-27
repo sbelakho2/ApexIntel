@@ -1205,13 +1205,18 @@ pub async fn add_supplier_risk(
         .map(|s| serde_json::from_str(s).unwrap_or(serde_json::json!({"summary": s})))
         .unwrap_or(serde_json::json!({}));
 
-    if Uuid::parse_str(form.supplier_id.trim()).is_err() {
-        return (StatusCode::BAD_REQUEST, "Invalid supplier ID").into_response();
+    // `supplier_risk.supplier_id` is a VARCHAR reference (seeds use ids like
+    // `sup-001`), so the contract is a non-empty trimmed id, not a UUID. The
+    // trimmed value is what gets persisted, so a padded id can never create a
+    // dangling reference.
+    let supplier_id = form.supplier_id.trim();
+    if supplier_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Supplier ID is required").into_response();
     }
 
     if let Err(error) = store
         .create_supplier_risk_entry(
-            &form.supplier_id,
+            supplier_id,
             &form.risk_category,
             form.risk_score,
             &risk_factors,
@@ -1220,7 +1225,7 @@ pub async fn add_supplier_risk(
         )
         .await
     {
-        tracing::error!(%error, supplier_id = %form.supplier_id, "add_supplier_risk: write failed");
+        tracing::error!(%error, supplier_id = %supplier_id, "add_supplier_risk: write failed");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to save supplier risk entry",
@@ -1421,8 +1426,11 @@ pub async fn add_evidence(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<AddEvidenceForm>,
 ) -> impl IntoResponse {
-    if Uuid::parse_str(form.entity_id.trim()).is_err() {
-        return (StatusCode::BAD_REQUEST, "Invalid evidence entity ID").into_response();
+    // `source_evidence.entity_id` is a VARCHAR reference (seeds use ids like
+    // `comp-001`), so the contract is a non-empty trimmed id, not a UUID.
+    let entity_id = form.entity_id.trim();
+    if entity_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Evidence entity ID is required").into_response();
     }
 
     // Authoritative persistence: a failed insert must not redirect as if the
@@ -1430,7 +1438,7 @@ pub async fn add_evidence(
     if let Err(error) = store
         .create_source_evidence(
             &form.entity_type,
-            &form.entity_id,
+            entity_id,
             &form.evidence_type,
             &form.source_url,
             form.source_domain.as_deref(),
@@ -1513,8 +1521,11 @@ pub async fn create_team_assignment(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreateTeamAssignmentForm>,
 ) -> impl IntoResponse {
-    if Uuid::parse_str(form.entity_id.trim()).is_err() {
-        return (StatusCode::BAD_REQUEST, "Invalid assignment entity ID").into_response();
+    // `team_assignments.entity_id` is a VARCHAR reference, so the contract is
+    // a non-empty trimmed id, not a UUID.
+    let entity_id = form.entity_id.trim();
+    if entity_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Assignment entity ID is required").into_response();
     }
 
     // Authoritative persistence: a failed insert must not redirect as if the
@@ -1524,7 +1535,7 @@ pub async fn create_team_assignment(
             &form.team_id,
             &form.team_name,
             &form.entity_type,
-            &form.entity_id,
+            entity_id,
             &session.user_id,
             &form.assigned_to,
             &form.role,
@@ -1665,19 +1676,48 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    fn supplier_risk_form(supplier_id: &str) -> AddSupplierRiskForm {
+        AddSupplierRiskForm {
+            supplier_id: supplier_id.to_string(),
+            risk_category: "financial".to_string(),
+            risk_score: 0.5,
+            risk_factors: None,
+            mitigation: None,
+            owner_id: None,
+        }
+    }
+
+    fn evidence_form(entity_id: &str) -> AddEvidenceForm {
+        AddEvidenceForm {
+            entity_type: "company".to_string(),
+            entity_id: entity_id.to_string(),
+            evidence_type: "news".to_string(),
+            source_url: "https://example.com".to_string(),
+            source_domain: None,
+            source_name: None,
+            reliability_score: 0.5,
+            excerpt: None,
+        }
+    }
+
+    fn team_assignment_form(entity_id: &str) -> CreateTeamAssignmentForm {
+        CreateTeamAssignmentForm {
+            team_id: "team-1".to_string(),
+            team_name: "Team One".to_string(),
+            entity_type: "company".to_string(),
+            entity_id: entity_id.to_string(),
+            assigned_to: "analyst".to_string(),
+            role: "contributor".to_string(),
+            notes: None,
+        }
+    }
+
     #[tokio::test]
-    async fn add_supplier_risk_rejects_malformed_supplier_id() {
+    async fn add_supplier_risk_rejects_empty_supplier_id() {
         let response = add_supplier_risk(
             Extension(test_session()),
             Extension(lazy_store()),
-            Form(AddSupplierRiskForm {
-                supplier_id: "not-a-uuid".to_string(),
-                risk_category: "financial".to_string(),
-                risk_score: 0.5,
-                risk_factors: None,
-                mitigation: None,
-                owner_id: None,
-            }),
+            Form(supplier_risk_form("   ")),
         )
         .await
         .into_response();
@@ -1685,20 +1725,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_evidence_rejects_malformed_entity_id() {
+    async fn add_supplier_risk_accepts_text_supplier_ids() {
+        // The column and seed data use ids like `sup-001`; validation must be
+        // non-empty, and the trimmed value reaches the store (which fails here
+        // only because the lazy pool has no database).
+        let response = add_supplier_risk(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(supplier_risk_form("  sup-001  ")),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn add_evidence_rejects_empty_entity_id() {
         let response = add_evidence(
             Extension(test_session()),
             Extension(lazy_store()),
-            Form(AddEvidenceForm {
-                entity_type: "company".to_string(),
-                entity_id: "not-a-uuid".to_string(),
-                evidence_type: "news".to_string(),
-                source_url: "https://example.com".to_string(),
-                source_domain: None,
-                source_name: None,
-                reliability_score: 0.5,
-                excerpt: None,
-            }),
+            Form(evidence_form("")),
         )
         .await
         .into_response();
@@ -1706,19 +1752,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_team_assignment_rejects_malformed_entity_id() {
+    async fn add_evidence_accepts_text_entity_ids() {
+        let response = add_evidence(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(evidence_form("comp-001")),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn create_team_assignment_rejects_empty_entity_id() {
         let response = create_team_assignment(
             Extension(test_session()),
             Extension(lazy_store()),
-            Form(CreateTeamAssignmentForm {
-                team_id: "team-1".to_string(),
-                team_name: "Team One".to_string(),
-                entity_type: "company".to_string(),
-                entity_id: "not-a-uuid".to_string(),
-                assigned_to: "analyst".to_string(),
-                role: "contributor".to_string(),
-                notes: None,
-            }),
+            Form(team_assignment_form("  ")),
         )
         .await
         .into_response();
