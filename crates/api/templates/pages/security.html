@@ -56,6 +56,32 @@
   </div>
 </div>
 
+{% if !source_states.is_empty() %}
+<div class="apex-card mb-6" id="security-source-states">
+  <div class="border-b border-rams-line px-4 py-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Security Source States</h2>
+    <p class="text-[11px] text-rams-muted mt-1">
+      Measured per source. A clean result is only claimed when a scan succeeded; not scanned, failed, authentication unavailable, rate limited, source unavailable and partial scans each render distinctly.
+    </p>
+  </div>
+  <div class="divide-y divide-rams-line">
+    {% for source in source_states %}
+    <div class="px-4 py-3 flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <p class="text-sm font-semibold">{{ source.label }}</p>
+        <p class="text-[11px] text-rams-muted">{{ source.detail }}</p>
+        {% match source.last_scan_at %}
+        {% when Some with (ts) %}
+        <p class="mt-0.5 text-[10px] text-rams-muted tabular-nums">last scan {{ ts }}</p>
+        {% when None %}{% endmatch %}
+      </div>
+      <span class="shrink-0 text-[10px] font-black uppercase tracking-[0.08em] {{ source.state_class }}">{{ source.state }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="grid gap-4 lg:grid-cols-3 mb-6">
   <div class="apex-card p-4">
     <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Risk Distribution</h2>

@@ -76,6 +76,61 @@ pub struct SecurityFinding {
     pub source_href: Option<String>,
 }
 
+/// One security source's measured state, rendered as a badge. The label is
+/// never a bare "0 findings": a clean result is only shown for a scan that
+/// actually succeeded.
+#[derive(Clone, Debug)]
+pub struct SecuritySourceBadge {
+    pub id: String,
+    pub label: String,
+    pub state: String,
+    pub state_class: String,
+    pub detail: String,
+    pub findings: Option<u64>,
+    pub last_scan_at: Option<String>,
+}
+
+/// Map a taxonomy state to its badge label and colour class. Every state has a
+/// distinct label; the negative states never render as a clean result.
+pub fn security_source_badge(
+    state: crate::routes::security::SecuritySourceState,
+) -> (&'static str, &'static str) {
+    use crate::routes::security::SecuritySourceState as S;
+    match state {
+        S::FindingsReported => ("Findings reported", "apex-text-danger"),
+        S::NoFindingsAfterSuccessfulScan => {
+            ("No findings after successful scan", "apex-text-positive")
+        }
+        S::NotScanned => ("Not scanned", "text-rams-muted"),
+        S::ScanFailed => ("Scan failed", "apex-text-danger"),
+        S::AuthenticationUnavailable => ("Authentication unavailable", "apex-text-warning"),
+        S::RateLimited => ("Rate limited", "apex-text-warning"),
+        S::SourceUnavailable => ("Source unavailable", "apex-text-danger"),
+        S::PartialScan => ("Partial scan", "apex-text-warning"),
+        S::ScanSucceeded => ("Scan succeeded", "apex-text-positive"),
+    }
+}
+
+fn security_source_badges(
+    statuses: &[crate::routes::security::SecuritySourceStatus],
+) -> Vec<SecuritySourceBadge> {
+    statuses
+        .iter()
+        .map(|status| {
+            let (label, state_class) = security_source_badge(status.state);
+            SecuritySourceBadge {
+                id: status.id.clone(),
+                label: status.label.clone(),
+                state: label.to_string(),
+                state_class: state_class.to_string(),
+                detail: status.detail.clone(),
+                findings: status.findings,
+                last_scan_at: status.last_scan_at.clone(),
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SecurityQuery {
     pub signal: Option<String>,
@@ -124,6 +179,8 @@ pub struct SecurityPage {
     pub scores: Vec<SecurityScore>,
     pub last_scan_at: String,
     pub domains_monitored: i64,
+    /// Per-source state taxonomy (never a bare "0 findings").
+    pub source_states: Vec<SecuritySourceBadge>,
     pub findings: Vec<SecurityFinding>,
     pub findings_total: i64,
     pub active_findings: i64,
@@ -463,6 +520,48 @@ pub async fn security_page(
         .count() as i64;
     let posture_warnings = dns_posture.len() as i64 - dns_posture_pass;
 
+    // Security-source negative-state taxonomy. The counts feed the
+    // CVE/dark-web rows so a successful scan with a real zero is the only way
+    // "no findings" is shown.
+    let job_states = store
+        .list_worker_job_states()
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "security source states: worker job state query failed");
+            vec![]
+        });
+    let source_runtime_states = store
+        .load_source_runtime_states()
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "security source states: source runtime query failed");
+            vec![]
+        });
+    let dark_web_findings = store
+        .count_warnings(&WarningListFilters {
+            warning_types: vec!["dark_web".to_string()],
+            ..Default::default()
+        })
+        .await
+        .ok();
+    let source_states =
+        security_source_badges(&crate::routes::security::build_security_source_statuses(
+            &job_states,
+            &source_runtime_states,
+            |key| {
+                std::env::var(key)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+            },
+            &|id| match id {
+                "cve" => Some(kev_items.len() as u64),
+                "dark_web" | "i2p" | "marketplaces" => {
+                    dark_web_findings.map(|count| count.max(0) as u64)
+                }
+                _ => None,
+            },
+        ));
+
     let tpl = SecurityPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
@@ -477,6 +576,7 @@ pub async fn security_page(
         scores: vec![],
         last_scan_at,
         domains_monitored,
+        source_states,
         findings,
         findings_total,
         active_findings,
@@ -554,5 +654,45 @@ pub async fn post_trigger_scan_html(
                 Html("<div class=\"rounded border border-rams-red/30 bg-rams-red/10 px-3 py-2 text-xs font-semibold text-rams-red\">Failed to queue security scan</div>".to_string()),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::routes::security::SecuritySourceState;
+
+    #[test]
+    fn every_security_source_state_renders_distinctly() {
+        let states = [
+            SecuritySourceState::FindingsReported,
+            SecuritySourceState::NoFindingsAfterSuccessfulScan,
+            SecuritySourceState::NotScanned,
+            SecuritySourceState::ScanFailed,
+            SecuritySourceState::AuthenticationUnavailable,
+            SecuritySourceState::RateLimited,
+            SecuritySourceState::SourceUnavailable,
+            SecuritySourceState::PartialScan,
+            SecuritySourceState::ScanSucceeded,
+        ];
+        let mut labels = std::collections::BTreeSet::new();
+        for state in states {
+            let (label, class) = security_source_badge(state);
+            assert!(!label.is_empty());
+            assert!(!class.is_empty());
+            assert!(
+                labels.insert(label),
+                "duplicate badge label for {state:?}: {label}"
+            );
+        }
+
+        // The clean states are never worded as a bare "0 findings".
+        let (clean_label, _) =
+            security_source_badge(SecuritySourceState::NoFindingsAfterSuccessfulScan);
+        assert!(!clean_label.contains("0 findings"));
+        let (not_scanned, _) = security_source_badge(SecuritySourceState::NotScanned);
+        assert_ne!(not_scanned, clean_label);
     }
 }

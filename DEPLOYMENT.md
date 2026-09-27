@@ -277,6 +277,40 @@ Migrations are embedded in the `apex-store` crate and run automatically when the
 
 ---
 
+### 3.5 Release evidence — a green SHA is only claimed with its bundle
+
+A commit is **not** a green release just because the tests happened to pass on
+someone's machine. The release contract is the retained evidence bundle
+produced by `scripts/ci/release_evidence.sh` for the exact SHA:
+
+```bash
+# Run the full canonical matrix for HEAD and retain the bundle.
+scripts/ci/release_evidence.sh --sha "$(git rev-parse HEAD)"
+# -> release-evidence/<sha>/release-evidence.json
+#    release-evidence/<sha>/release-evidence.txt
+#    release-evidence/<sha>/release-evidence.sha256
+#    release-evidence/<sha>/logs/<gate>.log
+```
+
+The bundle is only authoritative when:
+
+- `git_sha` equals the deployed commit and `exact_sha` is `true` (HEAD == SHA
+  and the worktree is clean at run time);
+- `status` is `passed` (no gate failed) and `complete` is `true` (every
+  canonical gate ran or was recorded by its owning pipeline step);
+- `artifact_digest` matches the deployed binary, and `/api/version` on the
+  running service reports the same `git_sha`, `build_timestamp` and
+  `artifact_digest`.
+
+Gates that were never executed and never recorded are published as `not_run`,
+so a partial bundle can never claim a gate that did not happen. Where CI owns
+a gate in its own pipeline step, record it explicitly
+(`--record <gate>=passed`) only after that step succeeded. Absent a bundle
+whose JSON says `status=passed` and `complete=true`, the SHA must be treated
+as unverified and must not be deployed as a release.
+
+---
+
 ## 4. Environment Configuration
 
 Create `/opt/apexintel/config/.env`:

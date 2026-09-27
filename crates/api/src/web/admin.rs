@@ -62,6 +62,72 @@ pub struct SystemMetric {
     pub status: String, // "ok" | "warning" | "error"
 }
 
+/// One capability-health badge rendered on the admin page. `state` carries the
+/// distinct typed label (Disabled and Not configured are rendered differently
+/// from Healthy) and `status_class` the semantic colour class.
+#[derive(Clone, Debug)]
+pub struct CapabilityBadge {
+    pub name: String,
+    pub state: String,
+    pub status_class: String,
+    pub detail: String,
+}
+
+/// Map a measured capability state to its badge label and colour class.
+/// Disabled, Not configured and Not measured are each distinct: none of them
+/// may render as Healthy.
+pub fn capability_badge(
+    state: crate::routes::capabilities::CapabilityState,
+) -> (&'static str, &'static str) {
+    use crate::routes::capabilities::CapabilityState;
+    match state {
+        CapabilityState::Healthy => ("Healthy", "apex-text-positive"),
+        CapabilityState::Degraded => ("Degraded", "apex-text-warning"),
+        CapabilityState::Unavailable => ("Unavailable", "apex-text-danger"),
+        CapabilityState::Disabled => ("Disabled", "text-rams-muted"),
+        CapabilityState::NotConfigured => ("Not configured", "apex-text-warning"),
+        CapabilityState::NotMeasured => ("Not measured", "apex-text-info"),
+    }
+}
+
+/// Capability badges from the latest published measurement. An empty result
+/// (no measurement yet) renders nothing rather than a fabricated Healthy row.
+pub fn capability_badges() -> Vec<CapabilityBadge> {
+    let Some(capabilities) = crate::system_status::current_capabilities() else {
+        return Vec::new();
+    };
+    const NAMES: [&str; 14] = [
+        "database",
+        "schema",
+        "worker_heartbeat",
+        "llm",
+        "embeddings",
+        "nats",
+        "search_index",
+        "browser_renderer",
+        "crawl_freshness",
+        "source_coverage",
+        "alert_engine",
+        "outbox",
+        "notification_delivery",
+        "scheduled_jobs",
+    ];
+    NAMES
+        .iter()
+        .filter_map(|name| {
+            capabilities.capability(name).map(|capability| {
+                let (label, status_class) = capability_badge(capability.state());
+                CapabilityBadge {
+                    name: name.replace('_', " "),
+                    state: label.to_string(),
+                    status_class: status_class.to_string(),
+                    detail: capability.detail.clone(),
+                }
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct QueueInfo {
     pub name: String,
@@ -171,6 +237,9 @@ pub struct AdminPage {
     pub poi_coverage: Vec<PoiCoverage>,
     pub recipe_performance: Vec<RecipePerformance>,
     pub system_metrics: Vec<SystemMetric>,
+    /// Measured capability states (Disabled/Not configured/Not measured render
+    /// distinctly from Healthy).
+    pub capability_badges: Vec<CapabilityBadge>,
     pub queues: Vec<QueueInfo>,
     pub prompt_versions: Vec<PromptVersionItem>,
     pub workflow_runs: Vec<WorkflowRunItem>,
@@ -621,6 +690,7 @@ pub async fn admin_page(
             freshness_metric,
             role_metric,
         ],
+        capability_badges: capability_badges(),
         queues: vec![],
         prompt_versions,
         workflow_runs,
@@ -707,4 +777,39 @@ pub async fn admin_replay_outbox(
         ),
     }
     Redirect::to("/admin").into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::routes::capabilities::CapabilityState;
+
+    #[test]
+    fn capability_badges_render_every_state_distinctly() {
+        let healthy = capability_badge(CapabilityState::Healthy);
+        let disabled = capability_badge(CapabilityState::Disabled);
+        let not_configured = capability_badge(CapabilityState::NotConfigured);
+        let not_measured = capability_badge(CapabilityState::NotMeasured);
+
+        assert_eq!(healthy.0, "Healthy");
+        assert_eq!(disabled.0, "Disabled");
+        assert_eq!(not_configured.0, "Not configured");
+        assert_eq!(not_measured.0, "Not measured");
+
+        // Disabled must never share the label or colour of Healthy, and the
+        // three non-healthy states must not collapse into one another.
+        assert_ne!(disabled.0, healthy.0);
+        assert_ne!(disabled.1, healthy.1);
+        assert_ne!(disabled.0, not_configured.0);
+        assert_ne!(not_configured.0, not_measured.0);
+    }
+
+    #[test]
+    fn capability_badges_are_absent_until_measured() {
+        // No published snapshot in this test process: an unmeasured platform
+        // renders no badge rather than a fabricated Healthy row.
+        assert!(capability_badges().is_empty());
+    }
 }

@@ -13,7 +13,7 @@ use std::time::Duration as StdDuration;
 use apex_core::profile::DeploymentProfile;
 use axum::http::StatusCode;
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use apex_store::postgres::{PgStore, SchemaLineage, ServiceHeartbeatRow};
 use apex_store::tantivy_index::SearchIndex;
@@ -28,11 +28,70 @@ pub const CAPABILITIES_PATH: &str = "/api/health/capabilities";
 
 const NATS_PROBE_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 
+/// Typed measured state of one capability.
+///
+/// The generic conversion (JSON payloads, `/api/health` components, UI badges)
+/// must never collapse [`CapabilityState::Disabled`] or
+/// [`CapabilityState::NotConfigured`] into `Healthy`: only the
+/// profile-specific readiness composition decides whether a `Disabled`
+/// capability is acceptable for a given deployment profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityState {
+    /// Measured healthy.
+    Healthy,
+    /// Measured but outside policy (stale, overloaded, below threshold).
+    Degraded,
+    /// Measured and missing/broken (connection refused, schema mismatch).
+    Unavailable,
+    /// Deliberately switched off (profile does not require it, feature flag).
+    Disabled,
+    /// Required but the deployment has no configuration for it.
+    NotConfigured,
+    /// No measurement exists for this capability in this response.
+    NotMeasured,
+}
+
+impl CapabilityState {
+    /// Map the persisted probe status string to the typed state. Unknown
+    /// strings are `NotMeasured` — never assumed healthy.
+    pub fn from_status(status: &str) -> Self {
+        match status {
+            "ok" | "healthy" => Self::Healthy,
+            "degraded" => Self::Degraded,
+            "unavailable" => Self::Unavailable,
+            "disabled" => Self::Disabled,
+            "not_configured" => Self::NotConfigured,
+            _ => Self::NotMeasured,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::Unavailable => "unavailable",
+            Self::Disabled => "disabled",
+            Self::NotConfigured => "not_configured",
+            Self::NotMeasured => "not_measured",
+        }
+    }
+
+    /// True only for a measured healthy capability.
+    pub fn is_healthy(self) -> bool {
+        matches!(self, Self::Healthy)
+    }
+}
+
 /// One capability probe result.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CapabilityStatus {
-    /// `ok` | `degraded` | `unavailable` | `disabled`.
+    /// `ok` | `degraded` | `unavailable` | `disabled` | `not_configured` |
+    /// `not_measured`.
     pub status: String,
+    /// Typed form of `status`, published so the UI/API can render
+    /// Disabled/NotConfigured distinctly from Healthy.
+    pub state: CapabilityState,
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<String>,
@@ -52,12 +111,28 @@ impl CapabilityStatus {
     pub fn new(status: &str, detail: impl Into<String>) -> Self {
         Self {
             status: status.to_string(),
+            state: CapabilityState::from_status(status),
             detail: detail.into(),
             last_seen_at: None,
             age_seconds: None,
             lag_seconds: None,
             coverage: None,
         }
+    }
+
+    /// A capability the deployment has not configured.
+    pub fn not_configured(detail: impl Into<String>) -> Self {
+        Self::new("not_configured", detail)
+    }
+
+    /// A capability with no measurement available in this response.
+    pub fn not_measured(detail: impl Into<String>) -> Self {
+        Self::new("not_measured", detail)
+    }
+
+    /// Typed state derived from the probe status.
+    pub fn state(&self) -> CapabilityState {
+        CapabilityState::from_status(&self.status)
     }
 
     /// Attach the published source-coverage matrix report.
@@ -67,7 +142,7 @@ impl CapabilityStatus {
     }
 
     pub fn is_ok(&self) -> bool {
-        self.status == "ok"
+        self.state().is_healthy()
     }
 }
 
@@ -276,7 +351,10 @@ pub struct ReadinessReport {
 }
 
 impl Capabilities {
-    /// Worst-of status across all capabilities (`ok` when everything is fine).
+    /// Worst-of status across all capabilities (`ok` only when every
+    /// capability is measured healthy). Disabled and NotConfigured
+    /// capabilities degrade the generic aggregate: the profile-specific
+    /// readiness composition is the only place that may accept them.
     pub fn overall_status(&self) -> &'static str {
         let all = [
             &self.llm,
@@ -294,9 +372,12 @@ impl Capabilities {
             &self.notification_delivery,
             &self.scheduled_jobs,
         ];
-        if all.iter().any(|c| c.status == "unavailable") {
+        if all
+            .iter()
+            .any(|c| c.state() == CapabilityState::Unavailable)
+        {
             "unavailable"
-        } else if all.iter().any(|c| c.status == "degraded") {
+        } else if all.iter().any(|c| !c.state().is_healthy()) {
             "degraded"
         } else {
             "ok"
@@ -337,12 +418,13 @@ impl Capabilities {
         .into_iter()
         .map(|(name, capability)| ComponentHealth {
             name: name.to_string(),
-            status: match capability.status.as_str() {
-                "ok" | "disabled" => HealthStatus::Healthy,
+            status: match capability.state() {
+                CapabilityState::Healthy => HealthStatus::Healthy,
                 // Only a dead database makes the API process itself
                 // unhealthy; optional dependencies (NATS, browser, worker
-                // heartbeat, freshness) degrade it instead.
-                "unavailable" if name == "database" => HealthStatus::Unhealthy,
+                // heartbeat, freshness) degrade it instead. Disabled,
+                // NotConfigured and NotMeasured are never Healthy.
+                CapabilityState::Unavailable if name == "database" => HealthStatus::Unhealthy,
                 _ => HealthStatus::Degraded,
             },
             message: Some(capability.detail.clone()),
@@ -381,6 +463,10 @@ impl Capabilities {
     /// Readiness report for an explicit capability-name set. An unknown name
     /// fails closed as `Unhealthy` rather than being silently dropped, so a
     /// profile can never claim a requirement that is not actually measured.
+    /// Only the profile-specific composition here may accept a `Disabled`
+    /// capability, and only by *excluding* it (`names`); a required capability
+    /// reporting any non-healthy state — including Disabled and
+    /// NotConfigured — fails closed.
     pub fn readiness_checks_for(&self, names: &[&str]) -> Vec<ComponentHealth> {
         names
             .iter()
@@ -646,7 +732,7 @@ async fn probe_search_index(
 
 async fn probe_nats(nats_url: Option<&str>) -> CapabilityStatus {
     let Some(url) = nats_url.filter(|url| !url.trim().is_empty()) else {
-        return CapabilityStatus::new("disabled", "NATS_URL not configured");
+        return CapabilityStatus::not_configured("NATS_URL not configured");
     };
 
     match tokio::time::timeout(NATS_PROBE_TIMEOUT, async_nats::connect(url)).await {
@@ -873,6 +959,99 @@ mod tests {
         "notification_delivery",
         "scheduled_jobs",
     ];
+
+    #[test]
+    fn capability_state_mapping_is_total_and_never_defaults_to_healthy() {
+        assert_eq!(CapabilityState::from_status("ok"), CapabilityState::Healthy);
+        assert_eq!(
+            CapabilityState::from_status("degraded"),
+            CapabilityState::Degraded
+        );
+        assert_eq!(
+            CapabilityState::from_status("unavailable"),
+            CapabilityState::Unavailable
+        );
+        assert_eq!(
+            CapabilityState::from_status("disabled"),
+            CapabilityState::Disabled
+        );
+        assert_eq!(
+            CapabilityState::from_status("not_configured"),
+            CapabilityState::NotConfigured
+        );
+        assert_eq!(
+            CapabilityState::from_status("not_measured"),
+            CapabilityState::NotMeasured
+        );
+        // An unknown status is never healthy.
+        assert_eq!(
+            CapabilityState::from_status("something-new"),
+            CapabilityState::NotMeasured
+        );
+        assert!(!CapabilityState::NotMeasured.is_healthy());
+        assert!(!CapabilityState::Disabled.is_healthy());
+        assert!(!CapabilityState::NotConfigured.is_healthy());
+        assert!(CapabilityState::Healthy.is_healthy());
+    }
+
+    #[test]
+    fn capability_status_publishes_the_typed_state() {
+        let json = serde_json::to_value(CapabilityStatus::not_configured("no URL")).expect("json");
+        assert_eq!(json["state"], "not_configured");
+        assert_eq!(json["status"], "not_configured");
+
+        let json =
+            serde_json::to_value(CapabilityStatus::new("disabled", "not required")).expect("json");
+        assert_eq!(json["state"], "disabled");
+    }
+
+    #[test]
+    fn generic_checks_and_overall_status_never_treat_disabled_as_healthy() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::not_configured("NATS_URL not configured");
+        caps.browser_renderer = CapabilityStatus::new("disabled", "headless browser disabled");
+        caps.llm = CapabilityStatus::not_measured("probe did not run");
+
+        assert_ne!(
+            caps.overall_status(),
+            "ok",
+            "disabled/not_configured/not_measured must degrade the generic aggregate"
+        );
+
+        let checks = caps.health_checks();
+        for name in ["nats", "browser_renderer", "llm"] {
+            let check = checks
+                .iter()
+                .find(|check| check.name == name)
+                .expect("check is published");
+            assert_ne!(
+                check.status,
+                HealthStatus::Healthy,
+                "{name} must not be reported Healthy when it is not measured healthy"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_readiness_composition_is_where_disabled_becomes_acceptable() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("disabled", "not required by core");
+        caps.llm = CapabilityStatus::not_configured("no model");
+
+        // Core does not require either capability, so readiness stays green.
+        assert_eq!(
+            readiness_status(&caps, DeploymentProfile::Core),
+            HealthStatus::Healthy
+        );
+
+        // Full requires both, and neither is measured healthy: fail closed.
+        let full = readiness_status(&caps, DeploymentProfile::Full);
+        assert_eq!(full, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&full),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 
     #[test]
     fn capability_payload_has_required_keys_and_types() {

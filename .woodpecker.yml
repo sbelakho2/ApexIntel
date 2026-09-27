@@ -141,6 +141,15 @@ steps:
       # config and source CSS still produce output.
       - npx tailwindcss -i crates/api/static/css/globals.css -o /tmp/tailwind.css --minify
 
+  # The shared crate is consumed by wasm targets; prove it still compiles for
+  # wasm32 so a native-only regression fails CI. This owns the `wasm-shared`
+  # release-evidence gate.
+  - name: wasm-shared
+    image: rust:bookworm
+    commands:
+      - rustup target add wasm32-unknown-unknown
+      - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
+
   # Bootstraps a real, empty PostgreSQL and applies every migration via sqlx,
   # then runs EVERY ignored PostgreSQL integration suite in the workspace (store
   # RLS/outbox/subscriptions/migrations, triage ingest, insight evidence, API
@@ -257,7 +266,7 @@ steps:
   # injected by Woodpecker and feed /api/version via the printed exports.
   - name: release-evidence
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared]
     when:
       - event: [pull_request]
     commands:
@@ -282,7 +291,7 @@ steps:
   # which only runs on trusted events (push/tag/manual).
   - name: release-evidence-release
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared, browser-container]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared, browser-container]
     when:
       - event: [push, tag, manual]
     commands:

@@ -221,6 +221,9 @@ impl Source {
                 families.insert(CoverageFamily::ExecutiveChanges);
                 families.insert(CoverageFamily::Regulatory);
             }
+            Category::CertificationRegistry => {
+                families.insert(CoverageFamily::Certifications);
+            }
             _ => {}
         }
 
@@ -290,11 +293,11 @@ impl Default for CoveragePolicy {
                 CoverageFamilyRequirement::row(Hiring, true, 1),
                 CoverageFamilyRequirement::row(Financial, true, 3),
                 CoverageFamilyRequirement::row(Tenders, true, 1),
-                // No certification source is registered today: not required
-                // until one exists, but the row is always evaluated so the
-                // gap is visible in the published matrix and an operator can
-                // make it required via APEX_COVERAGE_CERTIFICATIONS_REQUIRED.
-                CoverageFamilyRequirement::row(Certifications, false, 0),
+                // Certification-information sources now exist (IAF CertSearch,
+                // IAQG OASIS, ANAB, UKAS, openFDA device registration), so the
+                // family is required: a deployment whose certification sources
+                // are not operational cannot claim certification coverage.
+                CoverageFamilyRequirement::row(Certifications, true, 1),
                 CoverageFamilyRequirement::row(ExecutiveChanges, true, 1),
                 CoverageFamilyRequirement::row(TradeCustoms, true, 2),
                 CoverageFamilyRequirement::row(ProductCompetitive, true, 2),
@@ -311,77 +314,128 @@ impl CoveragePolicy {
         self.families.iter().find(|row| row.family == family)
     }
 
-    /// Resolve per-family overrides from `APEX_COVERAGE_*`; invalid values
-    /// keep the default (a malformed threshold must not take readiness down).
-    pub fn from_env() -> Self {
+    /// Resolve per-family overrides from `APEX_COVERAGE_*`.
+    ///
+    /// A malformed value is a configuration error naming the variable and the
+    /// bad value: security/readiness thresholds must never silently fall back
+    /// to a different policy than the one an operator wrote.
+    pub fn from_env() -> Result<Self, String> {
         let mut policy = Self::default();
+        let mut errors = Vec::new();
         for row in &mut policy.families {
             let token = row.family.env_token();
-            row.required = env_bool(&format!("APEX_COVERAGE_{token}_REQUIRED"), row.required);
+            row.required = env_bool(
+                &format!("APEX_COVERAGE_{token}_REQUIRED"),
+                row.required,
+                &mut errors,
+            );
             row.min_operational_sources = env_usize(
                 &format!("APEX_COVERAGE_{token}_MIN"),
                 row.min_operational_sources,
+                &mut errors,
             );
             row.max_freshness_age_secs = env_i64(
                 &format!("APEX_COVERAGE_{token}_FRESHNESS_SECS"),
                 row.max_freshness_age_secs,
+                &mut errors,
             );
             row.min_fetch_success_pct = env_u8(
                 &format!("APEX_COVERAGE_{token}_FETCH_SUCCESS_PCT"),
                 row.min_fetch_success_pct,
+                &mut errors,
             );
             row.min_parser_success_pct = env_u8(
                 &format!("APEX_COVERAGE_{token}_PARSER_SUCCESS_PCT"),
                 row.min_parser_success_pct,
+                &mut errors,
             );
             row.min_independent_domains = env_usize(
                 &format!("APEX_COVERAGE_{token}_MIN_DOMAINS"),
                 row.min_independent_domains,
+                &mut errors,
             );
         }
         policy.min_priority_company_coverage_pct = env_u8(
             "APEX_COVERAGE_PRIORITY_COMPANY_PCT",
             policy.min_priority_company_coverage_pct,
+            &mut errors,
         );
         policy.priority_company_window_secs = env_i64(
             "APEX_COVERAGE_PRIORITY_COMPANY_WINDOW_SECS",
             policy.priority_company_window_secs,
+            &mut errors,
         );
-        policy
+        if errors.is_empty() {
+            Ok(policy)
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
+fn env_bool(name: &str, default: bool, errors: &mut Vec<String>) -> bool {
     match std::env::var(name) {
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => true,
             "0" | "false" | "no" | "off" => false,
-            _ => default,
+            other => {
+                errors.push(format!(
+                    "{name}='{other}' is not a boolean (expected true/false)"
+                ));
+                default
+            }
         },
         Err(_) => default,
     }
 }
 
-fn env_i64(name: &str, default: i64) -> i64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(default)
+fn env_i64(name: &str, default: i64, errors: &mut Vec<String>) -> i64 {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(format!("{name}='{}' is not an integer", raw.trim()));
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
-fn env_u8(name: &str, default: u8) -> u8 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u8>().ok())
-        .filter(|value| *value <= 100)
-        .unwrap_or(default)
+fn env_u8(name: &str, default: u8, errors: &mut Vec<String>) -> u8 {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().parse::<u8>() {
+            Ok(value) if value <= 100 => value,
+            Ok(value) => {
+                errors.push(format!("{name}='{value}' must be between 0 and 100"));
+                default
+            }
+            Err(_) => {
+                errors.push(format!(
+                    "{name}='{}' is not an integer between 0 and 100",
+                    raw.trim()
+                ));
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(default)
+fn env_usize(name: &str, default: usize, errors: &mut Vec<String>) -> usize {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(format!(
+                    "{name}='{}' is not a non-negative integer",
+                    raw.trim()
+                ));
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 /// Per-family snapshot of the source universe.
@@ -992,8 +1046,8 @@ mod tests {
 
         assert_eq!(report.status, "ok");
         assert_eq!(report.families.len(), CoverageFamily::ALL.len());
-        assert_eq!(report.required_families, 10);
-        assert_eq!(report.satisfied_required_families, 10);
+        assert_eq!(report.required_families, 11);
+        assert_eq!(report.satisfied_required_families, 11);
         assert_eq!(report.priority_company_pct, Some(80));
         assert!((report.evidence_quality.coverage_completeness - 1.0).abs() < 1e-9);
     }
@@ -1080,6 +1134,87 @@ mod tests {
     }
 
     #[test]
+    fn default_policy_requires_certification_coverage() {
+        let policy = CoveragePolicy::default();
+        let certifications = policy
+            .requirement(CoverageFamily::Certifications)
+            .expect("certifications row is always published");
+        assert!(
+            certifications.required,
+            "certifications must be a required family now that lawful sources exist"
+        );
+        assert_eq!(
+            certifications.min_operational_sources, 1,
+            "at least one operational certification source must be proven"
+        );
+
+        // A deployment with zero operational certification sources is
+        // degraded, even when every other family is satisfied.
+        let now = Utc::now();
+        let families: Vec<FamilyCoverage> = CoverageFamily::ALL
+            .into_iter()
+            .map(|family| FamilyCoverage {
+                family,
+                declared: 5,
+                registered: 5,
+                operational: if family == CoverageFamily::Certifications {
+                    0
+                } else {
+                    5
+                },
+                independent_domains: 5,
+                attempted: 5,
+                parser_success_pct: Some(100),
+                fetch_success_pct: Some(100),
+                latest_success_at: Some(now),
+                ..FamilyCoverage::default()
+            })
+            .collect();
+        let report = evaluate_coverage(
+            &summary_with(families, 50),
+            &policy,
+            PriorityCompanyCoverage::default(),
+            now,
+        );
+        assert_eq!(report.status, "degraded");
+        let certifications_eval = report
+            .families
+            .iter()
+            .find(|row| row.family == CoverageFamily::Certifications)
+            .expect("certifications evaluation");
+        assert_eq!(certifications_eval.status, "degraded");
+        assert!(certifications_eval
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("operational sources, minimum 1")));
+    }
+
+    #[test]
+    fn registered_certification_sources_map_to_the_certification_family() {
+        let registry_sources = crate::sources_registry::all_sources();
+        let certification_sources: Vec<&crate::sources_registry::Source> = registry_sources
+            .iter()
+            .filter(|source| {
+                source
+                    .coverage_families()
+                    .contains(&CoverageFamily::Certifications)
+            })
+            .collect();
+        assert!(
+            !certification_sources.is_empty(),
+            "the registry must declare at least one certification-information source"
+        );
+        assert!(
+            certification_sources
+                .iter()
+                .any(|source| source.slug == "iaf_certsearch"
+                    || source.slug == "fda_device_registration"
+                    || source.slug == "iaqg_oasis"),
+            "expected IAF/IAQG/openFDA certification registers in the registry"
+        );
+    }
+
+    #[test]
     fn family_classification_uses_category_and_keywords() {
         let hiring = source(
             "greenhouse_job_board",
@@ -1107,6 +1242,42 @@ mod tests {
             !ct.coverage_families()
                 .contains(&CoverageFamily::Certifications),
             "TLS certificate transparency is not a certifications-intel source"
+        );
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn invalid_coverage_threshold_fails_loudly_and_names_the_variable() {
+        let _guard = env_lock();
+
+        std::env::set_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT", "150");
+        let error =
+            CoveragePolicy::from_env().expect_err("an out-of-range percentage must fail loudly");
+        std::env::remove_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT");
+
+        assert!(
+            error.contains("APEX_COVERAGE_PRIORITY_COMPANY_PCT"),
+            "the error must name the variable: {error}"
+        );
+        assert!(
+            error.contains("150"),
+            "the error must name the bad value: {error}"
+        );
+    }
+
+    #[test]
+    fn unset_coverage_thresholds_keep_their_defaults() {
+        let _guard = env_lock();
+
+        std::env::remove_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT");
+        let policy = CoveragePolicy::from_env().expect("unset thresholds use defaults");
+        assert_eq!(
+            policy.min_priority_company_coverage_pct,
+            CoveragePolicy::default().min_priority_company_coverage_pct
         );
     }
 

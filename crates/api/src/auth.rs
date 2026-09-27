@@ -155,7 +155,7 @@ impl ApiRole {
 }
 
 impl FromStr for ApiRole {
-    type Err = ();
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -163,7 +163,9 @@ impl FromStr for ApiRole {
             "analyst" => Ok(Self::Analyst),
             "viewer" => Ok(Self::Viewer),
             "service" => Ok(Self::Service),
-            _ => Err(()),
+            other => Err(format!(
+                "role '{other}' is invalid (expected one of: admin, analyst, viewer, service)"
+            )),
         }
     }
 }

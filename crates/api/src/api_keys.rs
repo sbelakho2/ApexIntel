@@ -127,7 +127,7 @@ fn load_from_source(
     source: &ApiKeySource,
 ) -> Result<(HashMap<String, ApiKey>, Option<SystemTime>)> {
     match source {
-        ApiKeySource::Env { slots } => Ok((load_api_keys_from_env(*slots), None)),
+        ApiKeySource::Env { slots } => Ok((load_api_keys_from_env(*slots)?, None)),
         ApiKeySource::File { path, slots } => {
             let keys = load_api_keys_from_file(path, *slots)?;
             let modified = file_modified_at(path)?;
@@ -142,55 +142,66 @@ fn file_modified_at(path: &Path) -> Result<Option<SystemTime>> {
         .and_then(|metadata| metadata.modified().ok()))
 }
 
-pub fn load_api_keys_from_env(slots: usize) -> HashMap<String, ApiKey> {
+/// Parse the comma-separated `API_KEY_<n>` slots.
+///
+/// A malformed slot or an unknown role is a configuration error that names the
+/// offending variable and value: roles are security-relevant, so an invalid
+/// role must never be silently rewritten to a different privilege level.
+pub fn load_api_keys_from_env(slots: usize) -> Result<HashMap<String, ApiKey>> {
     let mut registry = HashMap::new();
     for i in 1..=slots {
         let env_key = format!("API_KEY_{}", i);
-        if let Ok(val) = std::env::var(&env_key) {
-            let parts: Vec<&str> = val.splitn(4, ',').collect();
-            if parts.len() < 3 {
-                tracing::warn!(
-                    env_key,
-                    "Invalid API key format; expected raw_key,name,role[,user_id]"
-                );
-                continue;
-            }
-            let raw_key = parts[0].trim();
-            let name = parts[1].trim();
-            let role = parts[2]
-                .trim()
-                .parse::<ApiRole>()
-                .unwrap_or(ApiRole::Viewer);
-            let owner_user_id = parts
-                .get(3)
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty())
-                .map(UserId::from)
-                .unwrap_or_else(|| UserId::new(format!("user-{}", i)));
-            let key_id = format!("key-{}", i);
-            registry.insert(
-                key_id.clone(),
-                ApiKey {
-                    key_id,
-                    owner_user_id,
-                    key_hash: auth::hash_api_key(raw_key),
-                    name: name.to_string(),
-                    role,
-                    created_at: Utc::now(),
-                    expires_at: None,
-                    enabled: true,
-                    rate_limit_per_min: 120,
-                    allowed_origins: Vec::new(),
-                },
+        let Ok(val) = std::env::var(&env_key) else {
+            continue;
+        };
+        if val.trim().is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = val.splitn(4, ',').collect();
+        if parts.len() < 3 {
+            anyhow::bail!(
+                "{env_key}: invalid API key format '{}'; expected raw_key,name,role[,user_id]",
+                val.trim()
             );
         }
+        let raw_key = parts[0].trim();
+        if raw_key.is_empty() {
+            anyhow::bail!("{env_key}: raw_key must not be empty");
+        }
+        let name = parts[1].trim();
+        let role = parts[2].trim().parse::<ApiRole>().map_err(|error| {
+            anyhow::anyhow!("{env_key}: invalid role '{}': {error}", parts[2].trim())
+        })?;
+        let owner_user_id = parts
+            .get(3)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(UserId::from)
+            .unwrap_or_else(|| UserId::new(format!("user-{}", i)));
+        let key_id = format!("key-{}", i);
+        registry.insert(
+            key_id.clone(),
+            ApiKey {
+                key_id,
+                owner_user_id,
+                key_hash: auth::hash_api_key(raw_key),
+                name: name.to_string(),
+                role,
+                created_at: Utc::now(),
+                expires_at: None,
+                enabled: true,
+                rate_limit_per_min: 120,
+                allowed_origins: Vec::new(),
+            },
+        );
     }
-    registry
+    Ok(registry)
 }
 
 pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<String, ApiKey>> {
     let raw = fs::read_to_string(path)?;
-    let records: Vec<ApiKeyFileRecord> = serde_json::from_str(&raw)?;
+    let records: Vec<ApiKeyFileRecord> = serde_json::from_str(&raw)
+        .map_err(|error| anyhow::anyhow!("{}: invalid API key file: {error}", path.display()))?;
     let mut registry = HashMap::new();
 
     for (index, record) in records.into_iter().take(slots).enumerate() {
@@ -201,6 +212,23 @@ pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<Stri
             .filter(|value| !value.is_empty())
             .map(UserId::from)
             .unwrap_or_else(|| UserId::new(format!("file-user-{}", index + 1)));
+        let role = record.role.trim().parse::<ApiRole>().map_err(|error| {
+            anyhow::anyhow!(
+                "{}: entry #{} (name '{}'): invalid role '{}': {error}",
+                path.display(),
+                index + 1,
+                record.name.trim(),
+                record.role.trim()
+            )
+        })?;
+        if record.raw_key.trim().is_empty() {
+            anyhow::bail!(
+                "{}: entry #{} (name '{}'): raw_key must not be empty",
+                path.display(),
+                index + 1,
+                record.name.trim()
+            );
+        }
         registry.insert(
             key_id.clone(),
             ApiKey {
@@ -208,11 +236,7 @@ pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<Stri
                 owner_user_id,
                 key_hash: auth::hash_api_key(record.raw_key.trim()),
                 name: record.name.trim().to_string(),
-                role: record
-                    .role
-                    .trim()
-                    .parse::<ApiRole>()
-                    .unwrap_or(ApiRole::Viewer),
+                role,
                 created_at: Utc::now(),
                 expires_at: None,
                 enabled: true,
@@ -234,6 +258,12 @@ mod tests {
             std::env::temp_dir().join(format!("apex-api-{}-{}.json", name, uuid::Uuid::new_v4()));
         fs::write(&path, content).expect("write temp api key file");
         path
+    }
+
+    /// Serialises tests that mutate `API_KEY_*` in the process environment.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
@@ -303,6 +333,83 @@ mod tests {
         fs::write(&path, "not-json").expect("break api key file");
         assert!(manager.reload().is_err());
         assert_eq!(manager.snapshot().len(), original.len());
+    }
+
+    #[test]
+    fn invalid_env_role_fails_loudly_and_names_the_variable() {
+        let _guard = env_lock();
+        std::env::set_var("API_KEY_50", "secret,Ops Key,superuser,user-50");
+        let error = load_api_keys_from_env(50).expect_err("an invalid env role must fail loudly");
+        std::env::remove_var("API_KEY_50");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("API_KEY_50"),
+            "the error must name the variable: {message}"
+        );
+        assert!(
+            message.contains("superuser"),
+            "the error must name the bad role: {message}"
+        );
+        assert!(
+            message.contains("admin, analyst, viewer, service"),
+            "the error must list the valid roles: {message}"
+        );
+    }
+
+    #[test]
+    fn invalid_env_format_fails_loudly() {
+        let _guard = env_lock();
+        std::env::set_var("API_KEY_49", "only-a-key");
+        let error = load_api_keys_from_env(50).expect_err("a malformed slot must fail loudly");
+        std::env::remove_var("API_KEY_49");
+
+        assert!(error.to_string().contains("API_KEY_49"));
+    }
+
+    #[test]
+    fn invalid_file_role_fails_with_file_and_entry_context() {
+        let path = temp_file(
+            "api-keys-bad-role",
+            r#"[{"raw_key":"alpha","name":"Alpha","role":"root"}]"#,
+        );
+        let error = load_api_keys_from_file(&path, 50).expect_err("an invalid role must fail");
+        let message = error.to_string();
+
+        assert!(message.contains("entry #1"), "{message}");
+        assert!(message.contains("Alpha"), "{message}");
+        assert!(message.contains("root"), "{message}");
+    }
+
+    #[test]
+    fn api_keys_reload_keeps_previous_snapshot_when_new_role_is_invalid() {
+        let path = temp_file(
+            "api-keys-bad-role-reload",
+            r#"[{"raw_key":"alpha","name":"Alpha","role":"admin"}]"#,
+        );
+        let config = ApiKeysConfig {
+            file_path: Some(path.clone()),
+            reload_interval_secs: 1,
+            env_slots: 50,
+        };
+        let manager = ApiKeyManager::new(&config).expect("manager");
+        let original = manager.snapshot();
+        assert!(original.values().any(|key| key.role == ApiRole::Admin));
+
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(&path, r#"[{"raw_key":"beta","name":"Beta","role":"root"}]"#)
+            .expect("write malformed role");
+
+        assert!(
+            manager.reload().is_err(),
+            "a malformed role must be a reload error"
+        );
+        let kept = manager.snapshot();
+        assert_eq!(kept.len(), original.len());
+        assert!(
+            kept.values().any(|key| key.role == ApiRole::Admin),
+            "the previous valid snapshot must remain active"
+        );
     }
 
     #[test]

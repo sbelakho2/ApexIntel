@@ -142,92 +142,133 @@ impl Default for ReadinessPolicy {
 }
 
 impl ReadinessPolicy {
-    /// Resolve the policy from the environment, falling back to defaults for
-    /// unset/invalid values (a malformed threshold must not take readiness
-    /// probes down).
-    pub fn from_env() -> Self {
+    /// Resolve the policy from the environment.
+    ///
+    /// A malformed threshold is a configuration error naming the variable and
+    /// the bad value: a readiness gate must never silently enforce a different
+    /// policy than the operator configured. Unset variables keep the default.
+    pub fn from_env() -> Result<Self, String> {
         let defaults = Self::default();
-        Self {
-            llm_probe_ttl_secs: env_u64("APEX_LLM_PROBE_TTL_SECS", defaults.llm_probe_ttl_secs),
+        let mut errors = Vec::new();
+        let policy = Self {
+            llm_probe_ttl_secs: env_u64(
+                "APEX_LLM_PROBE_TTL_SECS",
+                defaults.llm_probe_ttl_secs,
+                &mut errors,
+            ),
             llm_probe_timeout_secs: env_u64(
                 "APEX_LLM_PROBE_TIMEOUT_SECS",
                 defaults.llm_probe_timeout_secs,
+                &mut errors,
             ),
             browser_probe_ttl_secs: env_u64(
                 "APEX_BROWSER_PROBE_TTL_SECS",
                 defaults.browser_probe_ttl_secs,
+                &mut errors,
             ),
             browser_probe_timeout_secs: env_u64(
                 "APEX_BROWSER_PROBE_TIMEOUT_SECS",
                 defaults.browser_probe_timeout_secs,
+                &mut errors,
             ),
             embedding_canary_ttl_secs: env_u64(
                 "APEX_EMBEDDING_CANARY_TTL_SECS",
                 defaults.embedding_canary_ttl_secs,
+                &mut errors,
             ),
             embedding_canary_timeout_secs: env_u64(
                 "APEX_EMBEDDING_CANARY_TIMEOUT_SECS",
                 defaults.embedding_canary_timeout_secs,
+                &mut errors,
             ),
             search_index_max_lag_secs: env_i64(
                 "APEX_SEARCH_INDEX_MAX_LAG_SECS",
                 defaults.search_index_max_lag_secs,
+                &mut errors,
             ),
             crawl_freshness_max_age_secs: env_i64(
                 "APEX_CRAWL_FRESHNESS_MAX_AGE_SECS",
                 defaults.crawl_freshness_max_age_secs,
+                &mut errors,
             ),
-            coverage: apex_crawl::coverage::CoveragePolicy::from_env(),
+            coverage: match apex_crawl::coverage::CoveragePolicy::from_env() {
+                Ok(coverage) => coverage,
+                Err(error) => {
+                    errors.push(error);
+                    defaults.coverage
+                }
+            },
             alert_engine_max_age_secs: env_i64(
                 "APEX_ALERT_ENGINE_MAX_AGE_SECS",
                 defaults.alert_engine_max_age_secs,
+                &mut errors,
             ),
-            outbox_max_pending: env_i64("APEX_OUTBOX_MAX_PENDING", defaults.outbox_max_pending),
+            outbox_max_pending: env_i64(
+                "APEX_OUTBOX_MAX_PENDING",
+                defaults.outbox_max_pending,
+                &mut errors,
+            ),
             outbox_max_oldest_pending_secs: env_i64(
                 "APEX_OUTBOX_MAX_OLDEST_PENDING_SECS",
                 defaults.outbox_max_oldest_pending_secs,
+                &mut errors,
             ),
             notification_delivery_max_processor_age_secs: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_PROCESSOR_AGE_SECS",
                 defaults.notification_delivery_max_processor_age_secs,
+                &mut errors,
             ),
             notification_delivery_max_overdue: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE",
                 defaults.notification_delivery_max_overdue,
+                &mut errors,
             ),
             notification_delivery_max_overdue_age_secs: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_OVERDUE_AGE_SECS",
                 defaults.notification_delivery_max_overdue_age_secs,
+                &mut errors,
             ),
             notification_delivery_max_dead_lettered: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED",
                 defaults.notification_delivery_max_dead_lettered,
+                &mut errors,
             ),
             notification_delivery_max_dead_letter_rate: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_DEAD_LETTER_RATE",
                 defaults.notification_delivery_max_dead_letter_rate,
+                &mut errors,
             ),
             notification_delivery_max_stuck_leases: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MAX_STUCK_LEASES",
                 defaults.notification_delivery_max_stuck_leases,
+                &mut errors,
             ),
             notification_delivery_success_window_secs: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_SUCCESS_WINDOW_SECS",
                 defaults.notification_delivery_success_window_secs,
+                &mut errors,
             ),
             notification_delivery_min_recent_attempts: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MIN_RECENT_ATTEMPTS",
                 defaults.notification_delivery_min_recent_attempts,
+                &mut errors,
             ),
             notification_delivery_min_success_percent: env_i64(
                 "APEX_NOTIFICATION_DELIVERY_MIN_SUCCESS_PERCENT",
                 defaults.notification_delivery_min_success_percent,
+                &mut errors,
             ),
-            critical_jobs: env_csv("APEX_CRITICAL_JOBS", &defaults.critical_jobs),
+            critical_jobs: env_csv("APEX_CRITICAL_JOBS", &defaults.critical_jobs, &mut errors),
             critical_job_max_age_secs: env_i64(
                 "APEX_CRITICAL_JOB_MAX_AGE_SECS",
                 defaults.critical_job_max_age_secs,
+                &mut errors,
             ),
+        };
+        if errors.is_empty() {
+            Ok(policy)
+        } else {
+            Err(errors.join("; "))
         }
     }
 
@@ -256,21 +297,36 @@ impl ReadinessPolicy {
     }
 }
 
-fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(default)
+fn env_u64(name: &str, default: u64, errors: &mut Vec<String>) -> u64 {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(format!(
+                    "{name}='{}' is not a non-negative integer",
+                    raw.trim()
+                ));
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
-fn env_i64(name: &str, default: i64) -> i64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(default)
+fn env_i64(name: &str, default: i64, errors: &mut Vec<String>) -> i64 {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(format!("{name}='{}' is not an integer", raw.trim()));
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
-fn env_csv(name: &str, default: &[String]) -> Vec<String> {
+fn env_csv(name: &str, default: &[String], errors: &mut Vec<String>) -> Vec<String> {
     match std::env::var(name) {
         Ok(raw) => {
             let parsed: Vec<String> = raw
@@ -279,6 +335,7 @@ fn env_csv(name: &str, default: &[String]) -> Vec<String> {
                 .filter(|value| !value.is_empty())
                 .collect();
             if parsed.is_empty() {
+                errors.push(format!("{name}='{raw}' names no jobs"));
                 default.to_vec()
             } else {
                 parsed
@@ -459,8 +516,7 @@ pub async fn probe_llm(
     }
     let status = match target {
         Some(target) => probe_llm_endpoint(target).await,
-        None => CapabilityStatus::new(
-            "degraded",
+        None => CapabilityStatus::not_configured(
             "llm feature compiled but no LLM model configured (set LLM_MODEL/LLM_BASE_URL)",
         ),
     };
@@ -1250,6 +1306,51 @@ mod tests {
     async fn cache_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         LOCK.lock().await
+    }
+
+    /// Serialises tests that mutate the process environment for `from_env`.
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn invalid_readiness_threshold_fails_loudly_and_names_the_variable() {
+        let _guard = env_test_lock();
+        std::env::set_var("APEX_OUTBOX_MAX_PENDING", "not-a-number");
+        let error = ReadinessPolicy::from_env()
+            .expect_err("a malformed readiness threshold must fail loudly");
+        std::env::remove_var("APEX_OUTBOX_MAX_PENDING");
+
+        assert!(
+            error.contains("APEX_OUTBOX_MAX_PENDING"),
+            "the error must name the variable: {error}"
+        );
+        assert!(
+            error.contains("not-a-number"),
+            "the error must name the bad value: {error}"
+        );
+    }
+
+    #[test]
+    fn unset_readiness_thresholds_keep_their_defaults() {
+        let _guard = env_test_lock();
+        std::env::remove_var("APEX_OUTBOX_MAX_PENDING");
+        let policy = ReadinessPolicy::from_env().expect("unset thresholds use defaults");
+        assert_eq!(
+            policy.outbox_max_pending,
+            ReadinessPolicy::default().outbox_max_pending
+        );
+    }
+
+    #[test]
+    fn invalid_critical_jobs_csv_fails_loudly() {
+        let _guard = env_test_lock();
+        std::env::set_var("APEX_CRITICAL_JOBS", ",");
+        let error = ReadinessPolicy::from_env().expect_err("an empty job list must fail loudly");
+        std::env::remove_var("APEX_CRITICAL_JOBS");
+
+        assert!(error.contains("APEX_CRITICAL_JOBS"), "{error}");
     }
 
     fn sample_job(
