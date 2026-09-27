@@ -404,12 +404,44 @@ pub struct MemoInputs {
     ///
     /// `Unavailable` means the drift query failed (health is unknown — not
     /// 100% healthy), `InsufficientEvidence` means there were no features to
-    /// assess.
+    /// assess. Legacy runtime input files carrying a bare
+    /// `pipeline_health_pct` number are accepted and decoded as
+    /// [`Measurement::Measured`].
+    #[serde(
+        default = "default_pipeline_health",
+        alias = "pipeline_health_pct",
+        deserialize_with = "deserialize_pipeline_health"
+    )]
     pub pipeline_health: Measurement<f64>,
     pub top_drift_features: Vec<(String, f64)>,
     pub poi_changes: Vec<PoiChange>,
     pub period_start: DateTime<Utc>,
     pub period_end: DateTime<Utc>,
+}
+
+/// Default for a missing `pipeline_health` field: not measured, never a
+/// fabricated number.
+fn default_pipeline_health() -> Measurement<f64> {
+    Measurement::not_measured()
+}
+
+/// Deserialize `pipeline_health`, accepting either the current tagged
+/// `Measurement` shape or the legacy `pipeline_health_pct` bare number.
+fn deserialize_pipeline_health<'de, D>(deserializer: D) -> Result<Measurement<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum HealthCompat {
+        Current(Measurement<f64>),
+        LegacyPercent(f64),
+    }
+
+    match HealthCompat::deserialize(deserializer)? {
+        HealthCompat::Current(measurement) => Ok(measurement),
+        HealthCompat::LegacyPercent(value) => Ok(Measurement::measured(value)),
+    }
 }
 
 impl MemoInputs {
@@ -1712,6 +1744,34 @@ mod tests {
         );
         assert!(!health.content.contains("100%"));
         assert!(!health.content.contains("0%"));
+    }
+
+    #[test]
+    fn test_memo_inputs_deserialize_accepts_current_and_legacy_health() {
+        let inputs = sample_memo_inputs();
+        let value = serde_json::to_value(&inputs).expect("serialize memo inputs");
+        let parsed: MemoInputs =
+            serde_json::from_value(value.clone()).expect("current shape deserializes");
+        assert_eq!(parsed.pipeline_health, Measurement::measured(0.875));
+
+        let mut legacy = value;
+        let object = legacy.as_object_mut().expect("memo inputs object");
+        object.remove("pipeline_health");
+        object.insert("pipeline_health_pct".to_string(), serde_json::json!(0.87));
+        let parsed: MemoInputs = serde_json::from_value(legacy).expect("legacy shape deserializes");
+        assert_eq!(parsed.pipeline_health.value_copied(), Some(0.87));
+    }
+
+    #[test]
+    fn test_memo_inputs_deserialize_missing_health_is_not_measured() {
+        let mut value = serde_json::to_value(sample_memo_inputs()).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("pipeline_health");
+        let parsed: MemoInputs =
+            serde_json::from_value(value).expect("missing health deserializes");
+        assert_eq!(parsed.pipeline_health, Measurement::not_measured());
     }
 
     #[test]

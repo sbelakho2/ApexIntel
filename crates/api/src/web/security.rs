@@ -27,7 +27,9 @@ pub struct DnsPostureItem {
     pub has_dkim: bool,
     pub has_dmarc: bool,
     pub has_dnssec: bool,
-    pub score: i64,
+    /// Posture score (0–100), or `None` when a component lookup was
+    /// indeterminate — an unknown posture must not render as 0.
+    pub score: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +117,7 @@ pub struct SecurityPage {
     pub theme: String,
     pub status_strip: crate::system_status::StatusStrip,
 
-    pub overall_score: i64,
+    pub overall_score: Option<i64>,
     pub dns_posture: Vec<DnsPostureItem>,
     pub kev_items: Vec<KevItem>,
     pub lookalike_domains: Vec<LookalikeDomain>,
@@ -186,8 +188,7 @@ pub async fn security_page(
                 score: v
                     .get("posture_score")
                     .and_then(|s| s.as_f64())
-                    .map(|s| (s * 100.0) as i64)
-                    .unwrap_or(0),
+                    .map(|s| (s * 100.0) as i64),
             }
         })
         .collect();
@@ -301,11 +302,13 @@ pub async fn security_page(
         })
         .collect();
 
-    // Compute overall score from DNS posture
-    let overall_score = if dns_posture.is_empty() {
-        0
+    // Compute overall score from DNS posture, averaging only the domains whose
+    // score was actually assertable (indeterminate lookups are not zeros).
+    let known_scores: Vec<i64> = dns_posture.iter().filter_map(|d| d.score).collect();
+    let overall_score = if known_scores.is_empty() {
+        None
     } else {
-        dns_posture.iter().map(|d| d.score).sum::<i64>() / dns_posture.len() as i64
+        Some(known_scores.iter().sum::<i64>() / known_scores.len() as i64)
     };
 
     let domains_monitored = dns_posture.len() as i64;

@@ -75,10 +75,6 @@ impl<T> Measurement<T> {
         matches!(self, Self::Measured(_))
     }
 
-    pub const fn is_not_measured(&self) -> bool {
-        matches!(self, Self::NotMeasured)
-    }
-
     pub const fn is_unavailable(&self) -> bool {
         matches!(self, Self::Unavailable(_))
     }
@@ -101,14 +97,6 @@ impl<T> Measurement<T> {
         T: Copy,
     {
         self.value().copied()
-    }
-
-    /// Consume the measurement, keeping only a measured value.
-    pub fn into_option(self) -> Option<T> {
-        match self {
-            Self::Measured(value) => Some(value),
-            _ => None,
-        }
     }
 
     /// Failure detail for an unavailable measurement.

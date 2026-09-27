@@ -59,8 +59,9 @@ pub struct DnsPostureResult {
     pub has_mx: bool,
     pub mx_records: Vec<String>,
 
-    // Posture Score (0-100)
-    pub posture_score: f32,
+    // Posture Score (0-100). `None` when any scored component lookup was
+    // indeterminate: an unknown posture must never be reported as a low one.
+    pub posture_score: Option<f32>,
 
     // Issues found
     pub issues: Vec<DnsSecurityIssue>,
@@ -116,7 +117,6 @@ pub enum LookalikeType {
 pub struct DnsChecker {
     client: Client,
     doh_endpoint: String,
-    common_dkim_selectors: Vec<String>,
 }
 
 impl Default for DnsChecker {
@@ -150,27 +150,16 @@ impl DnsChecker {
         Self {
             client,
             doh_endpoint: endpoint.to_string(),
-            common_dkim_selectors: vec![
-                "default".to_string(),
-                "selector1".to_string(),
-                "selector2".to_string(),
-                "google".to_string(),
-                "k1".to_string(),
-                "s1".to_string(),
-                "s2".to_string(),
-                "mail".to_string(),
-                "email".to_string(),
-                "dkim".to_string(),
-                "smtp".to_string(),
-            ],
         }
     }
 
     /// Check the DNS security posture for a domain.
     ///
     /// A failed lookup never becomes "record missing": indeterminate outcomes
-    /// are recorded in [`DnsPostureResult::lookup_failures`] and the related
-    /// `has_*` flags stay false without a "missing record" issue.
+    /// are recorded in [`DnsPostureResult::lookup_failures`], the related
+    /// `has_*` flags stay false without a "missing record" issue, and the
+    /// overall `posture_score` is `None` rather than a low score for unproven
+    /// absence.
     pub async fn check_posture(&self, domain: &str) -> Result<DnsPostureResult> {
         info!(domain = %domain, "Checking DNS security posture");
 
@@ -243,15 +232,26 @@ impl DnsChecker {
         // is recorded in `lookup_failures` instead of guessing either way.
         let has_mx = !mx_records.is_empty();
 
-        // Calculate posture score
-        let posture_score = self.calculate_posture_score(
-            has_spf,
-            &spf_all_policy,
+        // Calculate posture score. If any scored component (SPF, DKIM, DMARC)
+        // could not be resolved, the overall score is unknown rather than a
+        // fabricated deduction for unproven absence.
+        let posture_score = if posture_score_is_known(
+            spf_indeterminate,
+            dmarc_indeterminate,
+            dkim_indeterminate,
             has_dkim,
-            has_dmarc,
-            &dmarc_policy,
-            dmarc_pct,
-        );
+        ) {
+            Some(self.calculate_posture_score(
+                has_spf,
+                &spf_all_policy,
+                has_dkim,
+                has_dmarc,
+                &dmarc_policy,
+                dmarc_pct,
+            ))
+        } else {
+            None
+        };
 
         Ok(DnsPostureResult {
             domain: domain.to_string(),
@@ -656,15 +656,12 @@ impl DnsChecker {
         let mut found_selectors = Vec::new();
         let mut indeterminate = false;
 
-        for selector in &self.common_dkim_selectors {
-            let dkim_domain = format!("{}._domainkey.{}", selector, domain);
+        for &selector in COMMON_DKIM_SELECTORS {
+            let dkim_domain = format!("{selector}._domainkey.{domain}");
             match self.query_txt(&dkim_domain).await {
                 DnsLookupOutcome::Records(records) => {
-                    if records
-                        .iter()
-                        .any(|r| r.contains("v=DKIM1") || r.contains("k=rsa"))
-                    {
-                        found_selectors.push(selector.clone());
+                    if records.iter().any(|record| is_dkim_record(record)) {
+                        found_selectors.push(selector.to_string());
                     }
                 }
                 DnsLookupOutcome::Timeout | DnsLookupOutcome::Failure(_) => {
@@ -910,6 +907,21 @@ pub fn extract_dmarc_record(records: &[String]) -> Option<(String, Option<String
         .split(';')
         .find_map(|part| part.trim().strip_prefix("p=").map(|p| p.trim().to_string()));
     Some((record, policy))
+}
+
+/// Whether the posture score can be asserted.
+///
+/// SPF and DMARC contribute to the score whenever they are not confirmed, so
+/// any indeterminate lookup there makes the total unknown. A DKIM selector
+/// failure only matters when no selector confirmed DKIM: a confirmed presence
+/// keeps the DKIM component known.
+fn posture_score_is_known(
+    spf_indeterminate: bool,
+    dmarc_indeterminate: bool,
+    dkim_indeterminate: bool,
+    has_dkim: bool,
+) -> bool {
+    !(spf_indeterminate || dmarc_indeterminate || (dkim_indeterminate && !has_dkim))
 }
 
 /// Borrow records from an outcome, or an empty slice for definitive absence.
@@ -1224,6 +1236,18 @@ mod tests {
         let failure = DnsLookupOutcome::Failure("connection refused".to_string());
         assert_ne!(failure, DnsLookupOutcome::NoRecords);
         assert!(!failure.is_definitive_absence());
+    }
+
+    #[test]
+    fn test_posture_score_is_unknown_when_a_scored_component_failed() {
+        // Indeterminate SPF/DMARC always invalidates the total.
+        assert!(!posture_score_is_known(true, false, false, false));
+        assert!(!posture_score_is_known(false, true, false, false));
+        // Indeterminate DKIM matters only when DKIM was not confirmed.
+        assert!(!posture_score_is_known(false, false, true, false));
+        assert!(posture_score_is_known(false, false, true, true));
+        // All components resolved: the score is assertable.
+        assert!(posture_score_is_known(false, false, false, false));
     }
 
     #[test]

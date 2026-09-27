@@ -1585,9 +1585,15 @@ pub(super) async fn run_lookalike_domain_scan(
             "{summary} — lookalike persistence or warning ingestion degraded"
         ));
     } else if registration_checks > 0 && registration_lookup_failures == registration_checks {
-        run.fail(&format!(
-            "{summary} — every lookalike registration lookup failed; nothing was verified"
-        ));
+        // A dependency-wide DNS outage must stay visible without hard-failing
+        // the job: five consecutive failures would auto-disable the scan until
+        // an operator reset the circuit breaker.
+        run.degrade(
+            total_variants,
+            &format!(
+                "{summary} — every lookalike registration lookup failed; nothing was verified"
+            ),
+        );
     } else if registration_lookup_failures > 0 {
         run.degrade(
             total_variants,

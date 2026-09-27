@@ -31,7 +31,7 @@
 
 use anyhow::Result;
 use apex_core::measurement::{FailureReason, Measurement};
-use apex_core::stage::{FailureKind, StageResult, StructuredFailure};
+use apex_core::stage::{FailureKind, StageResult, StageStatus, StructuredFailure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -276,6 +276,29 @@ impl ImprovementCycleReport {
         .flatten()
         .collect()
     }
+
+    /// Failures from stages that terminally failed (`Failed`).
+    ///
+    /// Unlike [`Self::stage_failures`], this excludes `Partial` stages whose
+    /// value was still produced, so a single failed critique in a batch does
+    /// not read as a whole-cycle failure.
+    pub fn failed_stages(&self) -> Vec<&StructuredFailure> {
+        [
+            (self.critique.status, self.critique.failure_ref()),
+            (
+                self.prompt_improvements.status,
+                self.prompt_improvements.failure_ref(),
+            ),
+            (
+                self.failure_hypotheses.status,
+                self.failure_hypotheses.failure_ref(),
+            ),
+        ]
+        .into_iter()
+        .filter(|(status, _)| matches!(status, StageStatus::Failed))
+        .filter_map(|(_, failure)| failure)
+        .collect()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -365,14 +388,10 @@ impl SelfImprovementLoop {
             first_failure,
         );
 
-        let examples_qualifying = self
-            .history
-            .iter()
-            .filter(|c| {
-                c.measured_quality()
-                    .is_some_and(|score| score >= self.config.min_quality_score)
-            })
-            .count();
+        // Same predicate as `export_training_examples` (measured score >=
+        // threshold and `was_used`), so the reported count always matches the
+        // exported dataset size.
+        let examples_qualifying = self.export_training_examples().len();
 
         // Prompt improvement proposals
         let prompt_improvements = if self.config.generate_prompt_proposals {
@@ -948,6 +967,11 @@ mod tests {
 
         assert!(report.failure_hypotheses.is_failed());
         assert!(!report.failure_hypotheses.is_empty());
+        assert_eq!(
+            report.failed_stages().len(),
+            2,
+            "terminal failures must be reported as failed stages"
+        );
     }
 
     #[tokio::test]
@@ -1108,6 +1132,11 @@ mod tests {
             Some(1)
         );
         assert_eq!(report.avg_critique_score.value_copied(), Some(0.8));
+        assert_eq!(report.stage_failures().len(), 1);
+        assert!(
+            report.failed_stages().is_empty(),
+            "a partial stage that produced a value must not fail the whole cycle"
+        );
     }
 
     #[tokio::test]

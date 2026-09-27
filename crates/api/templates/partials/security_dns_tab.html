@@ -23,7 +23,7 @@
         <td class="px-4 py-2 text-center {% if d.has_dkim %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_dkim %}✓{% else %}✗{% endif %}</td>
         <td class="px-4 py-2 text-center {% if d.has_dmarc %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_dmarc %}✓{% else %}✗{% endif %}</td>
         <td class="px-4 py-2 text-center {% if d.has_dnssec %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_dnssec %}✓{% else %}✗{% endif %}</td>
-        <td class="px-4 py-2 text-center font-bold tabular-nums">{{ d.score }}</td>
+        <td class="px-4 py-2 text-center font-bold tabular-nums">{% match d.score %}{% when Some with (score) %}{{ score }}{% when None %}n/a{% endmatch %}</td>
       </tr>
       {% endfor %}
     </tbody>

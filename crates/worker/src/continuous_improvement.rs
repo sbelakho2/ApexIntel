@@ -30,8 +30,10 @@ pub(crate) struct LlmContinuousImprovementStats {
     pub(crate) qualifying_examples: usize,
     pub(crate) avg_critique_score: Measurement<f64>,
     /// Structured failures from the learning stages; a non-empty list means at
-    /// least one stage failed and the cycle must not roll up as success.
+    /// least one stage failed. `failed_stages` lists only terminal `Failed`
+    /// stages, which are the ones that fail the cycle job.
     pub(crate) stage_failures: Vec<StructuredFailure>,
+    pub(crate) failed_stages: Vec<String>,
 }
 
 #[cfg(feature = "llm")]
@@ -333,6 +335,13 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
     }
     let stage_failures: Vec<StructuredFailure> =
         cycle_report.stage_failures().into_iter().cloned().collect();
+    // Only terminal `Failed` stages fail the cycle job; a `Partial` stage kept
+    // its value and must not trip the job circuit breaker.
+    let failed_stages: Vec<String> = cycle_report
+        .failed_stages()
+        .into_iter()
+        .map(|failure| failure.stage.clone())
+        .collect();
 
     let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
     let cycle_metrics = serde_json::json!({
@@ -351,6 +360,7 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         "failure_hypotheses_status": cycle_report.failure_hypotheses.status.as_str(),
         "failure_hypotheses_failure": cycle_report.failure_hypotheses.failure_ref().map(|f| f.display()),
         "stage_failures": stage_failures.iter().map(|f| f.display()).collect::<Vec<_>>(),
+        "failed_stages": &failed_stages,
         "training_examples": training_examples.len(),
     });
     let cycle_report_value =
@@ -429,12 +439,13 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
             None
         }
         Measurement::Unavailable(reason) => {
+            // The stage failure itself is recorded once by the generic
+            // `stage_failures()` loop below; only log the annotation here.
             tracing::warn!(
                 reason = %reason.display(),
                 captures_analysed = cycle_report.captures_analysed,
                 "self_improvement_cycle: critique unavailable; every critique attempt failed"
             );
-            WORKER_METRICS.record_self_improvement_stage_failure("critique");
             None
         }
         Measurement::InsufficientEvidence => {
@@ -504,5 +515,6 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         qualifying_examples: cycle_report.examples_qualifying,
         avg_critique_score: cycle_report.avg_critique_score,
         stage_failures,
+        failed_stages,
     })
 }

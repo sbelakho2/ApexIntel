@@ -59,7 +59,7 @@
     "new_recipes_staged": 12,
     "recipes_promoted": 2,
     "recipes_deprecated": 1,
-    "pipeline_health_pct": 0.87,
+    "pipeline_health": { "state": "measured", "value": 0.87 },
     "top_drift_features": [["competitor_threat_score", 0.12], ["warning_frequency", 0.18]],
     "poi_changes": [
       {

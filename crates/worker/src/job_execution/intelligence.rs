@@ -408,9 +408,10 @@ pub(super) async fn run_self_improvement_cycle(
         .count();
 
     #[cfg(feature = "llm")]
-    let (total, failed) = {
+    let (total, failed, partial_learning_failures) = {
         let mut total = base_total;
         let mut failed = base_failed;
+        let mut partial_learning_failures = false;
 
         match run_llm_continuous_improvement_cycle(store, &ctx.ingress).await {
             Ok(stats) => {
@@ -423,21 +424,29 @@ pub(super) async fn run_self_improvement_cycle(
                     qualifying_examples = stats.qualifying_examples,
                     avg_critique = %stats.avg_critique_score.display_fixed(3),
                     stage_failures = stats.stage_failures.len(),
+                    failed_stages = stats.failed_stages.len(),
                     "self_improvement_cycle: llm continuous improvement completed"
                 );
                 total += stats.captures_analysed as u64;
-                // A learning stage that failed (model call error, invalid
-                // JSON) must not roll up as a successful cycle.
-                if !stats.stage_failures.is_empty() {
+                // Only terminally failed stages (model call error, invalid
+                // JSON with no value) fail the cycle. Partial stages produced
+                // their value and mark the cycle degraded at most.
+                if !stats.failed_stages.is_empty() {
+                    tracing::warn!(
+                        stages = ?stats.failed_stages,
+                        "self_improvement_cycle: llm learning stages failed"
+                    );
+                    failed += 1;
+                } else if !stats.stage_failures.is_empty() {
                     tracing::warn!(
                         stages = ?stats
                             .stage_failures
                             .iter()
                             .map(|failure| failure.stage.as_str())
                             .collect::<Vec<_>>(),
-                        "self_improvement_cycle: llm learning stages failed"
+                        "self_improvement_cycle: llm learning stages partially failed"
                     );
-                    failed += 1;
+                    partial_learning_failures = true;
                 }
             }
             Err(e) => {
@@ -445,16 +454,21 @@ pub(super) async fn run_self_improvement_cycle(
                 failed += 1;
             }
         }
-        (total, failed)
+        (total, failed, partial_learning_failures)
     };
 
     #[cfg(not(feature = "llm"))]
-    let (total, failed) = (base_total, base_failed);
+    let (total, failed, partial_learning_failures) = (base_total, base_failed, false);
 
     if failed > 0 {
         run.fail(&format!(
             "self_improvement_cycle: {failed} sub-jobs/components failed"
         ));
+    } else if partial_learning_failures {
+        run.degrade(
+            total,
+            "self_improvement_cycle: quality loops completed with partial learning-stage failures",
+        );
     } else {
         run.succeed(
             total,

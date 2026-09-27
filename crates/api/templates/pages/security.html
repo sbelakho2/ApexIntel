@@ -101,7 +101,7 @@
         <div class="rounded-sm border border-rams-line bg-rams-panel px-3 py-2">
           <div class="flex items-center justify-between">
             <span class="text-xs font-bold">{{ d.domain }}</span>
-            <span class="text-[10px] uppercase text-rams-muted">{{ d.score }}</span>
+            <span class="text-[10px] uppercase text-rams-muted">{% match d.score %}{% when Some with (score) %}{{ score }}{% when None %}n/a{% endmatch %}</span>
           </div>
         </div>
         {% endif %}

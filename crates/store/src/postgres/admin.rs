@@ -89,13 +89,12 @@ impl PgStore {
             sqlx::query_as("SELECT COUNT(DISTINCT split_part(url, '/', 3)) FROM page_fingerprints")
                 .fetch_one(&self.pool)
                 .await?;
-        // Authoritative freshness marker: None means "no crawl rows", not
-        // "unknown".
-        let latest: Option<(DateTime<Utc>,)> =
-            sqlx::query_as("SELECT MAX(ts) FROM page_fingerprints")
-                .fetch_optional(&self.pool)
+        // Authoritative freshness marker: a nullable aggregate so an empty
+        // table decodes to None ("no crawl rows") instead of a decode error.
+        let latest_ts: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT MAX(ts) FROM page_fingerprints")
+                .fetch_one(&self.pool)
                 .await?;
-        let latest_ts = latest.map(|value| value.0);
         // Telemetry-only summary: a degraded stats rollup renders as a zeroed
         // tile alongside the authoritative counts above and does not fail the
         // whole panel.

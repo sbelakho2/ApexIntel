@@ -31,11 +31,6 @@ impl StageStatus {
             Self::Partial => "partial",
         }
     }
-
-    /// Whether this status means at least part of the stage failed.
-    pub const fn is_failure(self) -> bool {
-        matches!(self, Self::Failed | Self::Partial)
-    }
 }
 
 /// Classification of a stage failure, used for metrics and alert routing.
@@ -167,10 +162,6 @@ impl<T> StageResult<T> {
 
     pub fn value_ref(&self) -> Option<&T> {
         self.value.as_ref()
-    }
-
-    pub fn into_value(self) -> Option<T> {
-        self.value
     }
 
     pub fn failure_ref(&self) -> Option<&StructuredFailure> {
