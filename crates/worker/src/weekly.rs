@@ -5,6 +5,7 @@
 //! and produces a WeeklyReport.
 
 use crate::scheduler::{JobKind, JobRun, JobStatus};
+use apex_core::measurement::Measurement;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -399,7 +400,12 @@ pub struct MemoInputs {
     pub new_recipes_staged: u32,
     pub recipes_promoted: u32,
     pub recipes_deprecated: u32,
-    pub pipeline_health_pct: f64,
+    /// Pipeline health in `[0.0, 1.0]` when it could be measured.
+    ///
+    /// `Unavailable` means the drift query failed (health is unknown — not
+    /// 100% healthy), `InsufficientEvidence` means there were no features to
+    /// assess.
+    pub pipeline_health: Measurement<f64>,
     pub top_drift_features: Vec<(String, f64)>,
     pub poi_changes: Vec<PoiChange>,
     pub period_start: DateTime<Utc>,
@@ -411,7 +417,7 @@ impl MemoInputs {
     ///
     /// Checks:
     /// - `period_end` is strictly after `period_start`
-    /// - `pipeline_health_pct` is in `[0.0, 1.0]`
+    /// - a measured `pipeline_health` is in `[0.0, 1.0]`
     /// - every warning `confidence` is in `[0.0, 1.0]`
     pub fn validate(&self) -> Result<(), String> {
         if self.period_end <= self.period_start {
@@ -421,11 +427,10 @@ impl MemoInputs {
                 self.period_start.format("%Y-%m-%dT%H:%M:%SZ")
             ));
         }
-        if !(0.0..=1.0).contains(&self.pipeline_health_pct) || self.pipeline_health_pct.is_nan() {
-            return Err(format!(
-                "pipeline_health_pct {} must be in [0.0, 1.0]",
-                self.pipeline_health_pct
-            ));
+        if let Some(health) = self.pipeline_health.value_copied() {
+            if !(0.0..=1.0).contains(&health) || health.is_nan() {
+                return Err(format!("pipeline_health {health} must be in [0.0, 1.0]"));
+            }
         }
         for (i, warning) in self.top_warnings.iter().enumerate() {
             if !(0.0..=1.0).contains(&warning.confidence) || warning.confidence.is_nan() {
@@ -525,6 +530,18 @@ pub struct MemoSection {
     pub content: String,
 }
 
+/// Render pipeline health for memo text.
+///
+/// An unavailable measurement renders as "unavailable", never as 0% or 100%.
+fn format_pipeline_health(health: &Measurement<f64>) -> String {
+    match health {
+        Measurement::Measured(value) => format!("{:.0}%", value * 100.0),
+        Measurement::NotMeasured => "not measured".to_string(),
+        Measurement::Unavailable(reason) => format!("unavailable ({})", reason.code),
+        Measurement::InsufficientEvidence => "insufficient evidence".to_string(),
+    }
+}
+
 fn build_executive_summary(inputs: &MemoInputs) -> String {
     let warning_count = inputs.top_warnings.len();
     let high_conf = inputs
@@ -535,13 +552,13 @@ fn build_executive_summary(inputs: &MemoInputs) -> String {
     format!(
         "This week produced **{} actionable warnings** ({} high-confidence). \
          {} new recipes were staged, {} promoted to production, and {} deprecated. \
-         System pipeline health: **{:.0}%**.",
+         System pipeline health: **{}**.",
         warning_count,
         high_conf,
         inputs.new_recipes_staged,
         inputs.recipes_promoted,
         inputs.recipes_deprecated,
-        inputs.pipeline_health_pct * 100.0,
+        format_pipeline_health(&inputs.pipeline_health),
     )
 }
 
@@ -585,8 +602,8 @@ fn build_recipe_section(inputs: &MemoInputs) -> String {
 
 fn build_health_section(inputs: &MemoInputs) -> String {
     let mut out = format!(
-        "Pipeline health: {:.0}%\n",
-        inputs.pipeline_health_pct * 100.0
+        "Pipeline health: {}\n",
+        format_pipeline_health(&inputs.pipeline_health)
     );
     if !inputs.top_drift_features.is_empty() {
         out.push_str("\nDrifted features:\n");
@@ -1019,7 +1036,7 @@ mod tests {
             new_recipes_staged: 3,
             recipes_promoted: 1,
             recipes_deprecated: 2,
-            pipeline_health_pct: 0.875,
+            pipeline_health: Measurement::measured(0.875),
             top_drift_features: vec![("commodity_vol".to_string(), 0.18)],
             poi_changes: vec![PoiChange {
                 person_name: "Ahmed Ben Ali".to_string(),
@@ -1426,7 +1443,7 @@ mod tests {
             new_recipes_staged: 0,
             recipes_promoted: 0,
             recipes_deprecated: 0,
-            pipeline_health_pct: 1.0,
+            pipeline_health: Measurement::measured(1.0),
             top_drift_features: vec![],
             poi_changes: vec![],
             period_start: utc(2026, 2, 16, 0, 0, 0),
@@ -1547,7 +1564,7 @@ mod tests {
             new_recipes_staged: 0,
             recipes_promoted: 0,
             recipes_deprecated: 0,
-            pipeline_health_pct: 1.0,
+            pipeline_health: Measurement::measured(1.0),
             top_drift_features: vec![],
             poi_changes: vec![],
             period_start: utc(2026, 2, 16, 0, 0, 0),
@@ -1600,7 +1617,7 @@ mod tests {
             new_recipes_staged: 0,
             recipes_promoted: 0,
             recipes_deprecated: 0,
-            pipeline_health_pct: 1.0,
+            pipeline_health: Measurement::measured(1.0),
             top_drift_features: vec![],
             poi_changes: vec![],
             period_start: utc(2026, 2, 16, 0, 0, 0),
@@ -1652,25 +1669,49 @@ mod tests {
     #[test]
     fn test_memo_inputs_validate_health_pct_below_zero() {
         let mut inputs = sample_memo_inputs();
-        inputs.pipeline_health_pct = -0.1;
+        inputs.pipeline_health = Measurement::measured(-0.1);
         let err = inputs.validate().unwrap_err();
-        assert!(err.contains("pipeline_health_pct"), "got: {err}");
+        assert!(err.contains("pipeline_health"), "got: {err}");
     }
 
     #[test]
     fn test_memo_inputs_validate_health_pct_above_one() {
         let mut inputs = sample_memo_inputs();
-        inputs.pipeline_health_pct = 1.01;
+        inputs.pipeline_health = Measurement::measured(1.01);
         let err = inputs.validate().unwrap_err();
-        assert!(err.contains("pipeline_health_pct"));
+        assert!(err.contains("pipeline_health"));
     }
 
     #[test]
     fn test_memo_inputs_validate_health_pct_nan() {
         let mut inputs = sample_memo_inputs();
-        inputs.pipeline_health_pct = f64::NAN;
+        inputs.pipeline_health = Measurement::measured(f64::NAN);
         let err = inputs.validate().unwrap_err();
-        assert!(err.contains("pipeline_health_pct"));
+        assert!(err.contains("pipeline_health"));
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_unavailable_health_is_allowed() {
+        let mut inputs = sample_memo_inputs();
+        inputs.pipeline_health =
+            Measurement::unavailable(apex_core::measurement::FailureReason::new(
+                "drift_stats_unavailable",
+                "connection refused",
+            ));
+        assert!(inputs.validate().is_ok());
+        let memo = build_memo_structure(&inputs);
+        let health = memo
+            .sections
+            .iter()
+            .find(|section| section.title.to_lowercase().contains("health"))
+            .expect("health section");
+        assert!(
+            health.content.contains("unavailable"),
+            "unavailable health must never render as a percentage: {}",
+            health.content
+        );
+        assert!(!health.content.contains("100%"));
+        assert!(!health.content.contains("0%"));
     }
 
     #[test]
@@ -1700,9 +1741,9 @@ mod tests {
     #[test]
     fn test_memo_inputs_validate_boundary_health_pct_zero_and_one() {
         let mut inputs = sample_memo_inputs();
-        inputs.pipeline_health_pct = 0.0;
+        inputs.pipeline_health = Measurement::measured(0.0);
         assert!(inputs.validate().is_ok(), "0.0 is valid");
-        inputs.pipeline_health_pct = 1.0;
+        inputs.pipeline_health = Measurement::measured(1.0);
         assert!(inputs.validate().is_ok(), "1.0 is valid");
     }
 

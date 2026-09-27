@@ -30,6 +30,7 @@
 //! ```
 
 use anyhow::{Context, Result};
+use apex_core::measurement::Measurement;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -216,7 +217,11 @@ pub struct EvalReport {
     pub passed: usize,
     pub failed: usize,
     pub results: Vec<EvalResult>,
-    pub avg_judge_score: f64,
+    /// Mean judge score over the cases the judge actually scored.
+    ///
+    /// `NotMeasured` when no case was judged — never a fabricated `0.0`
+    /// that a quality gate would read as catastrophic degradation.
+    pub avg_judge_score: Measurement<f64>,
     pub avg_latency_ms: f64,
 }
 
@@ -357,9 +362,9 @@ impl EvalRunner {
             passed,
             failed,
             avg_judge_score: if judge_scored > 0 {
-                total_judge_score / judge_scored as f64
+                Measurement::measured(total_judge_score / judge_scored as f64)
             } else {
-                0.0
+                Measurement::not_measured()
             },
             avg_latency_ms: if !results.is_empty() {
                 total_latency as f64 / results.len() as f64
@@ -374,7 +379,7 @@ impl EvalRunner {
             passed=%report.passed,
             failed=%report.failed,
             pass_rate=%format!("{:.1}%", report.pass_rate() * 100.0),
-            avg_score=%format!("{:.3}", report.avg_judge_score),
+            avg_score=%report.avg_judge_score.display_fixed(3),
             "Eval run complete"
         );
 
@@ -766,7 +771,7 @@ mod tests {
             passed: 3,
             failed: 1,
             results: vec![],
-            avg_judge_score: 0.75,
+            avg_judge_score: Measurement::measured(0.75),
             avg_latency_ms: 200.0,
         };
         assert!((report.pass_rate() - 0.75).abs() < 0.001);
@@ -812,7 +817,7 @@ mod tests {
             total_cases: 3,
             passed: 1,
             failed: 2,
-            avg_judge_score: 0.5,
+            avg_judge_score: Measurement::measured(0.5),
             avg_latency_ms: 100.0,
             results: vec![
                 make_result("c1", true, CheckOutcome::Pass, CheckOutcome::Pass),
@@ -846,6 +851,18 @@ mod tests {
         assert!(CheckOutcome::Skipped.is_ok_for_gate());
         assert!(CheckOutcome::Pass.is_ok_for_gate());
         assert!(!CheckOutcome::Fail("x".into()).is_ok_for_gate());
+    }
+
+    #[tokio::test]
+    async fn empty_suite_leaves_judge_score_not_measured() {
+        let runner = build_dummy_runner();
+        let report = runner
+            .run(&EvalSuite::new("empty"))
+            .await
+            .expect("empty suite runs");
+
+        assert_eq!(report.avg_judge_score, Measurement::not_measured());
+        assert_ne!(report.avg_judge_score.value_copied(), Some(0.0));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

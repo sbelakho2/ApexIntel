@@ -7,7 +7,8 @@
 //! - MX record analysis
 //! - Lookalike domain detection
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+use apex_core::measurement::{FailureReason, Measurement};
 use chrono::{DateTime, Utc};
 use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::{ProtoError, ProtoErrorKind};
@@ -63,6 +64,11 @@ pub struct DnsPostureResult {
 
     // Issues found
     pub issues: Vec<DnsSecurityIssue>,
+
+    /// Lookups that failed or timed out. When non-empty, the corresponding
+    /// "missing record" conclusions were NOT proven — absence is unknown.
+    #[serde(default)]
+    pub lookup_failures: Vec<String>,
 }
 
 /// A specific security issue found in DNS configuration
@@ -160,26 +166,64 @@ impl DnsChecker {
         }
     }
 
-    /// Check the DNS security posture for a domain
+    /// Check the DNS security posture for a domain.
+    ///
+    /// A failed lookup never becomes "record missing": indeterminate outcomes
+    /// are recorded in [`DnsPostureResult::lookup_failures`] and the related
+    /// `has_*` flags stay false without a "missing record" issue.
     pub async fn check_posture(&self, domain: &str) -> Result<DnsPostureResult> {
         info!(domain = %domain, "Checking DNS security posture");
 
         let mut issues = Vec::new();
+        let mut lookup_failures = Vec::new();
         let checked_at = Utc::now();
 
         // Check TXT records for SPF
-        let txt_records = self.query_txt(domain).await.unwrap_or_default();
-        let (has_spf, spf_record, spf_all_policy) = self.analyze_spf(&txt_records, &mut issues);
+        let txt_outcome = self.query_txt(domain).await;
+        let spf_indeterminate = Self::record_lookup_failure(
+            &txt_outcome,
+            "SPF",
+            domain,
+            &mut issues,
+            &mut lookup_failures,
+        );
+        let (has_spf, spf_record, spf_all_policy) = if spf_indeterminate {
+            (false, None, None)
+        } else {
+            self.analyze_spf(txt_records_or_empty(&txt_outcome), &mut issues)
+        };
 
         // Check DMARC
         let dmarc_domain = format!("_dmarc.{}", domain);
-        let dmarc_txt = self.query_txt(&dmarc_domain).await.unwrap_or_default();
-        let (has_dmarc, dmarc_record, dmarc_policy, dmarc_pct) =
-            self.analyze_dmarc(&dmarc_txt, &mut issues);
+        let dmarc_outcome = self.query_txt(&dmarc_domain).await;
+        let dmarc_indeterminate = Self::record_lookup_failure(
+            &dmarc_outcome,
+            "DMARC",
+            domain,
+            &mut issues,
+            &mut lookup_failures,
+        );
+        let (has_dmarc, dmarc_record, dmarc_policy, dmarc_pct) = if dmarc_indeterminate {
+            (false, None, None, None)
+        } else {
+            self.analyze_dmarc(txt_records_or_empty(&dmarc_outcome), &mut issues)
+        };
 
         // Check DKIM (common selectors)
-        let (has_dkim, dkim_selectors_found) = self.check_dkim(domain).await;
-        if !has_dkim {
+        let (has_dkim, dkim_selectors_found, dkim_indeterminate) = self.check_dkim(domain).await;
+        if dkim_indeterminate && !has_dkim {
+            let detail = format!(
+                "DKIM lookup for {domain} was indeterminate on at least one selector; absence not asserted"
+            );
+            issues.push(DnsSecurityIssue {
+                severity: IssueSeverity::Low,
+                category: "DKIM".to_string(),
+                description: detail.clone(),
+                recommendation: "Re-run the DNS posture check after resolving resolver connectivity"
+                    .to_string(),
+            });
+            lookup_failures.push(detail);
+        } else if !has_dkim {
             issues.push(DnsSecurityIssue {
                 severity: IssueSeverity::High,
                 category: "DKIM".to_string(),
@@ -189,7 +233,14 @@ impl DnsChecker {
         }
 
         // Check MX records
-        let mx_records = self.query_mx(domain).await.unwrap_or_default();
+        let mx_outcome = self.query_mx(domain).await;
+        Self::record_lookup_failure(&mx_outcome, "MX", domain, &mut issues, &mut lookup_failures);
+        let mx_records: Vec<String> = match &mx_outcome {
+            DnsLookupOutcome::Records(records) => records.clone(),
+            _ => Vec::new(),
+        };
+        // Only resolved MX records prove MX presence; an indeterminate lookup
+        // is recorded in `lookup_failures` instead of guessing either way.
         let has_mx = !mx_records.is_empty();
 
         // Calculate posture score
@@ -218,7 +269,43 @@ impl DnsChecker {
             mx_records,
             posture_score,
             issues,
+            lookup_failures,
         })
+    }
+
+    /// Record an indeterminate lookup as an explicit issue and failure entry.
+    ///
+    /// Returns `true` when the outcome failed to prove absence.
+    fn record_lookup_failure(
+        outcome: &DnsLookupOutcome,
+        record_type: &str,
+        domain: &str,
+        issues: &mut Vec<DnsSecurityIssue>,
+        lookup_failures: &mut Vec<String>,
+    ) -> bool {
+        let detail = match outcome {
+            DnsLookupOutcome::Timeout => Some(format!(
+                "{record_type} lookup for {domain} timed out; absence not asserted"
+            )),
+            DnsLookupOutcome::Failure(error) => Some(format!(
+                "{record_type} lookup for {domain} failed: {error}; absence not asserted"
+            )),
+            _ => None,
+        };
+
+        let Some(detail) = detail else {
+            return false;
+        };
+
+        issues.push(DnsSecurityIssue {
+            severity: IssueSeverity::Low,
+            category: "DNS".to_string(),
+            description: detail.clone(),
+            recommendation: "Re-run the DNS posture check after resolving resolver connectivity"
+                .to_string(),
+        });
+        lookup_failures.push(detail);
+        true
     }
 
     /// Generate lookalike domains for a given domain
@@ -336,30 +423,51 @@ impl DnsChecker {
         lookalikes
     }
 
-    /// Check if a lookalike domain is registered
-    pub async fn check_lookalike_registration(&self, lookalike: &str) -> Result<bool> {
-        // Try to resolve A record
-        let records = self.query_a(lookalike).await.unwrap_or_default();
-        Ok(!records.is_empty())
+    /// Check whether a lookalike domain resolves at all.
+    ///
+    /// Returns a typed measurement: `Measured(true)` only when the name
+    /// resolves, `Measured(false)` only when DNS definitively says the name or
+    /// record does not exist, and `Unavailable` when the lookup failed — a
+    /// failed lookup is never reported as "not registered".
+    pub async fn check_lookalike_registration(&self, lookalike: &str) -> Measurement<bool> {
+        match self.query_a(lookalike).await {
+            DnsLookupOutcome::Records(records) => Measurement::measured(!records.is_empty()),
+            DnsLookupOutcome::NxDomain | DnsLookupOutcome::NoRecords => {
+                Measurement::measured(false)
+            }
+            DnsLookupOutcome::Timeout => Measurement::unavailable(FailureReason::new(
+                "dns_timeout",
+                format!("A lookup for {lookalike} timed out"),
+            )),
+            DnsLookupOutcome::Failure(error) => Measurement::unavailable(FailureReason::new(
+                "dns_query_failed",
+                format!("A lookup for {lookalike} failed: {error}"),
+            )),
+        }
     }
 
     // ─── Private Methods ────────────────────────────────────────────
 
-    async fn query_txt(&self, domain: &str) -> Result<Vec<String>> {
+    async fn query_txt(&self, domain: &str) -> DnsLookupOutcome {
         self.query_records(domain, "TXT").await
     }
 
-    async fn query_mx(&self, domain: &str) -> Result<Vec<String>> {
+    async fn query_mx(&self, domain: &str) -> DnsLookupOutcome {
         self.query_records(domain, "MX").await
     }
 
-    async fn query_a(&self, domain: &str) -> Result<Vec<String>> {
+    async fn query_a(&self, domain: &str) -> DnsLookupOutcome {
         self.query_records(domain, "A").await
     }
 
-    async fn query_records(&self, domain: &str, record_type: &str) -> Result<Vec<String>> {
+    /// Structured DoH lookup. Every outcome — transport failure, non-success
+    /// status, parse failure, NXDOMAIN, NODATA or records — is represented
+    /// explicitly; none of them collapse into an empty record list.
+    async fn query_records(&self, domain: &str, record_type: &str) -> DnsLookupOutcome {
         #[derive(Deserialize)]
         struct DohResponse {
+            #[serde(rename = "Status")]
+            status: Option<u32>,
             #[serde(rename = "Answer")]
             answer: Option<Vec<DohAnswer>>,
         }
@@ -369,29 +477,49 @@ impl DnsChecker {
             data: String,
         }
 
+        let context = format!("{domain} {record_type}");
         let url = format!("{}?name={}&type={}", self.doh_endpoint, domain, record_type);
 
-        let resp = self
+        let resp = match self
             .client
             .get(&url)
             .header("Accept", "application/dns-json")
             .send()
             .await
-            .context("DoH request failed")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                debug!(domain = %domain, record_type = %record_type, %error, "DoH query failed");
+                return DnsLookupOutcome::Failure(format!(
+                    "DoH request failed for {context}: {error}"
+                ));
+            }
+        };
 
         if !resp.status().is_success() {
-            debug!(domain = %domain, record_type = %record_type, status = %resp.status(), "DoH query returned non-success");
-            return Ok(Vec::new());
+            let status = resp.status();
+            debug!(domain = %domain, record_type = %record_type, %status, "DoH query returned non-success");
+            return DnsLookupOutcome::Failure(format!("DoH HTTP {status} for {context}"));
         }
 
-        let doh: DohResponse = resp.json().await.context("Failed to parse DoH response")?;
+        let doh: DohResponse = match resp.json().await {
+            Ok(doh) => doh,
+            Err(error) => {
+                debug!(domain = %domain, record_type = %record_type, %error, "DoH response parse failed");
+                return DnsLookupOutcome::Failure(format!(
+                    "DoH response parse failed for {context}: {error}"
+                ));
+            }
+        };
 
-        Ok(doh
+        let answers: Vec<String> = doh
             .answer
             .unwrap_or_default()
             .into_iter()
             .map(|a| a.data.trim_matches('"').to_string())
-            .collect())
+            .collect();
+
+        classify_doh_response(doh.status, answers, &context)
     }
 
     fn analyze_spf(
@@ -524,22 +652,29 @@ impl DnsChecker {
         (has_dmarc, dmarc_record, policy, pct)
     }
 
-    async fn check_dkim(&self, domain: &str) -> (bool, Vec<String>) {
+    async fn check_dkim(&self, domain: &str) -> (bool, Vec<String>, bool) {
         let mut found_selectors = Vec::new();
+        let mut indeterminate = false;
 
         for selector in &self.common_dkim_selectors {
             let dkim_domain = format!("{}._domainkey.{}", selector, domain);
-            if let Ok(records) = self.query_txt(&dkim_domain).await {
-                if records
-                    .iter()
-                    .any(|r| r.contains("v=DKIM1") || r.contains("k=rsa"))
-                {
-                    found_selectors.push(selector.clone());
+            match self.query_txt(&dkim_domain).await {
+                DnsLookupOutcome::Records(records) => {
+                    if records
+                        .iter()
+                        .any(|r| r.contains("v=DKIM1") || r.contains("k=rsa"))
+                    {
+                        found_selectors.push(selector.clone());
+                    }
                 }
+                DnsLookupOutcome::Timeout | DnsLookupOutcome::Failure(_) => {
+                    indeterminate = true;
+                }
+                DnsLookupOutcome::NxDomain | DnsLookupOutcome::NoRecords => {}
             }
         }
 
-        (!found_selectors.is_empty(), found_selectors)
+        (!found_selectors.is_empty(), found_selectors, indeterminate)
     }
 
     fn calculate_posture_score(
@@ -777,6 +912,47 @@ pub fn extract_dmarc_record(records: &[String]) -> Option<(String, Option<String
     Some((record, policy))
 }
 
+/// Borrow records from an outcome, or an empty slice for definitive absence.
+///
+/// Callers must only use this for outcomes where absence is proven
+/// (`NxDomain`/`NoRecords`); an indeterminate outcome has no records and must
+/// be handled as unknown before reaching record analysis.
+fn txt_records_or_empty(outcome: &DnsLookupOutcome) -> &[String] {
+    match outcome {
+        DnsLookupOutcome::Records(records) => records,
+        _ => &[],
+    }
+}
+
+/// Classify a DNS-over-HTTPS JSON answer into a structured outcome.
+///
+/// `Status` 3 (NXDOMAIN) is definitive absence; any other non-zero status is a
+/// query failure, never an absence; an empty answer with status 0 is NODATA.
+/// A response with neither status nor answers is malformed and therefore a
+/// failure, not evidence of absence.
+pub fn classify_doh_response(
+    status: Option<u32>,
+    answers: Vec<String>,
+    context: &str,
+) -> DnsLookupOutcome {
+    match status {
+        Some(3) => DnsLookupOutcome::NxDomain,
+        Some(code) if code != 0 => {
+            DnsLookupOutcome::Failure(format!("DoH response status {code} for {context}"))
+        }
+        None if answers.is_empty() => DnsLookupOutcome::Failure(format!(
+            "DoH response missing both Status and Answer for {context}"
+        )),
+        _ => {
+            if answers.is_empty() {
+                DnsLookupOutcome::NoRecords
+            } else {
+                DnsLookupOutcome::Records(answers)
+            }
+        }
+    }
+}
+
 /// Structured resolver built on hickory-resolver (system configuration).
 ///
 /// Construction never panics: when the system resolver configuration cannot
@@ -971,6 +1147,83 @@ mod tests {
         assert_eq!(policy.as_deref(), Some("quarantine"));
 
         assert!(extract_dmarc_record(&["v=spf1 -all".to_string()]).is_none());
+    }
+
+    #[test]
+    fn test_doh_query_failure_is_not_no_record() {
+        let failed = classify_doh_response(Some(2), Vec::new(), "example.com TXT");
+        assert!(matches!(failed, DnsLookupOutcome::Failure(_)));
+        assert_ne!(failed, DnsLookupOutcome::NoRecords);
+        assert!(!failed.is_definitive_absence());
+        assert!(failed.is_indeterminate());
+
+        let nxdomain = classify_doh_response(Some(3), Vec::new(), "example.com TXT");
+        assert_eq!(nxdomain, DnsLookupOutcome::NxDomain);
+        assert!(nxdomain.is_definitive_absence());
+
+        let nodata = classify_doh_response(Some(0), Vec::new(), "example.com TXT");
+        assert_eq!(nodata, DnsLookupOutcome::NoRecords);
+        assert!(nodata.is_definitive_absence());
+
+        let records =
+            classify_doh_response(Some(0), vec!["v=spf1 -all".to_string()], "example.com TXT");
+        assert!(matches!(records, DnsLookupOutcome::Records(_)));
+
+        // A malformed response is a failure, never a definitive absence.
+        let malformed = classify_doh_response(None, Vec::new(), "example.com TXT");
+        assert!(matches!(malformed, DnsLookupOutcome::Failure(_)));
+        assert!(!malformed.is_definitive_absence());
+    }
+
+    #[test]
+    fn test_indeterminate_lookup_is_not_missing_record_evidence() {
+        assert_ne!(
+            DnsLookupOutcome::Failure("connection refused".to_string()),
+            DnsLookupOutcome::NxDomain
+        );
+        assert_ne!(DnsLookupOutcome::Timeout, DnsLookupOutcome::NoRecords);
+        assert!(!DnsLookupOutcome::Timeout.is_definitive_absence());
+        assert!(DnsLookupOutcome::Timeout.is_indeterminate());
+    }
+
+    #[test]
+    fn test_record_lookup_failure_marks_absence_unproven() {
+        let mut issues = Vec::new();
+        let mut failures = Vec::new();
+        let indeterminate = DnsChecker::record_lookup_failure(
+            &DnsLookupOutcome::Failure("resolver down".to_string()),
+            "SPF",
+            "example.com",
+            &mut issues,
+            &mut failures,
+        );
+        assert!(indeterminate);
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("absence not asserted"));
+        assert!(issues.iter().any(|issue| issue.category == "DNS"));
+        assert!(!issues
+            .iter()
+            .any(|issue| issue.description.contains("No SPF record found")));
+
+        let mut issues = Vec::new();
+        let mut failures = Vec::new();
+        let definitive = DnsChecker::record_lookup_failure(
+            &DnsLookupOutcome::NxDomain,
+            "SPF",
+            "example.com",
+            &mut issues,
+            &mut failures,
+        );
+        assert!(!definitive);
+        assert!(failures.is_empty());
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_lookalike_lookup_failure_is_not_unregistered() {
+        let failure = DnsLookupOutcome::Failure("connection refused".to_string());
+        assert_ne!(failure, DnsLookupOutcome::NoRecords);
+        assert!(!failure.is_definitive_absence());
     }
 
     #[test]

@@ -416,15 +416,29 @@ pub(super) async fn run_self_improvement_cycle(
             Ok(stats) => {
                 tracing::info!(
                     eval_pass_rate = stats.eval_pass_rate,
-                    eval_avg_score = stats.eval_avg_score,
+                    eval_avg_score = %stats.eval_avg_score.display_fixed(3),
                     eval_hallucination_rate = stats.eval_hallucination_rate,
                     captures_seeded = stats.captures_seeded,
                     captures_analysed = stats.captures_analysed,
                     qualifying_examples = stats.qualifying_examples,
-                    avg_critique = stats.avg_critique_score,
+                    avg_critique = %stats.avg_critique_score.display_fixed(3),
+                    stage_failures = stats.stage_failures.len(),
                     "self_improvement_cycle: llm continuous improvement completed"
                 );
                 total += stats.captures_analysed as u64;
+                // A learning stage that failed (model call error, invalid
+                // JSON) must not roll up as a successful cycle.
+                if !stats.stage_failures.is_empty() {
+                    tracing::warn!(
+                        stages = ?stats
+                            .stage_failures
+                            .iter()
+                            .map(|failure| failure.stage.as_str())
+                            .collect::<Vec<_>>(),
+                        "self_improvement_cycle: llm learning stages failed"
+                    );
+                    failed += 1;
+                }
             }
             Err(e) => {
                 tracing::error!(error = %e, "self_improvement_cycle: llm continuous improvement failed");

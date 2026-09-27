@@ -80,22 +80,25 @@ impl PgStore {
     }
 
     pub async fn get_admin_crawl_status(&self) -> Result<AdminCrawlStatus> {
+        // Authoritative inventory counts: a query failure must fail the panel,
+        // never render as "0 fingerprints / 0 domains".
         let (total_fp,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM page_fingerprints")
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or((0,));
+            .await?;
         let (domains,): (i64,) =
             sqlx::query_as("SELECT COUNT(DISTINCT split_part(url, '/', 3)) FROM page_fingerprints")
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .await?;
+        // Authoritative freshness marker: None means "no crawl rows", not
+        // "unknown".
         let latest: Option<(DateTime<Utc>,)> =
             sqlx::query_as("SELECT MAX(ts) FROM page_fingerprints")
                 .fetch_optional(&self.pool)
-                .await
-                .ok()
-                .flatten();
+                .await?;
         let latest_ts = latest.map(|value| value.0);
+        // Telemetry-only summary: a degraded stats rollup renders as a zeroed
+        // tile alongside the authoritative counts above and does not fail the
+        // whole panel.
         let crawl_stats = self
             .get_crawl_stats(Utc::now() - chrono::Duration::days(7))
             .await
@@ -109,25 +112,24 @@ impl PgStore {
     }
 
     pub async fn get_admin_recipe_performance(&self) -> Result<AdminRecipePerformance> {
+        // Authoritative counts: fail rather than fabricate zero recipes.
         let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM recipes")
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or((0,));
+            .await?;
         let (prod,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM recipes WHERE status IN ('active', 'production')")
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .await?;
         let (staging,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM recipes WHERE status = 'staging'")
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .await?;
         let (deprecated,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM recipes WHERE status = 'deprecated'")
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .await?;
+        // Telemetry-only performance rollup: degraded stats render empty
+        // rather than failing the authoritative counts above.
         let recipes = self.get_recipe_stats().await.unwrap_or_default();
         Ok(AdminRecipePerformance {
             total_recipes: total,
@@ -139,20 +141,20 @@ impl PgStore {
     }
 
     pub async fn get_admin_poi_coverage(&self) -> Result<AdminPoiCoverage> {
+        // Authoritative coverage counts: fail rather than fabricate zero.
         let (total_persons,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM persons")
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or((0,));
+            .await?;
         let (with_artifacts,): (i64,) =
             sqlx::query_as("SELECT COUNT(DISTINCT person_id) FROM poi_artifacts")
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .await?;
         let (total_artifacts,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM poi_artifacts")
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or((0,));
+            .await?;
         let avg = average_artifacts_per_person(total_persons, total_artifacts);
+        // Telemetry-only activity rollup: degraded stats render empty rather
+        // than failing the authoritative counts above.
         let poi_stats = self
             .get_poi_stats(Utc::now() - chrono::Duration::days(30))
             .await

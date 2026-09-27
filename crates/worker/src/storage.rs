@@ -17,7 +17,8 @@
 //! real database integration in production.
 
 use anyhow::Result;
-use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
+use apex_core::measurement::{FailureReason, Measurement};
+use apex_store::postgres::{DriftStats, PgStore, WarningListFilters, WarningOrderBy};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::Row;
 
@@ -171,12 +172,50 @@ fn map_production_recipe_row(r: apex_store::postgres::ProductionRecipeRow) -> Pr
     }
 }
 
+/// Map a drift-stats load into (pipeline health, top drifted features).
+///
+/// * `Err` → `Unavailable`: health is unknown, never 0% and never 100%.
+/// * `Ok` with zero features checked → `InsufficientEvidence`.
+/// * `Ok` with features → `Measured` fraction healthy in `[0, 1]`.
+fn drift_health_measurement(result: Result<DriftStats>) -> (Measurement<f64>, Vec<(String, f64)>) {
+    match result {
+        Ok(drift) => {
+            let health = if drift.features_checked == 0 {
+                Measurement::insufficient_evidence()
+            } else {
+                Measurement::measured(
+                    (1.0 - (drift.features_drifted as f64 / drift.features_checked as f64))
+                        .clamp(0.0, 1.0),
+                )
+            };
+            (health, drift.drift_scores)
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "drift stats unavailable; pipeline health reported as unavailable, not healthy"
+            );
+            (
+                Measurement::unavailable(FailureReason::new(
+                    "drift_stats_unavailable",
+                    error.to_string(),
+                )),
+                Vec::new(),
+            )
+        }
+    }
+}
+
 /// Build memo inputs from recent activity summaries.
 pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
     let since = ctx.run_timestamp - Duration::days(7);
 
     let _stats = ctx.store.get_weekly_summary_stats(since).await?;
-    let drift = ctx.store.get_drift_stats().await.unwrap_or_default();
+    // Drift statistics are an authoritative health input: a failed query means
+    // "drift unavailable", never "no drift". Keep the failure explicit instead
+    // of defaulting to zeroed stats (which previously produced a healthy 100%).
+    let (pipeline_health, mut top_drift_features) =
+        drift_health_measurement(ctx.store.get_drift_stats().await);
 
     let warning_filters = WarningListFilters {
         date_from: Some(since),
@@ -185,8 +224,7 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
     let warning_rows = ctx
         .store
         .list_warnings(&warning_filters, Some(WarningOrderBy::Severity), true, 5, 0)
-        .await
-        .unwrap_or_default();
+        .await?;
     let top_warnings = warning_rows
         .into_iter()
         .map(|row| crate::weekly::MemoWarning {
@@ -197,29 +235,28 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
         })
         .collect();
 
+    // Authoritative recipe counts: a failed query aborts the memo rather than
+    // reporting zero staged/promoted/deprecated recipes.
     let new_recipes_staged: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM recipes WHERE status = 'staging' AND created_at >= $1",
     )
     .bind(since)
     .fetch_one(&ctx.store.pool)
-    .await
-    .unwrap_or(0);
+    .await?;
 
     let recipes_promoted: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM recipes WHERE status IN ('active', 'production') AND updated_at >= $1",
     )
     .bind(since)
     .fetch_one(&ctx.store.pool)
-    .await
-    .unwrap_or(0);
+    .await?;
 
     let recipes_deprecated: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM recipes WHERE status = 'deprecated' AND updated_at >= $1",
     )
     .bind(since)
     .fetch_one(&ctx.store.pool)
-    .await
-    .unwrap_or(0);
+    .await?;
 
     let poi_changes_rows = sqlx::query(
         r#"SELECT
@@ -234,8 +271,7 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
     )
     .bind(since)
     .fetch_all(&ctx.store.pool)
-    .await
-    .unwrap_or_default();
+    .await?;
     let poi_changes = poi_changes_rows
         .into_iter()
         .map(|row| crate::weekly::PoiChange {
@@ -251,22 +287,15 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
         })
         .collect();
 
-    let mut top_drift_features = drift.drift_scores;
     top_drift_features.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     top_drift_features.truncate(5);
-
-    let pipeline_health_pct = if drift.features_checked == 0 {
-        1.0
-    } else {
-        (1.0 - (drift.features_drifted as f64 / drift.features_checked as f64)).clamp(0.0, 1.0)
-    };
 
     Ok(MemoInputs {
         top_warnings,
         new_recipes_staged: new_recipes_staged.max(0) as u32,
         recipes_promoted: recipes_promoted.max(0) as u32,
         recipes_deprecated: recipes_deprecated.max(0) as u32,
-        pipeline_health_pct,
+        pipeline_health,
         top_drift_features,
         poi_changes,
         period_start: since,
@@ -278,6 +307,47 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
 mod tests {
     use super::*;
     use apex_store::postgres::{ProductionRecipeRow, StagedRecipeRow};
+
+    fn drift_stats(features_checked: u64, features_drifted: u64) -> DriftStats {
+        DriftStats {
+            features_checked,
+            features_drifted,
+            drift_scores: vec![("company:1".to_string(), 0.42)],
+            alerts_raised: features_drifted,
+            errors: vec![],
+        }
+    }
+
+    #[test]
+    fn drift_stats_failure_is_unavailable_not_zero_drift() {
+        let (health, features) = drift_health_measurement(Err(anyhow::anyhow!("db down")));
+
+        assert!(health.is_unavailable());
+        assert!(!health.is_measured());
+        assert_ne!(health.value_copied(), Some(0.0));
+        assert_ne!(health.value_copied(), Some(1.0));
+        let reason = health.failure_reason().expect("failure reason retained");
+        assert_eq!(reason.code, "drift_stats_unavailable");
+        assert!(reason.message.contains("db down"));
+        assert!(features.is_empty());
+    }
+
+    #[test]
+    fn no_features_checked_is_insufficient_evidence_not_healthy() {
+        let (health, _) = drift_health_measurement(Ok(drift_stats(0, 0)));
+
+        assert!(health.is_insufficient_evidence());
+        assert!(!health.is_measured());
+        assert_ne!(health.value_copied(), Some(1.0));
+    }
+
+    #[test]
+    fn measured_drift_produces_health_fraction() {
+        let (health, features) = drift_health_measurement(Ok(drift_stats(10, 2)));
+
+        assert_eq!(health.value_copied(), Some(0.8));
+        assert_eq!(features.len(), 1);
+    }
 
     #[test]
     fn staged_recipe_mapping_uses_recipe_code_and_clamps_counts() {

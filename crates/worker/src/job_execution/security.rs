@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::Serialize;
 use uuid::Uuid;
 
+use apex_core::measurement::Measurement;
 use apex_crawl::dns::{
     extract_dmarc_record, extract_spf_record, DkimStatus, DnsLookupOutcome, StructuredDnsResolver,
 };
@@ -1334,6 +1335,8 @@ pub(super) async fn run_lookalike_domain_scan(
     let mut lookalike_persist_failures = 0u64;
     let mut observation_write_failures = 0u64;
     let mut warning_ingest_failures = 0u64;
+    let mut registration_checks = 0u64;
+    let mut registration_lookup_failures = 0u64;
     let mut counters = IngressCounters::default();
 
     // B329: verify DNS registration before persisting a lookalike. The
@@ -1382,12 +1385,32 @@ pub(super) async fn run_lookalike_domain_scan(
             );
             let mut evidence_checks = 0usize;
             for variant in variants.iter().take(max_checks_per_domain) {
-                let is_registered = dns_checker
-                    .check_lookalike_registration(variant)
-                    .await
-                    .unwrap_or(false);
-                if !is_registered {
-                    continue;
+                registration_checks += 1;
+                // A failed lookup is never "not registered": the variant is
+                // simply left unverified and counted, never silently dropped
+                // as if DNS had proven it absent.
+                match dns_checker.check_lookalike_registration(variant).await {
+                    Measurement::Measured(true) => {}
+                    Measurement::Measured(false) => continue,
+                    Measurement::Unavailable(reason) => {
+                        registration_lookup_failures += 1;
+                        tracing::debug!(
+                            domain = %domain,
+                            variant = %variant,
+                            reason = %reason.display(),
+                            "lookalike_domain_scan: registration lookup failed; registration not asserted"
+                        );
+                        continue;
+                    }
+                    Measurement::NotMeasured | Measurement::InsufficientEvidence => {
+                        registration_lookup_failures += 1;
+                        tracing::debug!(
+                            domain = %domain,
+                            variant = %variant,
+                            "lookalike_domain_scan: registration lookup left no measurement; registration not asserted"
+                        );
+                        continue;
+                    }
                 }
                 if evidence_checks >= max_evidence_checks {
                     evidence_skipped += 1;
@@ -1541,7 +1564,7 @@ pub(super) async fn run_lookalike_domain_scan(
         "lookalike_domain_scan: scanned {} domains, {} registered lookalike variants \
          ({} with warning-level evidence, {} evidence checks skipped by cap, \
          {} lookalike persist failures, {} observation write failures, \
-         {} warning ingest failures); {}",
+         {} warning ingest failures, {} registration lookups failed of {} attempted); {}",
         domains_scanned,
         total_variants,
         warned_variants,
@@ -1549,6 +1572,8 @@ pub(super) async fn run_lookalike_domain_scan(
         lookalike_persist_failures,
         observation_write_failures,
         warning_ingest_failures,
+        registration_lookup_failures,
+        registration_checks,
         counters.summary(),
     );
     if lookalike_persist_failures > 0
@@ -1559,6 +1584,18 @@ pub(super) async fn run_lookalike_domain_scan(
         run.fail(&format!(
             "{summary} — lookalike persistence or warning ingestion degraded"
         ));
+    } else if registration_checks > 0 && registration_lookup_failures == registration_checks {
+        run.fail(&format!(
+            "{summary} — every lookalike registration lookup failed; nothing was verified"
+        ));
+    } else if registration_lookup_failures > 0 {
+        run.degrade(
+            total_variants,
+            &format!(
+                "{summary} — {} registration lookups failed; those variants are unverified, not absent",
+                registration_lookup_failures
+            ),
+        );
     } else if let Some(reason) = counters.success_blocker() {
         run.degrade(total_variants, &format!("{summary}; {reason}"));
     } else {

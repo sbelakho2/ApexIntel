@@ -5,6 +5,8 @@
 //! cycle on evaluation quality plus the golden-set regression.
 
 use anyhow::Context;
+use apex_core::measurement::Measurement;
+use apex_core::stage::StructuredFailure;
 use apex_llm::evaluation::{standard_eval_suite, EvalRunner};
 use apex_llm::self_improvement::{
     ImprovementCycleReport, OutputCapture, SelfImprovementConfig, SelfImprovementLoop, TaskCategory,
@@ -15,17 +17,21 @@ use chrono::Utc;
 use crate::digest_filtering::passes_shared_insight_quality_gate;
 use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::llm_runtime::build_quality_llm_client;
+use crate::observability::WORKER_METRICS;
 use crate::runtime_validation::run_quality_gate_golden_set_regression;
 #[cfg(feature = "llm")]
 #[derive(Debug, Clone)]
 pub(crate) struct LlmContinuousImprovementStats {
     pub(crate) eval_pass_rate: f64,
-    pub(crate) eval_avg_score: f64,
+    pub(crate) eval_avg_score: Measurement<f64>,
     pub(crate) eval_hallucination_rate: f64,
     pub(crate) captures_seeded: usize,
     pub(crate) captures_analysed: usize,
     pub(crate) qualifying_examples: usize,
-    pub(crate) avg_critique_score: f64,
+    pub(crate) avg_critique_score: Measurement<f64>,
+    /// Structured failures from the learning stages; a non-empty list means at
+    /// least one stage failed and the cycle must not roll up as success.
+    pub(crate) stage_failures: Vec<StructuredFailure>,
 }
 
 #[cfg(feature = "llm")]
@@ -59,7 +65,7 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         .context("llm self-improvement: standard eval suite failed")?;
 
     let eval_pass_rate = eval_report.pass_rate();
-    let eval_avg_score = eval_report.avg_judge_score;
+    let eval_avg_score = eval_report.avg_judge_score.clone();
     let eval_hallucination_rate = eval_report.estimated_hallucination_rate();
 
     let failure_ids = eval_report
@@ -78,11 +84,11 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
     };
 
     let eval_summary = format!(
-        "suite={} run_id={} pass_rate={:.1}% avg_judge_score={:.3} hallucination_rate={:.1}% total_cases={} failed_cases={} ({})",
+        "suite={} run_id={} pass_rate={:.1}% avg_judge_score={} hallucination_rate={:.1}% total_cases={} failed_cases={} ({})",
         eval_report.suite_name,
         eval_report.run_id,
         eval_pass_rate * 100.0,
-        eval_avg_score,
+        eval_avg_score.display_fixed(3),
         eval_hallucination_rate * 100.0,
         eval_report.total_cases,
         eval_report.failed,
@@ -92,7 +98,8 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         "suite_name": eval_report.suite_name,
         "run_id": eval_report.run_id,
         "pass_rate": eval_pass_rate,
-        "avg_judge_score": eval_avg_score,
+        "avg_judge_score": eval_avg_score.value_copied(),
+        "avg_judge_score_state": eval_avg_score.label(),
         "hallucination_rate": eval_hallucination_rate,
         "total_cases": eval_report.total_cases,
         "passed": eval_report.passed,
@@ -122,14 +129,28 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         );
     }
 
+    if !eval_avg_score.is_measured() {
+        tracing::warn!(
+            state = eval_avg_score.label(),
+            "self_improvement_cycle: judge average score not measured; the score threshold is not evaluated"
+        );
+        WORKER_METRICS.record_self_improvement_not_evaluated();
+    }
+
+    // A judge score below threshold is a breach; "not measured" is not a
+    // breach (pass_rate and hallucination rate still gate the suite).
+    let eval_score_breached = matches!(
+        &eval_avg_score,
+        Measurement::Measured(value) if *value < min_eval_score
+    );
     if eval_pass_rate < min_eval_pass_rate
-        || eval_avg_score < min_eval_score
+        || eval_score_breached
         || eval_hallucination_rate > max_hallucination_rate
     {
         tracing::warn!(
             eval_pass_rate,
             min_eval_pass_rate,
-            eval_avg_score,
+            eval_avg_score = %eval_avg_score.display_fixed(3),
             min_eval_score,
             eval_hallucination_rate,
             max_hallucination_rate,
@@ -144,10 +165,10 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
             "high"
         };
         let desc = format!(
-            "LLM quality gate breached. pass_rate={:.1}% (min {:.1}%), avg_score={:.3} (min {:.3}), hallucination={:.1}% (max {:.1}%). failed_cases={}.",
+            "LLM quality gate breached. pass_rate={:.1}% (min {:.1}%), avg_score={} (min {:.3}), hallucination={:.1}% (max {:.1}%). failed_cases={}.",
             eval_pass_rate * 100.0,
             min_eval_pass_rate * 100.0,
-            eval_avg_score,
+            eval_avg_score.display_fixed(3),
             min_eval_score,
             eval_hallucination_rate * 100.0,
             max_hallucination_rate * 100.0,
@@ -276,14 +297,17 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
     let training_examples = loop_runner.export_training_examples();
 
     let improvement_summary = format!(
-        "cycle_id={} captures_seeded={} analysed={} qualifying_examples={} avg_critique={:.3} prompt_improvements={} failure_hypotheses={} training_examples={}",
+        "cycle_id={} captures_seeded={} analysed={} qualifying_examples={} avg_critique={} critique_status={} prompt_improvements={} prompt_improvements_status={} failure_hypotheses={} failure_hypotheses_status={} training_examples={}",
         cycle_report.cycle_id,
         captures_seeded,
         cycle_report.captures_analysed,
         cycle_report.examples_qualifying,
-        cycle_report.avg_critique_score,
-        cycle_report.prompt_improvements.len(),
-        cycle_report.failure_hypotheses.len(),
+        cycle_report.avg_critique_score.display_fixed(3),
+        cycle_report.critique.status.as_str(),
+        cycle_report.prompt_improvements_count(),
+        cycle_report.prompt_improvements.status.as_str(),
+        cycle_report.failure_hypotheses_count(),
+        cycle_report.failure_hypotheses.status.as_str(),
         training_examples.len(),
     );
     if passes_shared_insight_quality_gate(
@@ -296,15 +320,37 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         );
     }
 
+    // Surface every failed learning stage: a failed model call or an
+    // unparseable response must never read as "no improvements found".
+    for failure in cycle_report.stage_failures() {
+        tracing::warn!(
+            stage = %failure.stage,
+            kind = %failure.kind.as_str(),
+            error = %failure.message,
+            "self_improvement_cycle: stage failed"
+        );
+        WORKER_METRICS.record_self_improvement_stage_failure(&failure.stage);
+    }
+    let stage_failures: Vec<StructuredFailure> =
+        cycle_report.stage_failures().into_iter().cloned().collect();
+
     let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
     let cycle_metrics = serde_json::json!({
         "cycle_id": cycle_report.cycle_id,
         "captures_seeded": captures_seeded,
         "captures_analysed": cycle_report.captures_analysed,
         "examples_qualifying": cycle_report.examples_qualifying,
-        "avg_critique_score": cycle_report.avg_critique_score,
-        "prompt_improvements": cycle_report.prompt_improvements.len(),
-        "failure_hypotheses": cycle_report.failure_hypotheses.len(),
+        "avg_critique_score": cycle_report.avg_critique_score.value_copied(),
+        "avg_critique_score_state": cycle_report.avg_critique_score.label(),
+        "critique_status": cycle_report.critique.status.as_str(),
+        "critique_failure": cycle_report.critique.failure_ref().map(|f| f.display()),
+        "prompt_improvements": cycle_report.prompt_improvements_count(),
+        "prompt_improvements_status": cycle_report.prompt_improvements.status.as_str(),
+        "prompt_improvements_failure": cycle_report.prompt_improvements.failure_ref().map(|f| f.display()),
+        "failure_hypotheses": cycle_report.failure_hypotheses_count(),
+        "failure_hypotheses_status": cycle_report.failure_hypotheses.status.as_str(),
+        "failure_hypotheses_failure": cycle_report.failure_hypotheses.failure_ref().map(|f| f.display()),
+        "stage_failures": stage_failures.iter().map(|f| f.display()).collect::<Vec<_>>(),
         "training_examples": training_examples.len(),
     });
     let cycle_report_value =
@@ -369,18 +415,47 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.60)
         .clamp(0.0, 1.0);
-    if cycle_report.avg_critique_score < min_critique {
+    let critique_breach: Option<f64> = match &cycle_report.avg_critique_score {
+        Measurement::Measured(avg) if *avg < min_critique => Some(*avg),
+        Measurement::Measured(_) => None,
+        // Not evaluated is not a score: never fire the degradation warning for
+        // an absent measurement, and never let it pass silently either.
+        Measurement::NotMeasured => {
+            tracing::warn!(
+                captures_analysed = cycle_report.captures_analysed,
+                "self_improvement_cycle: critique not evaluated (no captures were critiqued); score gate skipped"
+            );
+            WORKER_METRICS.record_self_improvement_not_evaluated();
+            None
+        }
+        Measurement::Unavailable(reason) => {
+            tracing::warn!(
+                reason = %reason.display(),
+                captures_analysed = cycle_report.captures_analysed,
+                "self_improvement_cycle: critique unavailable; every critique attempt failed"
+            );
+            WORKER_METRICS.record_self_improvement_stage_failure("critique");
+            None
+        }
+        Measurement::InsufficientEvidence => {
+            tracing::warn!(
+                captures_analysed = cycle_report.captures_analysed,
+                "self_improvement_cycle: insufficient evidence for a critique score; score gate skipped"
+            );
+            WORKER_METRICS.record_self_improvement_not_evaluated();
+            None
+        }
+    };
+    if let Some(avg_critique_score) = critique_breach {
         tracing::warn!(
-            avg_critique = cycle_report.avg_critique_score,
+            avg_critique = avg_critique_score,
             min_critique,
             captures_analysed = cycle_report.captures_analysed,
             qualifying_examples = cycle_report.examples_qualifying,
             "self_improvement_cycle: llm critique quality gate breached"
         );
         let desc = format!(
-            "Continuous self-improvement critique score is below threshold: avg_critique={:.3} < min={:.3}. analysed={} qualifying_examples={}",
-            cycle_report.avg_critique_score,
-            min_critique,
+            "Continuous self-improvement critique score is below threshold: avg_critique={avg_critique_score:.3} < min={min_critique:.3}. analysed={} qualifying_examples={}",
             cycle_report.captures_analysed,
             cycle_report.examples_qualifying,
         );
@@ -393,7 +468,7 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 )
                 .description(&desc)
                 .region("global")
-                .confidence((1.0 - cycle_report.avg_critique_score).clamp(0.0, 1.0))
+                .confidence((1.0 - avg_critique_score).clamp(0.0, 1.0))
                 // Global self-improvement gate: no entity owns it.
                 .system_broadcast(),
             )
@@ -428,5 +503,6 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         captures_analysed: cycle_report.captures_analysed,
         qualifying_examples: cycle_report.examples_qualifying,
         avg_critique_score: cycle_report.avg_critique_score,
+        stage_failures,
     })
 }
