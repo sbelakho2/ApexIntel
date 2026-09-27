@@ -260,6 +260,76 @@ pub(crate) async fn get_insight_detail(
     )
 }
 
+/// Evidence lineage trace for one insight (audit evidence-graph item).
+///
+/// Walks the persisted lineage graph upstream from the insight node so the UI
+/// can render `insight -> claim -> observation -> source document`. An insight
+/// whose lineage was never recorded returns `recorded: false` with empty
+/// arrays instead of a 404: the insight itself still exists.
+pub(crate) async fn get_insight_lineage(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+    let insight_id = match parse_detail_uuid(&id) {
+        Ok(uuid) => uuid,
+        Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
+    };
+
+    let trace = match state
+        .store
+        .load_lineage_trace(
+            apex_core::lineage::LineageStage::Insight,
+            &insight_id.to_string(),
+            16,
+        )
+        .await
+    {
+        Ok(trace) => trace,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "load_lineage_trace failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load evidence lineage",
+                ))),
+            );
+        }
+    };
+
+    let payload = match trace {
+        Some(trace) => serde_json::json!({
+            "insight_id": insight_id.to_string(),
+            "recorded": true,
+            "root_stage": trace.root_stage.as_str(),
+            "nodes": trace.nodes,
+            "edges": trace.edges,
+            "source_documents": trace.source_documents,
+        }),
+        None => serde_json::json!({
+            "insight_id": insight_id.to_string(),
+            "recorded": false,
+            "root_stage": apex_core::lineage::LineageStage::Insight.as_str(),
+            "nodes": [],
+            "edges": [],
+            "source_documents": [],
+        }),
+    };
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    log_latency("get_insight_lineage", duration_ms);
+    (
+        StatusCode::OK,
+        Json(success_with_meta(
+            payload,
+            ResponseMeta::now()
+                .with_request_id(request_id)
+                .with_duration(duration_ms),
+        )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_detail_uuid;

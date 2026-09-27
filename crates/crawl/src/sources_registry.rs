@@ -3503,6 +3503,10 @@ pub struct SourceCoverageSummary {
     pub unavailable_missing_credentials: usize,
     /// Sources declaring `needs_proxy` with no proxy configured.
     pub unavailable_missing_proxy: usize,
+    /// Per-capability-family breakdown backing the multidimensional coverage
+    /// matrix (audit P1-9). Empty on hand-built summaries that never ran
+    /// through [`source_coverage_summary`].
+    pub families: Vec<crate::coverage::FamilyCoverage>,
 }
 
 /// Aggregate the registry + persisted runtime state into the admin
@@ -3601,6 +3605,7 @@ pub fn source_coverage_summary(
             }
         }
     }
+    summary.families = crate::coverage::family_coverage(sources, states, deployment_caps, now);
     summary
 }
 

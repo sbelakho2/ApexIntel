@@ -13,10 +13,13 @@
 //! and groups repeated warning patterns to reduce formulaic repetition.
 
 use apex_core::analysis::{
-    assess_evidence_quality, compare_temporal_windows, fuse_weak_signals,
-    score_competing_hypotheses, source_group_from_url, EvidenceRecord, EvidenceStance,
+    compare_temporal_windows, fuse_weak_signals, score_competing_hypotheses, source_group_from_url,
     HypothesisInput, HypothesisScorecard, SignalFrame, TemporalDelta,
 };
+// Shared ten-dimension evidence-quality model (audit P1-10): memo evidence
+// scoring must use the same semantics as source-coverage reporting instead of
+// feature-local thresholds.
+use apex_core::evidence_quality::{assess_evidence_quality, EvidenceItem, EvidenceStance};
 use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -462,8 +465,8 @@ pub fn build_regional_sections(
                         title: c.title.clone(),
                         severity: normalize_severity_label(&c.severity).to_string(),
                         impact_label: c.impact_label.clone(),
-                        evidence_quality_score: evidence.overall_score,
-                        evidence_quality_label: evidence.quality_label,
+                        evidence_quality_score: evidence.composite_score(),
+                        evidence_quality_label: evidence.quality_label().to_string(),
                     }
                 })
                 .collect();
@@ -512,8 +515,8 @@ pub fn build_regional_sections(
                     title: c.title.clone(),
                     severity: normalize_severity_label(&c.severity).to_string(),
                     impact_label: c.impact_label.clone(),
-                    evidence_quality_score: evidence.overall_score,
-                    evidence_quality_label: evidence.quality_label,
+                    evidence_quality_score: evidence.composite_score(),
+                    evidence_quality_label: evidence.quality_label().to_string(),
                 }
             })
             .collect();
@@ -528,22 +531,22 @@ pub fn build_regional_sections(
     sections
 }
 
-fn card_evidence_quality(card: &InsightCard) -> apex_core::analysis::EvidenceQuality {
+fn card_evidence_quality(card: &InsightCard) -> apex_core::evidence_quality::EvidenceQuality {
     let now = Utc::now();
-    let records: Vec<EvidenceRecord> = card
+    let items: Vec<EvidenceItem> = card
         .citations
         .iter()
         .map(|citation| {
-            let mut record = EvidenceRecord::new(card.confidence, EvidenceStance::Supports)
-                .with_source_url(citation.source_url.clone())
+            let mut item = EvidenceItem::new(card.confidence, EvidenceStance::Supports)
+                .with_origin(citation.source_url.clone())
                 .with_source_type(card.category.clone());
             if let Some(observed_at) = citation.observed_at {
-                record = record.with_observed_at(observed_at);
+                item = item.with_observed_at(observed_at);
             }
-            record
+            item
         })
         .collect();
-    assess_evidence_quality(&records, now)
+    assess_evidence_quality(&items, &[], now)
 }
 
 pub fn build_temporal_summary(cards: &[InsightCard]) -> TemporalSummary {

@@ -2,6 +2,8 @@ use super::*;
 
 use apex_core::claims::{backfill_claims, InsightClaim};
 
+use super::lineage::{ObservationLineageSeed, LINEAGE_PRODUCER, LINEAGE_PRODUCER_VERSION};
+
 fn normalize_insight_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
@@ -807,24 +809,30 @@ impl PgStore {
 
         let mut tx = self.pool.begin().await?;
 
-        // Validate the union of cited evidence ids once, before any insert.
+        // Validate the union of cited evidence ids once, before any insert,
+        // and keep each observation's confidence + provenance so document
+        // lineage edges can be recorded after the transaction commits.
         let cited: Vec<Uuid> = claims
             .iter()
             .flat_map(|claim| claim.evidence_ids.iter().copied())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let existing: std::collections::HashSet<Uuid> = if cited.is_empty() {
-            std::collections::HashSet::new()
+        let observation_rows: Vec<(Uuid, f64, Value)> = if cited.is_empty() {
+            Vec::new()
         } else {
-            sqlx::query_scalar::<_, Uuid>("SELECT id FROM observations WHERE id = ANY($1)")
-                .bind(&cited)
-                .fetch_all(&mut *tx)
-                .await?
-                .into_iter()
-                .collect()
+            sqlx::query_as(
+                "SELECT id, COALESCE(confidence, 1.0), provenance FROM observations \
+                 WHERE id = ANY($1)",
+            )
+            .bind(&cited)
+            .fetch_all(&mut *tx)
+            .await?
         };
+        let existing: std::collections::HashSet<Uuid> =
+            observation_rows.iter().map(|(id, _, _)| *id).collect();
 
+        let mut lineage_claims: Vec<(Uuid, String, Option<f64>, Vec<Uuid>)> = Vec::new();
         let mut inserted = 0usize;
         for claim in claims {
             let text = claim.claim.trim();
@@ -951,9 +959,60 @@ impl PgStore {
             .bind(&evidence)
             .execute(&mut *tx)
             .await?;
+
+            lineage_claims.push((claim_id, text.to_string(), claim.confidence, evidence));
         }
 
         tx.commit().await?;
+
+        // Best-effort evidence-lineage recording (migration 079): a lineage
+        // failure must never lose persisted claims, but it is logged loudly
+        // so the graph gap is visible.
+        if !lineage_claims.is_empty() {
+            let seeds: Vec<ObservationLineageSeed> = observation_rows
+                .iter()
+                .map(|(id, confidence, provenance)| ObservationLineageSeed {
+                    observation_id: *id,
+                    confidence: *confidence,
+                    document_url: provenance
+                        .get("url")
+                        .and_then(|value| value.as_str())
+                        .filter(|url| !url.trim().is_empty())
+                        .map(str::to_string),
+                    content_digest: provenance
+                        .get("content_hash")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    extractor_version: provenance
+                        .get("extractor_version")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                })
+                .collect();
+            for (claim_id, text, confidence, evidence) in &lineage_claims {
+                if let Err(error) = self
+                    .record_claim_lineage(
+                        insight_id,
+                        *claim_id,
+                        text,
+                        *confidence,
+                        evidence,
+                        &seeds,
+                        LINEAGE_PRODUCER,
+                        LINEAGE_PRODUCER_VERSION,
+                        None,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        insight_id = %insight_id,
+                        claim_id = %claim_id,
+                        error = %error,
+                        "insert_insight_claims: failed to persist evidence lineage"
+                    );
+                }
+            }
+        }
         Ok(inserted)
     }
 

@@ -1,0 +1,1153 @@
+//! Multidimensional source-coverage readiness (audit P1-9).
+//!
+//! The old readiness gate compared the deployment's total operational source
+//! count against a single minimum. That number is blind to *what* the sources
+//! cover: 30 operational news feeds satisfy it while procurement, patents and
+//! hiring have zero. This module replaces it with a policy-driven matrix over
+//! capability families. Every family declares its own requirement:
+//!
+//! * whether the family is required at all,
+//! * minimum operational sources,
+//! * maximum age of the newest successful fetch (freshness),
+//! * minimum successful-fetch ratio and parser-success ratio,
+//! * minimum independent domains,
+//!
+//! plus a deployment-level priority-company coverage dimension. The resolved
+//! matrix is published in the `source_coverage` capability detail so an
+//! operator can see exactly which family failed and why.
+//!
+//! The aggregate evidence base is summarised through the shared
+//! [`apex_core::evidence_quality::EvidenceQuality`] model so the same
+//! semantics drive coverage reporting and the intelligence features.
+
+use std::collections::{BTreeSet, HashMap};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::sources_registry::{
+    effective_capability, source_is_validated, Category, DeploymentCapabilities, Source,
+    SourceCapability,
+};
+use apex_core::analysis::EvidenceStance;
+use apex_core::evidence_quality::{assess_evidence_quality, EvidenceItem, EvidenceQuality};
+use apex_store::postgres::SourceRuntimeStateRow;
+
+/// Capability families the coverage matrix reasons about. These are the
+/// intel domains the product promises to cover, independent of how the
+/// registry happens to tag sources.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageFamily {
+    #[default]
+    Procurement,
+    Patents,
+    Regulatory,
+    Hiring,
+    Financial,
+    Tenders,
+    Certifications,
+    ExecutiveChanges,
+    TradeCustoms,
+    ProductCompetitive,
+    SupplyChainFactories,
+}
+
+impl CoverageFamily {
+    pub const ALL: [Self; 11] = [
+        Self::Procurement,
+        Self::Patents,
+        Self::Regulatory,
+        Self::Hiring,
+        Self::Financial,
+        Self::Tenders,
+        Self::Certifications,
+        Self::ExecutiveChanges,
+        Self::TradeCustoms,
+        Self::ProductCompetitive,
+        Self::SupplyChainFactories,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Procurement => "procurement",
+            Self::Patents => "patents",
+            Self::Regulatory => "regulatory",
+            Self::Hiring => "hiring",
+            Self::Financial => "financial",
+            Self::Tenders => "tenders",
+            Self::Certifications => "certifications",
+            Self::ExecutiveChanges => "executive_changes",
+            Self::TradeCustoms => "trade_customs",
+            Self::ProductCompetitive => "product_competitive",
+            Self::SupplyChainFactories => "supply_chain_factories",
+        }
+    }
+
+    /// Upper-case token used in environment variable names.
+    fn env_token(self) -> &'static str {
+        match self {
+            Self::Procurement => "PROCUREMENT",
+            Self::Patents => "PATENTS",
+            Self::Regulatory => "REGULATORY",
+            Self::Hiring => "HIRING",
+            Self::Financial => "FINANCIAL",
+            Self::Tenders => "TENDERS",
+            Self::Certifications => "CERTIFICATIONS",
+            Self::ExecutiveChanges => "EXECUTIVE_CHANGES",
+            Self::TradeCustoms => "TRADE_CUSTOMS",
+            Self::ProductCompetitive => "PRODUCT_COMPETITIVE",
+            Self::SupplyChainFactories => "SUPPLY_CHAIN_FACTORIES",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|family| family.as_str() == value.trim().to_ascii_lowercase())
+    }
+}
+
+impl std::fmt::Display for CoverageFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Keyword augmentations applied on top of the source's declared category.
+const FAMILY_KEYWORDS: &[(CoverageFamily, &[&str])] = &[
+    (
+        CoverageFamily::Tenders,
+        &["tender", "contract notice", "award notice"],
+    ),
+    (
+        CoverageFamily::Hiring,
+        &[
+            "hiring",
+            "job board",
+            "job_board",
+            "jobs",
+            "careers",
+            "recruit",
+        ],
+    ),
+    (
+        CoverageFamily::Certifications,
+        &[
+            "certification",
+            "accredit",
+            " iso",
+            "iso-",
+            "iso_",
+            "ansi",
+            "nist",
+        ],
+    ),
+    (
+        CoverageFamily::ExecutiveChanges,
+        &[
+            "executive",
+            "appointment",
+            "leadership",
+            "ceo",
+            "cfo",
+            "board",
+            "insider",
+        ],
+    ),
+    (
+        CoverageFamily::TradeCustoms,
+        &[
+            "customs",
+            "tariff",
+            "panjiva",
+            "importgenius",
+            "import genius",
+            "comtrade",
+            "trademap",
+        ],
+    ),
+    (
+        CoverageFamily::SupplyChainFactories,
+        &[
+            "factory",
+            "factories",
+            "manufactur",
+            "assembly",
+            "production line",
+        ],
+    ),
+    (
+        CoverageFamily::ProductCompetitive,
+        &["product", "competitive", "competitor"],
+    ),
+    (
+        CoverageFamily::Regulatory,
+        &["regulat", "compliance", "sanction"],
+    ),
+];
+
+impl Source {
+    /// Capability families this source contributes to. Category assignment is
+    /// authoritative; keywords extend it so a hiring board registered under
+    /// `Technology` still counts as hiring coverage.
+    pub fn coverage_families(&self) -> BTreeSet<CoverageFamily> {
+        let mut families = BTreeSet::new();
+        match self.category {
+            Category::Procurement => {
+                families.insert(CoverageFamily::Procurement);
+            }
+            Category::Patents => {
+                families.insert(CoverageFamily::Patents);
+            }
+            Category::LegalRegulatory | Category::Sanctions => {
+                families.insert(CoverageFamily::Regulatory);
+            }
+            Category::Finance => {
+                families.insert(CoverageFamily::Financial);
+            }
+            Category::Trade => {
+                families.insert(CoverageFamily::TradeCustoms);
+            }
+            Category::SupplyChain => {
+                families.insert(CoverageFamily::SupplyChainFactories);
+            }
+            Category::Technology => {
+                families.insert(CoverageFamily::ProductCompetitive);
+            }
+            Category::GovernmentRegistry => {
+                families.insert(CoverageFamily::ExecutiveChanges);
+                families.insert(CoverageFamily::Regulatory);
+            }
+            _ => {}
+        }
+
+        let haystack = format!(
+            "{} {} {} {}",
+            self.slug,
+            self.name,
+            self.url,
+            self.notes.as_deref().unwrap_or("")
+        )
+        .to_ascii_lowercase();
+        for (family, needles) in FAMILY_KEYWORDS {
+            if needles.iter().any(|needle| haystack.contains(needle)) {
+                families.insert(*family);
+            }
+        }
+        families
+    }
+}
+
+/// One family's requirement row in the coverage matrix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageFamilyRequirement {
+    pub family: CoverageFamily,
+    pub required: bool,
+    pub min_operational_sources: usize,
+    pub max_freshness_age_secs: i64,
+    /// Minimum successful-fetch ratio, in percent.
+    pub min_fetch_success_pct: u8,
+    /// Minimum parser-success ratio, in percent.
+    pub min_parser_success_pct: u8,
+    pub min_independent_domains: usize,
+}
+
+impl CoverageFamilyRequirement {
+    fn row(family: CoverageFamily, required: bool, min_operational_sources: usize) -> Self {
+        Self {
+            family,
+            required,
+            min_operational_sources,
+            max_freshness_age_secs: 7 * 24 * 60 * 60,
+            min_fetch_success_pct: 50,
+            min_parser_success_pct: 50,
+            min_independent_domains: 1,
+        }
+    }
+}
+
+/// The full policy-driven coverage matrix, published in readiness responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoveragePolicy {
+    pub families: Vec<CoverageFamilyRequirement>,
+    /// Minimum share (percent) of priority companies with recent observations.
+    pub min_priority_company_coverage_pct: u8,
+    /// Window in which a priority company observation counts as coverage.
+    pub priority_company_window_secs: i64,
+}
+
+impl Default for CoveragePolicy {
+    fn default() -> Self {
+        use CoverageFamily::*;
+        Self {
+            families: vec![
+                CoverageFamilyRequirement::row(Procurement, true, 3),
+                CoverageFamilyRequirement::row(Patents, true, 1),
+                CoverageFamilyRequirement::row(Regulatory, true, 2),
+                CoverageFamilyRequirement::row(Hiring, true, 1),
+                CoverageFamilyRequirement::row(Financial, true, 3),
+                CoverageFamilyRequirement::row(Tenders, true, 1),
+                // No certification source is registered today: not required
+                // until one exists, but the row is always evaluated so the
+                // gap is visible in the published matrix and an operator can
+                // make it required via APEX_COVERAGE_CERTIFICATIONS_REQUIRED.
+                CoverageFamilyRequirement::row(Certifications, false, 0),
+                CoverageFamilyRequirement::row(ExecutiveChanges, true, 1),
+                CoverageFamilyRequirement::row(TradeCustoms, true, 2),
+                CoverageFamilyRequirement::row(ProductCompetitive, true, 2),
+                CoverageFamilyRequirement::row(SupplyChainFactories, true, 2),
+            ],
+            min_priority_company_coverage_pct: 50,
+            priority_company_window_secs: 30 * 24 * 60 * 60,
+        }
+    }
+}
+
+impl CoveragePolicy {
+    pub fn requirement(&self, family: CoverageFamily) -> Option<&CoverageFamilyRequirement> {
+        self.families.iter().find(|row| row.family == family)
+    }
+
+    /// Resolve per-family overrides from `APEX_COVERAGE_*`; invalid values
+    /// keep the default (a malformed threshold must not take readiness down).
+    pub fn from_env() -> Self {
+        let mut policy = Self::default();
+        for row in &mut policy.families {
+            let token = row.family.env_token();
+            row.required = env_bool(&format!("APEX_COVERAGE_{token}_REQUIRED"), row.required);
+            row.min_operational_sources = env_usize(
+                &format!("APEX_COVERAGE_{token}_MIN"),
+                row.min_operational_sources,
+            );
+            row.max_freshness_age_secs = env_i64(
+                &format!("APEX_COVERAGE_{token}_FRESHNESS_SECS"),
+                row.max_freshness_age_secs,
+            );
+            row.min_fetch_success_pct = env_u8(
+                &format!("APEX_COVERAGE_{token}_FETCH_SUCCESS_PCT"),
+                row.min_fetch_success_pct,
+            );
+            row.min_parser_success_pct = env_u8(
+                &format!("APEX_COVERAGE_{token}_PARSER_SUCCESS_PCT"),
+                row.min_parser_success_pct,
+            );
+            row.min_independent_domains = env_usize(
+                &format!("APEX_COVERAGE_{token}_MIN_DOMAINS"),
+                row.min_independent_domains,
+            );
+        }
+        policy.min_priority_company_coverage_pct = env_u8(
+            "APEX_COVERAGE_PRIORITY_COMPANY_PCT",
+            policy.min_priority_company_coverage_pct,
+        );
+        policy.priority_company_window_secs = env_i64(
+            "APEX_COVERAGE_PRIORITY_COMPANY_WINDOW_SECS",
+            policy.priority_company_window_secs,
+        );
+        policy
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
+
+fn env_i64(name: &str, default: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u8(name: &str, default: u8) -> u8 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .filter(|value| *value <= 100)
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+/// Per-family snapshot of the source universe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FamilyCoverage {
+    pub family: CoverageFamily,
+    pub declared: usize,
+    pub registered: usize,
+    pub operational: usize,
+    pub validated: usize,
+    pub temporarily_degraded: usize,
+    pub never_crawled: usize,
+    /// Distinct domains among operational sources.
+    pub independent_domains: usize,
+    /// Sources with at least one recorded attempt.
+    pub attempted: usize,
+    /// Share (percent) of attempted sources whose last attempt succeeded
+    /// (fetch + parser contract); `None` when nothing was attempted.
+    pub parser_success_pct: Option<u8>,
+    /// Mean rolling fetch-success rate (percent) over attempted sources.
+    pub fetch_success_pct: Option<u8>,
+    pub latest_success_at: Option<DateTime<Utc>>,
+}
+
+/// Deployment-level priority-company coverage, computed from the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PriorityCompanyCoverage {
+    pub total: usize,
+    pub covered: usize,
+}
+
+/// One family's evaluated status against its requirement row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageFamilyEvaluation {
+    pub family: CoverageFamily,
+    pub required: bool,
+    /// `ok` | `degraded` | `not_required`.
+    pub status: String,
+    pub reasons: Vec<String>,
+    pub operational: usize,
+    pub min_operational_sources: usize,
+    pub independent_domains: usize,
+    pub min_independent_domains: usize,
+    pub freshness_age_secs: Option<i64>,
+    pub max_freshness_age_secs: i64,
+    pub fetch_success_pct: Option<u8>,
+    pub min_fetch_success_pct: u8,
+    pub parser_success_pct: Option<u8>,
+    pub min_parser_success_pct: u8,
+}
+
+/// Full coverage evaluation published in the `source_coverage` capability.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceCoverageReport {
+    /// `ok` | `degraded`.
+    pub status: String,
+    pub detail: String,
+    pub families: Vec<CoverageFamilyEvaluation>,
+    pub required_families: usize,
+    pub satisfied_required_families: usize,
+    pub priority_companies_total: usize,
+    pub priority_companies_covered: usize,
+    pub priority_company_pct: Option<u8>,
+    pub min_priority_company_coverage_pct: u8,
+    /// Shared evidence-quality summary of the operational evidence base.
+    pub evidence_quality: EvidenceQuality,
+}
+
+/// Classify one source using exactly the rules of
+/// [`crate::sources_registry::source_coverage_summary`], so the family
+/// breakdown can never disagree with the aggregate metric.
+fn classify_source(
+    source: &Source,
+    runtime: Option<&SourceRuntimeStateRow>,
+    deployment_caps: &DeploymentCapabilities,
+    now: DateTime<Utc>,
+) -> (bool, bool) {
+    let effective = effective_capability(source, runtime, deployment_caps);
+    let validated = source_is_validated(runtime)
+        && matches!(
+            effective,
+            SourceCapability::Operational | SourceCapability::TemporarilyFailed
+        );
+    let degraded = runtime
+        .map(|row| {
+            row.consecutive_failures > 0
+                || row
+                    .circuit_open_until
+                    .map(|until| until > now)
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let operational = validated && !(degraded || effective == SourceCapability::TemporarilyFailed);
+    (validated, operational)
+}
+
+fn pct(numerator: usize, denominator: usize) -> u8 {
+    if denominator == 0 {
+        return 0;
+    }
+    ((numerator as f64 * 100.0 / denominator as f64).round()).clamp(0.0, 100.0) as u8
+}
+
+/// Per-family coverage snapshot for the given registry + runtime state.
+pub fn family_coverage(
+    sources: &[Source],
+    states: &[SourceRuntimeStateRow],
+    deployment_caps: &DeploymentCapabilities,
+    now: DateTime<Utc>,
+) -> Vec<FamilyCoverage> {
+    let state_by_slug: HashMap<&str, &SourceRuntimeStateRow> = states
+        .iter()
+        .map(|row| (row.source_slug.as_str(), row))
+        .collect();
+
+    let mut by_family: HashMap<CoverageFamily, FamilyCoverage> = CoverageFamily::ALL
+        .into_iter()
+        .map(|family| {
+            (
+                family,
+                FamilyCoverage {
+                    family,
+                    ..FamilyCoverage::default()
+                },
+            )
+        })
+        .collect();
+
+    for source in sources {
+        let families = source.coverage_families();
+        if families.is_empty() {
+            continue;
+        }
+        let runtime = state_by_slug.get(source.slug.as_str()).copied();
+        let (validated, operational) = classify_source(source, runtime, deployment_caps, now);
+        for family in families {
+            let Some(entry) = by_family.get_mut(&family) else {
+                continue;
+            };
+            entry.declared += 1;
+            if !source.enabled {
+                continue;
+            }
+            entry.registered += 1;
+            if operational {
+                entry.operational += 1;
+            } else if validated {
+                entry.temporarily_degraded += 1;
+            } else {
+                entry.never_crawled += 1;
+            }
+        }
+    }
+
+    // Second pass for per-source measurements (attempts, ratios, freshness,
+    // domains) so each family aggregates its own source subset.
+    let mut parser_success: HashMap<CoverageFamily, (usize, usize)> = HashMap::new();
+    let mut fetch_success: HashMap<CoverageFamily, (f64, usize)> = HashMap::new();
+    let mut domains: HashMap<CoverageFamily, BTreeSet<String>> = HashMap::new();
+    for source in sources {
+        let families = source.coverage_families();
+        if families.is_empty() || !source.enabled {
+            continue;
+        }
+        let runtime = state_by_slug.get(source.slug.as_str()).copied();
+        let (_, operational) = classify_source(source, runtime, deployment_caps, now);
+        if !operational {
+            continue;
+        }
+        if let Some(domain) = source.domain() {
+            for family in &families {
+                domains.entry(*family).or_default().insert(domain.clone());
+            }
+        }
+        let Some(runtime) = runtime else {
+            continue;
+        };
+        let Some(attempted_at) = runtime.last_attempt_at else {
+            continue;
+        };
+        let success = runtime
+            .last_success_at
+            .map(|success_at| success_at >= attempted_at)
+            .unwrap_or(false);
+        let success_at = runtime.last_success_at.unwrap_or(attempted_at);
+        let rate = runtime.rolling_success_rate.unwrap_or(0.0).clamp(0.0, 1.0);
+        for family in &families {
+            let entry = parser_success.entry(*family).or_insert((0, 0));
+            entry.0 += usize::from(success);
+            entry.1 += 1;
+            let fetch = fetch_success.entry(*family).or_insert((0.0, 0));
+            fetch.0 += rate;
+            fetch.1 += 1;
+            if success {
+                if let Some(entry) = by_family.get_mut(family) {
+                    entry.latest_success_at = Some(
+                        entry
+                            .latest_success_at
+                            .map(|current| current.max(success_at))
+                            .unwrap_or(success_at),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<FamilyCoverage> = CoverageFamily::ALL
+        .into_iter()
+        .filter_map(|family| by_family.remove(&family))
+        .collect();
+    for entry in &mut result {
+        entry.independent_domains = domains.get(&entry.family).map(BTreeSet::len).unwrap_or(0);
+        if let Some((successes, attempts)) = parser_success.get(&entry.family) {
+            entry.attempted = *attempts;
+            entry.parser_success_pct = Some(pct(*successes, *attempts));
+        }
+        if let Some((total, count)) = fetch_success.get(&entry.family) {
+            if *count > 0 {
+                entry.fetch_success_pct =
+                    Some((((total / *count as f64) * 100.0).round()).clamp(0.0, 100.0) as u8);
+            }
+        }
+    }
+    result
+}
+
+/// Evaluate the coverage matrix. A required family with zero operational
+/// sources fails regardless of the deployment-wide total.
+pub fn evaluate_coverage(
+    summary: &crate::sources_registry::SourceCoverageSummary,
+    policy: &CoveragePolicy,
+    priority_companies: PriorityCompanyCoverage,
+    now: DateTime<Utc>,
+) -> SourceCoverageReport {
+    let by_family: HashMap<CoverageFamily, &FamilyCoverage> = summary
+        .families
+        .iter()
+        .map(|entry| (entry.family, entry))
+        .collect();
+
+    let mut evaluations = Vec::with_capacity(policy.families.len());
+    let mut required_families = 0usize;
+    let mut satisfied_required_families = 0usize;
+
+    for requirement in &policy.families {
+        let snapshot = by_family.get(&requirement.family).copied();
+        let mut reasons = Vec::new();
+        let mut status = if requirement.required {
+            required_families += 1;
+            "ok"
+        } else {
+            "not_required"
+        };
+
+        let (
+            operational,
+            independent_domains,
+            freshness_age_secs,
+            fetch_success_pct,
+            parser_success_pct,
+            latest_success_at,
+        ) = match snapshot {
+            Some(snapshot) => (
+                snapshot.operational,
+                snapshot.independent_domains,
+                snapshot
+                    .latest_success_at
+                    .map(|latest| (now - latest).num_seconds().max(0)),
+                snapshot.fetch_success_pct,
+                snapshot.parser_success_pct,
+                snapshot.latest_success_at,
+            ),
+            None => (0, 0, None, None, None, None),
+        };
+
+        if requirement.required {
+            if snapshot.is_none() {
+                reasons.push(format!(
+                    "no registered source maps to the '{}' family",
+                    requirement.family
+                ));
+            }
+            if operational < requirement.min_operational_sources {
+                reasons.push(format!(
+                    "{} operational sources, minimum {}",
+                    operational, requirement.min_operational_sources
+                ));
+            }
+            if independent_domains < requirement.min_independent_domains {
+                reasons.push(format!(
+                    "{} independent domains, minimum {}",
+                    independent_domains, requirement.min_independent_domains
+                ));
+            }
+            if operational > 0 {
+                match (latest_success_at, requirement.max_freshness_age_secs) {
+                    (Some(latest), max_age) => {
+                        let age = (now - latest).num_seconds().max(0);
+                        if age > max_age {
+                            reasons.push(format!(
+                                "newest successful fetch is {}s old, maximum {}s",
+                                age, max_age
+                            ));
+                        }
+                    }
+                    (None, _) => reasons
+                        .push("no successful fetch recorded for a required family".to_string()),
+                }
+            }
+            if let Some(fetch_pct) = fetch_success_pct {
+                if fetch_pct < requirement.min_fetch_success_pct {
+                    reasons.push(format!(
+                        "successful-fetch ratio {}%, minimum {}%",
+                        fetch_pct, requirement.min_fetch_success_pct
+                    ));
+                }
+            }
+            if let Some(parser_pct) = parser_success_pct {
+                if parser_pct < requirement.min_parser_success_pct {
+                    reasons.push(format!(
+                        "parser-success ratio {}%, minimum {}%",
+                        parser_pct, requirement.min_parser_success_pct
+                    ));
+                }
+            }
+            if reasons.is_empty() {
+                satisfied_required_families += 1;
+            } else {
+                status = "degraded";
+            }
+        }
+
+        evaluations.push(CoverageFamilyEvaluation {
+            family: requirement.family,
+            required: requirement.required,
+            status: status.to_string(),
+            reasons,
+            operational,
+            min_operational_sources: requirement.min_operational_sources,
+            independent_domains,
+            min_independent_domains: requirement.min_independent_domains,
+            freshness_age_secs,
+            max_freshness_age_secs: requirement.max_freshness_age_secs,
+            fetch_success_pct,
+            min_fetch_success_pct: requirement.min_fetch_success_pct,
+            parser_success_pct,
+            min_parser_success_pct: requirement.min_parser_success_pct,
+        });
+    }
+
+    let failing: Vec<&CoverageFamilyEvaluation> = evaluations
+        .iter()
+        .filter(|evaluation| evaluation.status == "degraded")
+        .collect();
+
+    let priority_company_pct = if priority_companies.total == 0 {
+        None
+    } else {
+        Some(pct(priority_companies.covered, priority_companies.total))
+    };
+    let priority_company_degraded = priority_company_pct
+        .map(|share| share < policy.min_priority_company_coverage_pct)
+        .unwrap_or(false);
+
+    let status = if failing.is_empty() && !priority_company_degraded {
+        "ok"
+    } else {
+        "degraded"
+    };
+    let mut problems: Vec<String> = failing
+        .iter()
+        .map(|evaluation| format!("{}: {}", evaluation.family, evaluation.reasons.join("; ")))
+        .collect();
+    if priority_company_degraded {
+        problems.push(format!(
+            "priority-company coverage {}%, minimum {}%",
+            priority_company_pct.unwrap_or(0),
+            policy.min_priority_company_coverage_pct
+        ));
+    }
+
+    let detail = if problems.is_empty() {
+        format!(
+            "{} operational of {} registered across {} required families | {}",
+            summary.operational,
+            summary.registered,
+            required_families,
+            coverage_matrix_summary(&evaluations)
+        )
+    } else {
+        format!(
+            "{} operational of {} registered | {}",
+            summary.operational,
+            summary.registered,
+            problems.join(" | ")
+        )
+    };
+
+    let evidence_quality = coverage_evidence_quality(summary, policy, now);
+
+    SourceCoverageReport {
+        status: status.to_string(),
+        detail,
+        families: evaluations,
+        required_families,
+        satisfied_required_families,
+        priority_companies_total: priority_companies.total,
+        priority_companies_covered: priority_companies.covered,
+        priority_company_pct,
+        min_priority_company_coverage_pct: policy.min_priority_company_coverage_pct,
+        evidence_quality,
+    }
+}
+
+/// Compact per-family summary line published alongside the detail.
+fn coverage_matrix_summary(evaluations: &[CoverageFamilyEvaluation]) -> String {
+    evaluations
+        .iter()
+        .map(|evaluation| {
+            format!(
+                "{}={}/{}",
+                evaluation.family, evaluation.operational, evaluation.min_operational_sources
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Summarise the operational evidence base through the shared
+/// [`EvidenceQuality`] model (audit P1-10 consumer: source coverage).
+///
+/// Operational sources are supporting evidence; validated-but-degraded
+/// sources contradict the "coverage is healthy" statement, which keeps
+/// `contradiction_ratio` meaningful. Expected coverage is the set of required
+/// families, so `coverage_completeness` measures the matrix directly.
+fn coverage_evidence_quality(
+    summary: &crate::sources_registry::SourceCoverageSummary,
+    policy: &CoveragePolicy,
+    now: DateTime<Utc>,
+) -> EvidenceQuality {
+    let mut items = Vec::new();
+    for entry in &summary.families {
+        let requirement = policy.requirement(entry.family);
+        let required = requirement.map(|row| row.required).unwrap_or(false);
+        if entry.operational > 0 {
+            let fetch = entry.fetch_success_pct.unwrap_or(50).min(100) as f64 / 100.0;
+            let mut item = EvidenceItem::new(fetch, EvidenceStance::Supports)
+                .with_source_type(entry.family.as_str())
+                .with_parser_confidence(
+                    entry.parser_success_pct.unwrap_or(50).min(100) as f64 / 100.0,
+                )
+                .with_coverage_tag(entry.family.as_str())
+                .primary();
+            if let Some(latest) = entry.latest_success_at {
+                item = item.with_observed_at(latest);
+            }
+            items.push(item);
+        }
+        if entry.temporarily_degraded > 0 {
+            items.push(
+                EvidenceItem::new(0.5, EvidenceStance::Contradicts)
+                    .with_source_type(entry.family.as_str())
+                    .with_coverage_tag(entry.family.as_str()),
+            );
+        }
+        if required && entry.operational == 0 && entry.declared == 0 {
+            // A required family with no declared source is itself a
+            // contradiction: the deployment promises coverage it cannot
+            // substantiate.
+            items.push(
+                EvidenceItem::new(0.9, EvidenceStance::Contradicts)
+                    .with_source_type(entry.family.as_str()),
+            );
+        }
+    }
+    let expected: Vec<String> = policy
+        .families
+        .iter()
+        .filter(|row| row.required)
+        .map(|row| row.family.as_str().to_string())
+        .collect();
+    assess_evidence_quality(&items, &expected, now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn operational_row(slug: &str, now: DateTime<Utc>) -> SourceRuntimeStateRow {
+        SourceRuntimeStateRow {
+            source_slug: slug.to_string(),
+            last_attempt_at: Some(now),
+            last_success_at: Some(now),
+            next_due_at: now,
+            consecutive_failures: 0,
+            rolling_success_rate: Some(1.0),
+            rolling_latency_ms: Some(50.0),
+            last_http_status: Some(200),
+            circuit_open_until: None,
+            etag: None,
+            last_modified: None,
+            last_error: None,
+            updated_at: now,
+        }
+    }
+
+    fn source(slug: &str, category: Category, region: crate::sources_registry::Region) -> Source {
+        Source {
+            slug: slug.to_string(),
+            name: slug.to_string(),
+            url: format!("https://{slug}.example.com"),
+            search_param: None,
+            region,
+            category,
+            tier: 2,
+            needs_proxy: false,
+            rss_url: None,
+            enabled: true,
+            min_interval_minutes: 60,
+            fetch_strategy: None,
+            capability: SourceCapability::Unvalidated,
+            notes: None,
+        }
+    }
+
+    fn summary_with(
+        families: Vec<FamilyCoverage>,
+        operational: usize,
+    ) -> crate::sources_registry::SourceCoverageSummary {
+        crate::sources_registry::SourceCoverageSummary {
+            registered: 500,
+            operational,
+            families,
+            ..crate::sources_registry::SourceCoverageSummary::default()
+        }
+    }
+
+    #[test]
+    fn required_family_with_zero_operational_sources_fails_despite_high_total() {
+        let now = Utc::now();
+        let mut families: Vec<FamilyCoverage> = CoverageFamily::ALL
+            .into_iter()
+            .map(|family| FamilyCoverage {
+                family,
+                declared: 5,
+                registered: 5,
+                operational: 5,
+                independent_domains: 5,
+                attempted: 5,
+                parser_success_pct: Some(100),
+                fetch_success_pct: Some(100),
+                latest_success_at: Some(now),
+                ..FamilyCoverage::default()
+            })
+            .collect();
+        // 500 operational sources overall, but procurement has none.
+        let procurement = families
+            .iter_mut()
+            .find(|entry| entry.family == CoverageFamily::Procurement)
+            .expect("procurement row");
+        procurement.operational = 0;
+
+        let report = evaluate_coverage(
+            &summary_with(families, 500),
+            &CoveragePolicy::default(),
+            PriorityCompanyCoverage::default(),
+            now,
+        );
+
+        assert_eq!(report.status, "degraded");
+        let procurement_eval = report
+            .families
+            .iter()
+            .find(|row| row.family == CoverageFamily::Procurement)
+            .expect("procurement evaluation");
+        assert_eq!(procurement_eval.status, "degraded");
+        assert!(report.detail.contains("procurement"));
+    }
+
+    #[test]
+    fn all_families_met_is_ok_and_publishes_the_matrix() {
+        let now = Utc::now();
+        let families: Vec<FamilyCoverage> = CoverageFamily::ALL
+            .into_iter()
+            .map(|family| FamilyCoverage {
+                family,
+                declared: 5,
+                registered: 5,
+                operational: 5,
+                independent_domains: 5,
+                attempted: 5,
+                parser_success_pct: Some(100),
+                fetch_success_pct: Some(100),
+                latest_success_at: Some(now),
+                ..FamilyCoverage::default()
+            })
+            .collect();
+
+        let report = evaluate_coverage(
+            &summary_with(families, 55),
+            &CoveragePolicy::default(),
+            PriorityCompanyCoverage {
+                total: 10,
+                covered: 8,
+            },
+            now,
+        );
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.families.len(), CoverageFamily::ALL.len());
+        assert_eq!(report.required_families, 10);
+        assert_eq!(report.satisfied_required_families, 10);
+        assert_eq!(report.priority_company_pct, Some(80));
+        assert!((report.evidence_quality.coverage_completeness - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stale_family_and_low_ratios_fail_their_dimensions() {
+        let now = Utc::now();
+        let stale = now - chrono::Duration::days(30);
+        let families: Vec<FamilyCoverage> = CoverageFamily::ALL
+            .into_iter()
+            .map(|family| FamilyCoverage {
+                family,
+                declared: 5,
+                registered: 5,
+                operational: 5,
+                independent_domains: 5,
+                attempted: 5,
+                parser_success_pct: Some(10),
+                fetch_success_pct: Some(10),
+                latest_success_at: Some(stale),
+                ..FamilyCoverage::default()
+            })
+            .collect();
+
+        let report = evaluate_coverage(
+            &summary_with(families, 55),
+            &CoveragePolicy::default(),
+            PriorityCompanyCoverage::default(),
+            now,
+        );
+
+        assert_eq!(report.status, "degraded");
+        let procurement = report
+            .families
+            .iter()
+            .find(|row| row.family == CoverageFamily::Procurement)
+            .expect("procurement evaluation");
+        assert!(procurement
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("newest successful fetch")));
+        assert!(procurement
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("successful-fetch ratio")));
+        assert!(procurement
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("parser-success ratio")));
+    }
+
+    #[test]
+    fn priorities_companies_below_threshold_degrade_even_when_families_pass() {
+        let now = Utc::now();
+        let families: Vec<FamilyCoverage> = CoverageFamily::ALL
+            .into_iter()
+            .map(|family| FamilyCoverage {
+                family,
+                declared: 5,
+                registered: 5,
+                operational: 5,
+                independent_domains: 5,
+                attempted: 5,
+                parser_success_pct: Some(100),
+                fetch_success_pct: Some(100),
+                latest_success_at: Some(now),
+                ..FamilyCoverage::default()
+            })
+            .collect();
+
+        let report = evaluate_coverage(
+            &summary_with(families, 55),
+            &CoveragePolicy::default(),
+            PriorityCompanyCoverage {
+                total: 10,
+                covered: 1,
+            },
+            now,
+        );
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.priority_company_pct, Some(10));
+        assert!(report.detail.contains("priority-company coverage"));
+    }
+
+    #[test]
+    fn family_classification_uses_category_and_keywords() {
+        let hiring = source(
+            "greenhouse_job_board",
+            Category::Technology,
+            crate::sources_registry::Region::Global,
+        );
+        let families = hiring.coverage_families();
+        assert!(families.contains(&CoverageFamily::Hiring));
+        assert!(families.contains(&CoverageFamily::ProductCompetitive));
+
+        let registry = source(
+            "sedar_plus_ca",
+            Category::GovernmentRegistry,
+            crate::sources_registry::Region::NorthAmerica,
+        );
+        let families = registry.coverage_families();
+        assert!(families.contains(&CoverageFamily::ExecutiveChanges));
+
+        let ct = source(
+            "certificate_transparency",
+            Category::Cybersecurity,
+            crate::sources_registry::Region::Global,
+        );
+        assert!(
+            !ct.coverage_families()
+                .contains(&CoverageFamily::Certifications),
+            "TLS certificate transparency is not a certifications-intel source"
+        );
+    }
+
+    #[test]
+    fn family_coverage_counts_attempt_ratios_and_domains() {
+        let now = Utc::now();
+        let sources = vec![
+            source(
+                "alpha_procurement",
+                Category::Procurement,
+                crate::sources_registry::Region::Global,
+            ),
+            source(
+                "beta_procurement",
+                Category::Procurement,
+                crate::sources_registry::Region::Europe,
+            ),
+        ];
+        let states = vec![operational_row("alpha_procurement", now)];
+        let coverage = family_coverage(
+            &sources,
+            &states,
+            &DeploymentCapabilities {
+                browser: true,
+                proxy: true,
+                credentialed_api_adapters: Default::default(),
+            },
+            now,
+        );
+        let procurement = coverage
+            .iter()
+            .find(|entry| entry.family == CoverageFamily::Procurement)
+            .expect("procurement row");
+
+        assert_eq!(procurement.declared, 2);
+        assert_eq!(procurement.operational, 1);
+        assert_eq!(procurement.never_crawled, 1);
+        assert_eq!(procurement.attempted, 1);
+        assert_eq!(procurement.parser_success_pct, Some(100));
+        assert_eq!(procurement.fetch_success_pct, Some(100));
+        assert_eq!(procurement.latest_success_at, Some(now));
+        assert_eq!(procurement.independent_domains, 1);
+    }
+}
