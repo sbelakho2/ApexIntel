@@ -105,27 +105,24 @@ Before merge:
 
 ## 7. Validation Commands
 
-### WASM Frontend (Leptos)
-
-```bash
-# Build the WASM frontend and check for compile errors
-cd crates/frontend && trunk build
-
-# Run E2E tests (includes accessibility checks)
-npx playwright test -c playwright.config.cjs
-
-# Run specific test file for UI parity
-npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js
-```
-
 ### Server-Rendered UI (Askama/HTMX)
 
 ```bash
 # Compile-time template validation (catches syntax errors)
 cargo check -p apex-api
 
+# Accessibility + visual contract specs (server must already be running)
+npx playwright test -c playwright.server-ui.config.cjs e2e/server-ui-a11y.spec.js
+
+# Full route sweep with axe checks
+BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword \
+  node scripts/ci/e2e_server_ui.mjs
+
 # Compile Tailwind CSS
-npx tailwindcss -i crates/api/static/css/input.css -o crates/api/static/css/tailwind.css --minify
+npx tailwindcss -i crates/api/static/css/globals.css -o crates/api/static/css/tailwind.css --minify
 ```
+
+The Leptos/WASM frontend was retired from the workspace
+(`experiments/wasm-frontend/`); it has no build or test commands.
 
 Use browser a11y tooling (axe/Lighthouse) during review for additional verification.

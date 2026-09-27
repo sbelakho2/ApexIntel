@@ -14,7 +14,6 @@ members = [
     "crates/api",
     "crates/worker",
     "crates/shared",
-    "crates/frontend",
     "crates/investigation",
     "crates/threat_intel",
     "crates/triage",

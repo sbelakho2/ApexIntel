@@ -1,13 +1,12 @@
 //! Chart data API handlers.
 //!
-//! Returns JSON data points for client-side chart rendering and
-//! SVG fragments for HTMX-based chart loading.
+//! Returns server-rendered SVG chart fragments for the server-rendered UI and
+//! JSON data points for the chart endpoints API clients consume.
 
 use crate::*;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use chrono::{Duration, Utc};
 use serde::Serialize;
-use std::time::Instant;
 
 // ─── Request types ───────────────────────────────────────────────────────────
 
@@ -24,8 +23,9 @@ pub(crate) struct ObservationChartQuery {
 
 // ─── Response types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub(crate) struct ActivityChartResponse {
+    pub days: i64,
     pub dates: Vec<String>,
     pub observations: Vec<u32>,
     pub insights: Vec<u32>,
@@ -49,6 +49,112 @@ pub(crate) struct ObservationChartResponse {
 pub(crate) struct ChartDataPoint {
     pub date: String,
     pub value: f64,
+}
+
+// ─── Axis tick generation ────────────────────────────────────────────────────
+
+/// One Y-axis tick: `value` is in data units and `frac` is its position in
+/// [0, 1] on the rendered axis (0 = axis minimum, 1 = axis maximum).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AxisTick {
+    pub value: f64,
+    pub frac: f64,
+}
+
+/// Round a raw tick interval up to the nearest 1/2/5 × 10^n value.
+fn nice_step(raw: f64) -> f64 {
+    if !raw.is_finite() || raw <= 0.0 {
+        return 1.0;
+    }
+    let magnitude = 10f64.powf(raw.log10().floor());
+    let normalized = raw / magnitude;
+    let nice = if normalized <= 1.0 {
+        1.0
+    } else if normalized <= 2.0 {
+        2.0
+    } else if normalized <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * magnitude
+}
+
+/// Build truthful axis ticks covering `[min, max]`.
+///
+/// The first and last ticks are exactly `min` and `max`, so the axis is always
+/// labelled with the scale actually rendered: a non-zero minimum is never
+/// printed as `0`. Interior ticks use 1/2/5 steps when the range allows.
+///
+/// * non-finite bounds (e.g. no data) → empty
+/// * degenerate range (single point) → one centred tick at that value
+pub(crate) fn compute_axis_ticks(min: f64, max: f64, max_ticks: usize) -> Vec<AxisTick> {
+    axis_ticks_with_min_step(min, max, max_ticks, 0.0)
+}
+
+/// Ticks for a count (integer) series: the interval is floored at 1 so a
+/// range of 1 (all-equal counts, including all-zero windows) does not emit a
+/// fractional interior tick whose rounded label duplicates an endpoint.
+pub(crate) fn compute_count_axis_ticks(min: f64, max: f64, max_ticks: usize) -> Vec<AxisTick> {
+    axis_ticks_with_min_step(min, max, max_ticks, 1.0)
+}
+
+fn axis_ticks_with_min_step(min: f64, max: f64, max_ticks: usize, min_step: f64) -> Vec<AxisTick> {
+    if !min.is_finite() || !max.is_finite() || max_ticks == 0 {
+        return Vec::new();
+    }
+    let (min, max) = if min <= max { (min, max) } else { (max, min) };
+    if (max - min).abs() <= f64::EPSILON {
+        return vec![AxisTick {
+            value: min,
+            frac: 0.5,
+        }];
+    }
+
+    let range = max - min;
+    let mut ticks = vec![AxisTick {
+        value: min,
+        frac: 0.0,
+    }];
+    if max_ticks > 2 {
+        let step = nice_step(range / (max_ticks - 1) as f64).max(min_step);
+        let mut candidate = (min / step).ceil() * step;
+        while candidate < max - step * 1e-9 && ticks.len() < max_ticks - 1 {
+            if candidate > min + step * 1e-9 {
+                ticks.push(AxisTick {
+                    value: candidate,
+                    frac: (candidate - min) / range,
+                });
+            }
+            candidate += step;
+        }
+    }
+    ticks.push(AxisTick {
+        value: max,
+        frac: 1.0,
+    });
+    ticks
+}
+
+fn format_count_tick(value: f64) -> String {
+    format!("{value:.0}")
+}
+
+fn format_score_tick(value: f64) -> String {
+    if (value - value.round()).abs() < 1e-9 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    }
+}
+
+/// X coordinate of series index `i` of `n` evenly spaced points.
+fn series_x(i: usize, n: usize, pad_left: f64, plot_w: f64) -> f64 {
+    if n <= 1 {
+        pad_left + plot_w / 2.0
+    } else {
+        pad_left + (i as f64 / (n - 1) as f64) * plot_w
+    }
 }
 
 // ─── SVG rendering helpers ───────────────────────────────────────────────────
@@ -132,6 +238,12 @@ pub(crate) fn render_sparkline_svg(
 }
 
 /// Build a multi-series activity chart SVG as an HTML string.
+///
+/// Observation and insight counts share the left count axis, whose ticks are
+/// derived from the rendered data range (a non-zero minimum is labelled with
+/// its real value, never a hard-coded `0`). The 0–1 activity score is plotted on
+/// its own right axis so it is not flattened by count magnitudes; the
+/// normalization is stated in the SVG description.
 pub(crate) fn render_activity_chart_svg(
     response: &ActivityChartResponse,
     width: u32,
@@ -145,36 +257,62 @@ pub(crate) fn render_activity_chart_svg(
     let w = width.max(200) as f64;
     let h = height.max(100) as f64;
     let pad_left = 50.0;
-    let pad_right = 16.0;
+    let pad_right = 44.0;
     let pad_top = 32.0;
     let pad_bottom = 36.0;
     let plot_w = w - pad_left - pad_right;
     let plot_h = h - pad_top - pad_bottom;
 
-    // Compute global max
-    let all_values: Vec<f64> = response
-        .observations
-        .iter()
-        .map(|v| *v as f64)
-        .chain(response.insights.iter().map(|v| *v as f64))
-        .chain(response.scores.iter().copied())
-        .collect();
-    let max_val = all_values
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max)
-        .max(1.0);
-
-    let nf = (n - 1) as f64;
-
+    let obs_f64: Vec<f64> = response.observations.iter().map(|v| *v as f64).collect();
+    let ins_f64: Vec<f64> = response.insights.iter().map(|v| *v as f64).collect();
     let score_series: &[f64] = &response.scores;
+
+    // Left (count) axis: derived from the rendered data range.
+    let count_min = obs_f64
+        .iter()
+        .chain(ins_f64.iter())
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let count_max = obs_f64
+        .iter()
+        .chain(ins_f64.iter())
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let count_min = if count_min.is_finite() {
+        count_min
+    } else {
+        0.0
+    };
+    let count_max = if count_max.is_finite() {
+        count_max
+    } else {
+        0.0
+    };
+    let (count_axis_min, count_axis_max) = if (count_max - count_min).abs() <= f64::EPSILON {
+        // Degenerate range (single point / all-equal counts): pad so the axis
+        // and its tick labels still describe a real interval.
+        (count_min, count_min + 1.0)
+    } else {
+        (count_min, count_max)
+    };
+    let count_range = count_axis_max - count_axis_min;
+    let count_ticks = compute_count_axis_ticks(count_axis_min, count_axis_max, 4);
+
+    // Right (score) axis: the producer already normalizes activity to 0–1.
+    let score_ticks = compute_axis_ticks(0.0, 1.0, 3);
+
+    let count_y = |v: f64| pad_top + plot_h - ((v - count_axis_min) / count_range) * plot_h;
+    let score_y = |v: f64| pad_top + plot_h - v.clamp(0.0, 1.0) * plot_h;
 
     let mut svg = String::new();
     svg.push_str(&format!(
-        r#"<svg width="{}" height="{}" viewBox="0 0 {} {}" role="img" aria-label="Entity activity chart" class="w-full">"#,
-        w, h, w, h
+        r#"<svg width="{}" height="{}" viewBox="0 0 {} {}" role="img" aria-label="Entity activity chart, last {} days: observations, insights and a 0-1 activity score" data-days="{}" data-point-count="{}" class="w-full">"#,
+        w, h, w, h, response.days, response.days, n
     ));
-    svg.push_str("<desc>Multi-series activity chart</desc>");
+    svg.push_str(&format!(
+        "<desc>Multi-series activity chart over {} days. Observation and insight counts share the left count axis; the activity score is normalized per window from those same counts (60% observations, 40% insights, clamped to 0-1) and plotted on its own right axis.</desc>",
+        response.days
+    ));
 
     // Plot background
     svg.push_str(&format!(
@@ -182,73 +320,103 @@ pub(crate) fn render_activity_chart_svg(
         pad_left, pad_top, plot_w, plot_h
     ));
 
-    // Grid lines
+    // Grid lines and left count labels derived from the real scale.
+    for tick in &count_ticks {
+        let y = pad_top + plot_h * (1.0 - tick.frac);
+        let dash = if tick.frac <= 0.0 {
+            ""
+        } else {
+            r#" stroke-dasharray="4 4""#
+        };
+        svg.push_str(&format!(
+            r#"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="rgba(22,22,22,0.12)" stroke-width="1"{}"/>"#,
+            pad_left, y, pad_left + plot_w, y, dash
+        ));
+        svg.push_str(&format!(
+            r#"<text class="apex-tick-counts" data-tick-value="{}" x="{:.1}" y="{:.1}" text-anchor="end" dominant-baseline="middle" font-size="9" font-weight="600" fill="var(--chart-label)">{}</text>"#,
+            format_count_tick(tick.value),
+            pad_left - 6.0,
+            y,
+            format_count_tick(tick.value)
+        ));
+    }
+
+    // Right score-axis labels (0–1).
+    for tick in &score_ticks {
+        let y = pad_top + plot_h * (1.0 - tick.frac);
+        svg.push_str(&format!(
+            r#"<text class="apex-tick-score" data-tick-value="{}" x="{:.1}" y="{:.1}" text-anchor="start" dominant-baseline="middle" font-size="9" font-weight="600" fill="var(--chart-label)">{}</text>"#,
+            format_score_tick(tick.value),
+            pad_left + plot_w + 6.0,
+            y,
+            format_score_tick(tick.value)
+        ));
+    }
+
+    // Rendered window label, inside the chart, so the active window is always
+    // visible no matter which chip loaded the fragment.
     svg.push_str(&format!(
-        r#"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="rgba(22,22,22,0.15)" stroke-width="1"/>"#,
-        pad_left, pad_top + plot_h, pad_left + plot_w, pad_top + plot_h
+        r#"<text x="{:.1}" y="14" text-anchor="end" font-size="9" font-weight="700" fill="var(--chart-label)">Last {} days</text>"#,
+        pad_left + plot_w + 38.0,
+        response.days
     ));
-    for frac in [0.25, 0.5, 0.75] {
-        let y = pad_top + plot_h * (1.0 - frac);
-        svg.push_str(&format!(
-            r#"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="rgba(22,22,22,0.08)" stroke-width="1" stroke-dasharray="4 4"/>"#,
-            pad_left, y, pad_left + plot_w, y
-        ));
-    }
 
-    // Y-axis labels
-    for (frac, label) in [
-        (0.0, "0"),
-        (0.5, &format!("{:.0}", max_val * 0.5)),
-        (1.0, &format!("{:.0}", max_val)),
-    ] {
-        let y = pad_top + plot_h * (1.0 - frac);
-        svg.push_str(&format!(
-            r#"<text x="{:.1}" y="{:.1}" text-anchor="end" dominant-baseline="middle" font-size="9" font-weight="600" fill="var(--chart-label)">{}</text>"#,
-            pad_left - 6.0, y, label
-        ));
+    // One descriptor per series, used for both the polyline and its markers so
+    // colour, class, and axis mapping cannot drift between the two.
+    struct SeriesRender<'a> {
+        values: &'a [f64],
+        color: &'a str,
+        class: &'a str,
+        axis: &'a str,
+        map: &'a dyn Fn(f64) -> f64,
     }
+    let series = [
+        SeriesRender {
+            values: &obs_f64,
+            color: "var(--chart-series-blue)",
+            class: "apex-activity-series apex-activity-observations",
+            axis: "counts-left",
+            map: &count_y,
+        },
+        SeriesRender {
+            values: &ins_f64,
+            color: "var(--chart-series-amber)",
+            class: "apex-activity-series apex-activity-insights",
+            axis: "counts-left",
+            map: &count_y,
+        },
+        SeriesRender {
+            values: score_series,
+            color: "var(--chart-series-green)",
+            class: "apex-activity-series apex-activity-score",
+            axis: "score-0-1-right",
+            map: &score_y,
+        },
+    ];
 
-    // Helper to build a polyline
-    let build_polyline = |values: &[f64], color: &str| -> String {
+    // Lines first, then markers, both rendered from the same descriptors.
+    for s in &series {
         let mut pts = String::new();
-        for (i, v) in values.iter().enumerate() {
-            let x = pad_left + (i as f64 / nf) * plot_w;
-            let y = pad_top + plot_h - ((v - 0.0) / max_val) * plot_h;
+        for (i, v) in s.values.iter().enumerate() {
+            let x = series_x(i, n, pad_left, plot_w);
+            let y = (s.map)(*v);
             if i > 0 {
                 pts.push(' ');
             }
             pts.push_str(&format!("{:.1},{:.1}", x, y));
         }
-        format!(
-            r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
-            pts, color
-        )
-    };
-
-    // Observations polyline
-    let obs_f64: Vec<f64> = response.observations.iter().map(|v| *v as f64).collect();
-    svg.push_str(&build_polyline(&obs_f64, "var(--chart-series-blue)"));
-
-    // Insights polyline
-    let ins_f64: Vec<f64> = response.insights.iter().map(|v| *v as f64).collect();
-    svg.push_str(&build_polyline(&ins_f64, "var(--chart-series-amber)"));
-
-    // Activity scores polyline
-    svg.push_str(&build_polyline(score_series, "var(--chart-series-green)"));
-
-    // Data points
-    let series_colors: [(&[f64], &str); 3] = [
-        (&obs_f64, "var(--chart-series-blue)"),
-        (&ins_f64, "var(--chart-series-amber)"),
-        (score_series, "var(--chart-series-green)"),
-    ];
-    for (values, color) in series_colors {
-        for (i, v) in values.iter().enumerate() {
-            let x = pad_left + (i as f64 / nf) * plot_w;
-            let y = pad_top + plot_h - ((v - 0.0) / max_val) * plot_h;
+        svg.push_str(&format!(
+            r#"<polyline class="{}" data-axis="{}" points="{}" fill="none" stroke="{}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+            s.class, s.axis, pts, s.color
+        ));
+    }
+    for s in &series {
+        for (i, v) in s.values.iter().enumerate() {
+            let x = series_x(i, n, pad_left, plot_w);
+            let y = (s.map)(*v);
             svg.push_str(&format!(
-                r#"<circle cx="{:.1}" cy="{:.1}" r="2.5" fill="{}" stroke="white" stroke-width="1.5"/>"#,
-                x, y, color
+                r#"<circle class="{}" cx="{:.1}" cy="{:.1}" r="2.5" fill="{}" stroke="white" stroke-width="1.5"/>"#,
+                s.class, x, y, s.color
             ));
         }
     }
@@ -257,7 +425,7 @@ pub(crate) fn render_activity_chart_svg(
     let legend_items = [
         ("var(--chart-series-blue)", "Observations"),
         ("var(--chart-series-amber)", "Insights"),
-        ("var(--chart-series-green)", "Activity"),
+        ("var(--chart-series-green)", "Activity (right, 0-1)"),
     ];
     for (i, (color, label)) in legend_items.iter().enumerate() {
         let lx = pad_left + i as f64 * 140.0;
@@ -308,6 +476,21 @@ async fn fetch_entity_activity_data(
         .map(|(_, day_offset, cnt)| (day_offset, cnt))
         .collect();
 
+    Ok(build_activity_series(since, days, &entity_obs, &entity_ins))
+}
+
+/// Assemble the per-day activity series for a `days`-long window starting at
+/// `since`.
+///
+/// Rows are `(day_offset, count)` pairs as returned by the store; offsets
+/// outside `[0, days)` are ignored, so a wider window really can only add older
+/// days — it never re-scales or drops the days a smaller window would show.
+fn build_activity_series(
+    since: DateTime<Utc>,
+    days: i64,
+    entity_obs: &[(i64, i64)],
+    entity_ins: &[(i64, i64)],
+) -> ActivityChartResponse {
     let day_count = days as usize;
     let mut dates = Vec::with_capacity(day_count);
     let mut observations = vec![0u32; day_count];
@@ -319,17 +502,19 @@ async fn fetch_entity_activity_data(
         dates.push(d.format("%Y-%m-%d").to_string());
     }
 
-    for (offset, cnt) in &entity_obs {
-        let idx = *offset as usize;
-        if idx < day_count {
-            observations[idx] = (*cnt).max(0) as u32;
+    for (offset, cnt) in entity_obs {
+        if let Ok(idx) = usize::try_from(*offset) {
+            if idx < day_count {
+                observations[idx] = (*cnt).max(0) as u32;
+            }
         }
     }
 
-    for (offset, cnt) in &entity_ins {
-        let idx = *offset as usize;
-        if idx < day_count {
-            insights[idx] = (*cnt).max(0) as u32;
+    for (offset, cnt) in entity_ins {
+        if let Ok(idx) = usize::try_from(*offset) {
+            if idx < day_count {
+                insights[idx] = (*cnt).max(0) as u32;
+            }
         }
     }
 
@@ -341,34 +526,13 @@ async fn fetch_entity_activity_data(
         scores[i] = (obs_norm * 0.6 + ins_norm * 0.4).clamp(0.0, 1.0);
     }
 
-    Ok(ActivityChartResponse {
+    ActivityChartResponse {
+        days,
         dates,
         observations,
         insights,
         scores,
-    })
-}
-
-// ─── Handler: GET /api/charts/entity/{id}/activity (returns JSON) ─────────────
-
-pub(crate) async fn get_entity_activity_chart(
-    Path(id): Path<Uuid>,
-    State(state): State<AppState>,
-    Query(query): Query<ActivityQuery>,
-) -> Result<Json<ActivityChartResponse>, ApiError> {
-    let _start = Instant::now();
-    let days = query.days.unwrap_or(30).clamp(1, 365);
-
-    let response = fetch_entity_activity_data(&state.store, id, days).await?;
-
-    tracing::info!(
-        "entity_activity_chart entity_id={} days={} elapsed={}ms",
-        id,
-        days,
-        _start.elapsed().as_millis()
-    );
-
-    Ok(Json(response))
+    }
 }
 
 // ─── Handler: GET /api/charts/entity/{id}/activity/svg (returns SVG) ─────────
@@ -377,23 +541,41 @@ pub(crate) async fn get_entity_activity_chart_svg(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
     Query(query): Query<ActivityQuery>,
+    headers: HeaderMap,
 ) -> Result<(StatusCode, HeaderMap, String), ApiError> {
     let days = query.days.unwrap_or(30).clamp(1, 365);
 
     let data = fetch_entity_activity_data(&state.store, id, days).await?;
     let svg = render_activity_chart_svg(&data, 600, 300);
 
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("image/svg+xml"),
-    );
-    headers.insert(
+    let mut out_headers = HeaderMap::new();
+    let body = if apex_api::web::is_htmx_request(&headers) {
+        // HTMX fragment response: update the card's window label out-of-band so
+        // the selector's state is always visible, then the chart itself.
+        out_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        // The wording lives in the template; this fragment only refreshes the
+        // day count, from the same `data.days` the chart renders.
+        format!(
+            r#"<span id="entity-activity-window-days-{id}" hx-swap-oob="innerHTML">{}</span>{svg}"#,
+            data.days
+        )
+    } else {
+        // Direct fetch stays a standalone SVG image.
+        out_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("image/svg+xml"),
+        );
+        svg
+    };
+    out_headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=60"),
     );
 
-    Ok((StatusCode::OK, headers, svg))
+    Ok((StatusCode::OK, out_headers, body))
 }
 
 // ─── Handler: GET /api/charts/entity/{id}/observations?days=90&bucket=week ────
@@ -506,44 +688,202 @@ mod tests {
         assert!(svg.contains("<polygon"));
     }
 
+    fn response_with(
+        days: i64,
+        observations: Vec<u32>,
+        insights: Vec<u32>,
+        scores: Vec<f64>,
+    ) -> ActivityChartResponse {
+        let n = observations.len();
+        ActivityChartResponse {
+            days,
+            dates: (0..n).map(|i| format!("2026-01-{:02}", i + 1)).collect(),
+            observations,
+            insights,
+            scores,
+        }
+    }
+
+    fn polyline_points(svg: &str, class: &str) -> Vec<(f64, f64)> {
+        let marker = format!(r#"class="{class}""#);
+        let start = svg
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing polyline {class}"));
+        let seg = &svg[start..];
+        let pts_start = seg.find("points=\"").expect("points attr") + "points=\"".len();
+        let pts_end = pts_start + seg[pts_start..].find('"').expect("points close");
+        seg[pts_start..pts_end]
+            .split_whitespace()
+            .map(|pair| {
+                let (x, y) = pair.split_once(',').expect("x,y pair");
+                (x.parse::<f64>().expect("x"), y.parse::<f64>().expect("y"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_compute_axis_ticks_non_zero_minimum() {
+        let ticks = compute_axis_ticks(5.0, 20.0, 4);
+        assert!(!ticks.is_empty());
+        assert_eq!(ticks.first().map(|t| t.value), Some(5.0));
+        assert_eq!(ticks.last().map(|t| t.value), Some(20.0));
+        assert!(ticks.iter().all(|t| t.value >= 5.0 && t.value <= 20.0));
+        assert!(ticks.iter().all(|t| t.value.abs() > f64::EPSILON));
+        assert!(ticks.windows(2).all(|w| w[0].frac < w[1].frac));
+    }
+
+    #[test]
+    fn test_compute_axis_ticks_empty_data() {
+        assert!(compute_axis_ticks(f64::INFINITY, f64::NEG_INFINITY, 4).is_empty());
+        assert!(compute_axis_ticks(f64::NAN, f64::NAN, 4).is_empty());
+        assert!(compute_axis_ticks(0.0, 10.0, 0).is_empty());
+    }
+
+    #[test]
+    fn test_compute_axis_ticks_single_point() {
+        let ticks = compute_axis_ticks(7.0, 7.0, 4);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].value, 7.0);
+        assert_eq!(ticks[0].frac, 0.5);
+    }
+
+    #[test]
+    fn test_count_axis_ticks_stay_integer_valued_on_unit_ranges() {
+        // A range of 1 is the all-zero / all-equal window case; the count axis
+        // must not emit a 0.5 tick whose `{:.0}` label duplicates an endpoint.
+        for (min, max) in [(0.0, 1.0), (1.0, 2.0), (5.0, 6.0)] {
+            let ticks = compute_count_axis_ticks(min, max, 4);
+            assert!(
+                ticks.iter().all(|t| t.value.fract().abs() < 1e-9),
+                "fractional count tick for axis [{min},{max}]: {ticks:?}"
+            );
+            let mut labels: Vec<String> =
+                ticks.iter().map(|t| format_count_tick(t.value)).collect();
+            let count = labels.len();
+            labels.sort();
+            labels.dedup();
+            assert_eq!(
+                labels.len(),
+                count,
+                "duplicate count-axis labels for axis [{min},{max}]"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_zero_activity_chart_count_axis_has_single_zero_label() {
+        let resp = response_with(30, vec![0; 30], vec![0; 30], vec![0.0; 30]);
+        let svg = render_activity_chart_svg(&resp, 600, 300);
+        assert_eq!(
+            svg.matches(r#"class="apex-tick-counts" data-tick-value="0""#)
+                .count(),
+            1
+        );
+        assert!(svg.contains(r#"class="apex-tick-counts" data-tick-value="1""#));
+    }
+
     #[test]
     fn test_render_activity_chart_svg_empty() {
-        let resp = ActivityChartResponse {
-            dates: vec![],
-            observations: vec![],
-            insights: vec![],
-            scores: vec![],
-        };
+        let resp = response_with(30, vec![], vec![], vec![]);
         let svg = render_activity_chart_svg(&resp, 600, 300);
         assert!(svg.contains("No activity data"));
+        assert!(!svg.contains("NaN"));
+    }
+
+    #[test]
+    fn test_render_activity_chart_svg_single_point() {
+        let resp = response_with(1, vec![5], vec![2], vec![0.8]);
+        let svg = render_activity_chart_svg(&resp, 600, 300);
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains(r#"data-days="1""#));
+        assert!(!svg.contains("NaN"));
+        assert_eq!(svg.matches("<circle").count(), 3);
     }
 
     #[test]
     fn test_render_activity_chart_svg_with_data() {
-        let resp = ActivityChartResponse {
-            dates: vec!["2026-01-01".into(), "2026-01-02".into()],
-            observations: vec![5, 10],
-            insights: vec![2, 3],
-            scores: vec![0.5, 0.8],
-        };
+        let resp = response_with(2, vec![5, 10], vec![2, 3], vec![0.5, 0.8]);
         let svg = render_activity_chart_svg(&resp, 600, 300);
         assert!(svg.contains("<svg"));
         assert!(svg.contains("Observations"));
         assert!(svg.contains("Insights"));
-        assert!(svg.contains("Activity"));
+        assert!(svg.contains("Activity (right, 0-1)"));
+        assert!(svg.contains(r#"data-axis="score-0-1-right""#));
+        assert!(svg.contains(r#"data-axis="counts-left""#));
     }
 
     #[test]
-    fn test_activity_chart_response_serializes() {
-        let resp = ActivityChartResponse {
-            dates: vec!["2026-01-01".into()],
-            observations: vec![5],
-            insights: vec![2],
-            scores: vec![0.5],
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"observations\""));
-        assert!(json.contains("\"insights\""));
+    fn test_activity_score_not_flattened_by_count_magnitude() {
+        let resp = response_with(2, vec![1000, 1000], vec![1000, 1000], vec![0.0, 1.0]);
+        let svg = render_activity_chart_svg(&resp, 600, 300);
+
+        // Counts that dwarf the score stay on the left axis...
+        let counts = polyline_points(&svg, "apex-activity-series apex-activity-observations");
+        assert_eq!(counts.len(), 2);
+        assert!((counts[0].1 - counts[1].1).abs() < 0.6);
+
+        // ...while the 0–1 score still spans the full plot height instead of
+        // collapsing onto the count baseline.
+        let score = polyline_points(&svg, "apex-activity-series apex-activity-score");
+        assert_eq!(score.len(), 2);
+        assert!(
+            (score[0].1 - 264.0).abs() < 0.6,
+            "score 0.0 y = {}",
+            score[0].1
+        );
+        assert!(
+            (score[1].1 - 32.0).abs() < 0.6,
+            "score 1.0 y = {}",
+            score[1].1
+        );
+    }
+
+    #[test]
+    fn test_count_axis_ticks_never_label_non_zero_minimum_as_zero() {
+        let resp = response_with(2, vec![50, 90], vec![40, 60], vec![0.5, 1.0]);
+        let svg = render_activity_chart_svg(&resp, 600, 300);
+        assert!(svg.contains(r#"class="apex-tick-counts" data-tick-value="40""#));
+        assert!(!svg.contains(r#"class="apex-tick-counts" data-tick-value="0""#));
+        assert!(svg.contains(r#"class="apex-tick-counts" data-tick-value="90""#));
+    }
+
+    #[test]
+    fn test_days_window_filters_series() {
+        let now = Utc::now();
+        let since = now - Duration::days(90);
+        let obs = vec![(5_i64, 3_i64), (50_i64, 9_i64)];
+        let ins = vec![(5_i64, 1_i64)];
+
+        let week = build_activity_series(since, 7, &obs, &ins);
+        assert_eq!(week.days, 7);
+        assert_eq!(week.observations.len(), 7);
+        assert_eq!(week.observations[5], 3);
+        assert_eq!(week.observations.iter().copied().max(), Some(3));
+        assert_eq!(week.insights[5], 1);
+
+        let quarter = build_activity_series(since, 90, &obs, &ins);
+        assert_eq!(quarter.days, 90);
+        assert_eq!(quarter.observations.len(), 90);
+        assert_eq!(quarter.observations[5], 3);
+        assert_eq!(quarter.observations[50], 9);
+        assert_eq!(quarter.insights[5], 1);
+    }
+
+    #[test]
+    fn test_rendered_series_changes_with_days_window() {
+        let now = Utc::now();
+        let obs = vec![(5_i64, 3_i64), (50_i64, 9_i64)];
+        let week = build_activity_series(now - Duration::days(7), 7, &obs, &[]);
+        let quarter = build_activity_series(now - Duration::days(90), 90, &obs, &[]);
+
+        let week_svg = render_activity_chart_svg(&week, 600, 300);
+        let quarter_svg = render_activity_chart_svg(&quarter, 600, 300);
+
+        assert!(week_svg.contains(r#"data-days="7""#));
+        assert!(quarter_svg.contains(r#"data-days="90""#));
+        assert_eq!(week_svg.matches("<circle").count(), 3 * 7);
+        assert_eq!(quarter_svg.matches("<circle").count(), 3 * 90);
+        assert_ne!(week_svg, quarter_svg);
     }
 
     #[test]

@@ -397,10 +397,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         // ─── Entity Trend Chart Data Routes ──────────────────────────────
         .route(
-            "/api/charts/entity/:id/activity",
-            get(charts_handlers::get_entity_activity_chart),
-        )
-        .route(
             "/api/charts/entity/:id/activity/svg",
             get(charts_handlers::get_entity_activity_chart_svg),
         )

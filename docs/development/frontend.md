@@ -2,29 +2,23 @@
 
 ## Overview
 
-ApexIntel has **two frontend surfaces**, each serving different interaction models:
+ApexIntel ships **one web UI**: the server-rendered application in
+`crates/api/` built with **Askama** (compile-time Rust templates), **HTMX** for
+partial-page updates, and **Tailwind CSS** for styling. It covers every product
+route, including charts, as plain HTML/SVG fragments that HTMX swaps into the
+page.
 
-1. **Leptos/WASM Single-Page Application** (`crates/frontend/`) — An interactive client-side rendered SPA for data exploration, charts, and graph visualization. Built with Leptos (Rust/WASM) and served via Trunk.
-
-2. **Server-Rendered HTML UI** (`crates/api/`) — Classic page-based rendering using **Askama** (compile-time Rust templates), **HTMX** for partial-page updates, and **Tailwind CSS** for styling. Used for rapid page loads, list views, and form interactions.
-
-Both frontends share the same design tokens (`--rams-*` CSS variables) for visual consistency.
+A Leptos/WASM single-page application previously duplicated route composition,
+API clients, and chart components. It was never deployed and drifted from the
+shipped UI, so it was retired from the workspace and archived under
+[`experiments/wasm-frontend/`](../experiments/wasm-frontend/). It is not built,
+tested, or shipped; see [`experiments/README.md`](../experiments/README.md).
+`scripts/ci/check_frontend_removed.sh` fails if it reappears in the workspace,
+CI, or package scripts.
 
 ---
 
-## Technology Stack
-
-### WASM Frontend
-
-| Layer | Technology | Version |
-|-------|-----------|---------|
-| Framework | Leptos (CSR) | 0.6 |
-| Router | leptos_router | 0.6 |
-| Bundler | Trunk | — |
-| Styling | Plain CSS + Custom Properties | — |
-| Charts | SVG components (native) | — |
-
-### Server-Rendered UI
+## Technology Stack (Server-Rendered UI)
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
@@ -32,116 +26,8 @@ Both frontends share the same design tokens (`--rams-*` CSS variables) for visua
 | Template-Axum Integration | askama_axum | 0.4 |
 | Partial Updates | HTMX | 2.0 |
 | Styling | Tailwind CSS | 3.x (standalone CLI) |
+| Charts | Server-rendered SVG (inline templates / Rust string builders) | — |
 | Icons | Inline SVG via `icon` macro | — |
-
----
-
-## WASM Frontend (`crates/frontend/`)
-
-### Directory Structure
-
-```
-crates/frontend/
-├── Cargo.toml              # Rust crate manifest
-├── Trunk.toml              # Trunk bundler configuration
-├── index.html              # Entry HTML (loaded by browser)
-├── style.css               # Design tokens, layout, components
-└── src/
-    ├── lib.rs              # WASM entry point (mount_to_body)
-    ├── app.rs              # App shell, router, navigation
-    ├── api.rs              # HTTP API client
-    ├── routes/             # Page components (one per route)
-    │   ├── mod.rs
-    │   ├── overview.rs
-    │   ├── warnings.rs
-    │   ├── insights.rs
-    │   ├── companies.rs
-    │   ├── company_detail.rs
-    │   ├── persons.rs
-    │   ├── person_detail.rs
-    │   ├── search.rs
-    │   ├── memos.rs
-    │   ├── calibration.rs
-    │   ├── graph.rs
-    │   ├── competitors.rs
-    │   ├── security.rs
-    │   ├── recipes.rs
-    │   ├── settings.rs
-    │   ├── admin.rs
-    │   ├── causality.rs
-    │   ├── timeline.rs
-    │   ├── login.rs
-    │   └── adversarial.rs
-    └── components/         # Shared UI components
-        ├── mod.rs
-        ├── cards.rs        # StatCard, SurfaceCard
-        ├── filters.rs      # FilterBar, FilterChip
-        ├── panels.rs       # Side panels, toolbars
-        ├── badges/         # BayesianBadge, SourceReliabilityBadge, TemporalFlag
-        └── charts/         # SVG chart components
-            ├── mod.rs
-            ├── probability_gauge.rs
-            ├── reliability_diagram.rs
-            ├── community_graph.rs
-            ├── causal_graph.rs
-            ├── confidence_band.rs
-            ├── sparkline.rs
-            ├── survival_curve.rs
-            ├── brier_score_heatmap.rs
-            └── source_entropy_gauge.rs
-```
-
-### App Shell & Routing
-
-The app shell is defined in [`crates/frontend/src/app.rs`](../crates/frontend/src/app.rs:72). Key characteristics:
-
-- **Router base**: `/wasm` (all routes are prefixed with `/wasm/`)
-- **Layout**: CSS Grid with 260px sidebar + flexible main area (desktop); single-column with slide-in nav (mobile)
-- **Navigation**: workflow groups rendered from the `NAV_GROUPS` constant
-- **Routes**: Defined via `<Routes base="/wasm">` with nested `<Route path="..." view=... />` components
-
-### Navigation
-
-Primary navigation mirrors the server-rendered workflow IA (audit #15):
-workflows first, database tables never peers.
-
-```rust
-const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
-    ("Command Center", &[("Overview", "/wasm/"), ("Executive", "/wasm/executive"), ("Activity", "/wasm/activity"), ("Search", "/wasm/search")]),
-    ("Entities", &[("Companies", "/wasm/companies"), ("Persons", "/wasm/persons"), ("Psych Profiles", "/wasm/psych-profiles")]),
-    ("Signals", &[("Warnings", "/wasm/warnings"), ("Insights", "/wasm/insights"), ("Trends", "/wasm/trends"), ("Security", "/wasm/security"), ("Threat Intel", "/wasm/threat-intel"), ("Supply Chain", "/wasm/supply-risk"), ("Adversarial", "/wasm/adversarial")]),
-    ("Investigations", &[("Graph", "/wasm/graph"), ("Timeline", "/wasm/entities/demo/timeline"), ("Operations", "/wasm/operational"), ("Analyst", "/wasm/analyst"), ("Memos", "/wasm/memos"), ("Causality", "/wasm/causality")]),
-    ("Sales Intelligence", &[("Competitors", "/wasm/competitors"), ("Landscape", "/wasm/competitive-landscape"), ("Strategic Radar", "/wasm/strategic-radar"), ("Battlecards", "/wasm/battlecards")]),
-    ("Automations", &[("Recipes", "/wasm/recipes"), ("Calibration", "/wasm/calibration")]),
-    ("System", &[("Settings", "/wasm/settings"), ("Admin", "/wasm/admin")]),
-];
-```
-
-### API Client
-
-The WASM frontend communicates with the server via the API client in [`crates/frontend/src/api.rs`](../crates/frontend/src/api.rs:1). It fetches data from `/api/*` endpoints using `gloo-net`.
-
-### Styling
-
-All styles are in [`crates/frontend/style.css`](../crates/frontend/style.css:1) using CSS custom properties. The style defines:
-
-- Design tokens (colors, spacing, typography)
-- Layout components (app-shell, site-nav, app-main)
-- Surface components (surface-card, stat-card)
-- Chart components (.probability-gauge, .community-graph, etc.)
-- Responsive breakpoints at 900px (mobile layout switch)
-
-### Building & Running
-
-```bash
-# Development server (serves on http://127.0.0.1:8080)
-cd crates/frontend && trunk serve --port 8080
-
-# Production build
-cd crates/frontend && trunk build
-
-# Output goes to crates/frontend/dist/
-```
 
 ---
 
@@ -168,6 +54,9 @@ crates/api/
 │   ├── graph.rs
 │   ├── search.rs
 │   └── errors.rs
+├── src/api_handlers/  # JSON API endpoints and server-side SVG chart builders
+│   ├── charts.rs      # Entity activity chart data + SVG fragment rendering
+│   └── ...
 ├── templates/
 │   ├── base.html      # Base layout (sidebar, header, content slot)
 │   ├── macros.html    # Shared macros (icon, badges, charts, etc.)
@@ -244,6 +133,7 @@ Key macros:
 - `tag_pill(tag)` — small tag chip
 - `empty_state(message, icon)` — placeholder for empty lists
 - `donut_chart(segments, size, stroke_width, half, radius)` — SVG donut chart from precomputed segments
+- `entity_activity_chart(entity_id, days)` — HTMX loader for the per-entity activity SVG
 - `country_flag(code)` — flag emoji from 2-letter country code
 - `tier_color_class(tier)` — Tailwind color class for priority tiers
 - `role_family_color_class(family)` — Tailwind color class for role families
@@ -293,6 +183,30 @@ Detail pages use tabs (client-side toggle or HTMX-loaded):
 - **Person detail**: Client-side tabs (Affiliations / Role History / Peers) toggled via inline JS
 - **Security**: Client-side tabs (DNS / KEV / Lookalike) toggled via inline JS
 
+### Server-Rendered Charts
+
+Charts are HTML/SVG fragments rendered on the server, not client-side chart
+components:
+
+- **Entity activity chart** — `GET /api/charts/entity/:id/activity/svg?days=7|30|90`
+  returns an inline SVG built by
+  [`render_activity_chart_svg`](../crates/api/src/api_handlers/charts.rs:1).
+  The `days` query parameter selects the window; the returned series length
+  equals that window (7/30/90 points). Observation and insight counts share the
+  left count axis; the 0–1 activity score has its own right axis so it is not
+  flattened against count magnitudes. Axis ticks are derived from the rendered
+  data range, so a non-zero minimum is labelled with its real value instead of
+  a hard-coded `0`. The macro's `7d/30d/90d` chips HTMX-swap this fragment into
+  the card body.
+- **JSON observation buckets** — `GET /api/charts/entity/:id/observations?days=N&bucket=week`
+  returns bucketed counts for API consumers. The entity *activity* JSON twin
+  (`/api/charts/entity/:id/activity`) was removed with the WASM SPA cleanup:
+  the SVG fragment is the only activity-chart surface, so there is no
+  second, unverified rendering path to drift.
+- **Macro bar charts** — dashboard trend and crawl-activity charts are Askama
+  macros over precomputed per-bucket heights (`warning_trend_chart`,
+  `insight_trend_chart`, `crawl_activity_chart`, `observation_trend_chart`).
+
 ## Rust Handler Structure
 
 Each handler module follows this structure:
@@ -303,7 +217,7 @@ Each handler module follows this structure:
 
 Template structs must include `PageContext` fields (`current_path`, `username`, `warning_count`, `theme`).
 
-## Adding a New Page (Server-Rendered)
+## Adding a New Page
 
 1. Create `templates/pages/new_page.html` extending `base.html`
 2. Create `src/web/new_page.rs` with template struct and handler
@@ -311,24 +225,15 @@ Template structs must include `PageContext` fields (`current_path`, `username`, 
 4. Wire route in `main.rs` under `html_protected`
 5. Add nav item in `base.html` sidebar
 
-## Adding a New Route (WASM Frontend)
-
-1. Create `src/routes/new_page.rs` with a Leptos component
-2. Add `pub mod new_page;` to `src/routes/mod.rs`
-3. Add `<Route path="new-page" view=NewPage />` in `app.rs`
-4. Optionally add the route to `NAV_ITEMS` in `app.rs`
-
 ## Compiling Tailwind
 
 ```bash
-npx tailwindcss -i crates/api/static/css/input.css -o crates/api/static/css/tailwind.css --minify
+npx tailwindcss -i crates/api/static/css/globals.css -o crates/api/static/css/tailwind.css --minify
 ```
 
 The Tailwind config scans `crates/api/templates/**/*.html` for class names.
 
 ## Build Verification
-
-### Server-Rendered UI
 
 Askama templates are checked at compile time. Run:
 ```bash
@@ -336,20 +241,13 @@ cargo check -p apex-api
 ```
 Any template syntax errors, missing fields, or type mismatches will be caught as compile errors.
 
-### WASM Frontend
-
-```bash
-cd crates/frontend && trunk build
-```
-Trunk compiles the Leptos app to WASM and outputs to `crates/frontend/dist/`.
-
 ### E2E Tests
 
 ```bash
-# Run all Playwright E2E tests against the WASM frontend
-npx playwright test -c playwright.config.cjs
+# Route sweep + task contracts against a running apex-api
+BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword \
+  node scripts/ci/e2e_server_ui.mjs
 
-# Run specific test suites
-npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js
-npx playwright test -c playwright.config.cjs e2e/chart-pages.spec.js
+# Playwright contract/visual specs (server must already be running)
+npx playwright test -c playwright.server-ui.config.cjs
 ```

@@ -135,6 +135,18 @@ const SEED = {
       },
     ],
   },
+  // Source observation cited by the seeded insight claim. Migration 078
+  // requires observed/inference claims to link a real observation row, so the
+  // fixture must seed both ends of `insight_claim_evidence`.
+  observation: {
+    id: 'e71de000-0000-4000-8000-000000000001',
+    companyId: 'c0ffee00-0000-4000-8000-000000000001',
+    observationType: 'CapacityExpansion',
+    tsUtc: '2026-01-17 09:30:00+00',
+    excerpt: 'Northwind Power Systems filed permits for a 4 GWh cell line expansion in Austin.',
+    url: 'https://example.test/analysis/northwind-evidence',
+    confidence: 0.83,
+  },
   insight: {
     id: '1d5eaf00-0000-4000-8000-000000000001',
     evidenceRefId: 'e71de000-0000-4000-8000-000000000001',
@@ -195,6 +207,11 @@ async function seedDatabase() {
         SEED.warnings.map((w) => w.id),
       ]);
       await client.query('DELETE FROM insights WHERE id = $1::uuid', [SEED.insight.id]);
+      // Must come after the insight delete (claims cascade, then the evidence
+      // link no longer RESTRICTs the observation delete).
+      await client.query('DELETE FROM observations WHERE id = $1::uuid', [
+        SEED.observation.id,
+      ]);
       await client.query('DELETE FROM persons WHERE id = ANY($1::uuid[])', [
         SEED.persons.map((p) => p.id),
       ]);
@@ -250,6 +267,31 @@ async function seedDatabase() {
           ]
         );
       }
+
+      const observation = SEED.observation;
+      await client.query(
+        `INSERT INTO observations
+           (id, observation_type, entity_id, entity_type, ts_utc, value, provenance,
+            confidence, quality_score)
+         VALUES ($1::uuid, $2, $3::uuid, 'company', $4::timestamptz,
+                 jsonb_build_object('excerpt', $5::text, 'url', $6::text),
+                 jsonb_build_object('url', $6::text, 'source_domain', 'example.test'),
+                 $7::double precision, 0.9)
+         ON CONFLICT (id) DO UPDATE SET
+           ts_utc = EXCLUDED.ts_utc,
+           value = EXCLUDED.value,
+           provenance = EXCLUDED.provenance,
+           confidence = EXCLUDED.confidence`,
+        [
+          observation.id,
+          observation.observationType,
+          observation.companyId,
+          observation.tsUtc,
+          observation.excerpt,
+          observation.url,
+          observation.confidence,
+        ]
+      );
 
       for (const warning of SEED.warnings) {
         await client.query(
@@ -405,17 +447,27 @@ async function seedDatabase() {
       await client.query('DELETE FROM insight_claims WHERE insight_id = $1::uuid', [
         insight.id,
       ]);
+      // Migration 078 policy: create the claim as `unknown` (zero evidence is
+      // valid), promote it with its real kind once the evidence link exists.
+      // Writing it as `observed` up front fails the evidence_count CHECK.
       await client.query(
         `INSERT INTO insight_claims
            (insight_id, claim, evidence_ids, confidence, claim_kind, claim_hash)
-         VALUES ($1::uuid, $2, ARRAY[$3]::uuid[], $4, $5, 'seed-claim-1')`,
-        [
-          insight.id,
-          insight.claim,
-          insight.evidenceRefId,
-          insight.confidence,
-          insight.claimKind,
-        ]
+         VALUES ($1::uuid, $2, '{}'::uuid[], $3, 'unknown', 'seed-claim-1')`,
+        [insight.id, insight.claim, insight.confidence]
+      );
+      await client.query(
+        `UPDATE insight_claims
+         SET claim_kind = $1, evidence_ids = ARRAY[$2]::uuid[], evidence_count = 1
+         WHERE insight_id = $3::uuid AND claim_hash = 'seed-claim-1'`,
+        [insight.claimKind, insight.evidenceRefId, insight.id]
+      );
+      await client.query(
+        `INSERT INTO insight_claim_evidence (claim_id, evidence_id)
+         SELECT id, $2::uuid FROM insight_claims
+         WHERE insight_id = $1::uuid AND claim_hash = 'seed-claim-1'
+         ON CONFLICT (claim_id, evidence_id) DO NOTHING`,
+        [insight.id, insight.evidenceRefId]
       );
 
       const pipeline = SEED.pipeline;
