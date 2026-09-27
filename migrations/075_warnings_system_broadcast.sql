@@ -1,4 +1,4 @@
--- System broadcasts are persisted explicitly.
+-- Migration 075: explicit system-broadcast flag for warnings
 --
 -- Producers mark deliberate system-wide warnings with
 -- `NewWarning::system_broadcast()`, but that intent was lost at persistence:
