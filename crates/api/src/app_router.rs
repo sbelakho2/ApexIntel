@@ -838,6 +838,19 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .layer(Extension(state.search_index.clone()))
         .layer(Extension(state.autocomplete_index.clone()));
 
+    // Real warning analysis service for the HTMX panel (audit P1 #24):
+    // inject the configured model when the LLM runtime exists. The handler
+    // renders an explicit unavailable state when this extension is absent.
+    #[cfg(feature = "llm")]
+    let web_pages = match &state.llm {
+        Some(llm) => web_pages.layer(Extension(
+            apex_api::warning_analysis::WarningAnalysisModel {
+                primary: llm.primary.clone(),
+            },
+        )),
+        None => web_pages,
+    };
+
     Router::new()
         .merge(public)
         .merge(protected)

@@ -23,6 +23,7 @@ pub mod routes;
 pub mod sse;
 pub mod system_status;
 pub mod validation;
+pub mod warning_analysis;
 pub mod web;
 
 pub const API_LLM_FEATURE_ENABLED: bool = cfg!(feature = "llm");

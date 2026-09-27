@@ -1,0 +1,72 @@
+{# ── HTMX partial: real warning analysis panel (audit P0 #40) ─────────── #}
+<div class="apex-card p-4" id="analysis-panel" data-status="{{ status }}">
+  <div class="mb-3 flex items-center justify-between gap-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
+    <span class="rounded-sm border border-border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{{ status_label }}</span>
+  </div>
+
+  {% if has_result %}
+  <div class="space-y-4">
+    <div>
+      <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Threat assessment</h3>
+      <p class="text-sm leading-relaxed">{{ threat_assessment }}</p>
+    </div>
+
+    <div>
+      <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Claims &amp; evidence</h3>
+      {% if !has_claims %}
+      <p class="text-sm text-muted-foreground">The model produced no evidence-grounded claim paragraphs.</p>
+      {% else %}
+      <ul class="space-y-2">
+        {% for claim in claims %}
+        <li class="rounded-sm border border-border p-3">
+          <p class="text-sm leading-relaxed">{{ claim.indicator }}</p>
+          <p class="mt-1 text-[10px] text-muted-foreground">Evidence: {{ claim.evidence }} · Confidence: {{ confidence_pct }}% · Data sufficiency: {{ data_sufficiency }}</p>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <p class="mt-2 text-[10px] text-muted-foreground">{{ evidence_summary }}</p>
+    </div>
+
+    <div>
+      <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Impact</h3>
+      <p class="text-sm leading-relaxed">{{ impact_assessment }}</p>
+    </div>
+
+    <div>
+      <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Confidence</h3>
+      <p class="text-sm leading-relaxed">{{ confidence_pct }}% ({{ source_reliability }} source reliability · {{ data_sufficiency }} data sufficiency)</p>
+      {% if has_entities %}
+      <p class="mt-1 text-[10px] text-muted-foreground">Entities assessed: {{ entities_line }}</p>
+      {% endif %}
+    </div>
+
+    <div>
+      <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Limitations</h3>
+      <ul class="list-disc space-y-1 pl-5 text-sm leading-relaxed">
+        {% for limitation in limitations %}
+        <li>{{ limitation }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <h3 class="mb-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Recommendations</h3>
+      {% if !has_recommendations %}
+      <p class="text-sm text-muted-foreground">No response actions were generated.</p>
+      {% else %}
+      <ul class="list-disc space-y-1 pl-5 text-sm leading-relaxed">
+        {% for recommendation in recommendations %}
+        <li>{{ recommendation }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <p class="text-sm leading-relaxed text-muted-foreground">
+    {% if let Some(detail) = detail %}{{ detail }}{% else %}Analysis is unavailable. The warning is unchanged.{% endif %}
+  </p>
+  {% endif %}
+</div>

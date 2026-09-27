@@ -1328,9 +1328,125 @@ pub async fn unread_count(
     Html(format!("{}", count))
 }
 /// POST /warnings/:id/analyze — trigger AI analysis, return rendered panel.
+#[derive(Clone, Debug)]
+pub struct AnalysisClaimView {
+    pub indicator: String,
+    pub evidence: String,
+}
+
+/// HTMX partial rendered by `POST /warnings/:id/analyze`.
+///
+/// The panel carries the real analysis result (threat assessment, claims with
+/// their evidence, confidence, limitations, recommendations) or an explicit
+/// unavailable/failed state. It never renders a fake "analysis in progress".
+#[derive(Template)]
+#[template(path = "pages/warnings/_analysis.html")]
+pub struct WarningAnalysisPanel {
+    pub status: String,
+    pub status_label: String,
+    pub warning_id: String,
+    pub warning_title: String,
+    pub has_result: bool,
+    pub detail: Option<String>,
+    pub threat_assessment: String,
+    pub severity_justification: String,
+    pub impact_assessment: String,
+    pub claims: Vec<AnalysisClaimView>,
+    pub has_claims: bool,
+    pub evidence_summary: String,
+    pub confidence_pct: i64,
+    pub data_sufficiency: String,
+    pub source_reliability: String,
+    pub limitations: Vec<String>,
+    pub recommendations: Vec<String>,
+    pub has_recommendations: bool,
+    pub entities_line: String,
+    pub has_entities: bool,
+}
+
+impl WarningAnalysisPanel {
+    fn unavailable(warning_id: &str, warning_title: &str, detail: &str) -> Self {
+        Self {
+            status: "unavailable".to_string(),
+            status_label: "Unavailable".to_string(),
+            warning_id: warning_id.to_string(),
+            warning_title: warning_title.to_string(),
+            has_result: false,
+            detail: Some(detail.to_string()),
+            threat_assessment: String::new(),
+            severity_justification: String::new(),
+            impact_assessment: String::new(),
+            claims: Vec::new(),
+            has_claims: false,
+            evidence_summary: String::new(),
+            confidence_pct: 0,
+            data_sufficiency: String::new(),
+            source_reliability: String::new(),
+            limitations: Vec::new(),
+            recommendations: Vec::new(),
+            has_recommendations: false,
+            entities_line: String::new(),
+            has_entities: false,
+        }
+    }
+
+    #[cfg(feature = "llm")]
+    fn from_output(
+        warning_id: &str,
+        warning_title: &str,
+        output: &crate::warning_analysis::WarningAnalysisOutput,
+    ) -> Self {
+        let claims: Vec<AnalysisClaimView> = output
+            .key_indicators()
+            .into_iter()
+            .map(|claim| AnalysisClaimView {
+                indicator: claim.indicator,
+                evidence: claim.evidence,
+            })
+            .collect();
+        let recommendations = output.recommendations();
+        let limitations = output.limitations();
+        let entities_line = output.entity_names.join(", ");
+        Self {
+            status: "ok".to_string(),
+            status_label: "Analysis complete".to_string(),
+            warning_id: warning_id.to_string(),
+            warning_title: warning_title.to_string(),
+            has_result: true,
+            detail: None,
+            threat_assessment: output.threat_assessment.clone(),
+            severity_justification: output.severity_justification.clone(),
+            impact_assessment: output.impact_assessment.clone(),
+            has_claims: !claims.is_empty(),
+            claims,
+            evidence_summary: format!(
+                "Grounded in {} observations, {} sources, {} related insights.",
+                output.observation_count, output.source_count, output.related_insight_count
+            ),
+            confidence_pct: (output.overall_confidence * 100.0).round() as i64,
+            data_sufficiency: output.data_sufficiency.clone(),
+            source_reliability: output.source_reliability.clone(),
+            limitations,
+            has_recommendations: !recommendations.is_empty(),
+            recommendations,
+            has_entities: !entities_line.is_empty(),
+            entities_line,
+        }
+    }
+}
+
+/// POST /warnings/:id/analyze — run the real analysis service and return the
+/// rendered panel (audit P0 #40).
+///
+/// The handler runs the same evidence-gathering + LLM analysis as the JSON API
+/// (`POST /api/warnings/:id/analyze`), then renders the structured result:
+/// status, claims, evidence, confidence, limitations and recommendations.
+/// Missing LLM configuration, a disabled build, and LLM/storage failures each
+/// render an explicit unavailable/failed state instead of a placeholder.
 pub async fn analyze_warning_html(
     _session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
+    #[cfg(feature = "llm")] model: Option<Extension<crate::warning_analysis::WarningAnalysisModel>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let uuid = match Uuid::parse_str(&id) {
@@ -1344,36 +1460,57 @@ pub async fn analyze_warning_html(
         }
     };
 
-    // Check the warning exists
-    match store.get_warning(uuid).await {
-        Ok(Some(w)) => {
-            // Return a placeholder analysis panel — actual LLM analysis
-            // is triggered via the API endpoint POST /api/warnings/:id/analyze
-            Html(format!(
-                r#"<div class="apex-card p-4" id="analysis-panel">
-                     <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
-                     <p class="text-sm leading-relaxed text-muted-foreground">
-                       Analysis in progress for "<strong>{}</strong>". This may take a few moments.
-                       The analysis will evaluate the threat severity, assess affected entities,
-                       and recommend response actions based on available intelligence.
-                     </p>
-                     <div class="mt-3 flex items-center gap-2 text-[10px] text-muted-foreground">
-                       <span class="h-2 w-2 rounded-full bg-rams-orange animate-pulse"></span>
-                       Processing…
-                     </div>
-                   </div>"#,
-                super::escape_html(&w.title)
-            )).into_response()
+    let warning = match store.get_warning(uuid).await {
+        Ok(Some(warning)) => warning,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response()
         }
-        Ok(None) => (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response(),
-        Err(e) => {
-            tracing::error!("Failed to fetch warning for analysis {id}: {e}");
-            (
+        Err(error) => {
+            tracing::error!(warning_id = %id, error = %error, "Failed to fetch warning for analysis");
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("Failed to start analysis".to_string()),
             )
-                .into_response()
+                .into_response();
         }
+    };
+
+    #[cfg(feature = "llm")]
+    {
+        let Some(Extension(model)) = model else {
+            let panel = WarningAnalysisPanel::unavailable(
+                &id,
+                &warning.title,
+                "LLM analysis is not configured in this deployment. The warning is unchanged.",
+            );
+            return super::render_template(&panel);
+        };
+
+        match crate::warning_analysis::analyze_warning(&store, &model.primary, &warning).await {
+            Ok(output) => {
+                let panel = WarningAnalysisPanel::from_output(&id, &warning.title, &output);
+                super::render_template(&panel)
+            }
+            Err(error) => {
+                tracing::error!(warning_id = %id, error = %error, "warning analysis failed");
+                let panel = WarningAnalysisPanel::unavailable(
+                    &id,
+                    &warning.title,
+                    &format!("Analysis failed: {error}. The warning is unchanged."),
+                );
+                super::render_template(&panel)
+            }
+        }
+    }
+
+    #[cfg(not(feature = "llm"))]
+    {
+        let panel = WarningAnalysisPanel::unavailable(
+            &id,
+            &warning.title,
+            "This build does not include the LLM analysis feature. The warning is unchanged.",
+        );
+        super::render_template(&panel)
     }
 }
 

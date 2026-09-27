@@ -784,43 +784,184 @@ impl PgStore {
 
     // ── Claim-level evidence (audit P0 #23) ────────────────────────────────
 
-    /// Persist structured claims for an insight.
+    /// Persist structured claims for an insight together with their evidence.
     ///
-    /// Idempotent per `(insight_id, claim_text)`: re-running with the same
-    /// claims inserts nothing new. Returns the number of newly inserted rows.
+    /// Evidence ids are validated against `observations` before insert; ids
+    /// that do not exist are dropped, never linked. A claim whose kind
+    /// requires evidence but whose cited ids all failed validation is
+    /// downgraded to `unknown` (its provenance cannot be vouched for) rather
+    /// than inserted as a fabricated `observed` statement. `unknown` claims
+    /// carry no evidence links; `recommendation` claims may have none.
+    ///
+    /// Idempotent per `(insight_id, claim_hash)`: re-running with the same
+    /// claims re-links evidence but inserts no new claim rows. Returns the
+    /// number of newly inserted claim rows.
     pub async fn insert_insight_claims(
         &self,
         insight_id: Uuid,
         claims: &[InsightClaim],
     ) -> Result<usize> {
+        if claims.is_empty() {
+            return Ok(0);
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        // Validate the union of cited evidence ids once, before any insert.
+        let cited: Vec<Uuid> = claims
+            .iter()
+            .flat_map(|claim| claim.evidence_ids.iter().copied())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let existing: std::collections::HashSet<Uuid> = if cited.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM observations WHERE id = ANY($1)")
+                .bind(&cited)
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .collect()
+        };
+
         let mut inserted = 0usize;
         for claim in claims {
             let text = claim.claim.trim();
             if text.is_empty() {
                 continue;
             }
-            let result = sqlx::query(
+
+            let mut evidence: Vec<Uuid> = claim
+                .evidence_ids
+                .iter()
+                .filter(|id| existing.contains(id))
+                .copied()
+                .collect();
+            evidence.sort();
+            evidence.dedup();
+
+            let missing = claim.evidence_ids.len().saturating_sub(evidence.len());
+            if missing > 0 {
+                tracing::warn!(
+                    insight_id = %insight_id,
+                    claim = %text,
+                    missing,
+                    "insert_insight_claims: dropped evidence ids that do not exist in observations"
+                );
+            }
+
+            // Enforce the claim-kind policy before touching the join table.
+            let kind = match claim.kind {
+                apex_core::claims::ClaimKind::Unknown => {
+                    if !evidence.is_empty() {
+                        tracing::warn!(
+                            insight_id = %insight_id,
+                            claim = %text,
+                            "insert_insight_claims: unknown claim cannot cite evidence; dropping links"
+                        );
+                        evidence.clear();
+                    }
+                    apex_core::claims::ClaimKind::Unknown
+                }
+                apex_core::claims::ClaimKind::Recommendation => {
+                    apex_core::claims::ClaimKind::Recommendation
+                }
+                other if evidence.is_empty() => {
+                    tracing::warn!(
+                        insight_id = %insight_id,
+                        claim = %text,
+                        original_kind = %other,
+                        "insert_insight_claims: claim has no valid evidence; downgrading to unknown"
+                    );
+                    apex_core::claims::ClaimKind::Unknown
+                }
+                other => other,
+            };
+
+            // Find or create the claim row. New rows start as `unknown` with
+            // zero evidence so they are policy-valid before links exist; the
+            // row is promoted to its real kind below, once the join table
+            // state is settled.
+            let claim_id: Uuid = match sqlx::query_scalar::<_, Uuid>(
                 r#"INSERT INTO insight_claims
                        (insight_id, claim, evidence_ids, confidence, claim_kind, claim_hash)
-                   VALUES ($1, $2, $3, $4, $5, md5($2))
-                   ON CONFLICT (insight_id, claim_hash) DO NOTHING"#,
+                   VALUES ($1, $2, '{}'::uuid[], $3, 'unknown', md5($2))
+                   ON CONFLICT (insight_id, claim_hash) DO NOTHING
+                   RETURNING id"#,
             )
             .bind(insight_id)
             .bind(text)
-            .bind(&claim.evidence_ids)
             .bind(claim.confidence)
-            .bind(claim.kind.as_str())
-            .execute(&self.pool)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                Some(id) => {
+                    inserted += 1;
+                    id
+                }
+                None => sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM insight_claims WHERE insight_id = $1 AND claim_hash = md5($2)",
+                )
+                .bind(insight_id)
+                .bind(text)
+                .fetch_one(&mut *tx)
+                .await?,
+            };
+
+            // Promote the row to the resolved policy state. The counts below
+            // are recomputed by triggers as links are added/removed; setting
+            // the target count here keeps the CHECK satisfied at every
+            // intermediate step even when the old link set differed.
+            sqlx::query(
+                r#"UPDATE insight_claims
+                   SET claim_kind = $1,
+                       evidence_ids = $2,
+                       evidence_count = $3,
+                       confidence = COALESCE($4, confidence)
+                   WHERE id = $5"#,
+            )
+            .bind(kind.as_str())
+            .bind(&evidence)
+            .bind(evidence.len() as i32)
+            .bind(claim.confidence)
+            .bind(claim_id)
+            .execute(&mut *tx)
             .await?;
-            inserted += result.rows_affected() as usize;
+
+            // Add the validated links first (count can only grow, so an
+            // observed/inference claim never dips below 1), then remove links
+            // that are no longer cited.
+            for evidence_id in &evidence {
+                sqlx::query(
+                    r#"INSERT INTO insight_claim_evidence (claim_id, evidence_id)
+                       VALUES ($1, $2)
+                       ON CONFLICT (claim_id, evidence_id) DO NOTHING"#,
+                )
+                .bind(claim_id)
+                .bind(evidence_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            sqlx::query(
+                r#"DELETE FROM insight_claim_evidence
+                   WHERE claim_id = $1 AND NOT (evidence_id = ANY($2))"#,
+            )
+            .bind(claim_id)
+            .bind(&evidence)
+            .execute(&mut *tx)
+            .await?;
         }
+
+        tx.commit().await?;
         Ok(inserted)
     }
 
     /// Claims attached to an insight, ordered for rendering.
     pub async fn list_insight_claims(&self, insight_id: Uuid) -> Result<Vec<InsightClaimRow>> {
         let rows = sqlx::query_as::<_, InsightClaimRow>(
-            "SELECT id, insight_id, claim, evidence_ids, confidence, claim_kind, created_at
+            "SELECT id, insight_id, claim, evidence_ids, confidence, claim_kind, \
+                    evidence_count, created_at
              FROM insight_claims
              WHERE insight_id = $1
              ORDER BY created_at ASC, id ASC",
@@ -870,6 +1011,9 @@ pub struct InsightClaimRow {
     pub evidence_ids: Vec<Uuid>,
     pub confidence: Option<f64>,
     pub claim_kind: String,
+    /// Denormalized count of evidence links, maintained by triggers on
+    /// `insight_claim_evidence` (migration 078).
+    pub evidence_count: i32,
     pub created_at: DateTime<Utc>,
 }
 
