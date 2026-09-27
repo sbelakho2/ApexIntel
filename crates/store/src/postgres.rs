@@ -244,9 +244,9 @@ pub use event_outbox::{
 };
 mod notification_delivery;
 pub use notification_delivery::{
-    notification_delivery_backlog_on, notification_payload_hash, DeadLetterNotificationRow,
-    DeliveryChannel, NewNotificationEvent, NotificationBacklog, NotificationDeliveryRow,
-    NotificationEnqueueOutcome,
+    notification_delivery_backlog_on, notification_delivery_health_on, notification_payload_hash,
+    DeadLetterNotificationRow, DeliveryChannel, NewNotificationEvent, NotificationBacklog,
+    NotificationDeliveryHealth, NotificationDeliveryRow, NotificationEnqueueOutcome,
 };
 mod company_assets;
 mod competitors;

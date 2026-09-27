@@ -26,7 +26,15 @@ pub(super) async fn run_notification_delivery(kind: &JobKind, store: &Arc<PgStor
     run.start();
 
     let owner = delivery_claim_owner();
-    let router = ConfiguredChannelRouter::from_env();
+    let router = match ConfiguredChannelRouter::from_env() {
+        Ok(router) => router,
+        Err(error) => {
+            run.fail(&format!(
+                "notification_delivery: failed to build the channel router: {error}"
+            ));
+            return run;
+        }
+    };
 
     let outcome = match process_due_notifications(
         store.as_ref(),

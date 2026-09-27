@@ -18,9 +18,12 @@
 //!   jitter up to a per-channel attempt budget; permanent failures (bad
 //!   destination, 4xx, 5xx SMTP reply) dead-letter immediately.
 //! * **At-least-once** — a delivery accepted by the channel but not recorded
-//!   (crash) is retried; every attempt carries a stable idempotency key built
-//!   from (notification_event_id, channel, destination, attempt, payload_hash)
-//!   so the channel can deduplicate. Exactly-once is not claimed.
+//!   (crash) is retried; every attempt for a delivery row carries the same
+//!   stable idempotency key built from
+//!   (notification_event_id, channel, destination, payload_hash) — the attempt
+//!   number is NOT part of the key — so the channel can deduplicate a
+//!   redelivery after the lease expires and the row is reclaimed. Exactly-once
+//!   is not claimed.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -142,13 +145,18 @@ fn clock_jitter_fraction() -> f64 {
         .unwrap_or(0.5)
 }
 
-/// Stable per-attempt idempotency key:
-/// sha256(notification_event_id | channel | destination | attempt | payload_hash).
+/// Stable per-delivery idempotency key:
+/// sha256(notification_event_id | channel | destination | payload_hash).
+///
+/// The attempt number is deliberately **not** part of the identity. A send
+/// that the channel accepted but whose settlement was lost (crash, lease
+/// expiry, row reclaim) is retried with the same key, so the receiver can
+/// deduplicate the redelivery. The attempt travels separately as the
+/// `X-Apex-Attempt` header.
 pub fn transport_idempotency_key(
     notification_event_id: Option<Uuid>,
     channel: &str,
     destination: &str,
-    attempt: i32,
     payload_hash: Option<&str>,
 ) -> String {
     let mut hasher = Sha256::new();
@@ -163,18 +171,22 @@ pub fn transport_idempotency_key(
     hasher.update(b"|");
     hasher.update(destination.as_bytes());
     hasher.update(b"|");
-    hasher.update(attempt.to_string().as_bytes());
-    hasher.update(b"|");
     hasher.update(payload_hash.unwrap_or_default().as_bytes());
     hex::encode(hasher.finalize())
 }
 
 /// The domain payload persisted for one channel delivery.
+///
+/// The enqueue path stores `{ "alert": <PendingAlert> }`; `subject`/`body`
+/// are optional pre-rendered transport content. When absent, the router
+/// renders the channel body from the alert at delivery time, so a stored row
+/// is always deliverable rather than dead-lettering on a missing field.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NotificationDeliveryPayload {
     pub alert: PendingAlert,
+    #[serde(default)]
     pub subject: Option<String>,
-    /// Formatted channel body (webhook JSON / email text).
+    #[serde(default)]
     pub body: String,
 }
 
@@ -206,7 +218,6 @@ impl NotificationDelivery {
             row.notification_event_id,
             &row.channel,
             &row.destination,
-            row.attempts.max(0),
             Some(&payload_hash),
         );
         Ok(Self {
@@ -303,25 +314,44 @@ pub trait ChannelTransport: Send + Sync {
     async fn deliver(&self, delivery: &NotificationDelivery) -> Result<(), DeliveryFailure>;
 }
 
+/// Build the shared HTTP client for channel deliveries.
+///
+/// `Err` on failure (TLS backend init, ...): the caller propagates instead of
+/// falling back to a silently different client or panicking.
+fn build_notification_http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to build notification HTTP client")
+}
+
 /// Production transport: dispatches to webhook and email channels from the
 /// environment-derived [`NotificationConfig`].
+#[derive(Debug)]
 pub struct ConfiguredChannelRouter {
     config: NotificationConfig,
     http: reqwest::Client,
 }
 
 impl ConfiguredChannelRouter {
-    pub fn new(config: NotificationConfig) -> Self {
-        Self {
-            config,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .unwrap_or_else(|error| panic!("failed to build reqwest client: {error}")),
-        }
+    /// Build the production router.
+    ///
+    /// A client that cannot be built (TLS backend init failure, ...) is an
+    /// `Err` the caller must handle; this constructor never panics.
+    pub fn new(config: NotificationConfig) -> Result<Self> {
+        Self::with_http_client(config, build_notification_http_client())
     }
 
-    pub fn from_env() -> Self {
+    /// Testable seam: the client build result is injected so the failure path
+    /// is provably an `Err` rather than a panic.
+    fn with_http_client(config: NotificationConfig, http: Result<reqwest::Client>) -> Result<Self> {
+        Ok(Self {
+            config,
+            http: http.context("failed to build notification HTTP client")?,
+        })
+    }
+
+    pub fn from_env() -> Result<Self> {
         Self::new(NotificationConfig::from_env())
     }
 
@@ -343,6 +373,20 @@ impl ConfiguredChannelRouter {
         channels
     }
 
+    /// The transport body for a delivery: the pre-rendered body when present,
+    /// otherwise rendered from the alert for the channel. This keeps every
+    /// persisted row deliverable instead of sending an empty payload.
+    fn delivery_body(&self, delivery: &NotificationDelivery) -> String {
+        if !delivery.payload.body.trim().is_empty() {
+            return delivery.payload.body.clone();
+        }
+        if delivery.channel.eq_ignore_ascii_case("email") {
+            crate::notifications::format_email_body(&delivery.payload.alert)
+        } else {
+            crate::notifications::format_slack_message(&delivery.payload.alert)
+        }
+    }
+
     async fn deliver_webhook(
         &self,
         webhook: &WebhookConfig,
@@ -352,10 +396,15 @@ impl ConfiguredChannelRouter {
             .http
             .post(&delivery.destination)
             .header("Content-Type", "application/json")
-            // Stable per-attempt idempotency identity (item 5/36).
+            // Stable delivery identity: identical across every attempt for the
+            // same event/channel/destination/payload, so a redelivery after a
+            // lost settlement is deduplicated by the receiver.
             .header("Idempotency-Key", &delivery.idempotency_key)
+            .header("X-Apex-Delivery-Key", &delivery.idempotency_key)
+            // The attempt number is observability metadata, never identity.
+            .header("X-Apex-Attempt", delivery.attempts.max(1).to_string())
             .header("X-Apex-Notification-Event", delivery.delivery_key.as_str())
-            .body(delivery.payload.body.clone());
+            .body(self.delivery_body(delivery));
         if let Some(ref token) = webhook.bearer_token {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
@@ -380,11 +429,14 @@ impl ConfiguredChannelRouter {
         config: &EmailConfig,
         delivery: &NotificationDelivery,
     ) -> Result<(), DeliveryFailure> {
-        let subject = delivery
-            .payload
-            .subject
-            .clone()
-            .unwrap_or_else(|| "[ApexIntel Alert]".to_string());
+        let subject = delivery.payload.subject.clone().unwrap_or_else(|| {
+            format!(
+                "{} [{}] {}",
+                config.subject_prefix,
+                delivery.payload.alert.severity.as_str().to_uppercase(),
+                delivery.payload.alert.title
+            )
+        });
         let builder = Message::builder()
             .from(config.from_address.parse::<Mailbox>().map_err(|error| {
                 DeliveryFailure::Permanent(format!("invalid from address: {error}"))
@@ -400,7 +452,7 @@ impl ConfiguredChannelRouter {
             .singlepart(
                 SinglePart::builder()
                     .header(ContentType::TEXT_PLAIN)
-                    .body(delivery.payload.body.clone()),
+                    .body(self.delivery_body(delivery)),
             )
             .map_err(|error| DeliveryFailure::Permanent(format!("invalid email: {error}")))?;
 
@@ -505,11 +557,14 @@ pub struct EnqueueOutcome {
 }
 
 /// Build the durable notification event for a pending alert.
-pub fn notification_event_for(alert: &PendingAlert) -> NewNotificationEvent {
+///
+/// Serialization failures are errors: a fabricated empty payload (`{}`) must
+/// never be enqueued, because it would dedupe under the real identity while
+/// carrying no content, and the channel delivery would send an empty body.
+pub fn notification_event_for(alert: &PendingAlert) -> Result<NewNotificationEvent> {
     let event = alert.to_alert_event();
-    let payload = serde_json::to_value(alert).unwrap_or_else(|_| serde_json::json!({}));
-    let outbox_payload = serde_json::to_value(&event).unwrap_or_else(|_| serde_json::json!({}));
-    NewNotificationEvent {
+    let (payload, outbox_payload) = serialize_notification_payloads(alert, &event)?;
+    Ok(NewNotificationEvent {
         dedupe_key: alert.source_id.clone(),
         source_type: alert.category.clone(),
         source_id: alert.source_id.clone(),
@@ -526,7 +581,24 @@ pub fn notification_event_for(alert: &PendingAlert) -> NewNotificationEvent {
         outbox_aggregate_id: event.id,
         outbox_event_type: event.event_type.as_str().to_string(),
         outbox_payload,
-    }
+    })
+}
+
+/// Serialize the domain alert and its outbox event, surfacing any serialization
+/// failure instead of substituting an empty object.
+fn serialize_notification_payloads<A, E>(
+    alert: &A,
+    event: &E,
+) -> Result<(serde_json::Value, serde_json::Value)>
+where
+    A: serde::Serialize + ?Sized,
+    E: serde::Serialize + ?Sized,
+{
+    let payload = serde_json::to_value(alert)
+        .context("failed to serialize the notification alert payload")?;
+    let outbox_payload = serde_json::to_value(event)
+        .context("failed to serialize the notification outbox payload")?;
+    Ok((payload, outbox_payload))
 }
 
 #[async_trait]
@@ -536,7 +608,7 @@ impl NotificationEnqueuer for PgStore {
         alert: &PendingAlert,
         channels: &[DeliveryChannel],
     ) -> Result<EnqueueOutcome> {
-        let event = notification_event_for(alert);
+        let event = notification_event_for(alert)?;
         let outcome = self.enqueue_notification_event(&event, channels).await?;
         Ok(EnqueueOutcome {
             already_enqueued: outcome.already_enqueued,
@@ -918,24 +990,128 @@ mod tests {
     }
 
     #[test]
-    fn idempotency_key_is_stable_and_identity_sensitive() {
+    fn idempotency_key_is_stable_across_attempts_and_identity_sensitive() {
         let event_id = Uuid::new_v4();
-        let key = transport_idempotency_key(Some(event_id), "email", "a@b.c", 1, Some("hash"));
+        let key = transport_idempotency_key(Some(event_id), "email", "a@b.c", Some("hash"));
+        // Stable across attempts: the same delivery reclaimed after a lost
+        // settlement must arrive with an identical key, so the receiver can
+        // deduplicate it.
         assert_eq!(
             key,
-            transport_idempotency_key(Some(event_id), "email", "a@b.c", 1, Some("hash"))
+            transport_idempotency_key(Some(event_id), "email", "a@b.c", Some("hash"))
+        );
+        assert_eq!(key.len(), 64);
+        assert_ne!(
+            key,
+            transport_idempotency_key(Some(event_id), "slack", "a@b.c", Some("hash"))
         );
         assert_ne!(
             key,
-            transport_idempotency_key(Some(event_id), "email", "a@b.c", 2, Some("hash"))
+            transport_idempotency_key(Some(event_id), "email", "x@y.z", Some("hash"))
         );
         assert_ne!(
             key,
-            transport_idempotency_key(Some(event_id), "slack", "a@b.c", 1, Some("hash"))
+            transport_idempotency_key(Some(event_id), "email", "a@b.c", Some("other"))
         );
         assert_ne!(
             key,
-            transport_idempotency_key(Some(event_id), "email", "a@b.c", 1, Some("other"))
+            transport_idempotency_key(None, "email", "a@b.c", Some("hash"))
+        );
+    }
+
+    #[test]
+    fn delivery_body_renders_from_the_alert_when_absent() {
+        let router =
+            ConfiguredChannelRouter::new(NotificationConfig::default()).expect("client builds");
+        let alert = alert("sla-breach:w1", "sla_breach");
+        let delivery = NotificationDelivery {
+            delivery_key: "key-1".to_string(),
+            notification_event_id: Some(Uuid::new_v4()),
+            channel: "webhook".to_string(),
+            destination: "https://example.test/hook".to_string(),
+            attempts: 2,
+            idempotency_key: "stable".to_string(),
+            payload: NotificationDeliveryPayload {
+                alert: alert.clone(),
+                subject: None,
+                body: String::new(),
+            },
+        };
+
+        // The enqueue path stores only the alert; the router must render a
+        // real body rather than sending an empty payload.
+        let rendered = router.delivery_body(&delivery);
+        assert!(rendered.contains(&alert.title));
+        assert!(serde_json::from_str::<serde_json::Value>(&rendered).is_ok());
+
+        let email = NotificationDelivery {
+            channel: "email".to_string(),
+            ..delivery.clone()
+        };
+        assert!(router.delivery_body(&email).contains(&alert.body));
+
+        let pre_rendered = NotificationDelivery {
+            payload: NotificationDeliveryPayload {
+                alert,
+                subject: Some("subject".to_string()),
+                body: "{\"custom\":true}".to_string(),
+            },
+            ..delivery
+        };
+        assert_eq!(router.delivery_body(&pre_rendered), "{\"custom\":true}");
+    }
+
+    #[test]
+    fn constructor_failure_is_an_err_not_a_panic() {
+        let config = NotificationConfig::default();
+        let error = ConfiguredChannelRouter::with_http_client(
+            config.clone(),
+            Err(anyhow::anyhow!("tls backend init failed")),
+        )
+        .expect_err("a client build failure must surface as Err");
+        assert!(
+            error.to_string().contains("notification HTTP client"),
+            "the error must name the client build failure, got: {error}"
+        );
+
+        let router = ConfiguredChannelRouter::new(config).expect("client builds");
+        assert!(router.channels().is_empty());
+    }
+
+    /// A serializer that always fails, standing in for a payload type that
+    /// cannot be represented as JSON.
+    struct FailingSerialize;
+
+    impl serde::Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom(
+                "intentional serialization failure",
+            ))
+        }
+    }
+
+    #[test]
+    fn serialization_failure_is_an_error_not_an_empty_payload() {
+        let alert = alert("sla-breach:w1", "sla_breach");
+        let event = alert.to_alert_event();
+
+        let failed = serialize_notification_payloads(&FailingSerialize, &event)
+            .expect_err("a serialization failure must surface as an error");
+        assert!(
+            failed.to_string().contains("failed to serialize"),
+            "the error must identify the payload serialization, got: {failed}"
+        );
+
+        // The healthy path never fabricates an empty payload.
+        let built = notification_event_for(&alert).expect("healthy alert serializes");
+        assert_ne!(built.payload, serde_json::json!({}));
+        assert_ne!(built.outbox_payload, serde_json::json!({}));
+        assert_eq!(
+            built.payload["source_id"],
+            serde_json::json!("sla-breach:w1")
         );
     }
 
@@ -1110,8 +1286,8 @@ mod tests {
     #[test]
     fn notification_event_identity_is_stable_and_sla_tagged() {
         let alert = alert("sla-reminder:w9", "sla_reminder");
-        let first = notification_event_for(&alert);
-        let second = notification_event_for(&alert);
+        let first = notification_event_for(&alert).expect("serializes");
+        let second = notification_event_for(&alert).expect("serializes");
         assert_eq!(first.dedupe_key, "sla-reminder:w9");
         assert_eq!(first.dedupe_key, second.dedupe_key);
         assert_eq!(first.outbox_aggregate_type, "sla_alert");

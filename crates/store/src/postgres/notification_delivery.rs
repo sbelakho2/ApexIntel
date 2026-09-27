@@ -5,9 +5,12 @@
 //! send therefore runs outside any database transaction; a crash mid-send leaves
 //! the lease to expire and the row is retried instead of being lost.
 //!
-//! Delivery guarantee is at-least-once: a redelivered attempt carries the same
-//! transport idempotency key (event/channel/destination/attempt/payload-hash),
-//! so downstream consumers can deduplicate.
+//! Delivery guarantee is at-least-once: every attempt for a delivery row
+//! carries the same **stable** transport idempotency key
+//! (event/channel/destination/payload-hash), so a send that was accepted but
+//! whose settlement was lost is deduplicated by the receiver when the row is
+//! reclaimed. The attempt number travels separately (header), never inside the
+//! key.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -56,7 +59,9 @@ pub struct NewNotificationEvent {
     pub category: String,
     pub title: String,
     pub body: String,
-    /// Domain payload (the serialized `PendingAlert`).
+    /// Domain payload (the serialized `PendingAlert`). Stored as-is on
+    /// `notification_events` and wrapped as `{ "alert": ... }` for the
+    /// per-channel transport payload.
     pub payload: Value,
     /// Outbox row identity for the real-time alert stream.
     pub outbox_aggregate_type: String,
@@ -85,6 +90,38 @@ pub struct NotificationBacklog {
     pub overdue: i64,
     /// Terminal failures awaiting operator replay.
     pub dead_lettered: i64,
+}
+
+/// Full delivery health snapshot for the readiness capability probe.
+///
+/// Backlog alone cannot tell a healthy pipeline from a stalled one: a stuck
+/// `delivering` lease, a dead-letter spike, or a processor that stopped running
+/// leave the backlog counts looking harmless. This snapshot adds the
+/// retry-processor window statistics the `notification_delivery` capability
+/// probe evaluates (`NotificationDeliveryHealth` is policy-checked in the API).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, sqlx::FromRow)]
+pub struct NotificationDeliveryHealth {
+    /// Rows waiting to be attempted (pending or failed, not dead-lettered).
+    pub pending: i64,
+    /// Waiting rows whose `next_retry_at` is already due.
+    pub overdue: i64,
+    /// Age in seconds of the oldest overdue row (`None` when nothing is due).
+    pub oldest_overdue_age_secs: Option<i64>,
+    /// Terminal failures awaiting operator replay.
+    pub dead_lettered: i64,
+    /// Rows dead-lettered inside the recent window (change rate).
+    pub dead_lettered_recent: i64,
+    /// Claimed rows whose lease already expired: a crash (or a settlement
+    /// write failure) left them `delivering` past their lease.
+    pub stuck_delivering: i64,
+    /// Attempts recorded inside the recent window.
+    pub attempts_recent: i64,
+    /// Recent-window attempts that settled as delivered.
+    pub delivered_recent: i64,
+    /// Recent-window attempts that settled as dead-lettered (terminal
+    /// failures). Transient `failed` attempts are excluded: retries with
+    /// backoff are normal at-least-once behaviour, not delivery failure.
+    pub failed_recent: i64,
 }
 
 /// Dead-lettered delivery row (admin listing).
@@ -171,7 +208,12 @@ impl PgStore {
         .fetch_one(&mut *tx)
         .await?;
 
-        let payload_hash = notification_payload_hash(&event.payload);
+        // The transport payload the retry processor deserializes (alert plus
+        // optional subject/body rendered at claim time). Persisting the raw
+        // alert here would make every claimed row fail to parse and
+        // dead-letter, so the wrapper shape is part of the persisted contract.
+        let delivery_payload = serde_json::json!({ "alert": &event.payload });
+        let payload_hash = notification_payload_hash(&delivery_payload);
         let mut deliveries_enqueued = 0usize;
         for channel in channels {
             // Per-channel idempotency identity: event + channel + destination.
@@ -190,7 +232,7 @@ impl PgStore {
             .bind(notification_event_id)
             .bind(&channel.channel)
             .bind(&channel.destination)
-            .bind(&event.payload)
+            .bind(&delivery_payload)
             .bind(&payload_hash)
             .execute(&mut *tx)
             .await?;
@@ -206,7 +248,9 @@ impl PgStore {
         })
     }
 
-    /// Claim due `pending`/`failed` delivery rows with a lease.
+    /// Claim due `pending`/`failed` delivery rows — plus `delivering` rows
+    /// whose lease already expired (a crashed attempt or lost settlement) —
+    /// with a fresh lease.
     ///
     /// TX1 only: the row locks are released when the claim transaction commits,
     /// so the caller can attempt the channel send without holding any database
@@ -222,7 +266,7 @@ impl PgStore {
         let rows = sqlx::query_as::<_, NotificationDeliveryRow>(
             "WITH claimed AS ( \
                  SELECT delivery_key FROM notification_delivery_state \
-                  WHERE status IN ('pending', 'failed') \
+                  WHERE status IN ('pending', 'failed', 'delivering') \
                     AND dead_lettered_at IS NULL \
                     AND (next_retry_at IS NULL OR next_retry_at <= now()) \
                     AND (lease_until IS NULL OR lease_until <= now()) \
@@ -255,11 +299,16 @@ impl PgStore {
 
     /// Mark a claimed delivery delivered. Returns `false` when the lease was
     /// lost (another owner settled it first).
+    ///
+    /// The settlement and its attempt-log row commit together, so the
+    /// readiness success-ratio window sees exactly the settlements that
+    /// happened.
     pub async fn mark_notification_delivered(
         &self,
         delivery_key: &str,
         owner: &str,
     ) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             "UPDATE notification_delivery_state \
                 SET status = 'delivered', \
@@ -273,9 +322,14 @@ impl PgStore {
         )
         .bind(delivery_key)
         .bind(owner)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        Ok(result.rows_affected() > 0)
+        let settled = result.rows_affected() > 0;
+        if settled {
+            record_delivery_attempt(&mut *tx, delivery_key, "delivered", None).await?;
+        }
+        tx.commit().await?;
+        Ok(settled)
     }
 
     /// Record a retryable failure: schedule the next attempt at `next_retry_at`.
@@ -287,6 +341,7 @@ impl PgStore {
         error: &str,
     ) -> Result<bool> {
         let error = truncate_delivery_error(error);
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             "UPDATE notification_delivery_state \
                 SET status = 'failed', \
@@ -300,10 +355,15 @@ impl PgStore {
         .bind(delivery_key)
         .bind(owner)
         .bind(next_retry_at)
-        .bind(error)
-        .execute(&self.pool)
+        .bind(&error)
+        .execute(&mut *tx)
         .await?;
-        Ok(result.rows_affected() > 0)
+        let settled = result.rows_affected() > 0;
+        if settled {
+            record_delivery_attempt(&mut *tx, delivery_key, "failed", Some(&error)).await?;
+        }
+        tx.commit().await?;
+        Ok(settled)
     }
 
     /// Move a claimed delivery to the terminal dead-letter state.
@@ -314,6 +374,7 @@ impl PgStore {
         reason: &str,
     ) -> Result<bool> {
         let reason = truncate_delivery_error(reason);
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             "UPDATE notification_delivery_state \
                 SET status = 'dead_lettered', \
@@ -328,10 +389,15 @@ impl PgStore {
         )
         .bind(delivery_key)
         .bind(owner)
-        .bind(reason)
-        .execute(&self.pool)
+        .bind(&reason)
+        .execute(&mut *tx)
         .await?;
-        Ok(result.rows_affected() > 0)
+        let settled = result.rows_affected() > 0;
+        if settled {
+            record_delivery_attempt(&mut *tx, delivery_key, "dead_lettered", Some(&reason)).await?;
+        }
+        tx.commit().await?;
+        Ok(settled)
     }
 
     /// Operator replay: reset a dead-lettered delivery so the retry processor
@@ -362,6 +428,16 @@ impl PgStore {
         now: DateTime<Utc>,
     ) -> Result<NotificationBacklog> {
         notification_delivery_backlog_on(&self.pool, now).await
+    }
+
+    /// Full delivery health snapshot used by the `notification_delivery`
+    /// readiness capability probe.
+    pub async fn notification_delivery_health(
+        &self,
+        now: DateTime<Utc>,
+        window_secs: i64,
+    ) -> Result<NotificationDeliveryHealth> {
+        notification_delivery_health_on(&self.pool, now, window_secs).await
     }
 
     /// Dead-lettered channel deliveries, newest first (admin UI).
@@ -409,6 +485,85 @@ where
         overdue,
         dead_lettered,
     })
+}
+
+/// Append one settlement to the attempt log. Called in the same transaction as
+/// the state update so the readiness success-ratio window cannot drift from
+/// the settlement it describes.
+async fn record_delivery_attempt<'e, E>(
+    executor: E,
+    delivery_key: &str,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        "INSERT INTO notification_delivery_attempts (delivery_key, attempted_at, status, error) \
+         VALUES ($1, now(), $2, $3)",
+    )
+    .bind(delivery_key)
+    .bind(status)
+    .bind(error)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Full delivery health snapshot that can run on a pool or a single connection
+/// (readiness probe), without holding a transaction.
+///
+/// `window_secs` bounds the recent attempt/dead-letter change-rate figures.
+pub async fn notification_delivery_health_on<'e, E>(
+    executor: E,
+    now: DateTime<Utc>,
+    window_secs: i64,
+) -> Result<NotificationDeliveryHealth>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let window_secs = window_secs.clamp(1, 86_400);
+    let health = sqlx::query_as::<_, NotificationDeliveryHealth>(
+        "SELECT \
+             (SELECT COUNT(*) FROM notification_delivery_state \
+               WHERE status IN ('pending', 'failed') AND dead_lettered_at IS NULL)::bigint \
+                 AS pending, \
+             (SELECT COUNT(*) FROM notification_delivery_state \
+               WHERE status IN ('pending', 'failed') AND dead_lettered_at IS NULL \
+                 AND (next_retry_at IS NULL OR next_retry_at <= $1))::bigint \
+                 AS overdue, \
+             (SELECT (EXTRACT(EPOCH FROM ($1 - MIN(next_retry_at)))::bigint) \
+                FROM notification_delivery_state \
+               WHERE status IN ('pending', 'failed') AND dead_lettered_at IS NULL \
+                 AND next_retry_at IS NOT NULL AND next_retry_at <= $1) \
+                 AS oldest_overdue_age_secs, \
+             (SELECT COUNT(*) FROM notification_delivery_state \
+               WHERE status = 'dead_lettered')::bigint \
+                 AS dead_lettered, \
+             (SELECT COUNT(*) FROM notification_delivery_state \
+               WHERE status = 'dead_lettered' AND dead_lettered_at >= $1 - make_interval(secs => $2::double precision))::bigint \
+                 AS dead_lettered_recent, \
+             (SELECT COUNT(*) FROM notification_delivery_state \
+               WHERE status = 'delivering' AND lease_until IS NOT NULL AND lease_until < $1)::bigint \
+                 AS stuck_delivering, \
+             (SELECT COUNT(*) FROM notification_delivery_attempts \
+               WHERE attempted_at >= $1 - make_interval(secs => $2::double precision))::bigint \
+                 AS attempts_recent, \
+             (SELECT COUNT(*) FROM notification_delivery_attempts \
+               WHERE attempted_at >= $1 - make_interval(secs => $2::double precision) \
+                 AND status = 'delivered')::bigint \
+                 AS delivered_recent, \
+             (SELECT COUNT(*) FROM notification_delivery_attempts \
+               WHERE attempted_at >= $1 - make_interval(secs => $2::double precision) \
+                 AND status = 'dead_lettered')::bigint \
+                 AS failed_recent",
+    )
+    .bind(now)
+    .bind(window_secs as f64)
+    .fetch_one(executor)
+    .await?;
+    Ok(health)
 }
 
 #[cfg(test)]

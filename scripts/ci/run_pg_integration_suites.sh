@@ -76,6 +76,13 @@ run cargo test -p apex-store \
 # ── Triage semantic dedup / warning ingress ──────────────────────────────────
 run cargo test -p apex-triage --test triage_ingest_integration --locked -- --ignored --test-threads=1
 
+# ── Notification delivery crash-window idempotency ───────────────────────────
+# Receiver accepts -> settlement write lost -> lease expires -> row reclaimed:
+# the redelivery must carry the same stable key (and the receiver dedupes it).
+run cargo test -p apex-worker \
+  --test notification_delivery_idempotency_integration \
+  --locked -- --ignored --test-threads=1
+
 # ── Insight evidence persistence (unit-test target) ──────────────────────────
 run cargo test -p apex-insights --lib --locked -- --ignored --test-threads=1
 
