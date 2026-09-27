@@ -1,5 +1,5 @@
 -- ──────────────────────────────────────────────────────────────────────────────
--- Migration 069: alert-rule engine state
+-- Migration 074: alert-rule engine state
 --
 -- Readiness must prove the alert-rule engine is actually loaded, not merely
 -- that a YAML file exists: `/api/health/ready` under APEX_PROFILE=full requires

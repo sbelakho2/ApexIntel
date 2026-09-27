@@ -7,8 +7,8 @@
 # describing 061). The first self-identification found in the header is the
 # one that counts, and it must equal the number in the filename.
 #
-# Migrations 000..045 are the production revision recorded in
-# crates/store/tests/fixtures/production_schema_045.sql. Their bytes (and
+# Migrations 000..068 are the revisions production has recorded as applied
+# (checksums in `_sqlx_migrations`). Their bytes (and
 # therefore their sqlx checksums) are immutable: editing one would make every
 # deployed database refuse to start. They are counted as frozen and skipped.
 #
@@ -17,7 +17,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIR="${1:-${ROOT}/migrations}"
-FROZEN_MAX="${FROZEN_MAX:-45}"
+FROZEN_MAX="${FROZEN_MAX:-68}"
 
 failed=0
 checked=0

@@ -1,4 +1,4 @@
--- 070_app_users_unique_username.sql
+-- 072_app_users_unique_username.sql
 --
 -- Audit item 2: `app_users.username` was never unique (059 created a
 -- non-unique index and 065 added another non-unique one), so

@@ -1,4 +1,4 @@
--- 071_app_users_role_check.sql
+-- 073_app_users_role_check.sql
 --
 -- Audit item 3: `app_users.role` was an unconstrained TEXT column, and the
 -- login path silently defaulted a malformed role to `analyst`. An unknown
