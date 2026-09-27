@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS login_attempt_throttle (
 );
 
 COMMENT ON TABLE login_attempt_throttle IS
-    'Durable multi-replica login throttle: one row per normalised username + client fingerprint (migration 069)';
+    'Durable multi-replica login throttle: one row per normalised username + client fingerprint (migration 071)';
 COMMENT ON COLUMN login_attempt_throttle.attempt_key IS
     'Opaque throttle key; callers build it from the normalised login name plus a trusted client fingerprint';
 COMMENT ON COLUMN login_attempt_throttle.window_10m_started_at IS

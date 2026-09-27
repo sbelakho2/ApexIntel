@@ -53,7 +53,7 @@ BEGIN
 
     IF downgraded > 0 THEN
         RAISE WARNING
-            'migration 071: % app_users row(s) carried an unknown role and were downgraded to viewer',
+            'migration 073: % app_users row(s) carried an unknown role and were downgraded to viewer',
             downgraded;
     END IF;
 END $$;
@@ -64,6 +64,6 @@ ALTER TABLE app_users ADD CONSTRAINT app_users_role_check
 ALTER TABLE app_users VALIDATE CONSTRAINT app_users_role_check;
 
 COMMENT ON COLUMN app_users.role IS
-    'One of admin | analyst | viewer | service; enforced by app_users_role_check (migration 071) and by WebUser::api_role on the login path';
+    'One of admin | analyst | viewer | service; enforced by app_users_role_check (migration 073) and by WebUser::api_role on the login path';
 
 COMMIT;

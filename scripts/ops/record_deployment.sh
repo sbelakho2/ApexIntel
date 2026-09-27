@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Record one production deployment's provenance.
 #
-# Every deploy must leave a durable record of: the git SHA, the CI pipeline that
-# produced the artifact, the test result, the migration test result, the
-# artifact digest, and the deploy time. The script prints the matching
-# APEX_GIT_SHA / APEX_CI_PIPELINE_ID / APEX_ARTIFACT_DIGEST / APEX_DEPLOYED_AT
-# exports; add them to the service environment and restart so `/api/version`
-# and `/api/health/capabilities` report the exact running deployment.
+# Every deploy must leave a durable record of: the git SHA, the build
+# timestamp, the CI pipeline that produced the artifact, the test result, the
+# migration test result, the artifact digest, and the deploy time. The script
+# prints the matching APEX_GIT_SHA / APEX_BUILD_TIMESTAMP / APEX_CI_PIPELINE_ID
+# / APEX_ARTIFACT_DIGEST / APEX_DEPLOYED_AT exports; add them to the service
+# environment and restart so `/api/version` reports the exact running
+# deployment and it can be matched to the release evidence bundle.
 #
 # Usage:
 #   scripts/ops/record_deployment.sh \
 #     --git-sha "$(git rev-parse HEAD)" \
 #     --pipeline-id "$CI_PIPELINE_NUMBER" \
+#     --build-timestamp "$CI_PIPELINE_CREATED" \
 #     --tests passed \
 #     --migrations passed \
 #     --artifact /opt/apexintel/bin/apex-api \
@@ -23,13 +25,14 @@
 set -euo pipefail
 
 usage() {
-  grep '^#' "$0" | sed 's/^# \{0,1\}//' | sed -n '2,26p'
+  grep '^#' "$0" | sed 's/^# \{0,1\}//' | sed -n '2,28p'
   exit "${1:-0}"
 }
 
 ledger="${APEX_DEPLOYMENT_LEDGER:-deployments.jsonl}"
 git_sha="${APEX_GIT_SHA:-${CI_COMMIT_SHA:-}}"
 pipeline_id="${APEX_CI_PIPELINE_ID:-${CI_PIPELINE_NUMBER:-${CI_PIPELINE_ID:-}}}"
+build_timestamp="${APEX_BUILD_TIMESTAMP:-${CI_PIPELINE_CREATED:-}}"
 tests="${APEX_TEST_RESULT:-}"
 migrations="${APEX_MIGRATION_TEST_RESULT:-}"
 artifact_digest="${APEX_ARTIFACT_DIGEST:-}"
@@ -42,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --ledger) ledger="$2"; shift 2 ;;
     --git-sha) git_sha="$2"; shift 2 ;;
     --pipeline-id) pipeline_id="$2"; shift 2 ;;
+    --build-timestamp) build_timestamp="$2"; shift 2 ;;
     --tests) tests="$2"; shift 2 ;;
     --migrations) migrations="$2"; shift 2 ;;
     --artifact) artifact_path="$2"; shift 2 ;;
@@ -98,8 +102,9 @@ json_escape() {
 }
 
 mkdir -p "$(dirname "${ledger}")"
-printf '{"git_sha":"%s","ci_pipeline_id":"%s","test_result":"%s","migration_test_result":"%s","artifact_digest":"%s","deployed_at":"%s","recorded_by":"%s"}\n' \
+printf '{"git_sha":"%s","build_timestamp":"%s","ci_pipeline_id":"%s","test_result":"%s","migration_test_result":"%s","artifact_digest":"%s","deployed_at":"%s","recorded_by":"%s"}\n' \
   "$(json_escape "${git_sha}")" \
+  "$(json_escape "${build_timestamp}")" \
   "$(json_escape "${pipeline_id}")" \
   "$(json_escape "${tests}")" \
   "$(json_escape "${migrations}")" \
@@ -109,6 +114,7 @@ printf '{"git_sha":"%s","ci_pipeline_id":"%s","test_result":"%s","migration_test
 
 echo "Recorded deployment in ${ledger}:"
 echo "  git_sha=${git_sha}"
+echo "  build_timestamp=${build_timestamp}"
 echo "  ci_pipeline_id=${pipeline_id}"
 echo "  test_result=${tests}"
 echo "  migration_test_result=${migrations}"
@@ -117,6 +123,7 @@ echo "  deployed_at=${deployed_at}"
 echo
 echo "Export these in the service environment so /api/version reports them:"
 echo "  APEX_GIT_SHA=${git_sha}"
+echo "  APEX_BUILD_TIMESTAMP=${build_timestamp}"
 echo "  APEX_CI_PIPELINE_ID=${pipeline_id}"
 echo "  APEX_ARTIFACT_DIGEST=${artifact_digest}"
 echo "  APEX_DEPLOYED_AT=${deployed_at}"

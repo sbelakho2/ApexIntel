@@ -12,7 +12,7 @@ use apex_api::responses::{
 };
 use apex_api::routes::capabilities::{
     probe_capabilities, probe_capabilities_for_profile, readiness_http_status, Capabilities,
-    ProbeContext, ProductSurface, ReadinessReport, SurfaceHealth,
+    ProbeContext, ProductSurface, ReadinessReport, SchemaLineageReport, SurfaceHealth,
 };
 use apex_api::routes::companies::{
     validate_company_id, CompanyDetail, CompanyEvent, CompanyKeyPerson, CompanyListItem,
@@ -797,6 +797,11 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Readin
     let checks = capabilities.readiness_checks(state.profile);
     let surfaces = capabilities.surface_reports(state.profile);
     let overall = aggregate_health(&checks);
+    let schema_lineage = state
+        .store
+        .schema_lineage()
+        .await
+        .map_err(|error| error.to_string());
 
     (
         readiness_http_status(&overall),
@@ -812,6 +817,7 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Readin
                 .map(|name| (*name).to_string())
                 .collect(),
             thresholds: state.policy.as_ref().clone(),
+            schema_lineage: SchemaLineageReport::from_result(schema_lineage),
             surfaces,
             checks,
         }),

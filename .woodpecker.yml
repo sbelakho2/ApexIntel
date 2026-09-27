@@ -26,8 +26,19 @@
 #  11. container-level browser integration: builds Dockerfile.worker's
 #      browser-check stage (runtime image + Chromium) and renders a JS-only
 #      fixture (late network + lazy-loaded DOM) through that image.
-#  10. migration header check: every pending migration states its own number,
-#      so a renumbered file cannot keep describing an older revision.
+#  12. migration identity check: every pending migration states its own number
+#      in the header and everywhere else in its comments / SQL string literals,
+#      so a renumbered file cannot keep describing an older revision; the
+#      production-applied files are frozen and explicitly allowlisted in
+#      scripts/ci/frozen_migrations.txt.
+#  13. release evidence bundle (scripts/ci/release_evidence.sh) for the exact
+#      commit SHA: executed gates plus the gates owned by the steps above,
+#      artifact digests and timestamps, written to release-evidence/<sha>/.
+#
+# Runtime readiness additionally proves the schema lineage (applied migration
+# head == embedded head + checksum verification) through the `schema`
+# capability in /api/health/capabilities and `schema_lineage` in
+# /api/health/ready.
 #
 # All cargo invocations use `--locked` so a stale Cargo.lock fails the build.
 
@@ -73,8 +84,10 @@ steps:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_warning_ingress.sh
 
-  # Fails if a migration header describes a different revision than its
-  # filename (audit #40). Production-applied migrations 000..045 are frozen.
+  # Fails if a migration header or body comment describes a different revision
+  # than its filename (audit #40 + stale body numbering). Production-applied
+  # migrations (000..065, 068) are frozen and explicitly allowlisted in
+  # scripts/ci/frozen_migrations.txt.
   - name: migration-headers
     image: alpine:3.20
     commands:
@@ -231,3 +244,60 @@ steps:
     commands:
       - apk add --no-cache bash
       - bash scripts/ci/browser_container_check.sh
+
+  # RELEASE EVIDENCE (P1-8) — binds this pipeline's gates to the exact commit
+  # SHA and writes release-evidence/<sha>/release-evidence.{json,txt} plus a
+  # .sha256 sidecar. The step re-runs the cheap self-contained gates
+  # (exact-sha, rustfmt) and records the gates owned by the steps above as
+  # `pipeline-step` results; depends_on guarantees those steps passed first,
+  # and anything not run is published as `not_run` (complete=false), never
+  # claimed. CI_COMMIT_SHA / CI_PIPELINE_NUMBER / CI_PIPELINE_CREATED are
+  # injected by Woodpecker and feed /api/version via the printed exports.
+  - name: release-evidence
+    image: rust:bookworm
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared]
+    when:
+      - event: [pull_request]
+    commands:
+      - rustup component add rustfmt
+      - >-
+        bash scripts/ci/release_evidence.sh
+        --sha "${CI_COMMIT_SHA}"
+        --gate exact-sha
+        --gate rustfmt
+        --record clippy-default=passed
+        --record clippy-all-features=passed
+        --record unit-tests=passed
+        --record all-features-tests=passed
+        --record pg-canonical=passed
+        --record migration-bootstrap=passed
+        --record browser-integration=passed
+        --record ui-journey=passed
+        --record tailwind-assets=passed
+        --record wasm-shared=passed
+
+  # Release-event evidence additionally records the container browser gate,
+  # which only runs on trusted events (push/tag/manual).
+  - name: release-evidence-release
+    image: rust:bookworm
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared, browser-container]
+    when:
+      - event: [push, tag, manual]
+    commands:
+      - rustup component add rustfmt
+      - >-
+        bash scripts/ci/release_evidence.sh
+        --sha "${CI_COMMIT_SHA}"
+        --gate exact-sha
+        --gate rustfmt
+        --record clippy-default=passed
+        --record clippy-all-features=passed
+        --record unit-tests=passed
+        --record all-features-tests=passed
+        --record pg-canonical=passed
+        --record migration-bootstrap=passed
+        --record browser-integration=passed
+        --record ui-journey=passed
+        --record tailwind-assets=passed
+        --record wasm-shared=passed
+        --record container-browser=passed

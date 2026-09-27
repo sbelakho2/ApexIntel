@@ -50,7 +50,7 @@ BEGIN
 
     IF collisions IS NOT NULL THEN
         RAISE EXCEPTION USING
-            MESSAGE = 'migration 070: ambiguous duplicate login names among credential-bearing app_users rows; resolve these rows manually, then re-run the migration',
+            MESSAGE = 'migration 072: ambiguous duplicate login names among credential-bearing app_users rows; resolve these rows manually, then re-run the migration',
             DETAIL = collisions,
             HINT = 'Keep the row whose credentials must win and rename or remove the other(s); the migration cannot choose safely.';
     END IF;
@@ -108,6 +108,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_app_users_username_ci
     WHERE password_hash IS NOT NULL;
 
 COMMENT ON INDEX uq_app_users_username_ci IS
-    'Canonical login names: at most one credential-bearing app_users row per lower(username) (migration 070)';
+    'Canonical login names: at most one credential-bearing app_users row per lower(username) (migration 072)';
 
 COMMIT;

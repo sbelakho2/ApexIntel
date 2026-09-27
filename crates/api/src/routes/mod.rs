@@ -237,7 +237,7 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             method: HttpMethod::Get,
             path: paths::VERSION,
             description:
-                "Running deployment provenance (git SHA, CI pipeline, artifact digest, deploy time)",
+                "Running deployment provenance (git SHA, build timestamp, CI pipeline, artifact digest, deploy time)",
             auth_required: false,
             min_role: "public",
         },

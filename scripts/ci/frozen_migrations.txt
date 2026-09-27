@@ -1,0 +1,79 @@
+# Frozen production-applied migrations (000..065, 068).
+#
+# These files are the revisions the production database recorded in
+# _sqlx_migrations. Their bytes ARE the sqlx checksums: editing one makes
+# every deployed database refuse to start, so the migration identity gate
+# skips them instead of rewriting their comments. Several still describe an
+# older revision number (header and/or body) from before the file was
+# renumbered; that stale text is deliberately left byte-identical and
+# allowlisted here. Comments after a filename are audit notes only.
+#
+# The pending range (069+) is validated by the gate and must never appear
+# in this file.
+000_core_schema.sql
+001_entity_alert_configs.sql  # header says 'Migration 0019' (pre-renumber typo)
+002_create_collaboration_tables.sql
+003_create_collaboration_features.sql
+004_add_comprehensive_tests.sql
+005_dossier_and_role_history.sql
+006_weekly_memos_and_competitor_changes.sql
+007_observability_tables.sql
+008_data_retention.sql
+009_materialized_views.sql
+010_observation_dedup.sql
+011_insight_bookmarks.sql
+012_recipe_metrics_and_warning_reviews.sql
+013_collaboration_and_replay.sql
+014_source_reliability_stats.sql
+015_stats_alert_calibration.sql
+016_warning_soft_delete.sql
+017_pattern_candidates.sql
+018_performance_indexes.sql
+019_insights_metadata.sql
+020_enable_rls.sql
+021_unify_duplicate_schemas.sql
+022_views_and_ux_enhancements.sql
+023_audit_fixes.sql
+024_pgvector_extension.sql
+025_battlecards.sql
+026_starzcrm_integration.sql
+027_ai_triage.sql
+028_historical_trends.sql
+029_security_tables.sql
+030_port_missing_tables.sql
+031_worker_trigger_queue_and_fixes.sql
+032_triage_queue_dimensions.sql
+033_embedding_dimension_384.sql
+034_poi_role_profile_correction.sql
+035_psychological_profiles.sql
+036_remaining_schema_gaps.sql
+037_fix_deployment_issues.sql
+038_psych_profiles_and_threat_intel.sql
+039_reconcile_psych_profiles.sql  # header says 'Migration 20260627' (date-based lineage)
+040_seed_buyer_relevant_pois.sql
+041_schema_integrity_provenance.sql
+042_poi_bio_enrichment.sql
+043_sales_activation_layer.sql  # header says 'Migration 20260701' (date-based lineage)
+044_engagement_profile_metadata.sql
+045_schema_reconciliation.sql
+046_remove_fixture_intelligence.sql
+047_source_runtime_state.sql
+048_user_alert_subscriptions.sql
+049_service_heartbeats.sql
+050_heartbeat_grants.sql
+051_rls_force_and_grants.sql
+052_entity_verification_evidence.sql
+053_triage_merge_fields.sql
+054_learning_eval_metrics.sql  # header says 'Migration 051'
+055_insight_claims.sql  # header says '051_insight_claims.sql'
+056_llm_cache.sql  # header says '052_llm_cache.sql'
+057_user_private_rls_force.sql
+058_rls_annotations_bookmarks.sql
+059_app_users.sql
+060_entity_review_queue.sql  # header says '058_entity_review_queue.sql'
+061_event_outbox.sql
+062_degraded_job_statuses.sql
+063_learning_eval_examples.sql  # header says 'Migration 061'
+064_learning_eval_training_truth.sql  # header says 'Migration 062'
+065_app_users_credentials.sql  # header says 'Migration 061'
+068_drop_legacy_bookmark_fk.sql  # header says '061_drop_legacy_bookmark_fk.sql'
