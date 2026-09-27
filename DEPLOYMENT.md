@@ -791,11 +791,35 @@ systemctl status apexintel-api apexintel-worker apexintel-llm nats minio postgre
 curl -s https://starzerp.fi/api/health | jq
 # Expected: {"status":"Healthy","version":"0.1.0","checks":[...]}
 
-# Profile-aware readiness probe (503 when a required capability is missing)
+# Profile-aware readiness probe (503 when a required capability is not proven)
 curl -s -o /dev/null -w '%{http_code}\n' https://starzerp.fi/api/health/ready
 # APEX_PROFILE=core (default) requires database, worker heartbeat, embeddings
-# and search index; APEX_PROFILE=full additionally requires LLM, NATS and the
-# browser renderer, and refuses to start without a `--features llm` build.
+# and search index. APEX_PROFILE=full composes the product surfaces and
+# additionally requires the LLM endpoint, NATS, browser rendering, crawl
+# freshness, minimum operational source coverage, alert-rule engine state,
+# outbox publisher backlog and critical scheduled-job freshness; it refuses to
+# start without a `--features llm` build. The response publishes the exact
+# required set and the resolved thresholds as policy.
+
+# Product surface probes (same measured capabilities, scoped per surface)
+curl -s https://starzerp.fi/process/live       # 200 while the API serves
+curl -s https://starzerp.fi/process/ready      # database, worker, scheduled jobs
+curl -s https://starzerp.fi/data/healthy       # freshness, sources, index, browser
+curl -s https://starzerp.fi/intelligence/healthy  # LLM, embeddings, alert engine
+curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher
+# Expected: {"surface":"...","status":"ok","checks":[...]}
+
+# Policy thresholds are configurable without a rebuild (defaults in parens):
+#   APEX_LLM_PROBE_TTL_SECS (60)         APEX_LLM_PROBE_TIMEOUT_SECS (5)
+#   APEX_BROWSER_PROBE_TTL_SECS (300)    APEX_BROWSER_PROBE_TIMEOUT_SECS (30)
+#   APEX_EMBEDDING_CANARY_TTL_SECS (300) APEX_EMBEDDING_CANARY_TIMEOUT_SECS (10)
+#   APEX_SEARCH_INDEX_MAX_LAG_SECS (3600)
+#   APEX_CRAWL_FRESHNESS_MAX_AGE_SECS (21600)
+#   APEX_MIN_OPERATIONAL_SOURCES (25)
+#   APEX_ALERT_ENGINE_MAX_AGE_SECS (900)
+#   APEX_OUTBOX_MAX_PENDING (100)        APEX_OUTBOX_MAX_OLDEST_PENDING_SECS (300)
+#   APEX_CRITICAL_JOBS (crawl_cycle,triage_processing)
+#   APEX_CRITICAL_JOB_MAX_AGE_SECS (7200)
 ```
 
 Worker containers run `apex-worker healthcheck` as their Docker healthcheck:

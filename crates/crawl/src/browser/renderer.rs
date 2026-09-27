@@ -58,6 +58,32 @@ const EXTRACTION_GRACE: Duration = Duration::from_secs(15);
 /// Lower bound for the total render-time cap.
 const MIN_RENDER_TIME_SECS: u64 = 5;
 
+/// Fixture page for the renderer self-test. The inline script rewrites the DOM
+/// after load, so a renderer that did not execute JavaScript cannot produce the
+/// marker.
+const SELF_TEST_HTML: &str = "<!DOCTYPE html><html><head><title>apex-readiness</title></head>\
+<body><div id=\"apex-probe\">pending</div>\
+<script>document.getElementById('apex-probe').textContent = 'rendered-' + String(6 * 7);</script>\
+</body></html>";
+
+/// DOM marker only an actual render + script execution can produce.
+pub const SELF_TEST_MARKER: &str = "rendered-42";
+
+/// Evidence produced by [`PersistentChromiumBrowser::self_test`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserSelfTestReport {
+    /// Marker read back out of the rendered DOM.
+    pub marker: String,
+    /// Whether the fixture's inline script executed (`marker` present).
+    pub js_executed: bool,
+    /// Whether the fixture element was present in the serialized DOM.
+    pub dom_verified: bool,
+    /// Wall-clock time for the whole launch/render/read cycle.
+    pub elapsed_ms: u64,
+    /// URL the fixture resolved to.
+    pub final_url: String,
+}
+
 const BIN_ENV: &str = "HEADLESS_BROWSER_BIN";
 const MAX_CONCURRENCY_ENV: &str = "HEADLESS_BROWSER_MAX_CONCURRENCY";
 const TIMEOUT_SECS_ENV: &str = "HEADLESS_BROWSER_TIMEOUT_SECS";
@@ -377,6 +403,48 @@ impl PersistentChromiumBrowser {
         }
     }
 
+    /// Prove this renderer can actually render: launch Chromium, load an
+    /// inline `data:` fixture, execute its JavaScript, and read the resulting
+    /// DOM back over CDP.
+    ///
+    /// This is the readiness probe's evidence — a binary on `PATH` or a
+    /// configured flag is never sufficient. The fixture is a trusted constant,
+    /// not user input, so the SSRF URL validation used by [`BrowserFetcher`]
+    /// does not apply; the render itself uses the same persistent process and
+    /// readiness pipeline as production fetches.
+    pub async fn self_test(&self) -> Result<BrowserSelfTestReport> {
+        let _permit = self
+            .gate
+            .acquire()
+            .await
+            .context("acquiring browser concurrency slot")?;
+
+        let started = Instant::now();
+        let fixture_url = self_test_fixture_url()?;
+        let policy = RenderPolicy {
+            max_scroll_steps: 0,
+            ..self.config.policy()
+        };
+
+        let page = self.render(&fixture_url, &policy).await?;
+        let js_executed = page.html.contains(SELF_TEST_MARKER);
+        let dom_verified = page.html.contains("apex-probe");
+        if !js_executed || !dom_verified {
+            return Err(anyhow!(
+                "browser self-test rendered but the fixture DOM marker was absent \
+                 (js_executed={js_executed}, dom_verified={dom_verified})"
+            ));
+        }
+
+        Ok(BrowserSelfTestReport {
+            marker: SELF_TEST_MARKER.to_string(),
+            js_executed,
+            dom_verified,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            final_url: page.final_url,
+        })
+    }
+
     async fn render_in_session(
         &self,
         session: &CdpSession,
@@ -385,7 +453,6 @@ impl PersistentChromiumBrowser {
     ) -> Result<BrowserPage> {
         session.call("Page.enable", json!({})).await?;
         session.call("Network.enable", json!({})).await?;
-
         let navigation = session
             .call("Page.navigate", json!({ "url": parsed.as_str() }))
             .await?;
@@ -548,6 +615,17 @@ pub fn persistent_browser_from_env() -> Result<Option<PersistentChromiumBrowser>
     Ok(Some(PersistentChromiumBrowser::new(
         BrowserConfig::from_env()?,
     )))
+}
+
+/// Build the self-test fixture as a `data:` URL.
+///
+/// The payload must be **percent**-encoded: `data:` URLs only percent-decode,
+/// so a form encoder's `+`-for-space substitution would delimit HTML tags and
+/// break the fixture script. `urlencoding` emits `%20`, which round-trips.
+fn self_test_fixture_url() -> Result<Url> {
+    let encoded = urlencoding::encode(SELF_TEST_HTML);
+    Url::parse(&format!("data:text/html;charset=utf-8,{encoded}"))
+        .context("building browser self-test fixture URL")
 }
 
 /// Whether a render failure requires discarding the persistent process.
@@ -830,6 +908,54 @@ mod tests {
         assert!(
             !page.readiness.timed_out,
             "should settle well within budget"
+        );
+    }
+
+    #[test]
+    fn self_test_fixture_requires_script_execution() {
+        assert!(SELF_TEST_HTML.contains("<script>"));
+        assert!(SELF_TEST_HTML.contains("document.getElementById('apex-probe')"));
+        assert!(SELF_TEST_HTML.contains("String(6 * 7)"));
+        assert_eq!(SELF_TEST_MARKER, "rendered-42");
+    }
+
+    #[test]
+    fn self_test_fixture_url_percent_encodes_spaces_and_round_trips() {
+        let encoded = urlencoding::encode(SELF_TEST_HTML);
+        assert!(
+            !encoded.contains('+'),
+            "form-style '+' spaces corrupt data: URL payloads"
+        );
+        assert!(encoded.contains("%20"), "spaces must be %20-encoded");
+        let decoded = urlencoding::decode(&encoded).expect("payload decodes");
+        assert_eq!(decoded.as_ref(), SELF_TEST_HTML);
+
+        let url = self_test_fixture_url().expect("fixture url");
+        assert!(url.as_str().starts_with("data:text/html;charset=utf-8,"));
+        assert!(url.as_str().contains("%20"));
+        assert!(
+            url.as_str().contains("apex-probe"),
+            "the fixture marker must survive encoding: {}",
+            url.as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn self_test_fails_when_browser_binary_is_missing() {
+        let config = BrowserConfig {
+            chrome_binary: PathBuf::from("/nonexistent/apex-readiness-chromium"),
+            ..BrowserConfig::default()
+        };
+        let browser = PersistentChromiumBrowser::new(config);
+
+        let error = browser
+            .self_test()
+            .await
+            .expect_err("a missing browser binary must fail the self-test");
+        assert!(
+            error.to_string().contains("launching Chromium")
+                || error.downcast_ref::<std::io::Error>().is_some(),
+            "unexpected error: {error}"
         );
     }
 }

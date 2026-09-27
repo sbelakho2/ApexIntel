@@ -49,8 +49,8 @@ pub use readiness::{
     DEFAULT_SAMPLE_INTERVAL, MAX_NETWORK_QUIET_WINDOW, MIN_NETWORK_QUIET_WINDOW,
 };
 pub use renderer::{
-    persistent_browser_from_env, BrowserConfig, PersistentChromiumBrowser, BROWSER_START_TIMEOUT,
-    DEFAULT_CHROME_BINARY,
+    persistent_browser_from_env, BrowserConfig, BrowserSelfTestReport, PersistentChromiumBrowser,
+    BROWSER_START_TIMEOUT, DEFAULT_CHROME_BINARY, SELF_TEST_MARKER,
 };
 pub use validation::{
     assert_public_resolution, host_from_url, is_private_host, validate_browser_url,

@@ -167,6 +167,9 @@ pub enum JobKind {
     StarzCrmSync,
     /// Embedding reindex — generates vector embeddings for entities without them.
     EmbeddingReindex,
+    /// Observation index — incrementally commits new observations to the
+    /// tantivy search index and advances its readiness checkpoint.
+    ObservationIndex,
     /// Dark web forum scan — monitors breach forums, paste sites, ransomware blogs.
     DarkWebScan,
     /// AI Triage Engine — scores queued insights/warnings/alerts using LLM.
@@ -251,6 +254,7 @@ impl JobKind {
             Self::PoiDiscovery => "poi_discovery",
             Self::StarzCrmSync => "starzcrm_sync",
             Self::EmbeddingReindex => "embedding_reindex",
+            Self::ObservationIndex => "observation_index",
             Self::DarkWebScan => "dark_web_scan",
             Self::TriageProcessing => "triage_processing",
             Self::TrendAggregation => "trend_aggregation",
@@ -298,6 +302,7 @@ impl JobKind {
             "poi_discovery" => Self::PoiDiscovery,
             "starzcrm_sync" => Self::StarzCrmSync,
             "embedding_reindex" => Self::EmbeddingReindex,
+            "observation_index" => Self::ObservationIndex,
             "dark_web_scan" => Self::DarkWebScan,
             "triage_processing" => Self::TriageProcessing,
             "trend_aggregation" => Self::TrendAggregation,
@@ -1289,6 +1294,15 @@ pub fn default_scheduler() -> Scheduler {
         .with_timeout(7200), // 2 h — LLM embedding inference can be slow
     );
 
+    // Observation index: every 5 minutes — incrementally commits new
+    // observations to the search index and advances its commit checkpoint so
+    // readiness can measure real index lag instead of assuming freshness.
+    s.register(
+        JobDef::new(JobKind::ObservationIndex, Schedule::IntervalSecs(300))
+            .with_jitter(30) // +30 s spread
+            .with_timeout(600), // 10 min — bounded batch, local writer
+    );
+
     // Autocomplete index rebuild: daily at 04:15 UTC — after nightly data pipeline completes.
     s.register(
         JobDef::new(
@@ -2028,6 +2042,7 @@ mod tests {
             "update_email_digest",
             "self_improvement_cycle",
             "embedding_reindex",
+            "observation_index",
             "rebuild-autocomplete",
             "starzcrm_sync",
             "dark_web_scan",

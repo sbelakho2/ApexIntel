@@ -26,11 +26,18 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
 
 use apex_worker::nats_stream::{AlertEvent, AlertEventType};
+
+/// SHA-256 (hex) of the exact alert-rules file content. Stable across restarts
+/// so readiness can publish and compare the engine's configuration hash.
+pub fn config_hash(yaml: &str) -> String {
+    hex::encode(Sha256::digest(yaml.as_bytes()))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rule types — mirrors `config/runtime/alert-rules.yaml`
@@ -182,6 +189,12 @@ pub struct AlertEvaluator {
     dedup: Arc<RwLock<HashMap<DedupKey, Instant>>>,
     /// Cooldown duration for dedup (parsed from rule `for` field).
     cooldown: Duration,
+    /// Rules-file schema version.
+    version: u32,
+    /// SHA-256 of the exact YAML content these rules were parsed from.
+    config_hash: String,
+    /// Path the rules were loaded from (`None` for direct YAML loads).
+    source_path: Option<String>,
 }
 
 impl AlertEvaluator {
@@ -189,7 +202,9 @@ impl AlertEvaluator {
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let content =
             std::fs::read_to_string(path.as_ref()).context("failed to read alert-rules.yaml")?;
-        Self::load_from_yaml(&content)
+        let mut evaluator = Self::load_from_yaml(&content)?;
+        evaluator.source_path = Some(path.as_ref().display().to_string());
+        Ok(evaluator)
     }
 
     /// Load alert rules from a YAML string.
@@ -207,7 +222,30 @@ impl AlertEvaluator {
             rules: config.rules,
             dedup: Arc::new(RwLock::new(HashMap::new())),
             cooldown: Duration::from_secs(300), // default 5 min
+            version: config.version,
+            config_hash: config_hash(yaml),
+            source_path: None,
         })
+    }
+
+    /// Number of rules currently loaded in memory.
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+
+    /// Rules-file schema version.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// SHA-256 of the YAML the loaded rules were parsed from.
+    pub fn config_hash(&self) -> &str {
+        &self.config_hash
+    }
+
+    /// Path the rules were loaded from, when loaded from disk.
+    pub fn source_path(&self) -> Option<&str> {
+        self.source_path.as_deref()
     }
 
     /// Set a custom cooldown duration (overrides rule `for` field).
@@ -509,6 +547,28 @@ rules:
     fn test_load_rules() {
         let evaluator = AlertEvaluator::load_from_yaml(sample_rules_yaml()).unwrap();
         assert_eq!(evaluator.rules.len(), 3);
+    }
+
+    #[test]
+    fn engine_exposes_rule_count_version_and_stable_hash() {
+        let evaluator = AlertEvaluator::load_from_yaml(sample_rules_yaml()).unwrap();
+        assert_eq!(evaluator.rule_count(), 3);
+        assert_eq!(evaluator.version(), 1);
+        assert_eq!(evaluator.config_hash().len(), 64, "sha-256 hex");
+        assert!(evaluator.source_path().is_none());
+
+        let again = AlertEvaluator::load_from_yaml(sample_rules_yaml()).unwrap();
+        assert_eq!(evaluator.config_hash(), again.config_hash());
+        assert_ne!(
+            evaluator.config_hash(),
+            config_hash("version: 1\nrules: []\n")
+        );
+    }
+
+    #[test]
+    fn config_hash_helper_is_stable_and_content_sensitive() {
+        assert_eq!(config_hash("abc"), config_hash("abc"));
+        assert_ne!(config_hash("abc"), config_hash("abd"));
     }
 
     #[test]
