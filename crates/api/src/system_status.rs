@@ -10,6 +10,8 @@ use std::sync::{OnceLock, RwLock};
 
 use chrono::Duration;
 
+use crate::routes::capabilities::Capabilities;
+
 /// A worker heartbeat older than this is considered offline. Defined in
 /// `apex-store` so the API probes, the status strip, and the worker container
 /// healthcheck cannot drift apart.
@@ -132,6 +134,29 @@ pub fn format_age(age: Duration) -> String {
 fn cache() -> &'static RwLock<StatusStrip> {
     static CACHE: OnceLock<RwLock<StatusStrip>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(StatusStrip::unknown()))
+}
+
+/// Latest measured capability report, published by the API heartbeat task so
+/// server-rendered badges show the same states as `/api/health/capabilities`
+/// without each page re-running the probes. `None` means "never measured".
+pub fn current_capabilities() -> Option<Capabilities> {
+    capability_cache()
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+/// Publish a freshly measured capability report for subsequent page renders.
+pub fn publish_capabilities(capabilities: &Capabilities) {
+    match capability_cache().write() {
+        Ok(mut guard) => *guard = Some(capabilities.clone()),
+        Err(poisoned) => *poisoned.into_inner() = Some(capabilities.clone()),
+    }
+}
+
+fn capability_cache() -> &'static RwLock<Option<Capabilities>> {
+    static CACHE: OnceLock<RwLock<Option<Capabilities>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(None))
 }
 
 #[cfg(test)]

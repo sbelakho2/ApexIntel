@@ -7,6 +7,47 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — P1 status/config audit: capability states, fail-loud config, security source states, certification coverage
+
+Audit P1 status/config items plus exact-SHA release evidence.
+
+### Backend
+- **Capability state** `/api/health/capabilities` now publishes a typed
+  `CapabilityState` (`healthy | degraded | unavailable | disabled |
+  not_configured | not_measured`) per capability. The generic conversion
+  (`/api/health` components and the admin badges) no longer maps `disabled`
+  to `Healthy`: only the profile-specific readiness composition decides
+  whether `Disabled` is acceptable (by not requiring the capability), and
+  `Disabled`/`Not configured`/`Not measured` render as distinct badges.
+  NATS with no URL and an unconfigured LLM now report `not_configured`
+  instead of `disabled`/`degraded`.
+- **Fail-loud configuration** An invalid API-key role in `API_KEY_<n>` or in
+  the API-keys file is now a startup/reload error naming the variable, entry
+  and bad role instead of being silently rewritten to `Viewer`; a malformed
+  file reload keeps the previous valid snapshot. Malformed
+  readiness/coverage/security thresholds are configuration errors naming the
+  variable and value, not silent default fallbacks.
+- **Security-source states** `/api/security` and `/security` publish a
+  per-source taxonomy (findings reported | no findings after successful scan
+  | not scanned | scan failed | authentication unavailable | rate limited |
+  source unavailable | partial scan | scan succeeded) for CVE/CISA KEV, dark
+  web, Censys, GitHub code exposure, I2P and marketplaces. A bare
+  "0 findings" is never shown unless a scan actually succeeded and returned
+  zero; missing credentials, rate limits, source outages and partial scans
+  each render distinctly.
+- **Certification coverage** Added a lawful `certification_registry` source
+  category and sources (IAF CertSearch, IAQG OASIS, ANAB, UKAS, openFDA
+  device registration). The default coverage policy now *requires* the
+  certifications family with at least one operational source, so a
+  deployment that cannot prove certification coverage is degraded instead of
+  silently treating certifications as covered.
+- **Release evidence** `/api/version` exposes git SHA, build timestamp, CI
+  pipeline id, artifact digest and deploy time; DEPLOYMENT.md documents that
+  a SHA is green only when `release-evidence/<sha>/release-evidence.json`
+  exists with `status=passed` and `complete=true`.
+
+---
+
 ## [Unreleased] — Multidimensional coverage + shared evidence quality + lineage (P1-9/P1-10)
 
 Audit P1-9 (source-coverage readiness), P1-10 (reusable evidence quality)

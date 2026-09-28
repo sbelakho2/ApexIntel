@@ -145,13 +145,16 @@ const FAMILY_KEYWORDS: &[(CoverageFamily, &[&str])] = &[
     (
         CoverageFamily::Certifications,
         &[
+            // Certification-information registers only. NIST/NVD are
+            // vulnerability feeds, not certification registers, so "nist" is
+            // deliberately absent: with certifications now required, a
+            // keyword match on NVD must not satisfy the family.
             "certification",
             "accredit",
             " iso",
             "iso-",
             "iso_",
             "ansi",
-            "nist",
         ],
     ),
     (
@@ -230,6 +233,9 @@ impl Source {
                 families.insert(CoverageFamily::ExecutiveChanges);
                 families.insert(CoverageFamily::Regulatory);
             }
+            Category::CertificationRegistry => {
+                families.insert(CoverageFamily::Certifications);
+            }
             _ => {}
         }
 
@@ -299,11 +305,11 @@ impl Default for CoveragePolicy {
                 CoverageFamilyRequirement::row(Hiring, true, 1),
                 CoverageFamilyRequirement::row(Financial, true, 3),
                 CoverageFamilyRequirement::row(Tenders, true, 1),
-                // No certification source is registered today: not required
-                // until one exists, but the row is always evaluated so the
-                // gap is visible in the published matrix and an operator can
-                // make it required via APEX_COVERAGE_CERTIFICATIONS_REQUIRED.
-                CoverageFamilyRequirement::row(Certifications, false, 0),
+                // Certification-information sources now exist (IAF CertSearch,
+                // IAQG OASIS, ANAB, UKAS, openFDA device registration), so the
+                // family is required: a deployment whose certification sources
+                // are not operational cannot claim certification coverage.
+                CoverageFamilyRequirement::row(Certifications, true, 1),
                 CoverageFamilyRequirement::row(ExecutiveChanges, true, 1),
                 CoverageFamilyRequirement::row(TradeCustoms, true, 2),
                 CoverageFamilyRequirement::row(ProductCompetitive, true, 2),
@@ -379,12 +385,15 @@ impl CoveragePolicy {
 
 fn env_bool(name: &str, default: bool, errors: &mut ConfigErrors) -> bool {
     match std::env::var(name) {
+        // A present-but-blank value is treated as unset: placeholder lines in
+        // .env/compose files must not abort startup.
         Err(_) => default,
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => true,
             "0" | "false" | "no" | "off" => false,
-            _ => {
-                errors.push(name, raw, "one of true/false/1/0/yes/no/on/off");
+            other => {
+                errors.push(name, other, "one of true/false/1/0/yes/no/on/off");
                 default
             }
         },
@@ -394,10 +403,11 @@ fn env_bool(name: &str, default: bool, errors: &mut ConfigErrors) -> bool {
 fn env_i64(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
     match std::env::var(name) {
         Err(_) => default,
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<i64>() {
             Ok(value) => value,
             Err(_) => {
-                errors.push(name, raw, "an integer");
+                errors.push(name, raw.trim(), "an integer");
                 default
             }
         },
@@ -407,14 +417,15 @@ fn env_i64(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
 fn env_percentage(name: &str, default: u8, errors: &mut ConfigErrors) -> u8 {
     match std::env::var(name) {
         Err(_) => default,
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<u8>() {
             Ok(value) if value <= 100 => value,
-            Ok(_) => {
-                errors.push(name, raw, "an integer percentage in 0..=100");
+            Ok(value) => {
+                errors.push(name, value.to_string(), "an integer percentage in 0..=100");
                 default
             }
             Err(_) => {
-                errors.push(name, raw, "an integer percentage in 0..=100");
+                errors.push(name, raw.trim(), "an integer percentage in 0..=100");
                 default
             }
         },
@@ -424,10 +435,11 @@ fn env_percentage(name: &str, default: u8, errors: &mut ConfigErrors) -> u8 {
 fn env_usize(name: &str, default: usize, errors: &mut ConfigErrors) -> usize {
     match std::env::var(name) {
         Err(_) => default,
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<usize>() {
             Ok(value) => value,
             Err(_) => {
-                errors.push(name, raw, "a non-negative integer");
+                errors.push(name, raw.trim(), "a non-negative integer");
                 default
             }
         },
@@ -1213,8 +1225,8 @@ mod tests {
 
         assert_eq!(report.status, "ok");
         assert_eq!(report.families.len(), CoverageFamily::ALL.len());
-        assert_eq!(report.required_families, 10);
-        assert_eq!(report.satisfied_required_families, 10);
+        assert_eq!(report.required_families, 11);
+        assert_eq!(report.satisfied_required_families, 11);
         assert_eq!(report.priority_company_pct, Some(80));
         assert!(
             (report
@@ -1311,6 +1323,101 @@ mod tests {
     }
 
     #[test]
+    fn default_policy_requires_certification_coverage() {
+        let policy = CoveragePolicy::default();
+        let certifications = policy
+            .requirement(CoverageFamily::Certifications)
+            .expect("certifications row is always published");
+        assert!(
+            certifications.required,
+            "certifications must be a required family now that lawful sources exist"
+        );
+        assert_eq!(
+            certifications.min_operational_sources, 1,
+            "at least one operational certification source must be proven"
+        );
+
+        // A deployment with zero operational certification sources is
+        // degraded, even when every other family is satisfied.
+        let now = Utc::now();
+        let families: Vec<FamilyCoverage> = CoverageFamily::ALL
+            .into_iter()
+            .map(|family| FamilyCoverage {
+                family,
+                declared: 5,
+                registered: 5,
+                operational: if family == CoverageFamily::Certifications {
+                    0
+                } else {
+                    5
+                },
+                independent_domains: 5,
+                attempted: 5,
+                parser_success_pct: Some(100),
+                fetch_success_pct: Some(100),
+                latest_success_at: Some(now),
+                ..FamilyCoverage::default()
+            })
+            .collect();
+        let report = evaluate_coverage(
+            &summary_with(families, 50),
+            &policy,
+            PriorityCompanyCoverage::default(),
+            now,
+        );
+        assert_eq!(report.status, "degraded");
+        let certifications_eval = report
+            .families
+            .iter()
+            .find(|row| row.family == CoverageFamily::Certifications)
+            .expect("certifications evaluation");
+        assert_eq!(certifications_eval.status, "degraded");
+        assert!(certifications_eval
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("operational sources, minimum 1")));
+    }
+
+    #[test]
+    fn registered_certification_sources_map_to_the_certification_family() {
+        let registry_sources = crate::sources_registry::all_sources();
+        let certification_sources: Vec<&crate::sources_registry::Source> = registry_sources
+            .iter()
+            .filter(|source| {
+                source
+                    .coverage_families()
+                    .contains(&CoverageFamily::Certifications)
+            })
+            .collect();
+        assert!(
+            !certification_sources.is_empty(),
+            "the registry must declare at least one certification-information source"
+        );
+        assert!(
+            certification_sources
+                .iter()
+                .any(|source| source.slug == "iaf_certsearch"
+                    || source.slug == "fda_device_registration"
+                    || source.slug == "iaqg_oasis"),
+            "expected IAF/IAQG/openFDA certification registers in the registry"
+        );
+    }
+
+    #[test]
+    fn vulnerability_feeds_do_not_satisfy_the_certification_family() {
+        let registry_sources = crate::sources_registry::all_sources();
+        let nvd = registry_sources
+            .iter()
+            .find(|source| source.slug == "nvd_nist_vuln")
+            .expect("NVD source is registered");
+        assert!(
+            !nvd.coverage_families()
+                .contains(&CoverageFamily::Certifications),
+            "NVD/NIST is a vulnerability feed and must not count as certification coverage"
+        );
+    }
+
+    #[test]
     fn family_classification_uses_category_and_keywords() {
         let hiring = source(
             "greenhouse_job_board",
@@ -1338,6 +1445,56 @@ mod tests {
             !ct.coverage_families()
                 .contains(&CoverageFamily::Certifications),
             "TLS certificate transparency is not a certifications-intel source"
+        );
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn invalid_coverage_threshold_fails_loudly_and_names_the_variable() {
+        let _guard = env_lock();
+
+        std::env::set_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT", "150");
+        let error = CoveragePolicy::from_env().expect_err("an out-of-range percentage must fail loudly")
+            .to_string();
+        std::env::remove_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT");
+
+        assert!(
+            error.contains("APEX_COVERAGE_PRIORITY_COMPANY_PCT"),
+            "the error must name the variable: {error}"
+        );
+        assert!(
+            error.contains("150"),
+            "the error must name the bad value: {error}"
+        );
+    }
+
+    #[test]
+    fn blank_coverage_threshold_falls_back_to_default() {
+        let _guard = env_lock();
+
+        std::env::set_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT", "");
+        let policy = CoveragePolicy::from_env().expect("a blank threshold is treated as unset");
+        std::env::remove_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT");
+
+        assert_eq!(
+            policy.min_priority_company_coverage_pct,
+            CoveragePolicy::default().min_priority_company_coverage_pct
+        );
+    }
+
+    #[test]
+    fn unset_coverage_thresholds_keep_their_defaults() {
+        let _guard = env_lock();
+
+        std::env::remove_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT");
+        let policy = CoveragePolicy::from_env().expect("unset thresholds use defaults");
+        assert_eq!(
+            policy.min_priority_company_coverage_pct,
+            CoveragePolicy::default().min_priority_company_coverage_pct
         );
     }
 
@@ -1440,11 +1597,7 @@ mod tests {
 
     #[test]
     fn malformed_coverage_threshold_is_a_configuration_error() {
-        use std::sync::{LazyLock, Mutex};
-        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = env_lock();
 
         let name = "APEX_COVERAGE_PROCUREMENT_FETCH_SUCCESS_PCT";
         std::env::set_var(name, "banana");
@@ -1459,11 +1612,7 @@ mod tests {
 
     #[test]
     fn out_of_range_coverage_threshold_is_a_configuration_error() {
-        use std::sync::{LazyLock, Mutex};
-        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = env_lock();
 
         let name = "APEX_COVERAGE_PATENTS_PARSER_SUCCESS_PCT";
         std::env::set_var(name, "150");

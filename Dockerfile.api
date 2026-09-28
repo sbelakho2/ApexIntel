@@ -10,10 +10,15 @@ WORKDIR /build
 # Cache dependency compilation
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-# `apex-insights` embeds exactly this file via include_str! at compile time;
-# copying only that file keeps unrelated config edits from busting the cache.
-COPY config/augmentation_entities.yaml config/
-RUN cargo build --release --bin apex-api --features llm --locked
+# `apex-store` embeds `migrations/` via `sqlx::migrate!` and `apex-core` embeds
+# `config/intelligence_profiles.yaml` via `include_str!`, both at compile time,
+# so the full migrations and config trees must be in the build context.
+COPY config/ config/
+COPY migrations/ migrations/
+RUN --mount=type=cache,id=apex-target,sharing=shared,target=/build/target \
+    --mount=type=cache,id=apex-cargo-registry,sharing=shared,target=/usr/local/cargo/registry \
+    cargo build --release --bin apex-api --features llm --locked \
+    && cp target/release/apex-api /usr/local/bin/apex-api
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && \
@@ -23,7 +28,7 @@ RUN apt-get update && \
 RUN groupadd -r apexintel && useradd -r -g apexintel -d /opt/apexintel apexintel
 WORKDIR /opt/apexintel
 
-COPY --from=builder /build/target/release/apex-api /usr/local/bin/apex-api
+COPY --from=builder /usr/local/bin/apex-api /usr/local/bin/apex-api
 COPY config/ /opt/apexintel/config/
 COPY --from=builder /build/crates/api/static/ /opt/apexintel/static/
 

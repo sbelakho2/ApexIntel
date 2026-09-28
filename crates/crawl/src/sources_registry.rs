@@ -90,6 +90,10 @@ pub enum Category {
     EnergyResources,
     HealthcareLife,
     LegalRegulatory,
+    /// Public certification/accreditation registers (ISO/IEC, IATF, AS9100,
+    /// FDA device registration, national accreditation bodies). These are the
+    /// lawful sources for "who holds which valid certificate" facts.
+    CertificationRegistry,
 }
 
 impl Category {
@@ -113,6 +117,7 @@ impl Category {
             Self::EnergyResources => "energy_resources",
             Self::HealthcareLife => "healthcare_life",
             Self::LegalRegulatory => "legal_regulatory",
+            Self::CertificationRegistry => "certification_registry",
         }
     }
 }
@@ -3136,6 +3141,86 @@ fn default_sources() -> Vec<Source> {
         )
         .interval(240)
         .notes("Li-ion cell & raw-material price/supply benchmarks; cell-sourcing risk."),
+    );
+
+    // ── Certification & accreditation registers (audit P1) ────────
+    // Lawful public certification-information sources: who holds which valid
+    // certificate (ISO 9001/14001/27001, IATF 16949, AS9100, ISO 13485, UL and
+    // medical-device establishment registrations). All are public registers or
+    // public search endpoints; entries marked login-required expose their
+    // public certificate-search pages, and the parser must treat an
+    // authentication wall as `authentication_unavailable`, never as "no
+    // certificates found". These rows make the `certifications` coverage
+    // family measurable and required instead of a silent gap.
+    sources.push(
+        Source::new(
+            "iaf_certsearch",
+            "IAF CertSearch — Accredited Certificate Database",
+            "https://www.iafcertsearch.org/",
+            Region::Global,
+            Category::CertificationRegistry,
+            2,
+        )
+        .interval(1440)
+        .notes(
+            "Global database of certificates issued by IAF-accredited bodies (ISO 9001/14001/45001/27001, IATF 16949, AS9100). Public search; detailed records may require free registration — an auth wall must be reported, not parsed as empty.",
+        ),
+    );
+    sources.push(
+        Source::new(
+            "iaqg_oasis",
+            "IAQG OASIS — Aerospace Certification Database",
+            "https://oasis.iaqg.org/",
+            Region::Global,
+            Category::CertificationRegistry,
+            2,
+        )
+        .interval(1440)
+        .notes(
+            "Official IAQG OASIS database of AS9100/AS9110/AS9120 certified organizations. Public certificate search; account required for some record views.",
+        ),
+    );
+    sources.push(
+        Source::new(
+            "anab_accredited_bodies",
+            "ANAB Accredited Certification Bodies",
+            "https://anab.ansi.org/",
+            Region::NorthAmerica,
+            Category::CertificationRegistry,
+            3,
+        )
+        .interval(1440)
+        .notes(
+            "ANSI National Accreditation Board directory of accredited certification bodies and their scopes.",
+        ),
+    );
+    sources.push(
+        Source::new(
+            "ukas_accredited_organisations",
+            "UKAS Accredited Organisations",
+            "https://www.ukas.com/find-an-organisation/",
+            Region::Europe,
+            Category::CertificationRegistry,
+            3,
+        )
+        .interval(1440)
+        .notes(
+            "UK national accreditation body register of accredited certification and inspection bodies.",
+        ),
+    );
+    sources.push(
+        Source::new(
+            "fda_device_registration",
+            "FDA Device Establishment Registration & Listing (openFDA)",
+            "https://api.fda.gov/device/registrationlisting.json",
+            Region::NorthAmerica,
+            Category::CertificationRegistry,
+            2,
+        )
+        .interval(1440)
+        .notes(
+            "openFDA public API of device establishment registrations and listings; supports ISO 13485 / medical-device supply-chain verification. No key required (rate limited).",
+        ),
     );
 
     sources

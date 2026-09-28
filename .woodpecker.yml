@@ -159,7 +159,7 @@ steps:
 
   # apex-shared is the wasm-compatible boundary crate (serde/chrono only); the
   # release-evidence `wasm-shared` gate is only truthful if a step actually
-  # compiles it for wasm32.
+  # compiles it for wasm32, so a native-only regression fails CI here.
   - name: wasm-shared
     image: rust:bookworm
     commands:

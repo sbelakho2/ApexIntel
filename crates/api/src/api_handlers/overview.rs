@@ -905,6 +905,13 @@ pub(crate) async fn list_security(
     let lookalike_domains_detected = lookalike_rows.len() as u64;
     let kev_matches = kev_rows.len() as u64;
 
+    // Security-source negative-state taxonomy: the report never collapses a
+    // non-scan into "0 findings". The shared loader keeps this surface and
+    // the /security page in lockstep.
+    let source_states_report =
+        apex_api::routes::security::load_security_source_statuses(&state.store, Some(kev_matches))
+            .await;
+
     let last_scan_at = dns_rows
         .iter()
         .chain(lookalike_rows.iter())
@@ -919,6 +926,7 @@ pub(crate) async fn list_security(
         kev_matches,
         domains_monitored,
         last_scan_at,
+        source_states: source_states_report,
     };
 
     let duration_ms = start.elapsed().as_millis() as u64;

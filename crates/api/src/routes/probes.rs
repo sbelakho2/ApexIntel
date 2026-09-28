@@ -259,7 +259,7 @@ impl ReadinessPolicy {
                 defaults.notification_delivery_min_success_percent,
                 &mut errors,
             ),
-            critical_jobs: env_csv("APEX_CRITICAL_JOBS", &defaults.critical_jobs),
+            critical_jobs: env_csv("APEX_CRITICAL_JOBS", &defaults.critical_jobs, &mut errors),
             critical_job_max_age_secs: env_i64(
                 "APEX_CRITICAL_JOB_MAX_AGE_SECS",
                 defaults.critical_job_max_age_secs,
@@ -297,11 +297,14 @@ impl ReadinessPolicy {
 
 fn env_u64(name: &str, default: u64, errors: &mut ConfigErrors) -> u64 {
     match std::env::var(name) {
+        // A present-but-blank value is treated as unset: placeholder lines
+        // like `APEX_OUTBOX_MAX_PENDING=` must not abort startup.
         Err(_) => default,
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<u64>() {
             Ok(value) => value,
             Err(_) => {
-                errors.push(name, raw, "a non-negative integer");
+                errors.push(name, raw.trim(), "a non-negative integer");
                 default
             }
         },
@@ -311,10 +314,11 @@ fn env_u64(name: &str, default: u64, errors: &mut ConfigErrors) -> u64 {
 fn env_i64(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
     match std::env::var(name) {
         Err(_) => default,
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<i64>() {
             Ok(value) => value,
             Err(_) => {
-                errors.push(name, raw, "an integer");
+                errors.push(name, raw.trim(), "an integer");
                 default
             }
         },
@@ -324,21 +328,22 @@ fn env_i64(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
 fn env_percentage(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
     match std::env::var(name) {
         Err(_) => default,
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<i64>() {
             Ok(value) if (0..=100).contains(&value) => value,
             Ok(_) => {
-                errors.push(name, raw, "an integer percentage in 0..=100");
+                errors.push(name, raw.trim(), "an integer percentage in 0..=100");
                 default
             }
             Err(_) => {
-                errors.push(name, raw, "an integer percentage in 0..=100");
+                errors.push(name, raw.trim(), "an integer percentage in 0..=100");
                 default
             }
         },
     }
 }
 
-fn env_csv(name: &str, default: &[String]) -> Vec<String> {
+fn env_csv(name: &str, default: &[String], errors: &mut ConfigErrors) -> Vec<String> {
     match std::env::var(name) {
         Ok(raw) => {
             let parsed: Vec<String> = raw
@@ -346,10 +351,15 @@ fn env_csv(name: &str, default: &[String]) -> Vec<String> {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .collect();
-            if parsed.is_empty() {
-                default.to_vec()
-            } else {
+            if !parsed.is_empty() {
                 parsed
+            } else {
+                // Blank means unset; a non-blank value with no names (e.g.
+                // ",") is a real configuration error.
+                if !raw.trim().is_empty() {
+                    errors.push(name, raw.trim(), "at least one job name");
+                }
+                default.to_vec()
             }
         }
         Err(_) => default.to_vec(),
@@ -527,8 +537,7 @@ pub async fn probe_llm(
     }
     let status = match target {
         Some(target) => probe_llm_endpoint(target).await,
-        None => CapabilityStatus::new(
-            "degraded",
+        None => CapabilityStatus::not_configured(
             "llm feature compiled but no LLM model configured (set LLM_MODEL/LLM_BASE_URL)",
         ),
     };
@@ -1303,6 +1312,7 @@ pub fn evaluate_source_coverage(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::routes::capabilities::CapabilityState;
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use chrono::TimeZone;
@@ -1318,6 +1328,67 @@ mod tests {
     async fn cache_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         LOCK.lock().await
+    }
+
+    /// Serialises tests that mutate the process environment for `from_env`.
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn invalid_readiness_threshold_fails_loudly_and_names_the_variable() {
+        let _guard = env_test_lock();
+        std::env::set_var("APEX_OUTBOX_MAX_PENDING", "not-a-number");
+        let error = ReadinessPolicy::from_env()
+            .expect_err("a malformed readiness threshold must fail loudly")
+            .to_string();
+        std::env::remove_var("APEX_OUTBOX_MAX_PENDING");
+
+        assert!(
+            error.contains("APEX_OUTBOX_MAX_PENDING"),
+            "the error must name the variable: {error}"
+        );
+        assert!(
+            error.contains("not-a-number"),
+            "the error must name the bad value: {error}"
+        );
+    }
+
+    #[test]
+    fn blank_readiness_threshold_falls_back_to_default() {
+        let _guard = env_test_lock();
+        std::env::set_var("APEX_OUTBOX_MAX_PENDING", "   ");
+        let policy = ReadinessPolicy::from_env().expect("a blank threshold is treated as unset");
+        std::env::remove_var("APEX_OUTBOX_MAX_PENDING");
+
+        assert_eq!(
+            policy.outbox_max_pending,
+            ReadinessPolicy::default().outbox_max_pending
+        );
+    }
+
+    #[test]
+    fn unset_readiness_thresholds_keep_their_defaults() {
+        let _guard = env_test_lock();
+        std::env::remove_var("APEX_OUTBOX_MAX_PENDING");
+        let policy = ReadinessPolicy::from_env().expect("unset thresholds use defaults");
+        assert_eq!(
+            policy.outbox_max_pending,
+            ReadinessPolicy::default().outbox_max_pending
+        );
+    }
+
+    #[test]
+    fn invalid_critical_jobs_csv_fails_loudly() {
+        let _guard = env_test_lock();
+        std::env::set_var("APEX_CRITICAL_JOBS", ",");
+        let error = ReadinessPolicy::from_env()
+            .expect_err("an empty job list must fail loudly")
+            .to_string();
+        std::env::remove_var("APEX_CRITICAL_JOBS");
+
+        assert!(error.contains("APEX_CRITICAL_JOBS"), "{error}");
     }
 
     fn sample_job(
@@ -1517,9 +1588,13 @@ mod tests {
         let status = probe_llm(None, &ReadinessPolicy::default()).await;
         assert_ne!(status.status, "ok");
         if cfg!(feature = "llm") {
-            assert_eq!(status.status, "degraded");
+            // The llm feature is compiled in but no model is configured:
+            // that is a configuration gap, not a measured degradation.
+            assert_eq!(status.status, "not_configured");
+            assert_eq!(status.state(), CapabilityState::NotConfigured);
         } else {
             assert_eq!(status.status, "disabled");
+            assert_eq!(status.state(), CapabilityState::Disabled);
         }
         reset_probe_cache();
     }

@@ -147,6 +147,28 @@
   </div>
 </div>
 
+{% if !capability_badges.is_empty() %}
+<div class="apex-card mb-6" id="capability-health">
+  <div class="border-b border-rams-line px-4 py-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Capability Health</h2>
+    <p class="text-[11px] text-rams-muted mt-1">
+      Measured states. Disabled, Not configured and Not measured are not claims of health.
+    </p>
+  </div>
+  <div class="divide-y divide-rams-line">
+    {% for badge in capability_badges %}
+    <div class="px-4 py-3 flex items-center justify-between gap-3">
+      <div class="min-w-0">
+        <p class="text-sm capitalize">{{ badge.name }}</p>
+        <p class="text-[11px] text-rams-muted truncate">{{ badge.detail }}</p>
+      </div>
+      <span class="shrink-0 text-[10px] font-black uppercase tracking-[0.08em] {{ badge.status_class }}">{{ badge.state }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if !crawl_statuses.is_empty() %}
 <div class="apex-card mb-6">
   <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">Crawl Status</h2>

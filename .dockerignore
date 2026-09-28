@@ -1,5 +1,7 @@
-# Docker build context exclusions. `crates/`, `Cargo.toml`, `Cargo.lock` and
-# `config/` are the only paths the Dockerfiles copy.
+# Docker build context exclusions. `crates/`, `Cargo.toml`, `Cargo.lock`,
+# `config/` and `migrations/` are the only paths the Dockerfiles copy (the
+# migrations tree and config yaml are compile-time embeds of apex-store and
+# apex-core).
 .git
 target
 node_modules

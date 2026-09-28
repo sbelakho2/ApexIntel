@@ -330,7 +330,7 @@ async fn build_state() -> Result<AppState> {
     let autocomplete_index = Arc::new(std::sync::RwLock::new(autocomplete_index));
     // ──────────────────────────────────────────────────────────────────────
 
-    let api_keys = load_api_keys();
+    let api_keys = load_api_keys()?;
     tracing::info!(count = %api_keys.len(), "API keys loaded");
 
     // Provision every API-key owner in the canonical `app_users` identity
@@ -436,7 +436,8 @@ async fn build_state() -> Result<AppState> {
     // Probes measure real capability: the policy carries configurable
     // thresholds, the browser state can run a real render self-test, and the
     // LLM/embedding probes target the configured endpoint/model. A malformed
-    // threshold is a startup error: readiness must not apply a silent default.
+    // readiness/security threshold is a startup configuration error naming the
+    // variable and value — never a silent fallback.
     let policy = Arc::new(
         ReadinessPolicy::from_env()
             .map_err(|errors| anyhow::anyhow!("invalid readiness configuration: {errors}"))?,
@@ -550,9 +551,10 @@ fn build_llm_runtime(_config: &ApiRuntimeConfig) -> Result<Option<()>> {
     Ok(None)
 }
 
-fn load_api_keys() -> HashMap<String, ApiKey> {
+fn load_api_keys() -> Result<HashMap<String, ApiKey>> {
     // B317: 50 slots to match the documented API_KEYS_ENV_SLOTS default —
     // keys 17..50 were silently ignored with the previous hardcoded 16.
+    // A malformed slot or unknown role is a startup configuration error.
     apex_api::api_keys::load_api_keys_from_env(50)
 }
 
@@ -762,6 +764,10 @@ fn start_status_heartbeat(state: AppState) {
             };
             let capabilities = probe_capabilities(&probe_context(&state, nats_probe, None)).await;
             apex_api::system_status::StatusStrip::publish(capabilities.status_strip());
+            // The same measured report powers the server-rendered capability
+            // badges (admin page), so the UI never claims a state the probes
+            // did not measure.
+            apex_api::system_status::publish_capabilities(&capabilities);
 
             if let Err(error) = state
                 .store
