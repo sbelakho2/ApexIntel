@@ -289,7 +289,7 @@ Audit items 10, 11, 18, 34 (source/crawl capability truth + browser hardening).
 - `npm run test:server-ui` added.
 
 ### Deployed
-- aarch64 binaries + static assets redeployed to `starzerp.fi`; row counts
+- aarch64 binaries + static assets redeployed to `https://<PRODUCTION_DOMAIN>`; row counts
   identical pre/post (zero data loss), migrations max=45, health 200.
 
 ---
@@ -366,9 +366,10 @@ pipeline.
 
 ### Production deployment (2026-09-23)
 - Cross-compiled `aarch64-unknown-linux-gnu` release binaries (`apex-api`,
-  `apex-worker`, `--features llm`) and deployed them to `starzerp.fi`
-  (`77.42.65.89`) with the RUNBOOK swap procedure (stop → `.prev` copies →
-  install → start → verify), plus refreshed static assets.
+  `apex-worker`, `--features llm --locked`) and deployed them to
+  `https://<PRODUCTION_DOMAIN>` (`<PRODUCTION_HOST>`) with the RUNBOOK swap
+  procedure (stop → `.prev` copies → install → start → verify), plus refreshed
+  static assets.
 - **Zero data loss**: a fresh `pg_dump` was taken and verified before the swap;
   the pre-swap dump was fully restored into a scratch database and the new
   migrations were rehearsed against real production data first. Post-deploy

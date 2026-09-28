@@ -48,13 +48,13 @@
 
 ```bash
 # Local: build ARM64 release binaries and upload
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api --features llm
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
-scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-api  root@77.42.65.89:/tmp/apex-api-new
-scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-worker root@77.42.65.89:/tmp/apex-worker-new
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api --features llm --locked
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm --locked
+scp -i ~/.ssh/<DEPLOY_KEY> target/aarch64-unknown-linux-gnu/release/apex-api  root@<PRODUCTION_HOST>:/tmp/apex-api-new
+scp -i ~/.ssh/<DEPLOY_KEY> target/aarch64-unknown-linux-gnu/release/apex-worker root@<PRODUCTION_HOST>:/tmp/apex-worker-new
 
 # Server: backup DB first, then verify the schema, swap + restart + verify
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 '
+ssh -i ~/.ssh/<DEPLOY_KEY> root@<PRODUCTION_HOST> '
 set -e
 sudo -u postgres pg_dump apexintel | gzip > /opt/apexintel/backups/db_$(date +%Y%m%d_%H%M%S).sql.gz
 # Preflight: production sets APEX_SKIP_MIGRATIONS=true, and the new binaries
@@ -107,7 +107,7 @@ from this table at boot; the job fires on the next 60 s tick).
 ### Prerequisites
 
 - Linux VPS (Ubuntu 22.04+ or Debian 12+), minimum 8 cores / 32GB RAM / 500GB NVMe
-- Domain with DNS pointing to server (e.g. `starzerp.fi` → `77.42.65.89`)
+- Domain with DNS pointing to server (e.g. `<PRODUCTION_DOMAIN>` → `<PRODUCTION_HOST>`)
 - SSL certificate (Let's Encrypt recommended)
 - Rust 1.77+ toolchain
 
@@ -281,8 +281,8 @@ engine require no API keys.
 
 ### Morning Checklist (5 minutes)
 
-1. **Dashboard**: Open `https://starzerp.fi` — verify data is recent
-2. **Health**: `curl -s https://starzerp.fi/api/health/deep | jq .`
+1. **Dashboard**: Open `https://<PRODUCTION_DOMAIN>` — verify data is recent
+2. **Health**: `curl -s https://<PRODUCTION_DOMAIN>/api/health/deep | jq .`
 3. **Warnings**: Check `/warnings` page for unacknowledged critical/high alerts
 4. **Admin**: Check `/admin` for crawler status and job health
 5. **Logs**: Quick scan for errors:
@@ -715,7 +715,7 @@ RESTORE_VALIDATE_DATABASE_URL=postgresql://.../apexintel_restore_check \
 bash scripts/restore_validate.sh /opt/apexintel/backups/LATEST
 
 # Continuous uptime probe with paging webhook
-HEALTHCHECK_URL=https://starzerp.fi/api/health/deep \
+HEALTHCHECK_URL=https://<PRODUCTION_DOMAIN>/api/health/deep \
 PAGE_WEBHOOK_URL=https://hooks.example.com/pager \
 bash scripts/uptime_check.sh
 ```
