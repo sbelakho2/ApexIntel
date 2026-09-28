@@ -893,6 +893,7 @@ pub(super) async fn run_recipe_fire(
     run.start();
     let now = Utc::now();
     let mut source_reliability_scores = HashMap::new();
+    let mut feature_persistence_failures: u64 = 0;
 
     #[cfg(feature = "llm")]
     let insight_llm_client = {
@@ -911,7 +912,16 @@ pub(super) async fn run_recipe_fire(
         InferenceLlmClient::new(base_url, api_key, config)
     };
 
-    let seed_recipes = load_default_seed_recipes().unwrap_or_default();
+    // A failed seed load must not masquerade as "no recipes configured".
+    let seed_recipes = match load_default_seed_recipes() {
+        Ok(recipes) => recipes,
+        Err(error) => {
+            run.fail(&format!(
+                "recipe_fire: failed to load seed recipes: {error}"
+            ));
+            return run;
+        }
+    };
     let engine_recipes: Vec<Recipe> = seed_recipes
         .iter()
         .filter(|sr| !sr.narrative_template.is_empty() && !sr.signals.is_empty())
@@ -2518,8 +2528,20 @@ pub(super) async fn run_recipe_fire(
         }
 
         if stats_result.alert_level.to_string() != "none" {
-            let feature_vector = serde_json::to_value(&stats_result.features)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            // A serialization failure must not persist an empty feature vector
+            // as if the measurement were zero-dimensional.
+            let feature_vector = match serde_json::to_value(&stats_result.features) {
+                Ok(value) => value,
+                Err(error) => {
+                    feature_persistence_failures += 1;
+                    tracing::error!(
+                        %error,
+                        entity_id = %entity_id,
+                        "recipe_fire: failed to serialize stats alert feature vector"
+                    );
+                    continue;
+                }
+            };
             let metadata = serde_json::json!({
                 "window_days": 30,
                 "stage_warning_count": stats_result.warnings.len(),
@@ -3585,6 +3607,7 @@ pub(super) async fn run_recipe_fire(
     }
 
     let mut insights_inserted: u64 = 0;
+    let mut insight_insert_failures: u64 = 0;
     let mut warnings_inserted: u64 = 0;
     let mut warning_ingest_failures: u64 = 0;
     let mut skipped_low_conf: u64 = 0;
@@ -4527,7 +4550,7 @@ pub(super) async fn run_recipe_fire(
                     )
                 };
                 let region_param = entity_region.as_deref();
-                let _ = store
+                match store
                     .insert_insight(
                         &title,
                         &summary,
@@ -4539,8 +4562,18 @@ pub(super) async fn run_recipe_fire(
                         Some(vec!["predictive".to_string(), pattern.id.clone()]),
                         None,
                     )
-                    .await;
-                predictive_count += 1;
+                    .await
+                {
+                    Ok(_) => predictive_count += 1,
+                    Err(error) => {
+                        insight_insert_failures += 1;
+                        tracing::error!(
+                            %error,
+                            entity_id = %entity_uuid,
+                            "recipe_fire: failed to persist predictive insight"
+                        );
+                    }
+                }
             }
         }
         if predictive_count > 0 {
@@ -4606,7 +4639,7 @@ pub(super) async fn run_recipe_fire(
         ) in hypothesis_candidates.into_iter().take(8)
         {
             let region_param = entity_region.as_deref();
-            let _ = store
+            match store
                 .insert_insight(
                     &title,
                     &insight_summary,
@@ -4618,8 +4651,18 @@ pub(super) async fn run_recipe_fire(
                     Some(vec!["hypothesis".to_string(), "ach".to_string()]),
                     None,
                 )
-                .await;
-            hypothesis_count += 1;
+                .await
+            {
+                Ok(_) => hypothesis_count += 1,
+                Err(error) => {
+                    insight_insert_failures += 1;
+                    tracing::error!(
+                        %error,
+                        entity_id = %entity_uuid,
+                        "recipe_fire: failed to persist hypothesis ACH insight"
+                    );
+                }
+            }
         }
         if hypothesis_count > 0 {
             tracing::info!(
@@ -4645,7 +4688,7 @@ pub(super) async fn run_recipe_fire(
             .filter(|opp| seen_advantaged_regions.insert(opp.advantaged_region.clone()))
             .take(4)
         {
-            let _ = store
+            match store
                 .insert_insight(
                     &opp.title,
                     &opp.description,
@@ -4661,8 +4704,18 @@ pub(super) async fn run_recipe_fire(
                     ]),
                     None,
                 )
-                .await;
-            arbitrage_count += 1;
+                .await
+            {
+                Ok(_) => arbitrage_count += 1,
+                Err(error) => {
+                    insight_insert_failures += 1;
+                    tracing::error!(
+                        %error,
+                        advantaged_region = %opp.advantaged_region,
+                        "recipe_fire: failed to persist arbitrage insight"
+                    );
+                }
+            }
         }
         if arbitrage_count > 0 {
             tracing::info!(
@@ -4756,7 +4809,7 @@ pub(super) async fn run_recipe_fire(
                     matrix.summary.common_capabilities.len(),
                     matrix.summary.competitor_unique_capabilities.len(),
                 );
-                let _ = store
+                match store
                     .insert_insight(
                         &title,
                         &summary,
@@ -4768,9 +4821,21 @@ pub(super) async fn run_recipe_fire(
                         Some(vec!["comparison".to_string(), "competitive".to_string()]),
                         None,
                     )
-                    .await;
-                insights_inserted += 1;
-                tracing::info!("recipe_fire: competitive comparison insight inserted");
+                    .await
+                {
+                    Ok(_) => {
+                        insights_inserted += 1;
+                        tracing::info!("recipe_fire: competitive comparison insight inserted");
+                    }
+                    Err(error) => {
+                        insight_insert_failures += 1;
+                        tracing::error!(
+                            %error,
+                            competitor = %title,
+                            "recipe_fire: failed to persist competitive comparison insight"
+                        );
+                    }
+                }
             }
         }
     }
@@ -4787,9 +4852,11 @@ pub(super) async fn run_recipe_fire(
     );
 
     let summary = format!(
-        "recipe_fire: {} candidate(s), inserted {} insight(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run); feature inputs loaded {}/{}",
+        "recipe_fire: {} candidate(s), inserted {} insight(s), {} insight persistence failure(s), {} feature persistence failure(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run); feature inputs loaded {}/{}",
         total_candidates,
         insights_inserted,
+        insight_insert_failures,
+        feature_persistence_failures,
         warnings_inserted,
         warning_ingest_failures,
         skipped_low_conf,
@@ -4798,10 +4865,13 @@ pub(super) async fn run_recipe_fire(
         feature_report.inputs_loaded(),
         feature_report.inputs_loaded() + feature_report.inputs_failed(),
     );
-    if warning_ingest_failures > 0 {
+    if warning_ingest_failures > 0
+        || insight_insert_failures > 0
+        || feature_persistence_failures > 0
+    {
         // Persistence failures must never be reported as a clean success.
         run.items_processed = insights_inserted;
-        run.fail(&format!("{summary} — warning ingestion degraded"));
+        run.fail(&format!("{summary} — persistence degraded"));
     } else if !feature_report.failed.is_empty() {
         // Structured degraded stage: evaluation ran with explicitly marked
         // missing feature inputs, so this is not a clean success.

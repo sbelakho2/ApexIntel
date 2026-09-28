@@ -10,45 +10,68 @@ use apex_worker::recipe_loader::{
 
 /// Load `config/recipes_seed.yaml`, validate and insert the seed recipes.
 ///
-/// Failures are logged, never fatal: the worker must still start when the
-/// seed file is missing or the database rejects an individual recipe.
+/// The worker must still start when the seed file is missing or the database
+/// rejects an individual recipe — but a sync that inserted nothing because a
+/// definition failed to serialize or persist is reported as degraded, never
+/// as a clean startup.
 pub(crate) async fn seed_recipes_from_yaml(pool: &sqlx::PgPool) {
     match load_default_seed_recipes() {
         Ok(recipes) => {
-            if !recipes.is_empty() {
-                let validation_errors = validate_seed_recipes(&recipes);
-                if !validation_errors.is_empty() {
-                    tracing::warn!(
-                        "Recipe validation found {} issues (recipes will still be loaded)",
-                        validation_errors.len()
-                    );
-                    for err in &validation_errors {
-                        tracing::warn!("  - {}", err);
-                    }
-                }
-                print_recipe_stats(&recipes);
-                tracing::info!("loaded {} seed recipes from YAML", recipes.len());
-
-                // Insert seed recipes into database
-                match insert_seed_recipes(pool, &recipes).await {
-                    Ok(result) => {
-                        tracing::info!(
-                            "recipe insertion: {} inserted, {} skipped (already exist), {} errors",
-                            result.inserted,
-                            result.skipped,
-                            result.errors.len()
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("failed to insert seed recipes: {}", e);
-                    }
-                }
-            } else {
+            if recipes.is_empty() {
                 tracing::debug!("no seed recipes found");
+                return;
+            }
+
+            let validation_errors = validate_seed_recipes(&recipes);
+            if !validation_errors.is_empty() {
+                tracing::warn!(
+                    "Recipe validation found {} issues (recipes will still be loaded)",
+                    validation_errors.len()
+                );
+                for err in &validation_errors {
+                    tracing::warn!("  - {}", err);
+                }
+            }
+            print_recipe_stats(&recipes);
+            tracing::info!("loaded {} seed recipes from YAML", recipes.len());
+
+            // Insert seed recipes into database
+            match insert_seed_recipes(pool, &recipes).await {
+                Ok(result) if result.errors.is_empty() => {
+                    tracing::info!(
+                        "recipe seed sync complete: {} inserted, {} skipped (already exist)",
+                        result.inserted,
+                        result.skipped
+                    );
+                }
+                Ok(result) => {
+                    for error in result.errors.iter().take(10) {
+                        tracing::error!(%error, "seed recipe insert failed");
+                    }
+                    tracing::error!(
+                        inserted = result.inserted,
+                        skipped = result.skipped,
+                        errors = result.errors.len(),
+                        "recipe seed sync DEGRADED: some recipes were not persisted; recipes in \
+                         the database no longer match config/recipes_seed.yaml"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "recipe seed sync FAILED: {} (the sync aborted before completing; \
+                         recipes recorded earlier in this run remain committed, so the \
+                         database may not match config/recipes_seed.yaml)",
+                        e
+                    );
+                }
             }
         }
         Err(e) => {
-            tracing::warn!("failed to load seed recipes: {}", e);
+            tracing::error!(
+                error = %e,
+                "recipe seed sync FAILED: could not load config/recipes_seed.yaml"
+            );
         }
     }
 }

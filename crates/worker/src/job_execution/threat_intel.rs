@@ -55,6 +55,7 @@ pub(super) async fn run_threat_intel_refresh(
     let mut total_scores_updated: u64 = 0;
     let mut supply_chain_risks: u64 = 0;
     let mut threat_actor_matches: u64 = 0;
+    let mut threat_match_failures: u64 = 0;
     let mut competitive_flags: u64 = 0;
 
     // The curated, verified threat-actor database is static intelligence, so it
@@ -107,19 +108,28 @@ pub(super) async fn run_threat_intel_refresh(
         // threat-actor database (sector + geography overlap).
         #[cfg(feature = "llm")]
         {
-            let matches = assess_threat_actor_matches(store, ingress, company, &known_threat_actors)
-                .await as u64;
-            if matches > 0 {
-                threat_actor_matches += matches;
-                activity_logger
-                    .log_threat_detected(
-                        "threat_actor_match",
-                        &company.name,
-                        "medium",
-                        Some(&company.id.to_string()),
-                        Some("company"),
-                    )
-                    .await;
+            match assess_threat_actor_matches(store, ingress, company, &known_threat_actors).await {
+                Ok(matches) if matches > 0 => {
+                    threat_actor_matches += matches as u64;
+                    activity_logger
+                        .log_threat_detected(
+                            "threat_actor_match",
+                            &company.name,
+                            "medium",
+                            Some(&company.id.to_string()),
+                            Some("company"),
+                        )
+                        .await;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(
+                        company = %company.name,
+                        %error,
+                        "threat_intel_refresh: threat actor match persistence failed"
+                    );
+                    threat_match_failures += 1;
+                }
             }
         }
 
@@ -136,6 +146,25 @@ pub(super) async fn run_threat_intel_refresh(
     }
 
     let elapsed = total_start.elapsed();
+    if threat_match_failures > 0 {
+        // Some assessments could not be persisted; the run is not a clean
+        // success and the missing matches must stay visible.
+        run.degrade(
+            total_scores_updated,
+            &format!(
+                "threat_intel_refresh: {} companies assessed, {} supply chain risks, \
+                 {} threat actor matches, {} competitive flags, {} match persistence \
+                 failure(s) in {:.1}s",
+                companies.len(),
+                supply_chain_risks,
+                threat_actor_matches,
+                competitive_flags,
+                threat_match_failures,
+                elapsed.as_secs_f64(),
+            ),
+        );
+        return run;
+    }
     run.succeed(
         total_scores_updated,
         &format!(
@@ -440,14 +469,16 @@ fn actor_match_reasons(
 /// Assess a company against every known threat actor, recording a
 /// `threat_actor_match` observation (and a high-severity warning for active,
 /// high-sophistication actors that directly target the company's sector).
-/// Returns the number of matches recorded.
+/// Returns the number of matches recorded, or an error when a match could not
+/// be persisted (the caller degrades the run instead of reporting a clean
+/// assessment that silently dropped rows).
 #[cfg(feature = "llm")]
 async fn assess_threat_actor_matches(
     store: &Arc<PgStore>,
     ingress: &Arc<IntelligenceIngress>,
     company: &apex_store::postgres::CompanyRow,
     known_actors: &[ThreatActor],
-) -> usize {
+) -> Result<usize, String> {
     let company_sectors = company_industry_sectors(company);
     let company_geo =
         company_geo_tokens(company.country_code.as_deref(), company.region.as_deref());
@@ -490,7 +521,7 @@ async fn assess_threat_actor_matches(
             "source": "worker_threat_intel_refresh",
         });
 
-        let _ = sqlx::query(
+        sqlx::query(
             r#"INSERT INTO observations
                (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
                VALUES ($1, 'threat_actor_match', $2, 'company', $3, $4::jsonb, $5::jsonb, $6)
@@ -503,7 +534,13 @@ async fn assess_threat_actor_matches(
         .bind(provenance)
         .bind(0.6)
         .execute(&store.pool)
-        .await;
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to persist threat actor match {} for {}: {error}",
+                actor.alias, company.name
+            )
+        })?;
 
         // Surface the most actionable matches (active, high-sophistication
         // actors directly targeting the company's sector) as warnings.
@@ -539,5 +576,5 @@ async fn assess_threat_actor_matches(
         matches += 1;
     }
 
-    matches
+    Ok(matches)
 }

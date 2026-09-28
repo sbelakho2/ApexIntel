@@ -1264,7 +1264,7 @@ async fn process_discovery_batch(
 
                 if let Some(seed) = parent_seed {
                     let role_family_label = person.role_family.as_str().to_string();
-                    let _ = store
+                    if let Err(error) = store
                         .insert_role_history(
                             person.id,
                             person.primary_org_id,
@@ -1276,10 +1276,16 @@ async fn process_discovery_batch(
                             Some(&discovery.source_url),
                             discovery.confidence as f64,
                         )
-                        .await;
+                        .await
+                    {
+                        stats.errors.push(format!(
+                            "{}: role history at {}: {error}",
+                            person.name, seed.org_name
+                        ));
+                    }
                 } else if let Some(company_seed) = company_seed {
                     let role_family_label = person.role_family.as_str().to_string();
-                    let _ = store
+                    if let Err(error) = store
                         .insert_role_history(
                             person.id,
                             person.primary_org_id,
@@ -1291,7 +1297,13 @@ async fn process_discovery_batch(
                             Some(&discovery.source_url),
                             discovery.confidence as f64,
                         )
-                        .await;
+                        .await
+                    {
+                        stats.errors.push(format!(
+                            "{}: role history at {}: {error}",
+                            person.name, company_seed.name
+                        ));
+                    }
                 }
 
                 let org_hint = parent_seed
@@ -2406,7 +2418,9 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
                 ),
             );
         } else {
-            run.succeed(
+            // Writes failed for some discoveries; the job must not read as a
+            // clean success. Degraded keeps the partial result visible.
+            run.degrade(
                 inserted + org_discovery.inserted,
                 &format!(
                     "poi_discovery: org-first {} inserted; {} company seeds in {} batches; {} raw candidates, {} sent to LLM, {} validated, {} persons inserted, {} artifacts, {} duplicates, {} errors; {}: {}",

@@ -1307,8 +1307,14 @@ pub async fn start_investigation_html(
     {
         Ok(workspace) => Redirect::to(&format!("/workspaces/{}", workspace.id)).into_response(),
         Err(error) => {
+            // Authoritative persistence: a failed workspace insert must not
+            // bounce back to the warning page as if the investigation existed.
             tracing::error!("Failed to create investigation for warning {id}: {error}");
-            Redirect::to(&format!("/warnings/{id}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to start investigation".to_string()),
+            )
+                .into_response()
         }
     }
 }
@@ -1921,6 +1927,13 @@ pub async fn create_warning_note(
         }
         Err(error) => {
             tracing::error!(warning_id = %id, error = %error, "failed to create warning note");
+            // Authoritative persistence: the redirect must not claim the note
+            // was saved when the write failed.
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to save note".to_string()),
+            )
+                .into_response();
         }
     }
 

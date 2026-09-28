@@ -7,7 +7,7 @@ use std::sync::Arc;
 use askama::Template;
 use axum::{
     extract::{Path, Query},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Extension,
 };
@@ -197,8 +197,14 @@ pub async fn get_battlecard(
 ) -> impl IntoResponse {
     let _ctx = PageContext::from_session(&session, &format!("/battlecards/{}", id), 0);
 
-    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-    let uid = Uuid::parse_str(&id).unwrap_or_default();
+    // A malformed battlecard ID is a validation error: defaulting to the nil
+    // UUID would query a fabricated identity that can never exist.
+    let uid = match Uuid::parse_str(&id) {
+        Ok(uid) => uid,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid battlecard ID").into_response();
+        }
+    };
     let row = store.get_battlecard(uid).await;
 
     match row {
@@ -313,5 +319,35 @@ pub async fn get_battlecard(
             };
             super::render_template_with_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &tpl)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn get_battlecard_rejects_malformed_id() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://apex:apex@127.0.0.1:1/apex_unused_test")
+            .expect("lazy pool construction never connects");
+        let store = std::sync::Arc::new(PgStore::from_pool(pool));
+        let session = WebSession {
+            user_id: apex_core::identity::UserId::new("test-user"),
+            username: apex_core::identity::Username::new("tester"),
+            role: crate::auth::ApiRole::Admin,
+            session_version: 1,
+            principal_id: Uuid::new_v4(),
+            issued_at: 0,
+            expires_at: None,
+        };
+
+        let response = get_battlecard(
+            Extension(store),
+            Path("not-a-uuid".to_string()),
+            Extension(session),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

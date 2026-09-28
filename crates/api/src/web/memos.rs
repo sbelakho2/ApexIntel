@@ -73,10 +73,18 @@ pub async fn list_memos(
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/memos", unack);
 
-    let (memo_rows, total) = store.list_weekly_memos(50, 0).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to list weekly memos: {e}");
-        (vec![], 0)
-    });
+    // A failed or malformed memo list is surfaced, not rendered as "no memos".
+    let (memo_rows, total) = match store.list_weekly_memos(50, 0).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("Failed to list weekly memos: {e:#}");
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::response::Html("Failed to load weekly memos".to_string()),
+            )
+                .into_response();
+        }
+    };
 
     let memos: Vec<MemoListItem> = memo_rows
         .iter()
@@ -131,10 +139,18 @@ pub async fn list_memos_partial(
         .unwrap_or(0);
     let _ctx = PageContext::from_session(&session, "/memos", unack);
 
-    let (memo_rows, total) = store.list_weekly_memos(50, 0).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to list weekly memos: {e}");
-        (vec![], 0)
-    });
+    // A failed or malformed memo list is surfaced, not rendered as "no memos".
+    let (memo_rows, total) = match store.list_weekly_memos(50, 0).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("Failed to list weekly memos: {e:#}");
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::response::Html("Failed to load weekly memos".to_string()),
+            )
+                .into_response();
+        }
+    };
 
     let memos: Vec<MemoListItem> = memo_rows
         .iter()

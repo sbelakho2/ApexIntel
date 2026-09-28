@@ -575,7 +575,10 @@ pub(crate) async fn post_replay(
                 execute_replay_job(state_clone.clone(), job_id, actor.clone(), body_clone).await
             {
                 tracing::error!(job_id = %job_id, "background replay failed: {err:#}");
-                let _ = state_clone
+                // The job-state write is authoritative: if marking it failed
+                // also fails, that must be visible; the row would otherwise
+                // stay "running" forever.
+                if let Err(mark_error) = state_clone
                     .store
                     .update_replay_job(
                         job_id,
@@ -586,8 +589,14 @@ pub(crate) async fn post_replay(
                         1,
                         Some(Utc::now()),
                     )
-                    .await;
-            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
+                    .await
+                {
+                    tracing::error!(
+                        job_id = %job_id,
+                        error = %mark_error,
+                        "background replay: failed to mark the replay job as failed"
+                    );
+                }
                 let _ = state_clone
                     .store
                     .record_audit_event(
@@ -629,7 +638,7 @@ pub(crate) async fn post_replay(
         ),
         Err(err) => {
             tracing::error!(job_id = %job_id, "replay failed: {err:#}");
-            let _ = state
+            if let Err(mark_error) = state
                 .store
                 .update_replay_job(
                     job_id,
@@ -640,7 +649,14 @@ pub(crate) async fn post_replay(
                     1,
                     Some(Utc::now()),
                 )
-                .await;
+                .await
+            {
+                tracing::error!(
+                    job_id = %job_id,
+                    error = %mark_error,
+                    "replay: failed to mark the replay job as failed"
+                );
+            }
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(error_response(ApiError::internal("Replay job failed"))),

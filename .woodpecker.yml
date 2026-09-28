@@ -86,6 +86,22 @@ steps:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_warning_ingress.sh
 
+  # False-success + identifier-decode guards.
+  # The suppression rule is semantic and asymmetric: an authoritative store
+  # call that discards or defaults its error fails with "authoritative
+  # operation still suppresses error" regardless of comments; only a reasoned
+  # entry in scripts/ci/false_success_allowlist.txt permits a telemetry-only
+  # discard. Identifier decodes may never fall back to the nil UUID / a fresh
+  # UUID / zero/empty defaults for id-like fields.
+  - name: false-success-guard
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache bash python3
+      - bash scripts/ci/check_false_success.sh --self-test
+      - bash scripts/ci/check_false_success.sh
+      - bash scripts/ci/check_identifier_decode.sh --self-test
+      - bash scripts/ci/check_identifier_decode.sh
+
   # Fails if a migration header or body comment describes a different revision
   # than its filename (audit #40 + stale body numbering). Production-applied
   # migrations (000..065, 068) are frozen and explicitly allowlisted in
@@ -140,6 +156,15 @@ steps:
       # The compiled stylesheet is committed; rebuild it to prove the Tailwind
       # config and source CSS still produce output.
       - npx tailwindcss -i crates/api/static/css/globals.css -o /tmp/tailwind.css --minify
+
+  # apex-shared is the wasm-compatible boundary crate (serde/chrono only); the
+  # release-evidence `wasm-shared` gate is only truthful if a step actually
+  # compiles it for wasm32.
+  - name: wasm-shared
+    image: rust:bookworm
+    commands:
+      - rustup target add wasm32-unknown-unknown
+      - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
 
   # Bootstraps a real, empty PostgreSQL and applies every migration via sqlx,
   # then runs EVERY ignored PostgreSQL integration suite in the workspace (store
@@ -257,7 +282,7 @@ steps:
   # injected by Woodpecker and feed /api/version via the printed exports.
   - name: release-evidence
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared]
     when:
       - event: [pull_request]
     commands:
@@ -282,7 +307,7 @@ steps:
   # which only runs on trusted events (push/tag/manual).
   - name: release-evidence-release
     image: rust:bookworm
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, frontend-assets, wasm-shared, browser-container]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared, browser-container]
     when:
       - event: [push, tag, manual]
     commands:

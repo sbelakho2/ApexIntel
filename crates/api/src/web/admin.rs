@@ -658,22 +658,38 @@ pub async fn admin_replay_delivery(
         .replay_dead_lettered_notification(&form.delivery_key)
         .await
     {
-        Ok(true) => tracing::info!(
-            delivery_key = %form.delivery_key,
-            username = %session.username,
-            "admin replayed a dead-lettered notification delivery"
-        ),
-        Ok(false) => tracing::warn!(
-            delivery_key = %form.delivery_key,
-            "admin replay found no dead-lettered delivery with that key"
-        ),
-        Err(error) => tracing::error!(
-            delivery_key = %form.delivery_key,
-            error = %error,
-            "admin replay of a notification delivery failed"
-        ),
+        Ok(true) => {
+            tracing::info!(
+                delivery_key = %form.delivery_key,
+                username = %session.username,
+                "admin replayed a dead-lettered notification delivery"
+            );
+            Redirect::to("/admin").into_response()
+        }
+        Ok(false) => {
+            tracing::warn!(
+                delivery_key = %form.delivery_key,
+                "admin replay found no dead-lettered delivery with that key"
+            );
+            (
+                StatusCode::NOT_FOUND,
+                "No dead-lettered delivery with that key",
+            )
+                .into_response()
+        }
+        Err(error) => {
+            tracing::error!(
+                delivery_key = %form.delivery_key,
+                error = %error,
+                "admin replay of a notification delivery failed"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to replay notification delivery",
+            )
+                .into_response()
+        }
     }
-    Redirect::to("/admin").into_response()
 }
 
 /// POST /admin/notifications/outbox/replay — requeue a dead-lettered outbox
@@ -686,25 +702,44 @@ pub async fn admin_replay_outbox(
     if !session.can_admin() {
         return (StatusCode::FORBIDDEN, "Admin role required").into_response();
     }
-    let Ok(outbox_id) = uuid::Uuid::parse_str(form.outbox_id.trim()) else {
-        tracing::warn!(outbox_id = %form.outbox_id, "admin replay received an invalid outbox id");
-        return Redirect::to("/admin").into_response();
+    let outbox_id = match uuid::Uuid::parse_str(form.outbox_id.trim()) {
+        Ok(outbox_id) => outbox_id,
+        Err(_) => {
+            tracing::warn!(outbox_id = %form.outbox_id, "admin replay received an invalid outbox id");
+            return (StatusCode::BAD_REQUEST, "Invalid outbox ID").into_response();
+        }
     };
     match store.replay_dead_lettered_outbox(outbox_id).await {
-        Ok(true) => tracing::info!(
-            %outbox_id,
-            username = %session.username,
-            "admin replayed a dead-lettered outbox event"
-        ),
-        Ok(false) => tracing::warn!(
-            %outbox_id,
-            "admin replay found no dead-lettered outbox event with that id"
-        ),
-        Err(error) => tracing::error!(
-            %outbox_id,
-            error = %error,
-            "admin replay of an outbox event failed"
-        ),
+        Ok(true) => {
+            tracing::info!(
+                %outbox_id,
+                username = %session.username,
+                "admin replayed a dead-lettered outbox event"
+            );
+            Redirect::to("/admin").into_response()
+        }
+        Ok(false) => {
+            tracing::warn!(
+                %outbox_id,
+                "admin replay found no dead-lettered outbox event with that id"
+            );
+            (
+                StatusCode::NOT_FOUND,
+                "No dead-lettered outbox event with that ID",
+            )
+                .into_response()
+        }
+        Err(error) => {
+            tracing::error!(
+                %outbox_id,
+                error = %error,
+                "admin replay of an outbox event failed"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to replay outbox event",
+            )
+                .into_response()
+        }
     }
-    Redirect::to("/admin").into_response()
 }

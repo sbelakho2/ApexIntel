@@ -25,12 +25,14 @@ pub(super) async fn run_adversarial_analysis(
     let mut placements_detected: u64 = 0;
     let mut sources_quarantined: u64 = 0;
     let mut entropy_alerts: u64 = 0;
+    let mut failed_stages: Vec<&str> = Vec::new();
 
     // 1. Run placement clustering: detect coordinated content placement patterns
     match run_placement_clustering(store, ingress).await {
         Ok(count) => placements_detected = count,
         Err(e) => {
-            tracing::warn!(error = %e, "adversarial_analysis: placement clustering failed");
+            tracing::error!(error = %e, "adversarial_analysis: placement clustering failed");
+            failed_stages.push("placement_clustering");
         }
     }
 
@@ -38,7 +40,8 @@ pub(super) async fn run_adversarial_analysis(
     match run_source_entropy_detection(store).await {
         Ok(count) => entropy_alerts = count,
         Err(e) => {
-            tracing::warn!(error = %e, "adversarial_analysis: source entropy detection failed");
+            tracing::error!(error = %e, "adversarial_analysis: source entropy detection failed");
+            failed_stages.push("source_entropy_detection");
         }
     }
 
@@ -46,23 +49,47 @@ pub(super) async fn run_adversarial_analysis(
     match run_quarantine_management(store, ingress).await {
         Ok(count) => sources_quarantined = count,
         Err(e) => {
-            tracing::warn!(error = %e, "adversarial_analysis: quarantine management failed");
+            tracing::error!(error = %e, "adversarial_analysis: quarantine management failed");
+            failed_stages.push("quarantine_management");
         }
     }
 
     let elapsed = total_start.elapsed();
-    run.succeed(
-        placements_detected + entropy_alerts + sources_quarantined,
-        &format!(
-            "adversarial_analysis: {} placement clusters, {} entropy alerts, \
-             {} sources quarantined in {:.1}s",
-            placements_detected,
-            entropy_alerts,
-            sources_quarantined,
-            elapsed.as_secs_f64(),
-        ),
-    );
+    let items = placements_detected + entropy_alerts + sources_quarantined;
+    if !failed_stages.is_empty() {
+        // A failed stage means its output is missing; the run must not read as
+        // a clean success.
+        run.degrade(
+            items,
+            &format!(
+                "adversarial_analysis: {} of 3 stages failed ({}); partial results only",
+                failed_stages.len(),
+                failed_stages.join(", "),
+            ),
+        );
+    } else {
+        run.succeed(
+            items,
+            &format!(
+                "adversarial_analysis: {} placement clusters, {} entropy alerts, \
+                 {} sources quarantined in {:.1}s",
+                placements_detected,
+                entropy_alerts,
+                sources_quarantined,
+                elapsed.as_secs_f64(),
+            ),
+        );
+    }
     run
+}
+
+/// One observation row used by placement clustering.
+#[derive(Debug, sqlx::FromRow)]
+struct PlacementObservationRow {
+    id: Uuid,
+    ts_utc: chrono::DateTime<chrono::Utc>,
+    content: String,
+    source_url: String,
 }
 
 /// Detect coordinated content placement patterns across sources.
@@ -72,17 +99,16 @@ async fn run_placement_clustering(
     store: &Arc<PgStore>,
     ingress: &Arc<IntelligenceIngress>,
 ) -> Result<u64, String> {
-    // Load recent observations grouped by time windows
+    // Load recent observations grouped by time windows. Typed decode: a row
+    // that cannot be decoded fails the stage instead of silently dropping the
+    // observation from clustering.
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
-    let rows = sqlx::query(
+    let rows = sqlx::query_as::<_, PlacementObservationRow>(
         r#"SELECT
                o.id,
                o.ts_utc,
-               o.observation_type,
                COALESCE(o.value->>'title', o.value->>'content', o.value->>'description', '') AS content,
-               COALESCE(o.value->>'url', o.value->>'source_url', '') AS source_url,
-               o.entity_id,
-               o.confidence
+               COALESCE(o.value->>'url', o.value->>'source_url', '') AS source_url
            FROM observations o
            WHERE o.created_at >= $1
              AND COALESCE(o.value->>'title', '') <> ''
@@ -99,32 +125,24 @@ async fn run_placement_clustering(
     }
 
     // Build token sets per observation for Jaccard similarity
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
-    let obs_tokens: Vec<(Uuid, Vec<String>, chrono::DateTime<chrono::Utc>, String)> = {
-        use sqlx::Row;
-        rows.iter()
-            .filter_map(|r| {
-                let id: Uuid = r.try_get("id").ok()?;
-                let content: String = r.try_get("content").ok()?;
-                // false-success-classification: best-effort — row-column default; a missing column contributes no value
-                let source_url: String = r.try_get("source_url").ok().unwrap_or_default();
-                let ts: chrono::DateTime<chrono::Utc> = r.try_get("ts_utc").ok()?;
+    let obs_tokens: Vec<(Uuid, Vec<String>, chrono::DateTime<chrono::Utc>, String)> = rows
+        .into_iter()
+        .filter_map(|row| {
+            if row.content.len() < 40 {
+                return None;
+            }
 
-                if content.len() < 40 {
-                    return None;
-                }
+            let tokens: Vec<String> = row
+                .content
+                .to_lowercase()
+                .split_whitespace()
+                .filter(|w| w.len() > 3)
+                .map(|w| w.to_string())
+                .collect();
 
-                let tokens: Vec<String> = content
-                    .to_lowercase()
-                    .split_whitespace()
-                    .filter(|w| w.len() > 3)
-                    .map(|w| w.to_string())
-                    .collect();
-
-                Some((id, tokens, ts, source_url))
-            })
-            .collect()
-    };
+            Some((row.id, tokens, row.ts_utc, row.source_url))
+        })
+        .collect();
 
     let mut clusters_found: u64 = 0;
     let mut processed = HashSet::new();
@@ -137,6 +155,8 @@ async fn run_placement_clustering(
         let mut cluster = Vec::new();
         let mut source_domains = HashSet::new();
         cluster.push(&obs_tokens[i]);
+        let mut similarity_sum = 0.0f64;
+        let mut similarity_count = 0usize;
 
         for j in (i + 1)..obs_tokens.len() {
             if processed.contains(&obs_tokens[j].0) {
@@ -151,6 +171,8 @@ async fn run_placement_clustering(
             let similarity = jaccard_similarity(&obs_tokens[i].1, &obs_tokens[j].1);
             if similarity > 0.5 {
                 cluster.push(&obs_tokens[j]);
+                similarity_sum += similarity;
+                similarity_count += 1;
                 if !obs_tokens[j].3.is_empty() {
                     source_domains.insert(extract_domain_from_url(&obs_tokens[j].3));
                 }
@@ -158,33 +180,37 @@ async fn run_placement_clustering(
         }
 
         if cluster.len() >= 3 && source_domains.len() >= 2 {
-            // Coordinated placement detected
+            // Coordinated placement detected. Every field below is measured
+            // from this cluster; the label carries the exact detail so the API
+            // never has to invent one.
             let signal_ids: Vec<Uuid> = cluster.iter().map(|c| c.0).collect();
             let now = chrono::Utc::now();
 
             let placement_id = Uuid::new_v4();
+            let measured_jaccard = if similarity_count > 0 {
+                similarity_sum / similarity_count as f64
+            } else {
+                0.0
+            };
             #[allow(clippy::unwrap_used, clippy::expect_used)]
-            let _placement_detail = serde_json::json!({
+            let placement_detail = serde_json::json!({
                 "placement_id": placement_id.to_string(),
                 "source_count": cluster.len(),
                 "time_window_hours": 6,
-                "token_jaccard": 0.55,
+                "token_jaccard": measured_jaccard,
                 "signal_ids": signal_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 "source_domains": source_domains.iter().collect::<Vec<_>>(),
                 "detected_at": now.to_rfc3339(),
             });
+            let placement_label = serde_json::to_string(&placement_detail)
+                .map_err(|e| format!("failed to serialize placement detail: {e}"))?;
 
-            let _ = sqlx::query(
+            sqlx::query(
                 r#"INSERT INTO pattern_candidates
-                   (entity_type, pattern_label, passed_gates, confidence, created_at)
-                   VALUES ('system', $1, TRUE, $2, $3)"#,
+                   (recipe_code, entity_type, pattern_label, passed_gates, confidence, created_at)
+                   VALUES ('adversarial_placement', 'system', $1, TRUE, $2, $3)"#,
             )
-            .bind(format!(
-                "adversarial_placement:{}:{} signals/{} sources",
-                placement_id,
-                cluster.len(),
-                source_domains.len()
-            ))
+            .bind(&placement_label)
             .bind(0.55 + (cluster.len() as f64 * 0.05).min(0.2))
             .bind(now)
             .execute(&store.pool)
@@ -242,14 +268,27 @@ async fn run_placement_clustering(
     Ok(clusters_found)
 }
 
+/// One aggregated source-statistics row for entropy detection.
+#[derive(Debug, sqlx::FromRow)]
+struct SourceEntropyRow {
+    source_domain: String,
+    observation_count: i32,
+    type_diversity: i32,
+    entity_span: i32,
+    /// `None` when none of the source's observations carry a confidence
+    /// measurement; that is not the same as a measured 0.5.
+    avg_confidence: Option<f64>,
+}
+
 /// Detect anomalous source behavior via entropy analysis.
 /// High entropy sources (unusual posting patterns, erratic domain behavior)
 /// are flagged for quarantine review.
 async fn run_source_entropy_detection(store: &Arc<PgStore>) -> Result<u64, String> {
     let since = chrono::Utc::now() - chrono::Duration::days(7);
 
-    // Get source posting statistics
-    let rows = sqlx::query(
+    // Get source posting statistics. Typed decode: a row that cannot be
+    // decoded fails the stage instead of coercing counts to zero.
+    let rows = sqlx::query_as::<_, SourceEntropyRow>(
         r#"SELECT
                COALESCE(o.value->>'source_domain',
                         o.value->>'url',
@@ -276,19 +315,19 @@ async fn run_source_entropy_detection(store: &Arc<PgStore>) -> Result<u64, Strin
     let now = chrono::Utc::now();
 
     for row in &rows {
-        use sqlx::Row;
-        let source_domain: String = row
-            .try_get::<String, _>("source_domain")
-            .unwrap_or_else(|_| "unknown".to_string());
-        let obs_count: i32 = row.try_get("observation_count").unwrap_or(0);
-        let type_diversity: i32 = row.try_get("type_diversity").unwrap_or(0);
-        let entity_span: i32 = row.try_get("entity_span").unwrap_or(0);
-        let avg_confidence: f64 = row.try_get::<f64, _>("avg_confidence").unwrap_or(0.5);
+        let source_domain = row.source_domain.clone();
+        let obs_count = row.observation_count;
+        let type_diversity = row.type_diversity;
+        let entity_span = row.entity_span;
+        let avg_confidence = row.avg_confidence;
 
-        // Entropy heuristics: flag sources with unusual patterns
+        // Entropy heuristics: flag sources with unusual patterns. The
+        // low-confidence rule only fires on a measured average; an
+        // unmeasured source is not assumed to be low-confidence.
         let is_high_volume_single_type = obs_count > 50 && type_diversity <= 2;
         let is_wide_entity_span = entity_span > 20;
-        let is_low_confidence_spam = obs_count > 20 && avg_confidence < 0.4;
+        let is_low_confidence_spam =
+            obs_count > 20 && matches!(avg_confidence, Some(measured) if measured < 0.4);
         let is_suspicious =
             is_high_volume_single_type || is_wide_entity_span || is_low_confidence_spam;
 
@@ -304,7 +343,7 @@ async fn run_source_entropy_detection(store: &Arc<PgStore>) -> Result<u64, Strin
             } else {
                 format!(
                     "Low confidence spam pattern ({obs_count} observations at avg {:.0}% confidence)",
-                    avg_confidence * 100.0
+                    avg_confidence.unwrap_or(0.0) * 100.0
                 )
             };
 
@@ -338,25 +377,13 @@ async fn run_source_entropy_detection(store: &Arc<PgStore>) -> Result<u64, Strin
             .await
             .map_err(|e| format!("failed to store entropy alert: {e}"))?;
 
-            // Update source reliability stats
-            let _ = sqlx::query(
-                r#"INSERT INTO source_reliability_stats
-                   (source_domain, reliability_tier, observation_count, false_positive_rate,
-                    last_updated, metadata)
-                   VALUES ($1, 'UnderReview', $2, 0.0, $3, $4)
-                   ON CONFLICT (source_domain) DO UPDATE
-                   SET reliability_tier = 'UnderReview',
-                       observation_count = $2,
-                       last_updated = $3,
-                       metadata = $4"#,
-            )
-            .bind(&source_domain)
-            .bind(obs_count)
-            .bind(now)
-            .bind(serde_json::json!({"flagged_by": "entropy_detection", "reason": reason}))
-            .execute(&store.pool)
-            .await
-            .map_err(|e| format!("failed to update source reliability: {e}"))?;
+            // `source_reliability_stats` is owned by the analytics pipeline,
+            // which writes measured observed/effective reliability. This
+            // detector has no reliability measurement for the source, and the
+            // table's NOT NULL reliability columns cannot be filled without
+            // inventing one — so the quarantine observation above is the only
+            // persisted record. The API reports "no reliability data" for the
+            // domain until a measured row exists, which is the truth.
 
             entropy_alerts += 1;
         }

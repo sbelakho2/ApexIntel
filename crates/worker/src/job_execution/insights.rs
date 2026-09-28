@@ -111,6 +111,8 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
         let mut total_insights_generated: u64 = 0;
         let mut companies_processed: u64 = 0;
         let mut companies_skipped: u64 = 0;
+        let mut companies_failed: u64 = 0;
+        let mut secondary_persistence_failures: u64 = 0;
 
         for (company_id, observations) in &sorted {
             if observations.is_empty() {
@@ -128,8 +130,21 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
                 }
             };
 
-            // Load POIs associated with this company for stakeholder mapping
-            let company_pois = load_company_pois(store, company_id).await;
+            // Load POIs associated with this company for stakeholder mapping.
+            // A failed load is a skip with a recorded reason, never an empty
+            // stakeholder list that reads as "no personnel tracked".
+            let company_pois = match load_company_pois(store, company_id).await {
+                Ok(pois) => pois,
+                Err(error) => {
+                    tracing::warn!(
+                        company_id = %company_id,
+                        error = %error,
+                        "insight_generation: failed to load company POIs"
+                    );
+                    companies_skipped += 1;
+                    continue;
+                }
+            };
 
             match generate_insights_for_company(
                 store,
@@ -140,17 +155,20 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
             )
             .await
             {
-                Ok(count) => {
-                    total_insights_generated += count;
+                Ok(outcome) => {
+                    total_insights_generated += outcome.insights_generated;
+                    secondary_persistence_failures += outcome.link_failures;
                     companies_processed += 1;
                     tracing::info!(
                         company = %company_name,
-                        insights_generated = count,
+                        insights_generated = outcome.insights_generated,
+                        link_failures = outcome.link_failures,
                         "insight_generation: company processed"
                     );
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    companies_failed += 1;
+                    tracing::error!(
                         company = %company_name,
                         error = %e,
                         "insight_generation: failed for company"
@@ -160,16 +178,34 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
         }
 
         let elapsed = total_start.elapsed();
-        run.succeed(
-            total_insights_generated,
-            &format!(
-                "insight_generation: {} companies processed, {} skipped, {} insights generated in {:.1}s",
-                companies_processed,
-                companies_skipped,
+        if companies_failed > 0 || secondary_persistence_failures > 0 {
+            // A company whose insight could not be stored, or whose secondary
+            // links failed after the insight persisted, means the run is not a
+            // clean success.
+            run.degrade(
                 total_insights_generated,
-                elapsed.as_secs_f64(),
-            ),
-        );
+                &format!(
+                    "insight_generation: {} companies processed, {} failed, {} skipped, {} secondary persistence failure(s), {} insights generated in {:.1}s",
+                    companies_processed,
+                    companies_failed,
+                    companies_skipped,
+                    secondary_persistence_failures,
+                    total_insights_generated,
+                    elapsed.as_secs_f64(),
+                ),
+            );
+        } else {
+            run.succeed(
+                total_insights_generated,
+                &format!(
+                    "insight_generation: {} companies processed, {} skipped, {} insights generated in {:.1}s",
+                    companies_processed,
+                    companies_skipped,
+                    total_insights_generated,
+                    elapsed.as_secs_f64(),
+                ),
+            );
+        }
     }
 
     #[cfg(not(feature = "llm"))]
@@ -260,8 +296,22 @@ struct CompanyPoiRef {
 }
 
 #[cfg(feature = "llm")]
-async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<CompanyPoiRef> {
-    let rows = sqlx::query(
+async fn load_company_pois(
+    store: &PgStore,
+    company_id: &uuid::Uuid,
+) -> Result<Vec<CompanyPoiRef>, sqlx::Error> {
+    use sqlx::FromRow;
+
+    #[derive(FromRow)]
+    struct CompanyPoiRow {
+        id: uuid::Uuid,
+        name: String,
+        role: String,
+        role_family: String,
+        org: String,
+    }
+
+    let rows = sqlx::query_as::<_, CompanyPoiRow>(
         r#"SELECT
                p.id,
                p.name,
@@ -276,25 +326,13 @@ async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<Comp
     )
     .bind(*company_id)
     .fetch_all(&store.pool)
-    .await
-    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-    .unwrap_or_default();
+    .await?;
 
-    rows.iter()
+    Ok(rows
+        .into_iter()
         .map(|row| {
-            use sqlx::Row;
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let name: String = row.try_get("name").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let role: String = row.try_get("role").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let role_family: String = row.try_get("role_family").unwrap_or_default();
-            // false-success-classification: best-effort — row-column default; a missing column contributes no value
-            let org: String = row.try_get("org").unwrap_or_default();
-            let role_lower = role.to_lowercase();
-            let family_lower = role_family.to_lowercase();
+            let role_lower = row.role.to_lowercase();
+            let family_lower = row.role_family.to_lowercase();
             let is_buyer_relevant = family_lower.contains("procurement")
                 || family_lower.contains("supply")
                 || family_lower.contains("quality")
@@ -309,15 +347,15 @@ async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<Comp
                 || role_lower.contains("manager");
 
             CompanyPoiRef {
-                id,
-                name,
-                role,
-                role_family,
-                org,
+                id: row.id,
+                name: row.name,
+                role: row.role,
+                role_family: row.role_family,
+                org: row.org,
                 is_buyer_relevant,
             }
         })
-        .collect()
+        .collect())
 }
 
 /// Build a buying-center-aware contact recommendation block from the POIs
@@ -439,6 +477,17 @@ fn claim_evidence_ref(
     )
 }
 
+/// Outcome of one company's insight generation.
+#[cfg(feature = "llm")]
+#[derive(Debug, Clone, Copy, Default)]
+struct CompanyInsightOutcome {
+    insights_generated: u64,
+    /// Secondary writes (claim evidence, entity links) that failed after the
+    /// insight row itself was persisted. The caller degrades the run on any
+    /// non-zero value instead of reporting a clean success.
+    link_failures: u64,
+}
+
 /// Generate a single grounded LLM insight for a company from its recent
 /// observations. Routes through the canonical `generate_llm_insight()`
 /// pipeline (shared with RecipeFire) so every insight carries real evidence
@@ -453,7 +502,7 @@ async fn generate_insights_for_company(
     company_name: &str,
     observations: &[ObservationText],
     company_pois: &[CompanyPoiRef],
-) -> Result<u64, String> {
+) -> Result<CompanyInsightOutcome, String> {
     use sqlx::Row;
 
     // Plain-text view of the corpus (existing keyword logic unchanged).
@@ -612,7 +661,7 @@ async fn generate_insights_for_company(
     }
 
     if evidence_signals.is_empty() {
-        return Ok(0);
+        return Ok(CompanyInsightOutcome::default());
     }
 
     // ── 4. Pick the best-fit category from the observation corpus ─────────
@@ -680,7 +729,7 @@ async fn generate_insights_for_company(
                         error = %e,
                         "insight_generation: LLM generation failed; skipping (no template fallback)"
                     );
-                    return Ok(0);
+                    return Ok(CompanyInsightOutcome::default());
                 }
             };
             if let Some(key) = cache_key.as_deref() {
@@ -737,7 +786,7 @@ async fn generate_insights_for_company(
             grounding_ratio,
             "insight_generation: grounding validation failed (<0.3); skipping ungrounded insight"
         );
-        return Ok(0);
+        return Ok(CompanyInsightOutcome::default());
     }
 
     // ── 7. Append buying-center-aware contact recommendations ─────────────
@@ -822,9 +871,13 @@ async fn generate_insights_for_company(
         .await
     {
         Ok(insight_id) => {
+            let mut link_failures: u64 = 0;
             // Persist claim-level evidence so the detail page can cite each
-            // claim back to its source rows.
+            // claim back to its source rows. Failure is secondary to the
+            // persisted insight, but it must not disappear silently: it is
+            // counted and the run degrades.
             if let Err(e) = store.insert_insight_claims(insight_id, &claims).await {
+                link_failures += 1;
                 tracing::warn!(
                     insight_id = %insight_id,
                     error = %e,
@@ -836,6 +889,7 @@ async fn generate_insights_for_company(
                 .link_insight_to_entity(insight_id, company_id, "company")
                 .await
             {
+                link_failures += 1;
                 tracing::warn!(
                     insight_id = %insight_id,
                     company_id = %company_id,
@@ -853,10 +907,21 @@ async fn generate_insights_for_company(
                 .await
                 {
                     if let Ok(person_id) = row.try_get::<uuid::Uuid, _>("id") {
-                        // false-success-classification: best-effort — supplemental person link alongside the persisted company link
-                        let _ = store
+                        // Person linkage is secondary to the persisted insight:
+                        // a failed write is counted and degrades the run, but
+                        // it must not discard the insight's success path.
+                        if let Err(e) = store
                             .link_insight_to_entity(insight_id, &person_id, "person")
-                            .await;
+                            .await
+                        {
+                            link_failures += 1;
+                            tracing::warn!(
+                                insight_id = %insight_id,
+                                person_id = %person_id,
+                                error = %e,
+                                "insight_generation: failed to link insight to person"
+                            );
+                        }
                     }
                 }
             }
@@ -881,16 +946,21 @@ async fn generate_insights_for_company(
                 confidence = llm_confidence,
                 "insight_generation: grounded insight generated and stored"
             );
-            Ok(1)
+            Ok(CompanyInsightOutcome {
+                insights_generated: 1,
+                link_failures,
+            })
         }
         Err(e) => {
-            tracing::warn!(
+            // The insight was generated but not persisted: that is a write
+            // failure, not a zero-insight outcome.
+            tracing::error!(
                 company = %company_name,
                 headline = %headline,
                 error = %e,
                 "insight_generation: failed to store insight"
             );
-            Ok(0)
+            Err(format!("failed to store insight '{headline}': {e}"))
         }
     }
 }
