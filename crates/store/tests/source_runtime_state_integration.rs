@@ -43,7 +43,13 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
     .unwrap();
     assert!(index_exists, "idx_source_runtime_due is missing");
 
-    let base = Utc::now();
+    // PostgreSQL timestamps have microsecond precision; capture the test
+    // clock at the same precision so round-tripped equality holds on every
+    // platform (Linux `Utc::now()` carries nanoseconds).
+    let base = {
+        let captured = Utc::now();
+        captured - Duration::nanoseconds(i64::from(captured.timestamp_subsec_nanos() % 1_000))
+    };
     let interval = Duration::hours(24);
     for (attempt, expected_minutes) in [1440_i64, 1440, 1440, 1440, 1440, 1440]
         .into_iter()
@@ -149,7 +155,11 @@ async fn source_parse_failure_preserves_last_success_and_degrades() {
         .await
         .unwrap();
 
-    let base = Utc::now();
+    // Microsecond precision, matching PostgreSQL's stored timestamps.
+    let base = {
+        let captured = Utc::now();
+        captured - Duration::nanoseconds(i64::from(captured.timestamp_subsec_nanos() % 1_000))
+    };
     let interval = Duration::hours(24);
     let success_at = base - Duration::hours(2);
     let row = store
