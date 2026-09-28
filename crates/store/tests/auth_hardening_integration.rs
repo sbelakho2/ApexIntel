@@ -98,11 +98,35 @@ async fn durable_login_throttle_blocks_and_survives_restart() {
         "the backoff must be visible to every replica"
     );
     // The remaining backoff must be visible through a second store instance.
-    // Bounded rather than exactly 1s: the test's client clock advances between
-    // calls, so a boundary second can round to 0 on a slower machine.
+    // Assert the durable row itself first so a failure reports the real DB
+    // state (count/backoff/expiry), not just the derived seconds.
+    let (raw_count, raw_backoff, raw_expires, raw_admin): (
+        i32,
+        Option<chrono::DateTime<Utc>>,
+        Option<chrono::DateTime<Utc>>,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT failure_count_10m, backoff_until, expires_at, admin_locked \
+         FROM login_attempt_throttle WHERE attempt_key = $1",
+    )
+    .bind(&key)
+    .fetch_one(&pool_b)
+    .await
+    .expect("throttle row readable through the second instance");
+    assert_eq!(
+        raw_count, 2,
+        "the failure count must be shared (raw row: count={raw_count} backoff={raw_backoff:?} \
+         expires={raw_expires:?} admin_locked={raw_admin})"
+    );
+    assert!(
+        raw_backoff.is_some_and(|until| until > now + Duration::seconds(2)),
+        "the durable backoff must still be in the future (raw row: count={raw_count} \
+         backoff={raw_backoff:?} expires={raw_expires:?} admin_locked={raw_admin})"
+    );
     assert!(
         (1..=3).contains(&shared.retry_after_secs),
-        "the shared backoff must be visible to every replica (got {}s)",
+        "the shared backoff must be visible to every replica (got {}s; raw row: \
+         count={raw_count} backoff={raw_backoff:?} expires={raw_expires:?} admin_locked={raw_admin})",
         shared.retry_after_secs
     );
 
