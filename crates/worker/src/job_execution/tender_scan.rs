@@ -26,6 +26,9 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{JobKind, JobRun, PgStore};
+use apex_crawl::acquisition::{
+    AcquisitionOutcome, AcquisitionRunCounters, AcquisitionRunDecision,
+};
 
 /// Stable namespace for UUIDv5 deterministic observation IDs. Any fixed UUID
 /// works — it just must not collide with `Uuid::NAMESPACE_DNS` etc. that other
@@ -112,21 +115,34 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
     let company_names = load_company_names(store).await;
 
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .user_agent("ApexIntel-Tenders/1.0 (+research; tenders)")
         .timeout(std::time::Duration::from_secs(20))
         .build()
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(client) => client,
+        Err(error) => {
+            // A transport that cannot be constructed is a job failure, not a
+            // silent fallback to another client configuration.
+            run.fail(&format!(
+                "tender_scan: failed to build the HTTP client: {error}"
+            ));
+            return run;
+        }
+    };
 
     let mut total_posted: u64 = 0;
     let mut total_relevant: u64 = 0;
     let mut total_linked: u64 = 0;
     let mut total_deduped: u64 = 0;
 
+    let mut counters = AcquisitionRunCounters::default();
+
     for portal in PORTALS {
-        let postings = crawl_portal(&client, portal).await;
-        for posting in &postings {
+        let portal_outcome = crawl_portal(&client, portal).await;
+        counters.record(&portal_outcome);
+        let postings = portal_outcome.items_ref();
+        for posting in postings {
             total_posted += 1;
 
             // Relevance gate: must mention an EMS/BESS term in the title or body.
@@ -147,6 +163,9 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     total_deduped += 1;
                 }
                 Err(e) => {
+                    // A fetched posting that cannot be persisted is data loss,
+                    // never an optional warning.
+                    counters.record_persistence_failure();
                     tracing::warn!(
                         portal = portal.code,
                         url = %posting.url,
@@ -160,6 +179,7 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
             portal = portal.code,
             country = portal.country,
             fetched = postings.len(),
+            outcome = portal_outcome.as_label(),
             "tender_scan: portal fetched"
         );
     }
@@ -176,19 +196,27 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .await;
 
     let elapsed = start.elapsed();
-    run.succeed(
+    let notes = format!(
+        "tender_scan: {} relevant tenders across {} MENA portals \
+         ({} seen, {} deduped, {} linked) in {:.1}s; {}",
         total_relevant,
-        &format!(
-            "tender_scan: {} relevant tenders posted across {} MENA portals \
-             ({} seen, {} deduped, {} linked) in {:.1}s",
-            total_relevant,
-            PORTALS.len(),
-            total_posted,
-            total_deduped,
-            total_linked,
-            elapsed.as_secs_f64(),
-        ),
+        PORTALS.len(),
+        total_posted,
+        total_deduped,
+        total_linked,
+        elapsed.as_secs_f64(),
+        counters.summary(),
     );
+    match counters.decision() {
+        AcquisitionRunDecision::Succeeded { .. } => run.succeed(total_relevant, &notes),
+        AcquisitionRunDecision::Degraded { reason } => {
+            run.degrade(total_relevant, &format!("{notes}; {reason}"))
+        }
+        AcquisitionRunDecision::Failed { reason } => {
+            run.fail(&format!("tender_scan: {reason} ({notes})"))
+        }
+        AcquisitionRunDecision::Skipped => run.skip(&notes),
+    }
     run
 }
 
@@ -204,8 +232,26 @@ struct RawPosting {
 /// Crawl a single portal: build keyword search URLs, fetch, and parse out
 /// posting entries. Falls back to the listings URL when no search endpoint is
 /// available. Robust to fetch failures (returns whatever it could collect).
-async fn crawl_portal(client: &reqwest::Client, portal: &TenderPortal) -> Vec<RawPosting> {
+async fn crawl_portal(
+    client: &reqwest::Client,
+    portal: &TenderPortal,
+) -> AcquisitionOutcome<RawPosting> {
     let mut postings = Vec::new();
+    let mut any_success = false;
+    let mut first_failure: Option<AcquisitionOutcome<RawPosting>> = None;
+
+    let record =
+        |outcome: AcquisitionOutcome<RawPosting>,
+         postings: &mut Vec<RawPosting>,
+         any_success: &mut bool,
+         first_failure: &mut Option<AcquisitionOutcome<RawPosting>>| {
+            if outcome.is_success() {
+                *any_success = true;
+                postings.extend(outcome.into_items());
+            } else if first_failure.is_none() {
+                *first_failure = Some(outcome);
+            }
+        };
 
     // Try the keyword search endpoint first (most precise), then the fallback
     // listings URL. We pick a small subset of queries per portal to stay polite.
@@ -219,9 +265,8 @@ async fn crawl_portal(client: &reqwest::Client, portal: &TenderPortal) -> Vec<Ra
             .search_url
             .expect("search_url present when queries non-empty");
         let url = template.replace("{q}", &simple_url_encode(query));
-        if let Some(found) = fetch_and_parse(client, &url, portal).await {
-            postings.extend(found);
-        }
+        let outcome = fetch_and_parse(client, &url, portal).await;
+        record(outcome, &mut postings, &mut any_success, &mut first_failure);
         // Politeness delay between queries.
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
@@ -229,16 +274,21 @@ async fn crawl_portal(client: &reqwest::Client, portal: &TenderPortal) -> Vec<Ra
     // Fallback listings URL (always tried once for portals with no search, and
     // as a supplement otherwise).
     if postings.is_empty() {
-        if let Some(found) = fetch_and_parse(client, portal.fallback_url, portal).await {
-            postings.extend(found);
-        }
+        let outcome = fetch_and_parse(client, portal.fallback_url, portal).await;
+        record(outcome, &mut postings, &mut any_success, &mut first_failure);
+    }
+
+    // A portal where every fetch failed must not look like a successful empty
+    // scan: report the failure that occurred.
+    if !any_success {
+        return first_failure.unwrap_or(AcquisitionOutcome::NotApplicable);
     }
 
     // Dedup by URL within this portal batch.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     postings.retain(|p| seen.insert(p.url.clone()));
     postings.truncate(MAX_PER_PORTAL);
-    postings
+    AcquisitionOutcome::success_now(postings)
 }
 
 /// Fetch a URL and parse posting entries from its HTML. Returns None on
@@ -249,19 +299,39 @@ async fn fetch_and_parse(
     client: &reqwest::Client,
     url: &str,
     portal: &TenderPortal,
-) -> Option<Vec<RawPosting>> {
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
+) -> AcquisitionOutcome<RawPosting> {
+    let resp = match client.get(url).send().await {
+        Ok(resp) => resp,
+        Err(error) => {
+            return AcquisitionOutcome::fetch_failed(
+                format!("tender portal {} fetch failed: {error}", portal.code),
+                None,
+            );
+        }
+    };
+    let status = resp.status();
+    if !status.is_success() {
         tracing::debug!(
             portal = portal.code,
             url,
-            status = resp.status().as_u16(),
+            status = status.as_u16(),
             "tender_scan: non-success status"
         );
-        return None;
+        return AcquisitionOutcome::fetch_failed(
+            format!("tender portal {} returned HTTP {status}", portal.code),
+            Some(status.as_u16()),
+        );
     }
-    let html = resp.text().await.ok()?;
-    Some(parse_postings_from_html(&html, url))
+    let html = match resp.text().await {
+        Ok(html) => html,
+        Err(error) => {
+            return AcquisitionOutcome::fetch_failed(
+                format!("tender portal {} body read failed: {error}", portal.code),
+                Some(status.as_u16()),
+            );
+        }
+    };
+    AcquisitionOutcome::success_now(parse_postings_from_html(&html, url))
 }
 
 /// Parse posting entries from a portal HTML page. Extracts `<a href>` anchors

@@ -23,6 +23,7 @@ use std::time::Instant;
 use chrono::Utc;
 
 use crate::{JobKind, JobRun, PgStore};
+use apex_crawl::acquisition::{AcquisitionOutcome, AcquisitionRunCounters, AcquisitionRunDecision};
 
 /// Subreddits most relevant to EMS/semiconductor/supply-chain intelligence.
 const MONITORED_SUBREDDITS: &[&str] = &[
@@ -64,77 +65,52 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let mut total_linked: u64 = 0;
 
     // Load tracked company names for entity linking.
-    let company_names = load_company_names(store).await;
+    let company_names = match load_company_names(store).await {
+        Ok(names) => names,
+        Err(error) => {
+            run.fail(&format!(
+                "social_scan: failed to load company names: {error}"
+            ));
+            return run;
+        }
+    };
     if company_names.is_empty() {
         run.skip("social_scan: no companies to match against");
         return run;
     }
 
-    // ── 1. Reddit ──────────────────────────────────────────────────────────
-    let reddit_posts = ingest_reddit(&company_names).await;
-    for post in &reddit_posts {
-        let entity_id = link_post_to_entity(&post.text, &company_names, store).await;
-        if let Err(e) = store_social_observation(store, post, "reddit", entity_id).await {
-            tracing::warn!(error = %e, "social_scan: failed to store Reddit post");
-        } else {
-            total_posts += 1;
-            if entity_id.is_some() {
-                total_linked += 1;
-            }
-        }
-    }
-    tracing::info!(count = reddit_posts.len(), "social_scan: Reddit ingested");
+    let mut counters = AcquisitionRunCounters::default();
 
-    // ── 2. Telegram ────────────────────────────────────────────────────────
-    let telegram_posts = ingest_telegram(&company_names).await;
-    for post in &telegram_posts {
-        let entity_id = link_post_to_entity(&post.text, &company_names, store).await;
-        if let Err(e) = store_social_observation(store, post, "telegram", entity_id).await {
-            tracing::warn!(error = %e, "social_scan: failed to store Telegram post");
-        } else {
-            total_posts += 1;
-            if entity_id.is_some() {
-                total_linked += 1;
-            }
-        }
-    }
-    tracing::info!(
-        count = telegram_posts.len(),
-        "social_scan: Telegram ingested"
-    );
+    // Each platform reports an explicit outcome; posts are stored only after
+    // the fetch succeeded, and every persistence failure is recorded.
+    let platforms: [(&str, AcquisitionOutcome<IngestedPost>); 4] = [
+        ("reddit", ingest_reddit(&company_names).await),
+        ("telegram", ingest_telegram(&company_names).await),
+        ("hackernews", ingest_hackernews(&company_names).await),
+        ("twitter", ingest_twitter_nitter(&company_names).await),
+    ];
 
-    // ── 3. Hacker News (via Algolia API — free, no key) ────────────────────
-    let hn_posts = ingest_hackernews(&company_names).await;
-    for post in &hn_posts {
-        let entity_id = link_post_to_entity(&post.text, &company_names, store).await;
-        if let Err(e) = store_social_observation(store, post, "hackernews", entity_id).await {
-            tracing::warn!(error = %e, "social_scan: failed to store HN post");
-        } else {
-            total_posts += 1;
-            if entity_id.is_some() {
-                total_linked += 1;
+    for (source, outcome) in platforms {
+        counters.record(&outcome);
+        let posts = outcome.into_items();
+        for post in &posts {
+            let entity_id = link_post_to_entity(&post.text, &company_names, store).await;
+            if let Err(e) = store_social_observation(store, post, source, entity_id).await {
+                counters.record_persistence_failure();
+                tracing::warn!(error = %e, source, "social_scan: failed to store post");
+            } else {
+                total_posts += 1;
+                if entity_id.is_some() {
+                    total_linked += 1;
+                }
             }
         }
+        tracing::info!(
+            count = posts.len(),
+            source,
+            "social_scan: platform ingested"
+        );
     }
-    tracing::info!(count = hn_posts.len(), "social_scan: Hacker News ingested");
-
-    // ── 4. Twitter via Nitter (no bearer token needed) ─────────────────────
-    let twitter_posts = ingest_twitter_nitter(&company_names).await;
-    for post in &twitter_posts {
-        let entity_id = link_post_to_entity(&post.text, &company_names, store).await;
-        if let Err(e) = store_social_observation(store, post, "twitter", entity_id).await {
-            tracing::warn!(error = %e, "social_scan: failed to store Twitter post");
-        } else {
-            total_posts += 1;
-            if entity_id.is_some() {
-                total_linked += 1;
-            }
-        }
-    }
-    tracing::info!(
-        count = twitter_posts.len(),
-        "social_scan: Twitter/Nitter ingested"
-    );
 
     // Log activity
     let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
@@ -149,15 +125,23 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .await;
 
     let elapsed = start.elapsed();
-    run.succeed(
+    let notes = format!(
+        "social_scan: {} posts ingested ({} linked to entities) from Reddit+Telegram+HN+Twitter in {:.1}s; {}",
         total_posts,
-        &format!(
-            "social_scan: {} posts ingested ({} linked to entities) from Reddit+Telegram+HN+Twitter in {:.1}s",
-            total_posts,
-            total_linked,
-            elapsed.as_secs_f64(),
-        ),
+        total_linked,
+        elapsed.as_secs_f64(),
+        counters.summary(),
     );
+    match counters.decision() {
+        AcquisitionRunDecision::Succeeded { .. } => run.succeed(total_posts, &notes),
+        AcquisitionRunDecision::Degraded { reason } => {
+            run.degrade(total_posts, &format!("{notes}; {reason}"))
+        }
+        AcquisitionRunDecision::Failed { reason } => {
+            run.fail(&format!("social_scan: {reason} ({notes})"))
+        }
+        AcquisitionRunDecision::Skipped => run.skip(&notes),
+    }
     run
 }
 
@@ -168,152 +152,214 @@ struct IngestedPost {
     text: String,
     author: String,
     url: String,
-    published_at: chrono::DateTime<Utc>,
+    /// Publication time as stated by the source. `None` when the source does
+    /// not state one — never replaced with "now" (the observation records the
+    /// actual basis in its provenance).
+    published_at: Option<chrono::DateTime<Utc>>,
     engagement: u64,
+}
+
+/// Per-platform outcome accumulator: any successful fetch makes the platform
+/// a success; otherwise the first failure is reported.
+#[derive(Default)]
+struct PlatformAccumulator {
+    posts: Vec<IngestedPost>,
+    any_success: bool,
+    first_failure: Option<AcquisitionOutcome<IngestedPost>>,
+}
+
+impl PlatformAccumulator {
+    fn record_fetch(
+        &mut self,
+        result: Result<String, AcquisitionOutcome<IngestedPost>>,
+    ) -> Option<String> {
+        match result {
+            Ok(body) => {
+                self.any_success = true;
+                Some(body)
+            }
+            Err(failure) => {
+                if self.first_failure.is_none() {
+                    self.first_failure = Some(failure);
+                }
+                None
+            }
+        }
+    }
+
+    fn push(&mut self, post: IngestedPost) {
+        self.posts.push(post);
+    }
+
+    fn finish(mut self) -> AcquisitionOutcome<IngestedPost> {
+        if !self.any_success {
+            return self
+                .first_failure
+                .unwrap_or(AcquisitionOutcome::NotApplicable);
+        }
+        self.posts.truncate(MAX_POSTS_PER_PLATFORM);
+        AcquisitionOutcome::success_now(self.posts)
+    }
+}
+
+/// Build a social HTTP client; a construction failure is an unavailable
+/// platform, never a silent different client configuration.
+fn build_social_client(user_agent: &str, timeout_secs: u64) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(user_agent)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|error| format!("failed to build HTTP client: {error}"))
+}
+
+/// Fetch a URL as text, mapping every failure onto an explicit outcome.
+async fn fetch_text(
+    client: &reqwest::Client,
+    url: &str,
+    context: &str,
+) -> Result<String, AcquisitionOutcome<IngestedPost>> {
+    match client.get(url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let status = resp.status().as_u16();
+            resp.text().await.map_err(|error| {
+                AcquisitionOutcome::fetch_failed(
+                    format!("{context} body read failed: {error}"),
+                    Some(status),
+                )
+            })
+        }
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            Err(AcquisitionOutcome::fetch_failed(
+                format!("{context} returned HTTP {status}"),
+                Some(status),
+            ))
+        }
+        Err(error) => Err(AcquisitionOutcome::fetch_failed(
+            format!("{context} network error: {error}"),
+            None,
+        )),
+    }
 }
 
 /// Ingest posts from monitored subreddits using RSS feeds (Reddit blocks
 /// the JSON API server-side with 403, but RSS feeds work without auth).
-async fn ingest_reddit(_company_names: &[(uuid::Uuid, String)]) -> Vec<IngestedPost> {
-    let client = reqwest::Client::builder()
-        .user_agent("ApexIntel-Social/1.0 (research)")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
+async fn ingest_reddit(
+    _company_names: &[(uuid::Uuid, String)],
+) -> AcquisitionOutcome<IngestedPost> {
+    let client = match build_social_client("ApexIntel-Social/1.0 (research)", 15) {
+        Ok(client) => client,
+        Err(reason) => return AcquisitionOutcome::Unavailable { reason },
+    };
 
-    let mut posts = Vec::new();
+    let mut acc = PlatformAccumulator::default();
 
     for subreddit in MONITORED_SUBREDDITS {
         // Reddit RSS feed endpoint — works without OAuth
         let url = format!("https://www.reddit.com/r/{subreddit}/.rss?limit=5");
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(xml) = resp.text().await {
-                    // Parse RSS XML — extract <item> entries
-                    for item_chunk in xml.split("<entry>").skip(1).take(5) {
-                        let title = extract_xml_tag(item_chunk, "title").unwrap_or_default();
-                        let content = extract_xml_tag(item_chunk, "content").unwrap_or_default();
-                        let author = extract_xml_tag(item_chunk, "name")
-                            .unwrap_or_else(|| "unknown".to_string());
-                        let link = extract_xml_tag(item_chunk, "id").unwrap_or_default();
-                        let published = extract_xml_tag(item_chunk, "published")
-                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-                            .map(|dt| dt.with_timezone(&Utc))
-                            .unwrap_or_else(Utc::now);
+        let context = format!("reddit r/{subreddit}");
+        if let Some(xml) = acc.record_fetch(fetch_text(&client, &url, &context).await) {
+            // Parse RSS XML — extract <item> entries
+            for item_chunk in xml.split("<entry>").skip(1).take(5) {
+                let title = extract_xml_tag(item_chunk, "title").unwrap_or_default();
+                let content = extract_xml_tag(item_chunk, "content").unwrap_or_default();
+                let author =
+                    extract_xml_tag(item_chunk, "name").unwrap_or_else(|| "unknown".to_string());
+                let link = extract_xml_tag(item_chunk, "id").unwrap_or_default();
+                let published = extract_xml_tag(item_chunk, "published")
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&Utc));
 
-                        if title.is_empty() {
-                            continue;
-                        }
-
-                        let clean_content = strip_html_tags(&content);
-                        let text = if clean_content.trim().is_empty() {
-                            title.clone()
-                        } else {
-                            format!(
-                                "{title}\n\n{}",
-                                clean_content.chars().take(2000).collect::<String>()
-                            )
-                        };
-
-                        posts.push(IngestedPost {
-                            platform: "reddit".to_string(),
-                            text: text.chars().take(4000).collect(),
-                            author,
-                            url: link,
-                            published_at: published,
-                            engagement: 0,
-                        });
-                    }
+                if title.is_empty() {
+                    continue;
                 }
-            }
-            Ok(resp) => {
-                tracing::warn!(
-                    subreddit,
-                    status = resp.status().as_u16(),
-                    "social_scan: Reddit RSS fetch failed"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(subreddit, error = %e, "social_scan: Reddit network error");
+
+                let clean_content = strip_html_tags(&content);
+                let text = if clean_content.trim().is_empty() {
+                    title.clone()
+                } else {
+                    format!(
+                        "{title}\n\n{}",
+                        clean_content.chars().take(2000).collect::<String>()
+                    )
+                };
+
+                acc.push(IngestedPost {
+                    platform: "reddit".to_string(),
+                    text: text.chars().take(4000).collect(),
+                    author,
+                    url: link,
+                    published_at: published,
+                    engagement: 0,
+                });
             }
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    posts.truncate(MAX_POSTS_PER_PLATFORM);
-    posts
+    acc.finish()
 }
 
 /// Ingest from public Telegram channels via t.me/s/{channel}.
-async fn ingest_telegram(_company_names: &[(uuid::Uuid, String)]) -> Vec<IngestedPost> {
-    let client = reqwest::Client::builder()
-        .user_agent("ApexIntel-Social/1.0")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
+async fn ingest_telegram(
+    _company_names: &[(uuid::Uuid, String)],
+) -> AcquisitionOutcome<IngestedPost> {
+    let client = match build_social_client("ApexIntel-Social/1.0", 15) {
+        Ok(client) => client,
+        Err(reason) => return AcquisitionOutcome::Unavailable { reason },
+    };
 
-    let mut posts = Vec::new();
+    let mut acc = PlatformAccumulator::default();
 
     for channel in MONITORED_TELEGRAM_CHANNELS {
         let url = format!("https://t.me/s/{channel}");
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(html) = resp.text().await {
-                    // Parse the HTML for message text using simple string matching
-                    // (the Telegram public preview page has predictable structure).
-                    for chunk in html.split("tgme_widget_message_text").skip(1) {
-                        if let Some(text_start) = chunk.find('>') {
-                            let rest = &chunk[text_start + 1..];
-                            if let Some(text_end) = rest.find("</div>") {
-                                let raw_text = &rest[..text_end];
-                                // Strip HTML tags
-                                let clean_text = strip_html_tags(raw_text);
-                                if clean_text.trim().len() < 20 {
-                                    continue;
-                                }
-
-                                posts.push(IngestedPost {
-                                    platform: "telegram".to_string(),
-                                    text: clean_text.chars().take(4000).collect(),
-                                    author: channel.to_string(),
-                                    url: url.clone(),
-                                    published_at: Utc::now(),
-                                    engagement: 0,
-                                });
-                            }
+        let context = format!("telegram {channel}");
+        if let Some(html) = acc.record_fetch(fetch_text(&client, &url, &context).await) {
+            // Parse the HTML for message text using simple string matching
+            // (the Telegram public preview page has predictable structure).
+            for chunk in html.split("tgme_widget_message_text").skip(1) {
+                if let Some(text_start) = chunk.find('>') {
+                    let rest = &chunk[text_start + 1..];
+                    if let Some(text_end) = rest.find("</div>") {
+                        let raw_text = &rest[..text_end];
+                        // Strip HTML tags
+                        let clean_text = strip_html_tags(raw_text);
+                        if clean_text.trim().len() < 20 {
+                            continue;
                         }
+
+                        acc.push(IngestedPost {
+                            platform: "telegram".to_string(),
+                            text: clean_text.chars().take(4000).collect(),
+                            author: channel.to_string(),
+                            url: url.clone(),
+                            // The public preview does not state a publication
+                            // time; recording "now" would fabricate freshness.
+                            published_at: None,
+                            engagement: 0,
+                        });
                     }
                 }
-            }
-            Ok(resp) => {
-                tracing::warn!(
-                    channel,
-                    status = resp.status().as_u16(),
-                    "social_scan: Telegram fetch failed"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(channel, error = %e, "social_scan: Telegram network error");
             }
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
 
-    posts.truncate(MAX_POSTS_PER_PLATFORM);
-    posts
+    acc.finish()
 }
 
 /// Ingest from Hacker News via the free Algolia search API.
-async fn ingest_hackernews(company_names: &[(uuid::Uuid, String)]) -> Vec<IngestedPost> {
-    let client = reqwest::Client::builder()
-        .user_agent("ApexIntel-Social/1.0")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
+async fn ingest_hackernews(
+    company_names: &[(uuid::Uuid, String)],
+) -> AcquisitionOutcome<IngestedPost> {
+    let client = match build_social_client("ApexIntel-Social/1.0", 15) {
+        Ok(client) => client,
+        Err(reason) => return AcquisitionOutcome::Unavailable { reason },
+    };
 
-    let mut posts = Vec::new();
+    let mut acc = PlatformAccumulator::default();
 
     // Search for company names + general terms
     let mut queries: Vec<String> = HN_SEARCH_TERMS.iter().map(|s| s.to_string()).collect();
@@ -327,13 +373,14 @@ async fn ingest_hackernews(company_names: &[(uuid::Uuid, String)]) -> Vec<Ingest
             "https://hn.algolia.com/api/v1/search?query={}&tags=story&hitsPerPage=5",
             simple_url_encode(query)
         );
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
+        let context = format!("hackernews query {query}");
+        if let Some(json_body) = acc.record_fetch(fetch_text(&client, &url, &context).await) {
+            match serde_json::from_str::<serde_json::Value>(&json_body) {
+                Ok(json) => {
                     if let Some(hits) = json.get("hits").and_then(|h| h.as_array()) {
                         for hit in hits.iter().take(3) {
                             let title = hit.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                            let url = hit.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                            let hit_url = hit.get("url").and_then(|v| v.as_str()).unwrap_or("");
                             let author = hit
                                 .get("author")
                                 .and_then(|v| v.as_str())
@@ -350,43 +397,41 @@ async fn ingest_hackernews(company_names: &[(uuid::Uuid, String)]) -> Vec<Ingest
                                 continue;
                             }
 
-                            posts.push(IngestedPost {
+                            acc.push(IngestedPost {
                                 platform: "hackernews".to_string(),
                                 text: title.chars().take(4000).collect(),
                                 author: author.to_string(),
-                                url: if url.is_empty() {
+                                url: if hit_url.is_empty() {
                                     format!("https://news.ycombinator.com/item?id={object_id}")
                                 } else {
-                                    url.to_string()
+                                    hit_url.to_string()
                                 },
-                                published_at: chrono::DateTime::from_timestamp(created, 0)
-                                    .unwrap_or_else(Utc::now),
+                                published_at: chrono::DateTime::from_timestamp(created, 0),
                                 engagement: points,
                             });
                         }
                     }
                 }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(query = %query, error = %e, "social_scan: HN fetch failed");
+                Err(error) => {
+                    tracing::warn!(query = %query, %error, "social_scan: HN JSON parse failed");
+                }
             }
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
 
-    posts.truncate(MAX_POSTS_PER_PLATFORM);
-    posts
+    acc.finish()
 }
 
 /// Ingest from Twitter/X via Nitter instances (no bearer token needed).
-async fn ingest_twitter_nitter(company_names: &[(uuid::Uuid, String)]) -> Vec<IngestedPost> {
-    let client = reqwest::Client::builder()
-        .user_agent("ApexIntel-Social/1.0")
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
+async fn ingest_twitter_nitter(
+    company_names: &[(uuid::Uuid, String)],
+) -> AcquisitionOutcome<IngestedPost> {
+    let client = match build_social_client("ApexIntel-Social/1.0", 10) {
+        Ok(client) => client,
+        Err(reason) => return AcquisitionOutcome::Unavailable { reason },
+    };
 
     let nitter_instances = [
         "nitter.privacydev.net",
@@ -394,47 +439,44 @@ async fn ingest_twitter_nitter(company_names: &[(uuid::Uuid, String)]) -> Vec<In
         "nitter.woodland.cafe",
     ];
 
-    let mut posts = Vec::new();
+    let mut acc = PlatformAccumulator::default();
 
     // Search for top company names
     for (_, name) in company_names.iter().take(5) {
         let query = simple_url_encode(name);
         for instance in &nitter_instances {
             let url = format!("https://{instance}/search?f=tweets&q={query}");
-            match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(html) = resp.text().await {
-                        // Parse Nitter's HTML for tweet text
-                        for chunk in html.split("tweet-content").skip(1).take(3) {
-                            if let Some(text_start) = chunk.find('>') {
-                                let rest = &chunk[text_start + 1..];
-                                if let Some(text_end) = rest.find("</div>") {
-                                    let clean_text = strip_html_tags(&rest[..text_end]);
-                                    if clean_text.trim().len() < 20 {
-                                        continue;
-                                    }
-                                    posts.push(IngestedPost {
-                                        platform: "twitter".to_string(),
-                                        text: clean_text.chars().take(4000).collect(),
-                                        author: name.clone(),
-                                        url: url.clone(),
-                                        published_at: Utc::now(),
-                                        engagement: 0,
-                                    });
-                                }
+            let context = format!("nitter {instance} query {name}");
+            if let Some(html) = acc.record_fetch(fetch_text(&client, &url, &context).await) {
+                // Parse Nitter's HTML for tweet text
+                for chunk in html.split("tweet-content").skip(1).take(3) {
+                    if let Some(text_start) = chunk.find('>') {
+                        let rest = &chunk[text_start + 1..];
+                        if let Some(text_end) = rest.find("</div>") {
+                            let clean_text = strip_html_tags(&rest[..text_end]);
+                            if clean_text.trim().len() < 20 {
+                                continue;
                             }
+                            acc.push(IngestedPost {
+                                platform: "twitter".to_string(),
+                                text: clean_text.chars().take(4000).collect(),
+                                author: name.clone(),
+                                url: url.clone(),
+                                // Nitter search HTML does not state a
+                                // reliable publication time here.
+                                published_at: None,
+                                engagement: 0,
+                            });
                         }
-                        break; // Got results from this instance, don't try others
                     }
                 }
-                _ => continue, // Try next instance
+                break; // Got results from this instance, don't try others
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    posts.truncate(MAX_POSTS_PER_PLATFORM);
-    posts
+    acc.finish()
 }
 
 /// Store a social post as a SocialPost observation.
@@ -444,9 +486,13 @@ async fn store_social_observation(
     source: &str,
     entity_id: Option<uuid::Uuid>,
 ) -> Result<(), sqlx::Error> {
+    let (ts_utc, timestamp_basis) = match post.published_at {
+        Some(published_at) => (published_at, "published_at"),
+        None => (Utc::now(), "ingested_at"),
+    };
     let obs = apex_core::entities::Observation::new(
         apex_core::entities::ObservationType::SocialPost,
-        post.published_at,
+        ts_utc,
         serde_json::json!({
             "platform": post.platform,
             "content": &post.text,
@@ -461,6 +507,7 @@ async fn store_social_observation(
             "source_id": format!("{}_{}", post.platform, post.url),
             "source_domain": &post.platform,
             "url": &post.url,
+            "timestamp_basis": timestamp_basis,
         }),
     );
     let mut obs = obs;
@@ -492,14 +539,12 @@ async fn link_post_to_entity(
 }
 
 /// Load tracked company names for entity linking.
-async fn load_company_names(store: &PgStore) -> Vec<(uuid::Uuid, String)> {
+async fn load_company_names(store: &PgStore) -> Result<Vec<(uuid::Uuid, String)>, sqlx::Error> {
     sqlx::query_as::<_, (uuid::Uuid, String)>(
         "SELECT id, name FROM companies WHERE name IS NOT NULL AND TRIM(name) != '' ORDER BY name",
     )
     .fetch_all(&store.pool)
     .await
-    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-    .unwrap_or_default()
 }
 
 /// Strip HTML tags from a string.

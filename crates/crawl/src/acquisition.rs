@@ -293,6 +293,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_counters_never_report_failure_as_success() {
+        // Every source failed → Failed, never Succeeded.
+        let mut all_failed = AcquisitionRunCounters::default();
+        all_failed.record(&AcquisitionOutcome::<u32>::fetch_failed("down", None));
+        all_failed.record(&AcquisitionOutcome::<u32>::unavailable("no tor"));
+        assert!(matches!(
+            all_failed.decision(),
+            AcquisitionRunDecision::Failed { .. }
+        ));
+
+        // Some optional failures, at least one success → Degraded.
+        let mut partial = AcquisitionRunCounters::default();
+        partial.record(&AcquisitionOutcome::<u32>::success_now(vec![1]));
+        partial.record(&AcquisitionOutcome::<u32>::fetch_failed("down", None));
+        assert!(matches!(
+            partial.decision(),
+            AcquisitionRunDecision::Degraded { .. }
+        ));
+
+        // All healthy with zero findings → Succeeded with empty_findings.
+        let mut empty = AcquisitionRunCounters::default();
+        empty.record(&AcquisitionOutcome::<u32>::success_now(vec![]));
+        assert_eq!(
+            empty.decision(),
+            AcquisitionRunDecision::Succeeded {
+                empty_findings: true
+            }
+        );
+
+        // Nothing applied → Skipped.
+        let mut skipped = AcquisitionRunCounters::default();
+        skipped.record(&AcquisitionOutcome::<u32>::NotApplicable);
+        assert_eq!(skipped.decision(), AcquisitionRunDecision::Skipped);
+
+        // Required failure forces Failed even when optional sources succeeded.
+        let mut required = AcquisitionRunCounters::default();
+        required.record(&AcquisitionOutcome::<u32>::success_now(vec![1]));
+        required.record_required(&AcquisitionOutcome::<u32>::parse_failed("bad", "<xml"));
+        assert!(matches!(
+            required.decision(),
+            AcquisitionRunDecision::Failed { .. }
+        ));
+
+        // Persistence failure is never optional.
+        let mut persistence = AcquisitionRunCounters::default();
+        persistence.record(&AcquisitionOutcome::<u32>::success_now(vec![1]));
+        persistence.record_persistence_failure();
+        assert!(matches!(
+            persistence.decision(),
+            AcquisitionRunDecision::Failed { .. }
+        ));
+    }
+
+    #[test]
     fn only_success_counts_as_a_successful_run_including_empty() {
         let empty: AcquisitionOutcome<u32> = AcquisitionOutcome::success_now(vec![]);
         assert!(empty.is_success());
@@ -769,6 +823,216 @@ pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+/// Aggregated acquisition outcomes for one worker job run.
+///
+/// The audit's shared model: a job whose sources all failed must not report
+/// `Succeeded` merely because it collected zero items, and a job with a
+/// required-stage failure must not be `Degraded`. Every acquisition-heavy job
+/// records its per-source outcomes here and derives its final
+/// [`JobRunStatus`] from [`Self::decision`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquisitionRunCounters {
+    pub attempted: u64,
+    pub succeeded: u64,
+    pub successful_empty: u64,
+    pub not_applicable: u64,
+    pub unavailable: u64,
+    pub authentication_required: u64,
+    pub rate_limited: u64,
+    pub fetch_failed: u64,
+    pub parse_failed: u64,
+    /// Required stages whose *persistence* failed (data loss, never optional).
+    pub persistence_failed: u64,
+    /// Required stages attempted / failed (a required failure forces Failed).
+    pub required_attempted: u64,
+    pub required_failed: u64,
+}
+
+/// The job-level verdict derived from [`AcquisitionRunCounters`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcquisitionRunDecision {
+    /// Every attempted source was healthy (zero findings allowed).
+    Succeeded { empty_findings: bool },
+    /// Some optional sources failed or were unavailable; the run completed.
+    Degraded { reason: String },
+    /// A required source failed, or a required persistence stage failed.
+    Failed { reason: String },
+    /// Nothing applied to this run.
+    Skipped,
+}
+
+impl AcquisitionRunCounters {
+    /// Record one optional source's outcome.
+    pub fn record<T>(&mut self, outcome: &AcquisitionOutcome<T>) {
+        self.record_inner(outcome, false);
+    }
+
+    /// Record one required source's outcome.
+    pub fn record_required<T>(&mut self, outcome: &AcquisitionOutcome<T>) {
+        self.record_inner(outcome, true);
+    }
+
+    fn record_inner<T>(&mut self, outcome: &AcquisitionOutcome<T>, required: bool) {
+        if required {
+            self.required_attempted += 1;
+        }
+        match outcome {
+            AcquisitionOutcome::Success { items, .. } => {
+                self.attempted += 1;
+                self.succeeded += 1;
+                if items.is_empty() {
+                    self.successful_empty += 1;
+                }
+            }
+            AcquisitionOutcome::NotApplicable => {
+                self.not_applicable += 1;
+            }
+            AcquisitionOutcome::Unavailable { .. } => {
+                self.attempted += 1;
+                self.unavailable += 1;
+                if required {
+                    self.required_failed += 1;
+                }
+            }
+            AcquisitionOutcome::RateLimited { .. } => {
+                self.attempted += 1;
+                self.rate_limited += 1;
+                if required {
+                    self.required_failed += 1;
+                }
+            }
+            AcquisitionOutcome::AuthenticationRequired => {
+                self.attempted += 1;
+                self.authentication_required += 1;
+                if required {
+                    self.required_failed += 1;
+                }
+            }
+            AcquisitionOutcome::FetchFailed { .. } => {
+                self.attempted += 1;
+                self.fetch_failed += 1;
+                if required {
+                    self.required_failed += 1;
+                }
+            }
+            AcquisitionOutcome::ParseFailed { .. } => {
+                self.attempted += 1;
+                self.parse_failed += 1;
+                if required {
+                    self.required_failed += 1;
+                }
+            }
+        }
+    }
+
+    /// Record a required persistence failure (data was lost).
+    pub fn record_persistence_failure(&mut self) {
+        self.persistence_failed += 1;
+    }
+
+    /// True when at least one source was attempted.
+    pub fn attempted_any(&self) -> bool {
+        self.attempted > 0
+    }
+
+    /// True when nothing succeeded.
+    pub fn all_failed(&self) -> bool {
+        self.attempted > 0 && self.succeeded == 0
+    }
+
+    /// Derive the job verdict from the counters.
+    ///
+    /// * required failure or persistence failure → `Failed`
+    /// * any optional failure/unavailability/rate-limit → `Degraded`
+    /// * attempts all healthy (zero findings allowed) → `Succeeded`
+    /// * nothing applicable → `Skipped`
+    pub fn decision(&self) -> AcquisitionRunDecision {
+        if self.required_failed > 0 || self.persistence_failed > 0 {
+            return AcquisitionRunDecision::Failed {
+                reason: self.failure_reason(),
+            };
+        }
+        if self.attempted == 0 {
+            return AcquisitionRunDecision::Skipped;
+        }
+        if self.succeeded == 0 {
+            // Every attempted source failed: the job did not do its work,
+            // regardless of whether the sources were optional.
+            return AcquisitionRunDecision::Failed {
+                reason: self.failure_reason(),
+            };
+        }
+        let optional_failures = self.unavailable
+            + self.authentication_required
+            + self.rate_limited
+            + self.fetch_failed
+            + self.parse_failed;
+        if optional_failures > 0 {
+            return AcquisitionRunDecision::Degraded {
+                reason: self.failure_reason(),
+            };
+        }
+        AcquisitionRunDecision::Succeeded {
+            empty_findings: self.succeeded == self.successful_empty && self.succeeded > 0,
+        }
+    }
+
+    /// Human-readable reason naming every non-success class.
+    pub fn failure_reason(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.persistence_failed > 0 {
+            parts.push(format!(
+                "{} persistence failure(s)",
+                self.persistence_failed
+            ));
+        }
+        if self.required_failed > 0 {
+            parts.push(format!(
+                "{}/{} required source(s) failed",
+                self.required_failed, self.required_attempted
+            ));
+        }
+        if self.unavailable > 0 {
+            parts.push(format!("{} unavailable", self.unavailable));
+        }
+        if self.authentication_required > 0 {
+            parts.push(format!(
+                "{} missing credentials",
+                self.authentication_required
+            ));
+        }
+        if self.rate_limited > 0 {
+            parts.push(format!("{} rate limited", self.rate_limited));
+        }
+        if self.fetch_failed > 0 {
+            parts.push(format!("{} fetch failed", self.fetch_failed));
+        }
+        if self.parse_failed > 0 {
+            parts.push(format!("{} parse failed", self.parse_failed));
+        }
+        if parts.is_empty() {
+            "no failures recorded".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+
+    /// One-line summary for job notes.
+    pub fn summary(&self) -> String {
+        format!(
+            "sources: {} attempted, {} succeeded ({} empty), {} failed/blocked",
+            self.attempted,
+            self.succeeded,
+            self.successful_empty,
+            self.unavailable
+                + self.authentication_required
+                + self.rate_limited
+                + self.fetch_failed
+                + self.parse_failed
+        )
+    }
 }
 
 /// Source adapter contract: one typed acquisition per source.

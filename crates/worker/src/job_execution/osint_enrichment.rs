@@ -15,13 +15,16 @@
 //! - **DNS posture** — SPF/DKIM/DMARC posture for company domains.
 //!
 //! Each source degrades gracefully: network errors are logged at `warn!` and
-//! the job continues with the remaining sources. No source failure can abort
-//! the whole enrichment cycle.
+//! the job continues with the remaining sources. No source failure aborts the
+//! whole enrichment cycle — but every outcome is recorded in
+//! [`AcquisitionRunCounters`] and the final job status is derived from them:
+//! all sources failed ⇒ `Failed`, some failed ⇒ `Degraded`, and a run where
+//! every source was healthy is `Succeeded` even with zero findings.
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use apex_crawl::acquisition::AcquisitionOutcome;
+use apex_crawl::acquisition::{AcquisitionOutcome, AcquisitionRunCounters, AcquisitionRunDecision};
 
 use crate::{JobKind, JobRun, PgStore};
 
@@ -69,11 +72,14 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
 
     let mut total_observations: u64 = 0;
     let mut companies_enriched: u64 = 0;
+    let mut counters = AcquisitionRunCounters::default();
     let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
 
     // ── 2. Global CVE fetch (not company-specific) ─────────────────────────
     let cve_client = apex_crawl::cve::CveClient::new();
-    match cve_client.fetch_recent(7).await {
+    let cve_outcome = cve_client.fetch_recent(7).await;
+    counters.record(&cve_outcome);
+    match cve_outcome {
         AcquisitionOutcome::Success { items: cves, .. } if !cves.is_empty() => {
             let count = cves.len();
             for cve in &cves {
@@ -82,6 +88,7 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                 // 6h no longer inserts a duplicate row.
                 obs.stabilize_id("cve");
                 if let Err(e) = store.insert_observation(&obs).await {
+                    counters.record_persistence_failure();
                     tracing::warn!(error = %e, "osint_enrichment: failed to insert CVE observation");
                 }
             }
@@ -113,13 +120,22 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                     // B326: stable ID per (company, registration data).
                     obs.stabilize_id("rdap");
                     if let Err(e) = store.insert_observation(&obs).await {
+                        counters.record_persistence_failure();
                         tracing::warn!(error = %e, "osint_enrichment: RDAP insert failed");
                     } else {
+                        counters.record(&AcquisitionOutcome::<()>::success_now(vec![()]));
                         company_obs += 1;
                     }
                 }
-                Ok(None) => {} // domain not found in RDAP (common for private TLDs)
+                Ok(None) => {
+                    // Not registered / not found is a successful empty lookup.
+                    counters.record(&AcquisitionOutcome::<()>::success_now(Vec::new()));
+                }
                 Err(e) => {
+                    counters.record(&AcquisitionOutcome::<()>::fetch_failed(
+                        format!("RDAP lookup for {domain} failed: {e}"),
+                        None,
+                    ));
                     tracing::warn!(domain = %domain, error = %e, "osint_enrichment: RDAP lookup failed");
                 }
             }
@@ -127,7 +143,9 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
 
         // ── 3b. OpenAlex academic publications ─────────────────────────────
         let openalex_client = apex_crawl::openalex::OpenAlexClient::new();
-        match openalex_client.search_works(&company.name, 5).await {
+        let openalex_outcome = openalex_client.search_works(&company.name, 5).await;
+        counters.record(&openalex_outcome);
+        match openalex_outcome {
             AcquisitionOutcome::Success { items: works, .. } if !works.is_empty() => {
                 for work in &works {
                     let mut obs = work.to_observation(Some(company.id));
@@ -135,6 +153,7 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                     // OpenAlex works were re-inserted every 6h.
                     obs.stabilize_id("openalex");
                     if let Err(e) = store.insert_observation(&obs).await {
+                        counters.record_persistence_failure();
                         tracing::warn!(error = %e, "osint_enrichment: OpenAlex insert failed");
                     } else {
                         company_obs += 1;
@@ -174,16 +193,18 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
 
         if let Some(ref ticker) = ticker {
             let edgar_client = apex_crawl::sec_edgar::SecEdgarClient::new();
-            match edgar_client
+            let edgar_outcome = edgar_client
                 .fetch_filings_as_observations(ticker, Some(company.id), 10)
-                .await
-            {
+                .await;
+            counters.record(&edgar_outcome);
+            match edgar_outcome {
                 AcquisitionOutcome::Success { mut items, .. } if !items.is_empty() => {
                     let count = items.len();
                     for filing in items.iter_mut() {
                         // B326: stable ID per filing accession number.
                         filing.stabilize_id("sec_edgar");
                         if let Err(e) = store.insert_observation(filing).await {
+                            counters.record_persistence_failure();
                             tracing::warn!(error = %e, "osint_enrichment: SEC filing insert failed");
                         }
                     }
@@ -222,12 +243,18 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                     // row only when the posture actually changes.
                     obs.stabilize_id("dns_posture");
                     if let Err(e) = store.insert_observation(&obs).await {
+                        counters.record_persistence_failure();
                         tracing::warn!(error = %e, "osint_enrichment: DNS posture insert failed");
                     } else {
+                        counters.record(&AcquisitionOutcome::<()>::success_now(vec![()]));
                         company_obs += 1;
                     }
                 }
                 Err(e) => {
+                    counters.record(&AcquisitionOutcome::<()>::fetch_failed(
+                        format!("DNS posture check for {domain} failed: {e}"),
+                        None,
+                    ));
                     tracing::warn!(domain = %domain, error = %e, "osint_enrichment: DNS posture check failed");
                 }
             }
@@ -255,15 +282,23 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
         .await;
 
     let elapsed = start.elapsed();
-    run.succeed(
+    let notes = format!(
+        "osint_enrichment: {} companies loaded, {} enriched, {} observations inserted in {:.1}s; {}",
+        companies.len(),
+        companies_enriched,
         total_observations,
-        &format!(
-            "osint_enrichment: {} companies loaded, {} enriched, {} observations inserted in {:.1}s",
-            companies.len(),
-            companies_enriched,
-            total_observations,
-            elapsed.as_secs_f64(),
-        ),
+        elapsed.as_secs_f64(),
+        counters.summary(),
     );
+    match counters.decision() {
+        AcquisitionRunDecision::Succeeded { .. } => run.succeed(total_observations, &notes),
+        AcquisitionRunDecision::Degraded { reason } => {
+            run.degrade(total_observations, &format!("{notes}; {reason}"))
+        }
+        AcquisitionRunDecision::Failed { reason } => {
+            run.fail(&format!("osint_enrichment: {reason} ({notes})"))
+        }
+        AcquisitionRunDecision::Skipped => run.skip(&notes),
+    }
     run
 }
