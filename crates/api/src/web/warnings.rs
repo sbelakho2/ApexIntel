@@ -1827,16 +1827,6 @@ pub async fn warning_analysis_status_html(
         );
         super::render_template(&panel)
     }
-
-    #[cfg(not(feature = "llm"))]
-    {
-        let panel = WarningAnalysisPanel::unavailable(
-            &id,
-            &warning.title,
-            "This build does not include the LLM analysis feature. The warning is unchanged.",
-        );
-        super::render_template(&panel)
-    }
 }
 
 pub async fn review_warning_html(

@@ -1,10 +1,20 @@
 //! Alert routing logic — determines which users should receive which alerts.
 //!
-//! The [`AlertRouter`] checks:
-//! 1. Explicit `user_ids` in the [`AlertEvent`]
-//! 2. Entity subscriptions (users watching an entity via `EntityAlertConfig`)
-//! 3. Default alert thresholds (`GlobalAlertDefaults`)
-//! 4. Per-entity overrides (`EntityAlertConfig`)
+//! The [`AlertRouter`] resolves an [`AlertEvent`]'s explicit
+//! [`AlertAudience`] into an [`AlertRoutingDecision`]:
+//!
+//! * [`AlertAudience::Broadcast`] — a deliberate system-wide alert; delivered
+//!   to every connected user.
+//! * [`AlertAudience::Users`] with explicit principals — each candidate is
+//!   checked against their `EntityAlertConfig` / `GlobalAlertDefaults` policy.
+//! * [`AlertAudience::Users`] with no principals — the entity-subscription
+//!   resolver (`user_alert_subscriptions`) determines the candidate set.
+//!
+//! An empty candidate list is **never** widened into a broadcast: it resolves
+//! to [`AlertRoutingDecision::NoRecipients`]. A policy read that fails is
+//! **never** treated as "allowed": it resolves to
+//! [`AlertRoutingDecision::RetryableFailure`] so the JetStream message can be
+//! retried instead of leaking through a disabled/suppressed preference.
 //!
 //! This module re-exports the shared [`AlertEvent`] type used by both the
 //! NATS publisher (worker) and the SSE consumer (API server).
@@ -14,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 use uuid::Uuid;
+
+pub use apex_core::alert_config::AlertAudience;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Re-export AlertEvent for use by both worker publisher and API consumer
@@ -51,19 +63,90 @@ impl fmt::Display for AlertEventType {
 }
 
 /// An alert event that travels through the pipeline: worker → NATS → API → SSE.
+///
+/// Wire-compatible with the worker publisher's format: the full `entity_ids`
+/// set (with the legacy singular `entity_id` still accepted on deserialize)
+/// and an explicit [`AlertAudience`]. The legacy `user_ids: []` encoding —
+/// whose empty value was ambiguously both "everyone" and "nobody" — is
+/// accepted only for messages published by older binaries and maps to
+/// [`AlertAudience::Broadcast`], matching what those binaries meant by it.
+/// New publishes always carry the tagged `audience`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "AlertEventWire")]
 pub struct AlertEvent {
     pub id: Uuid,
     pub event_type: AlertEventType,
     pub severity: apex_core::alert_config::AlertSeverity,
     pub title: String,
     pub description: String,
-    pub entity_id: Option<Uuid>,
+    /// Complete entity set the alert references. Subscriber resolution covers
+    /// every entry (union), so a multi-entity warning never notifies only the
+    /// first entity's subscribers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<Uuid>,
     pub entity_name: Option<String>,
-    /// Target user IDs (empty = broadcast to all).
-    pub user_ids: Vec<Uuid>,
+    /// Who this alert is addressed to. `Users(vec![])` addresses nobody and
+    /// only a deliberate `Broadcast` reaches every connected user.
+    pub audience: AlertAudience,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
+}
+
+/// Wire form that also accepts the legacy `entity_id` / `user_ids` fields.
+#[derive(Deserialize)]
+struct AlertEventWire {
+    id: Uuid,
+    event_type: AlertEventType,
+    severity: apex_core::alert_config::AlertSeverity,
+    title: String,
+    description: String,
+    #[serde(default)]
+    entity_ids: Vec<Uuid>,
+    #[serde(default)]
+    entity_id: Option<Uuid>,
+    #[serde(default)]
+    entity_name: Option<String>,
+    #[serde(default)]
+    audience: Option<AlertAudience>,
+    /// Legacy (pre-audience) recipient encoding. Empty meant broadcast to the
+    /// publishing binary; non-empty meant those exact users.
+    #[serde(default)]
+    user_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    metadata: serde_json::Value,
+    created_at: DateTime<Utc>,
+}
+
+impl From<AlertEventWire> for AlertEvent {
+    fn from(wire: AlertEventWire) -> Self {
+        let mut entity_ids = wire.entity_ids;
+        if entity_ids.is_empty() {
+            if let Some(entity_id) = wire.entity_id {
+                entity_ids.push(entity_id);
+            }
+        }
+        let audience = match (wire.audience, wire.user_ids) {
+            // New wire format: explicit audience always wins.
+            (Some(audience), _) => audience,
+            // Legacy format: an empty list was the old publishers' broadcast.
+            (None, Some(user_ids)) if user_ids.is_empty() => AlertAudience::Broadcast,
+            (None, Some(user_ids)) => AlertAudience::Users(user_ids),
+            // Neither field: unresolved, addresses nobody.
+            (None, None) => AlertAudience::Users(Vec::new()),
+        };
+        Self {
+            id: wire.id,
+            event_type: wire.event_type,
+            severity: wire.severity,
+            title: wire.title,
+            description: wire.description,
+            entity_ids,
+            entity_name: wire.entity_name,
+            audience,
+            metadata: wire.metadata,
+            created_at: wire.created_at,
+        }
+    }
 }
 
 impl AlertEvent {
@@ -78,16 +161,46 @@ impl AlertEvent {
             AlertEventType::SystemAlert => "system_alert",
         }
     }
+
+    /// Primary entity for display and per-entity config lookups, if any.
+    pub fn primary_entity_id(&self) -> Option<Uuid> {
+        self.entity_ids.first().copied()
+    }
+
+    /// A copy addressed to a resolved audience.
+    pub fn with_audience(&self, audience: AlertAudience) -> Self {
+        let mut routed = self.clone();
+        routed.audience = audience;
+        routed
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AlertRouter
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Routes alerts to the appropriate users based on configuration.
+/// The outcome of resolving an alert's audience.
 ///
-/// Uses the database to look up [`EntityAlertConfig`] and [`GlobalAlertDefaults`]
-/// to determine which users should receive each alert.
+/// A `Vec<Uuid>` cannot express the difference between "everyone", "nobody"
+/// and "could not resolve" — which is exactly how suppressed alerts used to be
+/// re-broadcast: the router returned an empty list for "suppressed" and the
+/// caller read it as "no override, keep the original (broadcast) recipients".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlertRoutingDecision {
+    /// Deliver to exactly these users (never empty).
+    Targets(Vec<Uuid>),
+    /// A deliberate system-wide broadcast to every connected user.
+    Broadcast,
+    /// Resolved successfully: nobody should receive this event. The consumer
+    /// must ack and drop it — this is an authorization decision, not a
+    /// failure, and must never be re-interpreted as a broadcast.
+    NoRecipients,
+    /// The routing policy could not be read (storage failure). The event must
+    /// be retried (NAK), never delivered and never acked as processed.
+    RetryableFailure(String),
+}
+
+/// Routes alerts to the appropriate users based on configuration.
 pub struct AlertRouter {
     db: Arc<apex_store::postgres::PgStore>,
 }
@@ -98,146 +211,137 @@ impl AlertRouter {
         Self { db }
     }
 
-    /// Route an alert to the right users.
+    /// Resolve the users an alert should be delivered to.
     ///
-    /// Returns the list of user IDs that should receive this alert.
-    /// If the alert already has explicit `user_ids`, those are returned directly
-    /// (after filtering by user preferences).
+    /// * Broadcast audience → [`AlertRoutingDecision::Broadcast`].
+    /// * Explicit users → filtered by each user's delivery policy.
+    /// * Empty users + entity scope → the `user_alert_subscriptions`
+    ///   canonical subscriber resolver, then the same policy filter.
+    /// * Empty users without entity scope → `NoRecipients`.
     ///
-    /// # Routing logic
-    /// 1. If `alert.user_ids` is non-empty, check each user's `EntityAlertConfig`
-    ///    for the entity (if any) and filter out those whose config suppresses it.
-    /// 2. If `alert.user_ids` is empty (broadcast), query all entity alert configs
-    ///    and return user IDs whose config allows this alert type/severity.
-    /// 3. When no entity config exists, fall back to `GlobalAlertDefaults`.
-    pub async fn route_alert(&self, alert: &AlertEvent) -> Vec<Uuid> {
-        // If explicit user IDs are set, filter them
-        if !alert.user_ids.is_empty() {
-            let mut targets = Vec::with_capacity(alert.user_ids.len());
-            for user_id in &alert.user_ids {
-                if self.should_notify_user(*user_id, alert).await {
-                    targets.push(*user_id);
-                }
+    /// Any policy/subscription storage failure resolves to
+    /// [`AlertRoutingDecision::RetryableFailure`]: a database outage fails
+    /// closed (retry) instead of leaking suppressed alerts to recipients.
+    pub async fn route_alert(&self, alert: &AlertEvent) -> AlertRoutingDecision {
+        match &alert.audience {
+            AlertAudience::Broadcast => AlertRoutingDecision::Broadcast,
+            AlertAudience::Users(user_ids) if !user_ids.is_empty() => {
+                self.filter_by_policy(user_ids, alert).await
             }
-            return targets;
+            AlertAudience::Users(_) => self.resolve_subscribers(alert).await,
         }
-
-        // Broadcast mode: find all users subscribed to this kind of alert
-        self.find_subscribed_users(alert).await
     }
 
-    /// Check whether a specific user should receive this alert.
+    /// Filter an explicit candidate list through each user's delivery policy.
+    async fn filter_by_policy(
+        &self,
+        candidates: &[Uuid],
+        alert: &AlertEvent,
+    ) -> AlertRoutingDecision {
+        let mut targets = Vec::with_capacity(candidates.len());
+        for user_id in candidates {
+            match self.policy_allows(*user_id, alert).await {
+                Ok(true) => targets.push(*user_id),
+                Ok(false) => {}
+                Err(error) => return AlertRoutingDecision::RetryableFailure(error),
+            }
+        }
+        if targets.is_empty() {
+            AlertRoutingDecision::NoRecipients
+        } else {
+            AlertRoutingDecision::Targets(targets)
+        }
+    }
+
+    /// Resolve the entity-scoped subscribers for an alert that carries no
+    /// explicit recipients.
+    async fn resolve_subscribers(&self, alert: &AlertEvent) -> AlertRoutingDecision {
+        if alert.entity_ids.is_empty() {
+            // No entity and no explicit users: unresolved audience. This is
+            // "deliver to nobody", never a broadcast.
+            return AlertRoutingDecision::NoRecipients;
+        }
+
+        let subscribers = match self
+            .db
+            .find_subscribed_users_for_entities(
+                &alert.entity_ids,
+                alert.alert_category(),
+                alert.severity,
+            )
+            .await
+        {
+            Ok(users) => users,
+            Err(error) => {
+                return AlertRoutingDecision::RetryableFailure(format!(
+                    "subscriber lookup failed for {} entity(ies): {error}",
+                    alert.entity_ids.len()
+                ));
+            }
+        };
+
+        if subscribers.is_empty() {
+            return AlertRoutingDecision::NoRecipients;
+        }
+
+        self.filter_by_policy(&subscribers, alert).await
+    }
+
+    /// Check whether a specific user's delivery policy allows this alert.
     ///
-    /// Checks the user's entity alert config (if one exists for the alert's
-    /// entity), falling back to global defaults.
-    pub async fn should_notify_user(&self, _user_id: Uuid, alert: &AlertEvent) -> bool {
+    /// Returns `Err` when the policy cannot be read: the caller must treat
+    /// that as unresolved (retry), never as "allowed".
+    pub async fn policy_allows(&self, _user_id: Uuid, alert: &AlertEvent) -> Result<bool, String> {
         use apex_core::alert_config::AlertChannel;
 
         // If the alert targets a specific entity, check its config
-        if let Some(ref entity_id) = alert.entity_id {
+        if let Some(entity_id) = alert.primary_entity_id() {
             let entity_id_str = entity_id.to_string();
             match self.db.get_entity_alert_config(&entity_id_str).await {
                 Ok(Some(cfg)) => {
                     // Check that InApp channel is enabled
                     if !cfg.enabled_channels.contains(&AlertChannel::InApp) {
-                        return false;
+                        return Ok(false);
                     }
                     // Check if the alert is suppressed
                     if cfg.is_alert_suppressed(alert.alert_category(), alert.severity) {
-                        return false;
+                        return Ok(false);
                     }
-                    return true;
+                    return Ok(true);
                 }
                 Ok(None) => {
                     // No per-entity config — check global defaults
-                    return self.check_global_defaults(alert).await;
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        entity_id = %entity_id_str,
-                        error = %e,
-                        "Failed to fetch entity alert config, falling back to defaults"
-                    );
-                    return self.check_global_defaults(alert).await;
+                    return Err(format!(
+                        "entity alert config read failed for {entity_id_str}: {e}"
+                    ));
                 }
             }
         }
 
-        // No entity — check global defaults
         self.check_global_defaults(alert).await
     }
 
     /// Check the global alert defaults.
-    async fn check_global_defaults(&self, alert: &AlertEvent) -> bool {
+    async fn check_global_defaults(&self, alert: &AlertEvent) -> Result<bool, String> {
         use apex_core::alert_config::AlertChannel;
 
         match self.db.get_global_alert_defaults().await {
             Ok(Some(defaults)) => {
                 // Check that InApp channel is enabled globally
                 if !defaults.enabled_channels.contains(&AlertChannel::InApp) {
-                    return false;
+                    return Ok(false);
                 }
                 // Check severity threshold
-                alert.severity >= defaults.min_severity
+                Ok(alert.severity >= defaults.min_severity)
             }
             Ok(None) => {
                 // No global config — allow by default if severity >= Medium
-                alert.severity >= apex_core::alert_config::AlertSeverity::Medium
+                Ok(alert.severity >= apex_core::alert_config::AlertSeverity::Medium)
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to fetch global alert defaults");
-                // Allow through on error (fail open)
-                true
-            }
+            Err(e) => Err(format!("global alert defaults read failed: {e}")),
         }
-    }
-
-    /// Find users subscribed to this kind of alert via entity alert configs.
-    ///
-    /// This queries the database for all entity alert configs and returns
-    /// user IDs whose config allows this alert category at the given severity.
-    ///
-    /// Note: The current schema stores configs per entity, not per user.
-    /// For user-specific subscriptions, this would need a `user_alert_subscriptions`
-    /// table. For now, we return an empty vec (no broadcast subscribers)
-    /// unless the entity has an explicit config allowing it.
-    async fn find_subscribed_users(&self, alert: &AlertEvent) -> Vec<Uuid> {
-        use apex_core::alert_config::AlertChannel;
-
-        // If the alert has an entity, check who's watching it
-        if let Some(ref entity_id) = alert.entity_id {
-            let entity_id_str = entity_id.to_string();
-            match self.db.get_entity_alert_config(&entity_id_str).await {
-                Ok(Some(cfg)) => {
-                    if cfg.enabled
-                        && cfg.enabled_channels.contains(&AlertChannel::InApp)
-                        && !cfg.is_alert_suppressed(alert.alert_category(), alert.severity)
-                    {
-                        // Entity has this alert enabled — in a full implementation
-                        // we'd look up which users follow this entity.
-                        // For now, return empty (the SSE manager will broadcast
-                        // if user_ids is empty, which handles anonymous broadcasts).
-                        return vec![];
-                    }
-                }
-                Ok(None) => {
-                    // No entity config — check global
-                    if self.check_global_defaults(alert).await {
-                        return vec![];
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        entity_id = %entity_id_str,
-                        error = %e,
-                        "Failed to fetch entity alert config for subscription lookup"
-                    );
-                }
-            }
-        }
-
-        // No subscribers found via entity configs
-        vec![]
     }
 }
 
@@ -247,7 +351,36 @@ impl AlertRouter {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    fn base_event(audience: AlertAudience) -> AlertEvent {
+        AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::NewWarning,
+            severity: apex_core::alert_config::AlertSeverity::High,
+            title: "Test".to_string(),
+            description: "Test".to_string(),
+            entity_ids: vec![],
+            entity_name: None,
+            audience,
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        }
+    }
+
+    /// A routing decision never becomes a broadcast from an empty list.
+    #[test]
+    fn routing_decision_distinguishes_nobody_from_everyone() {
+        assert_ne!(
+            AlertRoutingDecision::NoRecipients,
+            AlertRoutingDecision::Broadcast
+        );
+        assert_ne!(
+            AlertRoutingDecision::Targets(vec![]),
+            AlertRoutingDecision::Broadcast
+        );
+    }
 
     #[test]
     fn alert_event_type_as_str() {
@@ -267,32 +400,23 @@ mod tests {
 
     #[test]
     fn alert_category_mapping() {
-        let alert = AlertEvent {
-            id: Uuid::new_v4(),
-            event_type: AlertEventType::NewWarning,
-            severity: apex_core::alert_config::AlertSeverity::High,
-            title: "Test".to_string(),
-            description: "Test".to_string(),
-            entity_id: None,
-            entity_name: None,
-            user_ids: vec![],
-            metadata: serde_json::json!({}),
-            created_at: Utc::now(),
-        };
+        let alert = base_event(AlertAudience::Broadcast);
         assert_eq!(alert.alert_category(), "warning");
     }
 
     #[test]
     fn alert_event_serde_roundtrip() {
+        let entity_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
         let event = AlertEvent {
             id: Uuid::new_v4(),
             event_type: AlertEventType::CompetitorChange,
             severity: apex_core::alert_config::AlertSeverity::Critical,
             title: "Competitor move".to_string(),
             description: "A competitor changed strategy".to_string(),
-            entity_id: Some(Uuid::new_v4()),
+            entity_ids: vec![entity_id],
             entity_name: Some("Rival Corp".to_string()),
-            user_ids: vec![Uuid::new_v4()],
+            audience: AlertAudience::Users(vec![user_id]),
             metadata: serde_json::json!({"change_type": "pivot"}),
             created_at: Utc::now(),
         };
@@ -302,24 +426,78 @@ mod tests {
 
         assert_eq!(deserialized.id, event.id);
         assert_eq!(deserialized.event_type, event.event_type);
-        assert_eq!(deserialized.user_ids.len(), 1);
+        assert_eq!(deserialized.entity_ids, vec![entity_id]);
+        assert_eq!(deserialized.audience, AlertAudience::Users(vec![user_id]));
         assert_eq!(deserialized.metadata["change_type"], "pivot");
     }
 
+    /// The tagged wire format never carries an ambiguous empty `user_ids`.
     #[test]
-    fn empty_user_ids_means_broadcast() {
-        let alert = AlertEvent {
-            id: Uuid::new_v4(),
-            event_type: AlertEventType::SystemAlert,
-            severity: apex_core::alert_config::AlertSeverity::Info,
-            title: "System notice".to_string(),
-            description: "System is running".to_string(),
-            entity_id: None,
-            entity_name: None,
-            user_ids: vec![],
-            metadata: serde_json::json!({}),
-            created_at: Utc::now(),
-        };
-        assert!(alert.user_ids.is_empty());
+    fn wire_format_is_tagged_and_explicit() {
+        let broadcast = base_event(AlertAudience::Broadcast);
+        let json = serde_json::to_value(&broadcast).unwrap();
+        assert_eq!(json["audience"]["kind"], "broadcast");
+
+        let empty = base_event(AlertAudience::Users(vec![]));
+        let json = serde_json::to_value(&empty).unwrap();
+        assert_eq!(json["audience"]["kind"], "users");
+        assert_eq!(json["audience"]["user_ids"], serde_json::json!([]));
+        // The legacy ambiguous field must not be emitted.
+        assert!(json.get("user_ids").is_none());
+    }
+
+    /// Legacy messages published by older binaries still decode: an empty
+    /// `user_ids` was their deliberate broadcast; a non-empty list was
+    /// targeted.
+    #[test]
+    fn legacy_wire_format_still_decodes() {
+        let legacy_broadcast = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "event_type": "system_alert",
+            "severity": "info",
+            "title": "System notice",
+            "description": "System is running",
+            "entity_id": null,
+            "entity_name": null,
+            "user_ids": [],
+            "metadata": {},
+            "created_at": Utc::now(),
+        });
+        let alert: AlertEvent = serde_json::from_value(legacy_broadcast).unwrap();
+        assert_eq!(alert.audience, AlertAudience::Broadcast);
+
+        let user_id = Uuid::new_v4();
+        let legacy_targeted = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "event_type": "new_warning",
+            "severity": "high",
+            "title": "Targeted",
+            "description": "For one user",
+            "entity_id": Uuid::new_v4(),
+            "entity_name": null,
+            "user_ids": [user_id],
+            "metadata": {},
+            "created_at": Utc::now(),
+        });
+        let alert: AlertEvent = serde_json::from_value(legacy_targeted).unwrap();
+        assert_eq!(alert.audience, AlertAudience::Users(vec![user_id]));
+        assert_eq!(alert.entity_ids.len(), 1);
+    }
+
+    /// A legacy message with neither field addresses nobody — it must not be
+    /// upgraded to a broadcast.
+    #[test]
+    fn legacy_wire_without_recipients_addresses_nobody() {
+        let legacy = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "event_type": "new_insight",
+            "severity": "high",
+            "title": "No audience",
+            "description": "Ambiguous legacy event",
+            "metadata": {},
+            "created_at": Utc::now(),
+        });
+        let alert: AlertEvent = serde_json::from_value(legacy).unwrap();
+        assert_eq!(alert.audience, AlertAudience::Users(vec![]));
     }
 }

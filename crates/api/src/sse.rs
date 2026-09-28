@@ -10,7 +10,7 @@
 //! consumes alerts from NATS JetStream and dispatches them to connected SSE clients
 //! via fan-out per user. Each authenticated user gets their own event stream.
 
-use crate::alert_router::AlertRouter;
+use crate::alert_router::{AlertAudience, AlertRouter, AlertRoutingDecision};
 use anyhow::{Context, Result};
 use axum::response::sse::{Event, KeepAlive, Sse};
 #[cfg(test)]
@@ -116,22 +116,31 @@ pub struct SseManager {
     /// Bounded log of recently dispatched events, used to replay anything a
     /// reconnecting client missed (`Last-Event-ID`). Retained process-wide
     /// because the event stream is a shared broadcast, but every entry keeps
-    /// its target audience so a replay can never leak another user's alert.
+    /// its explicit audience so a replay can never leak another user's alert.
     recent: Arc<Mutex<VecDeque<ReplayEntry>>>,
+    /// Alert event ids already dispatched by this process. A JetStream
+    /// redelivery (crash before ack, NAK) must not duplicate a client event.
+    processed_alerts: Arc<Mutex<VecDeque<Uuid>>>,
 }
 
-/// A retained event plus the users it was addressed to (`targets` empty means
-/// broadcast).
+/// A retained event plus the audience it was addressed to. The audience is the
+/// explicit [`AlertAudience`] — never an "empty means broadcast" convention.
 struct ReplayEntry {
     event: SseEvent,
-    targets: Vec<Uuid>,
+    audience: AlertAudience,
 }
 
 impl ReplayEntry {
     fn is_visible_to(&self, user_id: Uuid) -> bool {
-        self.targets.is_empty() || self.targets.contains(&user_id)
+        match &self.audience {
+            AlertAudience::Broadcast => true,
+            AlertAudience::Users(targets) => targets.contains(&user_id),
+        }
     }
 }
+
+/// Maximum number of alert ids retained for redelivery deduplication.
+const SSE_PROCESSED_CAPACITY: usize = 1024;
 
 impl SseManager {
     /// Create a new empty SSE manager.
@@ -139,7 +148,23 @@ impl SseManager {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             recent: Arc::new(Mutex::new(VecDeque::with_capacity(SSE_REPLAY_CAPACITY))),
+            processed_alerts: Arc::new(Mutex::new(VecDeque::with_capacity(SSE_PROCESSED_CAPACITY))),
         }
+    }
+
+    /// Claim an alert id for processing. Returns `false` when this alert was
+    /// already dispatched, so a JetStream redelivery is acked without emitting
+    /// a duplicate client event.
+    pub async fn claim_alert(&self, alert_id: Uuid) -> bool {
+        let mut processed = self.processed_alerts.lock().await;
+        if processed.contains(&alert_id) {
+            return false;
+        }
+        if processed.len() >= SSE_PROCESSED_CAPACITY {
+            processed.pop_front();
+        }
+        processed.push_back(alert_id);
+        true
     }
 
     /// Register a new SSE connection for a user.
@@ -244,9 +269,10 @@ impl SseManager {
         );
     }
 
-    /// Dispatch an [`AlertEvent`] to all connected SSE clients for the
-    /// targeted users. If `user_ids` is empty, the alert is broadcast to all
-    /// connected users.
+    /// Dispatch an [`AlertEvent`] to the SSE clients its explicit
+    /// [`AlertAudience`] addresses: a `Broadcast` reaches every connected
+    /// user, `Users(list)` reaches exactly those users, and an empty `Users`
+    /// list reaches nobody. The audience is never inferred from emptiness.
     ///
     /// Returns the number of clients the event was sent to. Events are dropped
     /// for clients whose buffer is full (slow consumers).
@@ -273,7 +299,7 @@ impl SseManager {
             }
             recent.push_back(ReplayEntry {
                 event: event.clone(),
-                targets: alert.user_ids.clone(),
+                audience: alert.audience.clone(),
             });
         }
 
@@ -291,16 +317,19 @@ impl SseManager {
             }
         };
 
-        if alert.user_ids.is_empty() {
-            // Broadcast to all connected users
-            for senders in conns.values() {
-                deliver(senders, &event, &mut sent_count);
-            }
-        } else {
-            // Send only to specified users
-            for user_id in &alert.user_ids {
-                if let Some(senders) = conns.get(user_id) {
+        match &alert.audience {
+            AlertAudience::Broadcast => {
+                // Broadcast to all connected users
+                for senders in conns.values() {
                     deliver(senders, &event, &mut sent_count);
+                }
+            }
+            AlertAudience::Users(user_ids) => {
+                // Send only to specified users; an empty list sends to nobody.
+                for user_id in user_ids {
+                    if let Some(senders) = conns.get(user_id) {
+                        deliver(senders, &event, &mut sent_count);
+                    }
                 }
             }
         }
@@ -348,20 +377,35 @@ impl SseManager {
             warn!(error = %e, "Failed to ensure JetStream stream 'alerts'");
         }
 
-        // Create a push consumer
+        // Create a push consumer. The subject filter excludes the
+        // `alerts.dead_letter.*` subjects so a dead-lettered payload is never
+        // consumed again by this bridge.
+        //
+        // Delivery order is receive → deserialize → route → dispatch → ACK:
+        // the message is acked only after it was processed, so a crash or
+        // routing failure retries instead of silently losing the alert.
+        let consumer_config = async_nats::jetstream::consumer::push::Config {
+            durable_name: Some("sse_bridge".to_string()),
+            deliver_subject: format!("sse_bridge.deliver.{}", Uuid::new_v4()),
+            deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::New,
+            ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+            ack_wait: Duration::from_secs(30),
+            max_deliver: 3,
+            filter_subject: "alerts.events.>".to_string(),
+            ..Default::default()
+        };
+
+        // A durable consumer's configuration is immutable; recreate it so a
+        // deploy that adds/changes the filter actually takes effect.
+        if let Err(e) = jetstream
+            .delete_consumer_from_stream("alerts", "sse_bridge")
+            .await
+        {
+            debug!(error = %e, "No existing sse_bridge consumer to delete (expected on first start)");
+        }
+
         let consumer: async_nats::jetstream::consumer::PushConsumer = match jetstream
-            .create_consumer_on_stream(
-                async_nats::jetstream::consumer::push::Config {
-                    durable_name: Some("sse_bridge".to_string()),
-                    deliver_subject: format!("sse_bridge.deliver.{}", Uuid::new_v4()),
-                    deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::New,
-                    ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
-                    ack_wait: Duration::from_secs(30),
-                    max_deliver: 3,
-                    ..Default::default()
-                },
-                "alerts",
-            )
+            .create_consumer_on_stream(consumer_config, "alerts")
             .await
         {
             Ok(c) => c,
@@ -392,25 +436,99 @@ impl SseManager {
                     match tokio::time::timeout(Duration::from_secs(5), messages.next()).await {
                         Ok(Some(Ok(msg))) => {
                             let payload = msg.payload.clone();
-                            if let Err(e) = msg.ack().await {
-                                warn!(error = %e, "Failed to ack NATS message");
-                            }
 
-                            // Deserialize the alert event
-                            match serde_json::from_slice::<crate::alert_router::AlertEvent>(
-                                &payload,
-                            ) {
-                                Ok(alert) => {
-                                    // Route and dispatch
-                                    let targets = alert_router.route_alert(&alert).await;
-                                    let mut routed_alert = alert.clone();
-                                    if !targets.is_empty() {
-                                        routed_alert.user_ids = targets;
-                                    }
-                                    manager.dispatch_alert(&routed_alert).await;
-                                }
+                            // 1. Deserialize + validate. A malformed event is
+                            //    permanent: dead-letter it and ACK so it cannot
+                            //    poison the consumer forever.
+                            let alert = match serde_json::from_slice::<
+                                crate::alert_router::AlertEvent,
+                            >(&payload)
+                            {
+                                Ok(alert) => alert,
                                 Err(e) => {
-                                    warn!(error = %e, "Failed to deserialize alert from NATS");
+                                    warn!(
+                                        error = %e,
+                                        "Malformed alert payload — dead-lettering"
+                                    );
+                                    match jetstream
+                                        .publish(
+                                            "alerts.dead_letter.malformed",
+                                            payload.clone().into(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(_) => {}
+                                        Err(dlq_error) => warn!(
+                                            error = %dlq_error,
+                                            "Failed to publish malformed alert to the dead-letter subject"
+                                        ),
+                                    }
+                                    if let Err(e) = msg.ack().await {
+                                        warn!(error = %e, "Failed to ack dead-lettered NATS message");
+                                    }
+                                    continue;
+                                }
+                            };
+
+                            // 2. Resolve routing. A storage failure is
+                            //    retryable: NAK so JetStream redelivers, never
+                            //    ack and never leak through unresolved policy.
+                            match alert_router.route_alert(&alert).await {
+                                AlertRoutingDecision::RetryableFailure(error) => {
+                                    warn!(
+                                        alert_id = %alert.id,
+                                        %error,
+                                        "Alert routing unresolved — NAK, will retry"
+                                    );
+                                    if let Err(e) = msg
+                                        .ack_with(async_nats::jetstream::AckKind::Nak(None))
+                                        .await
+                                    {
+                                        warn!(error = %e, "Failed to NAK NATS message");
+                                    }
+                                    continue;
+                                }
+                                AlertRoutingDecision::NoRecipients => {
+                                    // Resolved: nobody is authorized for this
+                                    // event. Ack and drop — this is an
+                                    // authorization outcome, not a failure.
+                                    debug!(
+                                        alert_id = %alert.id,
+                                        "Alert routed to no recipients — dropping"
+                                    );
+                                    if let Err(e) = msg.ack().await {
+                                        warn!(error = %e, "Failed to ack suppressed NATS message");
+                                    }
+                                    continue;
+                                }
+                                AlertRoutingDecision::Broadcast => {
+                                    if manager.claim_alert(alert.id).await {
+                                        let routed = alert.with_audience(AlertAudience::Broadcast);
+                                        manager.dispatch_alert(&routed).await;
+                                    } else {
+                                        debug!(
+                                            alert_id = %alert.id,
+                                            "Duplicate delivery of alert — skipping dispatch"
+                                        );
+                                    }
+                                    if let Err(e) = msg.ack().await {
+                                        warn!(error = %e, "Failed to ack NATS message");
+                                    }
+                                }
+                                AlertRoutingDecision::Targets(user_ids) => {
+                                    if manager.claim_alert(alert.id).await {
+                                        let routed =
+                                            alert.with_audience(AlertAudience::Users(user_ids));
+                                        manager.dispatch_alert(&routed).await;
+                                    } else {
+                                        debug!(
+                                            alert_id = %alert.id,
+                                            "Duplicate delivery of alert — skipping dispatch"
+                                        );
+                                    }
+                                    if let Err(e) = msg.ack().await {
+                                        warn!(error = %e, "Failed to ack NATS message");
+                                    }
                                 }
                             }
                         }
@@ -545,9 +663,9 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: title.to_string(),
             description: "description".to_string(),
-            entity_id: None,
+            entity_ids: vec![],
             entity_name: None,
-            user_ids: vec![user_id],
+            audience: AlertAudience::Users(vec![user_id]),
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         }
@@ -609,9 +727,9 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Test".to_string(),
             description: "Test description".to_string(),
-            entity_id: None,
+            entity_ids: vec![],
             entity_name: None,
-            user_ids: vec![user_id],
+            audience: AlertAudience::Users(vec![user_id]),
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         };
@@ -640,9 +758,9 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::Info,
             title: "Broadcast".to_string(),
             description: "Broadcast test".to_string(),
-            entity_id: None,
+            entity_ids: vec![],
             entity_name: None,
-            user_ids: vec![], // empty = broadcast
+            audience: AlertAudience::Broadcast,
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         };
@@ -666,9 +784,9 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Slow consumer".to_string(),
             description: "Buffer pressure".to_string(),
-            entity_id: None,
+            entity_ids: vec![],
             entity_name: None,
-            user_ids: vec![user_id],
+            audience: AlertAudience::Users(vec![user_id]),
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         };
@@ -697,9 +815,9 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::Info,
             title: "Nobody".to_string(),
             description: "no subscribers".to_string(),
-            entity_id: None,
+            entity_ids: vec![],
             entity_name: None,
-            user_ids: vec![Uuid::new_v4()],
+            audience: AlertAudience::Users(vec![Uuid::new_v4()]),
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         };
@@ -783,7 +901,7 @@ mod tests {
         // Shared broadcast, then an alert targeted at A only.
         manager
             .dispatch_alert(&crate::alert_router::AlertEvent {
-                user_ids: Vec::new(),
+                audience: AlertAudience::Broadcast,
                 ..alert_for(user_a, "broadcast")
             })
             .await;
@@ -828,7 +946,7 @@ mod tests {
         let (tx_b, mut rx_b) = manager.register(user_b).await;
         manager
             .dispatch_alert(&crate::alert_router::AlertEvent {
-                user_ids: Vec::new(),
+                audience: AlertAudience::Broadcast,
                 ..alert_for(user_a, "broadcast")
             })
             .await;

@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use apex_api::alert_router::{AlertEvent, AlertEventType};
+use apex_api::alert_router::{AlertAudience, AlertEvent, AlertEventType};
 use apex_api::sse::{SseEvent, SseManager, SSE_RESYNC_EVENT};
 use chrono::Utc;
 use uuid::Uuid;
@@ -20,9 +20,9 @@ fn alert_for(user_id: Uuid, title: &str) -> AlertEvent {
         severity: apex_core::alert_config::AlertSeverity::High,
         title: title.to_string(),
         description: "resync fixture".to_string(),
-        entity_id: None,
+        entity_ids: vec![],
         entity_name: None,
-        user_ids: vec![user_id],
+        audience: AlertAudience::Users(vec![user_id]),
         metadata: serde_json::json!({}),
         created_at: Utc::now(),
     }
@@ -100,7 +100,7 @@ async fn targeted_alert_missed_while_offline_replays_on_reconnect() {
     let (tx_user, mut rx_user) = manager.register(user).await;
     let (_tx_other, mut rx_other) = manager.register(other).await;
     let broadcast = AlertEvent {
-        user_ids: Vec::new(),
+        audience: AlertAudience::Broadcast,
         ..alert_for(user, "broadcast")
     };
     manager.dispatch_alert(&broadcast).await;

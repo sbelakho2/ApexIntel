@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use apex_api::alert_router::{AlertEvent, AlertEventType};
+use apex_api::alert_router::{AlertAudience, AlertEvent, AlertEventType};
 use apex_api::sse::SseManager;
 use chrono::Utc;
 use uuid::Uuid;
@@ -20,11 +20,18 @@ fn targeted_alert(user_ids: Vec<Uuid>, title: &str) -> AlertEvent {
         severity: apex_core::alert_config::AlertSeverity::Critical,
         title: title.to_string(),
         description: format!("{title} description"),
-        entity_id: None,
+        entity_ids: vec![],
         entity_name: None,
-        user_ids,
+        audience: AlertAudience::Users(user_ids),
         metadata: serde_json::json!({}),
         created_at: Utc::now(),
+    }
+}
+
+fn broadcast_alert(title: &str) -> AlertEvent {
+    AlertEvent {
+        audience: AlertAudience::Broadcast,
+        ..targeted_alert(vec![Uuid::new_v4()], title)
     }
 }
 
@@ -65,7 +72,7 @@ async fn isolation_survives_reconnect_of_the_wrong_user() {
     let (_tx_a, mut rx_a) = manager.register(user_a).await;
     let (tx_b, mut rx_b) = manager.register(user_b).await;
     manager
-        .dispatch_alert(&targeted_alert(Vec::new(), "Shared broadcast"))
+        .dispatch_alert(&broadcast_alert("Shared broadcast"))
         .await;
     let cursor = rx_a.try_recv().expect("broadcast for A").id;
     let _ = rx_b.try_recv().expect("broadcast for B");
@@ -106,7 +113,7 @@ async fn broadcast_alerts_reach_every_connected_user() {
     let (_tx_a, mut rx_a) = manager.register(user_a).await;
     let (_tx_b, mut rx_b) = manager.register(user_b).await;
 
-    let broadcast = targeted_alert(vec![], "System broadcast");
+    let broadcast = broadcast_alert("System broadcast");
     assert_eq!(manager.dispatch_alert(&broadcast).await, 2);
     assert!(rx_a.try_recv().is_ok());
     assert!(rx_b.try_recv().is_ok());
