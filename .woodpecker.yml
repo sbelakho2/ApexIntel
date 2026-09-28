@@ -164,6 +164,12 @@ steps:
     environment:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: "1"
+      # The apex-worker test binary is large enough that a debuginfo linker
+      # run OOMs the CI container (ld signalled 9). Strip debuginfo and ask the
+      # linker to release memory as it goes; neither changes what is verified.
+      RUSTFLAGS: "-C debuginfo=0 -C link-arg=-Wl,--no-keep-memory"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     commands:
       - rustup component add rustfmt clippy
       # Formatting
