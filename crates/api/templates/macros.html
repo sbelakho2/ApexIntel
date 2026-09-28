@@ -297,7 +297,13 @@
 </div>
 {% endmacro %}
 
-{% macro recipe_line_chart(chart_width, precision_points, recall_points, fpr_points, rows) %}
+{% macro recipe_line_chart(chart_width, precision_points, fpr_points, precision_circles, fpr_circles, rows) %}
+{% if rows.is_empty() %}
+<div class="apex-card p-4 text-center">
+  <p class="text-xs font-bold uppercase text-rams-muted">No historical performance measurements yet</p>
+  <p class="mt-1 text-[10px] text-rams-muted">Monthly precision and false-positive history appears after weekly recipe snapshots accumulate. Nothing is charted until then.</p>
+</div>
+{% else %}
 <div class="overflow-x-auto">
   <svg class="apex-line-chart" viewBox="0 0 {{ chart_width + 18 }} 120" role="img" aria-label="Recipe quality trend lines" preserveAspectRatio="xMinYMid meet">
     <rect x="0" y="10" width="{{ chart_width }}" height="90" rx="10" class="apex-line-chart-plot" />
@@ -306,27 +312,23 @@
     <line x1="0" y1="50" x2="{{ chart_width }}" y2="50" class="apex-line-chart-grid" />
     <line x1="0" y1="25" x2="{{ chart_width }}" y2="25" class="apex-line-chart-grid" />
     <polyline points="{{ precision_points }}" class="apex-line-chart-stroke apex-line-chart-stroke-precision" />
-    <polyline points="{{ recall_points }}" class="apex-line-chart-stroke apex-line-chart-stroke-recall" />
     <polyline points="{{ fpr_points }}" class="apex-line-chart-stroke apex-line-chart-stroke-fpr" />
+    {% for point in precision_circles %}
+    <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3" class="apex-line-chart-point apex-line-chart-point-precision">
+      <title>{{ point.title }}</title>
+    </circle>
+    {% endfor %}
+    {% for point in fpr_circles %}
+    <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3" class="apex-line-chart-point apex-line-chart-point-fpr">
+      <title>{{ point.title }}</title>
+    </circle>
+    {% endfor %}
     {% for row in rows %}
-    <circle cx="{{ loop.index0 * 22 }}" cy="{{ 100 - row.precision_pct }}" r="3" class="apex-line-chart-point apex-line-chart-point-precision">
-      <title>{{ row.month }} precision {{ row.precision_pct }}%</title>
-    </circle>
-    <circle cx="{{ loop.index0 * 22 }}" cy="{{ 100 - row.recall_pct }}" r="3" class="apex-line-chart-point apex-line-chart-point-recall">
-      <title>{{ row.month }} recall {{ row.recall_pct }}%</title>
-    </circle>
-    <circle cx="{{ loop.index0 * 22 }}" cy="{{ 100 - row.fpr_pct }}" r="3" class="apex-line-chart-point apex-line-chart-point-fpr">
-      <title>{{ row.month }} false positive rate {{ row.fpr_pct }}%</title>
-    </circle>
-    {% if loop.last %}
-    <text x="{{ loop.index0 * 22 + 5 }}" y="{{ 96 - row.precision_pct }}" class="apex-line-chart-value">P {{ row.precision_pct }}%</text>
-    <text x="{{ loop.index0 * 22 + 5 }}" y="{{ 96 - row.recall_pct }}" class="apex-line-chart-value">R {{ row.recall_pct }}%</text>
-    <text x="{{ loop.index0 * 22 + 5 }}" y="{{ 96 - row.fpr_pct }}" class="apex-line-chart-value">F {{ row.fpr_pct }}%</text>
-    {% endif %}
     <text x="{{ loop.index0 * 22 }}" y="114" text-anchor="start" class="apex-line-chart-label">{{ row.month }}</text>
     {% endfor %}
   </svg>
 </div>
+{% endif %}
 {% endmacro %}
 
 {% macro competitor_comparison_chart(competitors, chart_width) %}
@@ -339,14 +341,20 @@
     <line x1="0" y1="21" x2="{{ chart_width }}" y2="21" class="apex-line-chart-grid" />
     {% for c in competitors %}
     <g>
+      {% if let Some(risk) = c.risk_pct %}
       <rect x="{{ c.chart_group_x + 6 }}" y="{{ c.chart_threat_y + 4 }}" width="14" height="{{ c.chart_threat_h }}" class="apex-compare-bar apex-compare-bar-threat" rx="2">
-        <title>{{ c.name }} threat: {{ c.risk_score }}</title>
+        <title>{{ c.name }} threat: {{ risk }}</title>
       </rect>
+      <text x="{{ c.chart_group_x + 13 }}" y="{{ c.chart_threat_y }}" class="apex-compare-value">{{ risk }}</text>
+      {% else %}
+      <title>{{ c.name }} threat: not measured</title>
+      {% endif %}
+      {% if let Some(overlap) = c.overlap_pct %}
       <rect x="{{ c.chart_group_x + 24 }}" y="{{ c.chart_overlap_y + 4 }}" width="14" height="{{ c.chart_overlap_h }}" class="apex-compare-bar apex-compare-bar-overlap" rx="2">
-        <title>{{ c.name }} overlap: {{ c.overlap_pct }}%</title>
+        <title>{{ c.name }} overlap: {{ overlap }}%</title>
       </rect>
-      <text x="{{ c.chart_group_x + 13 }}" y="{{ c.chart_threat_y }}" class="apex-compare-value">{{ c.risk_score }}</text>
-      <text x="{{ c.chart_group_x + 31 }}" y="{{ c.chart_overlap_y }}" class="apex-compare-value">{{ c.overlap_pct }}%</text>
+      <text x="{{ c.chart_group_x + 31 }}" y="{{ c.chart_overlap_y }}" class="apex-compare-value">{{ overlap }}%</text>
+      {% endif %}
       <text x="{{ c.chart_label_x }}" y="102" text-anchor="middle" class="apex-line-chart-label">{{ loop.index }}</text>
     </g>
     {% endfor %}

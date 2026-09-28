@@ -11,12 +11,12 @@
   <div class="apex-stat">
     <div class="apex-stat-rail metric-rail-orange"></div>
     <p class="apex-stat-label">Avg Threat</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{% if avg_threat > 0 %}{{ avg_threat }}{% else %}—{% endif %}</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{% if let Some(avg) = avg_threat %}{{ avg }}{% else %}—{% endif %}</p>
   </div>
   <div class="apex-stat">
     <div class="apex-stat-rail metric-rail-green"></div>
     <p class="apex-stat-label">Avg Overlap %</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{% if avg_overlap_pct > 0 %}{{ avg_overlap_pct }}{% else %}—{% endif %}</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{% if let Some(avg) = avg_overlap_pct %}{{ avg }}{% else %}—{% endif %}</p>
   </div>
 </div>
 
@@ -74,13 +74,19 @@
         <p class="font-bold text-sm">{{ c.name }}</p>
         <p class="text-[10px] text-rams-muted uppercase mt-1">{{ c.region }} · {{ c.sector }}</p>
       </div>
-      {% if c.risk_score > 0 %}
-      <p class="text-xs shrink-0">Threat: <span class="font-bold tabular-nums">{{ c.risk_score }}</span></p>
+      {% if let Some(risk) = c.risk_pct %}
+      <p class="text-xs shrink-0">Threat: <span class="font-bold tabular-nums">{{ risk }}</span></p>
+      {% else %}
+      <p class="text-xs shrink-0 text-rams-muted">Threat: not measured</p>
       {% endif %}
     </div>
     {% if let Some(change) = c.recent_change %}
     <p class="mt-2 text-[10px] text-rams-muted">{{ change }}</p>
     {% endif %}
+    <p class="mt-2 text-[10px] text-rams-muted tabular-nums">
+      {{ c.warning_count }} warning{% if c.warning_count != 1 %}s{% endif %} ·
+      {{ c.insight_count }} insight{% if c.insight_count != 1 %}s{% endif %}{% if let Some(date) = c.change_date %} · last change {{ date }}{% endif %}
+    </p>
   </a>
   {% endfor %}
   </div>

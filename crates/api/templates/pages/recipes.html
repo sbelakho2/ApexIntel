@@ -48,18 +48,17 @@
   </div>
 </div>
 
-{# ── Precision / Recall / FPR Trend (30d) ── #}
+{# ── Precision / FPR Trend (12 mo, measured) ── #}
 <div class="apex-card p-4 mb-6">
   <div class="mb-3 flex items-center justify-between">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Precision / Recall / FPR Trend (30d)</h2>
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Precision / FPR Trend (12 mo, measured)</h2>
     <div class="flex flex-wrap items-center gap-2">
       <span class="mobile-toolbar-control rounded-sm border border-rams-foreground bg-rams-foreground text-rams-chassis px-2 py-1 text-[9px] font-black uppercase">Precision</span>
-      <span class="mobile-toolbar-control rounded-sm border border-rams-foreground bg-rams-foreground text-rams-chassis px-2 py-1 text-[9px] font-black uppercase">Recall</span>
       <span class="mobile-toolbar-control rounded-sm border border-rams-foreground bg-rams-foreground text-rams-chassis px-2 py-1 text-[9px] font-black uppercase">FPR</span>
     </div>
   </div>
   <div class="apex-chart-frame">
-    {% call m::recipe_line_chart(recipe_chart_w, precision_points, recall_points, fpr_points, recipe_perf_trend) %}
+    {% call m::recipe_line_chart(recipe_chart_w, precision_points, fpr_points, precision_circles, fpr_circles, recipe_perf_trend) %}
   </div>
   <details class="mt-3">
     <summary class="text-[10px] font-bold uppercase cursor-pointer text-rams-muted hover:text-rams-foreground select-none">Chart data table</summary>
@@ -68,16 +67,14 @@
         <thead><tr class="border-b border-rams-line">
           <th class="py-1 pr-3 text-left font-bold uppercase text-rams-muted">Month</th>
           <th class="py-1 pr-3 text-right font-bold uppercase metric-text-red">Precision %</th>
-          <th class="py-1 pr-3 text-right font-bold uppercase metric-text-steel">Recall %</th>
           <th class="py-1 text-right font-bold uppercase metric-text-orange">FPR %</th>
         </tr></thead>
         <tbody class="divide-y divide-rams-line">
           {% for row in recipe_perf_trend %}
           <tr>
             <td class="py-1 pr-3 text-rams-muted">{{ row.month }}</td>
-            <td class="py-1 pr-3 text-right tabular-nums font-bold">{{ row.precision_pct }}%</td>
-            <td class="py-1 pr-3 text-right tabular-nums font-bold">{{ row.recall_pct }}%</td>
-            <td class="py-1 text-right tabular-nums font-bold">{{ row.fpr_pct }}%</td>
+            <td class="py-1 pr-3 text-right tabular-nums font-bold">{{ row.precision_display }}</td>
+            <td class="py-1 text-right tabular-nums font-bold">{{ row.fpr_display }}</td>
           </tr>
           {% endfor %}
         </tbody>

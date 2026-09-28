@@ -472,6 +472,53 @@ impl PgStore {
         .await?;
         Ok(())
     }
+
+    /// One month of historical recipe performance aggregated from the real
+    /// persisted weekly snapshots (`recipe_weekly_metrics`).
+    ///
+    /// Only *measured* values are present. `precision_pct` is `None` for a
+    /// month with no generated warnings (the weekly recorder stores a fallback
+    /// for that case) and `fpr_pct` is `None` for a month with no reviewed
+    /// warnings — an unmeasured rate is never reported as zero.
+    pub async fn list_recipe_monthly_performance(
+        &self,
+        months: i32,
+    ) -> Result<Vec<RecipeMonthlyPerformance>> {
+        let rows = sqlx::query_as::<_, RecipeMonthlyPerformance>(
+            r#"
+            SELECT
+                DATE_TRUNC('month', week_start)::DATE AS month_start,
+                (AVG(precision_score) FILTER (WHERE warnings_generated > 0) * 100.0)
+                    AS precision_pct,
+                (AVG(false_positive_rate) FILTER (WHERE reviewed_warnings > 0) * 100.0)
+                    AS fpr_pct,
+                COALESCE(SUM(warnings_generated), 0)::BIGINT AS warnings_generated,
+                COALESCE(SUM(reviewed_warnings), 0)::BIGINT AS reviewed_warnings
+            FROM recipe_weekly_metrics
+            WHERE week_start >= (DATE_TRUNC('month', now()) - make_interval(months => $1))::DATE
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+        )
+        .bind(months)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// One aggregated month of real recipe performance history.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct RecipeMonthlyPerformance {
+    pub month_start: NaiveDate,
+    /// Mean measured precision over the month's weekly snapshots, `None` when
+    /// no warnings were generated (nothing was measured).
+    pub precision_pct: Option<f64>,
+    /// Mean measured false-positive rate, `None` when no warnings were
+    /// reviewed that month.
+    pub fpr_pct: Option<f64>,
+    pub warnings_generated: i64,
+    pub reviewed_warnings: i64,
 }
 
 #[cfg(test)]

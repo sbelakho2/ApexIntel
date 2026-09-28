@@ -30,10 +30,16 @@ pub struct CompetitorCard {
     pub name: String,
     pub sector: String,
     pub region: String,
-    pub risk_score: i64,
-    pub overlap_pct: i64,
+    /// Measured threat (0..=100); `None` when no risk model has produced a
+    /// score. Never rendered or averaged as zero.
+    pub risk_pct: Option<i64>,
+    /// Measured tracked-entity overlap (0..=100); `None` when not measured.
+    pub overlap_pct: Option<i64>,
+    /// Real warning count for this competitor (batched query).
     pub warning_count: i64,
+    /// Real insight count for this competitor (batched query).
     pub insight_count: i64,
+    /// Latest recorded change summary and its date, when one exists.
     pub recent_change: Option<String>,
     pub change_date: Option<String>,
     pub strategic_context: String,
@@ -99,9 +105,13 @@ pub struct CompetitorsPage {
     pub competitors: Vec<CompetitorCard>,
     pub total: i64,
     pub recent_changes: Vec<CompetitorChange>,
-    pub avg_threat: i64,
+    /// Mean measured threat over competitors that have a score; `None` when
+    /// nothing has been measured.
+    pub avg_threat: Option<i64>,
+    /// Count of competitors with a measured threat >= 70.
     pub high_threat_count: i64,
-    pub avg_overlap_pct: i64,
+    /// Mean measured overlap; `None` when nothing has been measured.
+    pub avg_overlap_pct: Option<i64>,
     pub chart_width: i64,
     pub active_threat: String,
     pub active_overlap: String,
@@ -120,9 +130,13 @@ pub struct CompetitorsListPartial {
     pub competitors: Vec<CompetitorCard>,
     pub total: i64,
     pub recent_changes: Vec<CompetitorChange>,
-    pub avg_threat: i64,
+    /// Mean measured threat over competitors that have a score; `None` when
+    /// nothing has been measured.
+    pub avg_threat: Option<i64>,
+    /// Count of competitors with a measured threat >= 70.
     pub high_threat_count: i64,
-    pub avg_overlap_pct: i64,
+    /// Mean measured overlap; `None` when nothing has been measured.
+    pub avg_overlap_pct: Option<i64>,
     pub chart_width: i64,
     pub active_threat: String,
     pub active_overlap: String,
@@ -221,43 +235,71 @@ pub async fn list_competitors(
         .count();
     let reset_href = "/competitors".to_string();
 
+    // Real engagement signals for every competitor on the page, in one
+    // batched call: warning counts, insight counts, latest change.
+    let competitor_ids: Vec<uuid::Uuid> = competitor_rows.iter().map(|c| c.id).collect();
+    let engagement_state = DataState::from_result(
+        store.get_competitor_engagement(&competitor_ids).await,
+        "get_competitor_engagement failed (web competitors page)",
+        |engagement| {
+            engagement.warning_counts.is_empty()
+                && engagement.insight_counts.is_empty()
+                && engagement.latest_changes.is_empty()
+        },
+    );
+    DegradedNotice::capture(&engagement_state, &mut degraded_notice);
+    let engagement =
+        engagement_state.into_loaded_or(apex_store::postgres::CompetitorEngagement::default());
+
     let mut competitors: Vec<CompetitorCard> = competitor_rows
         .iter()
         .enumerate()
         .map(|(i, c)| {
+            // Unknown stays unknown: `None` is not rendered or charted as 0.
             let risk = c
                 .risk_score
-                .map(|s| (s * 100.0) as i64)
-                .unwrap_or(0)
-                .clamp(0, 100);
+                .map(|s| ((s * 100.0).round() as i64).clamp(0, 100));
             let overlap = c
                 .overlap_score
-                .map(|s| (s * 100.0) as i64)
-                .unwrap_or(0)
-                .clamp(0, 100);
+                .map(|s| ((s * 100.0).round() as i64).clamp(0, 100));
             let group_x = i as i64 * group_w;
-            let threat_h = risk * chart_area_h / 100;
-            let overlap_h = overlap * chart_area_h / 100;
+            let threat_h = risk.map_or(0, |r| r * chart_area_h / 100);
+            let overlap_h = overlap.map_or(0, |o| o * chart_area_h / 100);
+            let strategic_context = match (risk, overlap) {
+                (Some(r), Some(o)) if r >= 70 => {
+                    "High-threat competitor requiring close monitoring".to_string()
+                }
+                (Some(r), _) if r >= 40 => {
+                    "Moderate competitor presence in tracked sectors".to_string()
+                }
+                (Some(_), Some(o)) if o >= 30 => {
+                    "Limited measured threat; notable tracked overlap".to_string()
+                }
+                (Some(_), Some(_)) => {
+                    "Low measured threat with limited tracked overlap".to_string()
+                }
+                (Some(_), None) => "Measured threat; tracked overlap not measured".to_string(),
+                (None, Some(_)) => "Threat not measured; measured tracked overlap".to_string(),
+                (None, None) => "Insufficient data to assess threat or overlap".to_string(),
+            };
+            let latest_change = engagement
+                .latest_changes
+                .get(&c.id)
+                .map(|change| (change.description.clone(), change.detected_at.clone()));
             CompetitorCard {
                 id: c.id.to_string(),
                 name: c.name.clone(),
                 sector: c.company_type.clone().unwrap_or_default(),
                 region: c.region.clone().unwrap_or_default(),
-                risk_score: risk,
+                risk_pct: risk,
                 overlap_pct: overlap,
-                warning_count: 0,
-                insight_count: 0,
-                recent_change: None,
-                change_date: None,
-                strategic_context: {
-                    if risk >= 70 {
-                        "High-threat competitor requiring close monitoring".into()
-                    } else if risk >= 40 {
-                        "Moderate competitor presence in tracked sectors".into()
-                    } else {
-                        "Low-priority entity with limited overlap".into()
-                    }
-                },
+                warning_count: engagement.warning_counts.get(&c.id).copied().unwrap_or(0),
+                insight_count: engagement.insight_counts.get(&c.id).copied().unwrap_or(0),
+                recent_change: latest_change
+                    .as_ref()
+                    .map(|(description, _)| description.clone()),
+                change_date: latest_change.map(|(_, detected_at)| detected_at),
+                strategic_context,
                 chart_group_x: group_x,
                 chart_threat_y: chart_area_h - threat_h,
                 chart_threat_h: threat_h,
@@ -269,41 +311,50 @@ pub async fn list_competitors(
         .collect();
 
     if !active_threat.is_empty() {
+        // Competitors without a measured threat are not in any tier: an
+        // unknown score is not a "low" score.
         competitors.retain(|c| {
-            let tier = if c.risk_score >= 70 {
-                "high"
-            } else if c.risk_score >= 40 {
-                "medium"
-            } else {
-                "low"
-            };
-            tier == active_threat
+            c.risk_pct.is_some_and(|risk| {
+                let tier = if risk >= 70 {
+                    "high"
+                } else if risk >= 40 {
+                    "medium"
+                } else {
+                    "low"
+                };
+                tier == active_threat
+            })
         });
     }
 
     if !active_overlap.is_empty() {
         competitors.retain(|c| {
-            let bucket = if c.overlap_pct >= 50 {
-                "50%+"
-            } else if c.overlap_pct >= 30 {
-                "30-50%"
-            } else {
-                "<30%"
-            };
-            bucket == active_overlap
+            c.overlap_pct.is_some_and(|overlap| {
+                let bucket = if overlap >= 50 {
+                    "50%+"
+                } else if overlap >= 30 {
+                    "30-50%"
+                } else {
+                    "<30%"
+                };
+                bucket == active_overlap
+            })
         });
     }
 
-    let avg_threat = if competitors.is_empty() {
-        0
+    // Aggregates cover measured values only; nothing measured means "—".
+    let measured_threats: Vec<i64> = competitors.iter().filter_map(|c| c.risk_pct).collect();
+    let avg_threat = if measured_threats.is_empty() {
+        None
     } else {
-        competitors.iter().map(|c| c.risk_score).sum::<i64>() / competitors.len() as i64
+        Some(measured_threats.iter().sum::<i64>() / measured_threats.len() as i64)
     };
-    let high_threat_count = competitors.iter().filter(|c| c.risk_score >= 70).count() as i64;
-    let avg_overlap_pct = if competitors.is_empty() {
-        0
+    let high_threat_count = measured_threats.iter().filter(|risk| **risk >= 70).count() as i64;
+    let measured_overlaps: Vec<i64> = competitors.iter().filter_map(|c| c.overlap_pct).collect();
+    let avg_overlap_pct = if measured_overlaps.is_empty() {
+        None
     } else {
-        competitors.iter().map(|c| c.overlap_pct).sum::<i64>() / competitors.len() as i64
+        Some(measured_overlaps.iter().sum::<i64>() / measured_overlaps.len() as i64)
     };
 
     // Fetch recent competitor changes
@@ -375,18 +426,19 @@ pub async fn list_competitors(
 mod tests {
     use super::*;
 
-    /// Fix 1: Overlap must NOT be a synthetic function of risk_score.
-    /// Previously `overlap = (risk * 0.65).round()` — fabricated metric.
+    /// Unknown stays unknown: a competitor with no measured risk/overlap must
+    /// not be rendered, averaged or filtered as if it scored zero. The old
+    /// test asserted `unknown overlap == 0`, which is the exact semantics the
+    /// audit rejected.
     #[test]
-    fn overlap_is_not_derived_from_risk_score() {
-        // A card with risk 80 must NOT have overlap == (80*0.65).round() == 52
+    fn unknown_scores_are_not_zero() {
         let card = CompetitorCard {
             id: "test".into(),
             name: "Acme".into(),
             sector: "EMS".into(),
             region: "EU".into(),
-            risk_score: 80,
-            overlap_pct: 0, // should be 0 (unknown), NOT 52
+            risk_pct: None,
+            overlap_pct: None,
             warning_count: 0,
             insight_count: 0,
             recent_change: None,
@@ -399,8 +451,23 @@ mod tests {
             chart_overlap_h: 0,
             chart_label_x: 0,
         };
-        // The old fabricated value would have been 52
-        assert_ne!(card.overlap_pct, (80_f64 * 0.65).round() as i64);
-        assert_eq!(card.overlap_pct, 0, "unknown overlap should be 0");
+        assert_ne!(card.risk_pct, Some(0), "unknown threat is not zero threat");
+        assert_ne!(
+            card.overlap_pct,
+            Some(0),
+            "unknown overlap is not zero overlap"
+        );
+        // The old fabricated value would have been (80 * 0.65).round() == 52.
+        assert_ne!(card.overlap_pct, Some(52));
+    }
+
+    /// Measured values survive rounding and the aggregate helpers skip
+    /// unmeasured cards instead of counting them as zero.
+    #[test]
+    fn measured_values_are_preserved_and_unmeasured_are_skipped() {
+        let measured = vec![Some(80_i64), None, Some(40)];
+        let values: Vec<i64> = measured.iter().filter_map(|value| *value).collect();
+        assert_eq!(values.len(), 2, "unmeasured entries are skipped");
+        assert_eq!(values.iter().sum::<i64>() / values.len() as i64, 60);
     }
 }

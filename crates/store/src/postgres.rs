@@ -250,6 +250,7 @@ pub use notification_delivery::{
 };
 mod company_assets;
 mod competitors;
+pub use competitors::CompetitorEngagement;
 pub mod embeddings;
 mod graph;
 mod heartbeats;
@@ -276,6 +277,7 @@ mod persons;
 mod preferences;
 mod readiness;
 pub use readiness::{AlertEngineStateRecord, AlertEngineStateRow};
+pub use recipes::RecipeMonthlyPerformance;
 mod recipes;
 mod sales;
 mod security;

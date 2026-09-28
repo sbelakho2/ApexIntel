@@ -31,9 +31,21 @@ pub struct RecipesQuery {
 #[derive(Clone, Debug)]
 pub struct RecipePerfRow {
     pub month: String,
-    pub precision_pct: i64,
-    pub recall_pct: i64,
-    pub fpr_pct: i64,
+    /// Formatted measured precision ("72%") or "not measured" — an
+    /// unmeasured month is never rendered as 0%.
+    pub precision_display: String,
+    /// Formatted measured false-positive rate or "not measured".
+    pub fpr_display: String,
+    pub reviewed_warnings: i64,
+}
+
+/// One plotted point with its tooltip, so the template never has to compute
+/// arithmetic over a missing measurement.
+#[derive(Clone, Debug)]
+pub struct RecipePerfPoint {
+    pub x: i64,
+    pub y: i64,
+    pub title: String,
 }
 
 #[derive(Clone, Debug)]
@@ -88,8 +100,9 @@ pub struct RecipesListPage {
     pub avg_precision: i64,
     pub avg_recall: i64,
     pub precision_points: String,
-    pub recall_points: String,
     pub fpr_points: String,
+    pub precision_circles: Vec<RecipePerfPoint>,
+    pub fpr_circles: Vec<RecipePerfPoint>,
     pub recipe_chart_w: i64,
     pub recipe_perf_trend: Vec<RecipePerfRow>,
     pub degraded_notice: Option<String>,
@@ -115,8 +128,9 @@ pub struct RecipesListPartial {
     pub avg_precision: i64,
     pub avg_recall: i64,
     pub precision_points: String,
-    pub recall_points: String,
     pub fpr_points: String,
+    pub precision_circles: Vec<RecipePerfPoint>,
+    pub fpr_circles: Vec<RecipePerfPoint>,
     pub recipe_chart_w: i64,
     pub recipe_perf_trend: Vec<RecipePerfRow>,
     pub degraded_notice: Option<String>,
@@ -240,50 +254,90 @@ pub async fn list_recipes(
     let avg_precision = quality_summary.avg_precision_pct;
     let avg_recall = quality_summary.coverage_pct;
 
-    // Build 12-month performance trend (static seeded data)
-    let months = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let recipe_perf_trend: Vec<RecipePerfRow> = months
+    // Real 12-month history: monthly aggregates over the persisted weekly
+    // `recipe_weekly_metrics` snapshots. A month with no measurement is not
+    // plotted; when nothing has been measured the chart renders an explicit
+    // "no measurements yet" state instead of a synthesized trend.
+    let monthly_state = DataState::from_result(
+        store.list_recipe_monthly_performance(12).await,
+        "list_recipe_monthly_performance failed (web recipes list)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&monthly_state, &mut degraded_notice);
+    let monthly_performance = monthly_state.into_items();
+
+    let measured_months: Vec<_> = monthly_performance
         .iter()
-        .enumerate()
-        .map(|(i, &mo)| {
-            let s = (i + 1) as f64;
-            let prec = (avg_precision as f64 * (1.0 + (s * 0.5).sin() * 0.08))
-                .clamp(0.0, 100.0)
-                .round() as i64;
-            let rec = (avg_recall as f64 * (1.0 + (s * 0.7).cos() * 0.07))
-                .clamp(0.0, 100.0)
-                .round() as i64;
-            let fpr = ((10.0 + (s * 0.9).sin() * 4.0).abs()).round() as i64;
-            RecipePerfRow {
-                month: mo.into(),
-                precision_pct: prec,
-                recall_pct: rec,
-                fpr_pct: fpr,
-            }
+        .filter(|month| month.precision_pct.is_some() || month.fpr_pct.is_some())
+        .collect();
+    let recipe_perf_trend: Vec<RecipePerfRow> = measured_months
+        .iter()
+        .map(|month| RecipePerfRow {
+            month: month.month_start.format("%b %Y").to_string(),
+            precision_display: month
+                .precision_pct
+                .map(|value| format!("{}%", value.round() as i64))
+                .unwrap_or_else(|| "not measured".to_string()),
+            fpr_display: month
+                .fpr_pct
+                .map(|value| format!("{}%", value.round() as i64))
+                .unwrap_or_else(|| "not measured".to_string()),
+            reviewed_warnings: month.reviewed_warnings,
         })
         .collect();
 
     let recipe_chart_w = (recipe_perf_trend.len() as i64 * 22).max(22);
-    let precision_points: String = recipe_perf_trend
+    let precision_points: String = measured_months
         .iter()
         .enumerate()
-        .map(|(i, r)| format!("{},{}", i as i64 * 22, 100 - r.precision_pct))
+        .filter_map(|(i, month)| {
+            month
+                .precision_pct
+                .map(|value| format!("{},{}", i as i64 * 22, 100 - value.round() as i64))
+        })
         .collect::<Vec<_>>()
         .join(" ");
-    let recall_points: String = recipe_perf_trend
+    let fpr_points: String = measured_months
         .iter()
         .enumerate()
-        .map(|(i, r)| format!("{},{}", i as i64 * 22, 100 - r.recall_pct))
+        .filter_map(|(i, month)| {
+            month
+                .fpr_pct
+                .map(|value| format!("{},{}", i as i64 * 22, 100 - value.round() as i64))
+        })
         .collect::<Vec<_>>()
         .join(" ");
-    let fpr_points: String = recipe_perf_trend
+    let precision_circles: Vec<RecipePerfPoint> = measured_months
         .iter()
         .enumerate()
-        .map(|(i, r)| format!("{},{}", i as i64 * 22, 100 - r.fpr_pct))
-        .collect::<Vec<_>>()
-        .join(" ");
+        .filter_map(|(i, month)| {
+            month.precision_pct.map(|value| RecipePerfPoint {
+                x: i as i64 * 22,
+                y: 100 - value.round() as i64,
+                title: format!(
+                    "{} precision {}% ({} reviewed)",
+                    month.month_start.format("%b %Y"),
+                    value.round() as i64,
+                    month.reviewed_warnings
+                ),
+            })
+        })
+        .collect();
+    let fpr_circles: Vec<RecipePerfPoint> = measured_months
+        .iter()
+        .enumerate()
+        .filter_map(|(i, month)| {
+            month.fpr_pct.map(|value| RecipePerfPoint {
+                x: i as i64 * 22,
+                y: 100 - value.round() as i64,
+                title: format!(
+                    "{} false positive rate {}%",
+                    month.month_start.format("%b %Y"),
+                    value.round() as i64
+                ),
+            })
+        })
+        .collect();
 
     let total_pages = if per_page > 0 {
         (total + per_page - 1) / per_page
@@ -314,8 +368,9 @@ pub async fn list_recipes(
         avg_precision,
         avg_recall,
         precision_points,
-        recall_points,
         fpr_points,
+        precision_circles,
+        fpr_circles,
         recipe_chart_w,
         recipe_perf_trend,
         degraded_notice: degraded_notice.clone(),
@@ -339,8 +394,9 @@ pub async fn list_recipes(
             avg_precision: tpl.avg_precision,
             avg_recall: tpl.avg_recall,
             precision_points: tpl.precision_points.clone(),
-            recall_points: tpl.recall_points.clone(),
             fpr_points: tpl.fpr_points.clone(),
+            precision_circles: tpl.precision_circles.clone(),
+            fpr_circles: tpl.fpr_circles.clone(),
             recipe_chart_w: tpl.recipe_chart_w,
             recipe_perf_trend: tpl.recipe_perf_trend.clone(),
             degraded_notice: tpl.degraded_notice.clone(),

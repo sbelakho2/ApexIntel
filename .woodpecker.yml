@@ -108,6 +108,14 @@ steps:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_docs_contract.sh
 
+  # Backstop against fabricated analytics in production handlers/templates
+  # (seeded arrays, demo values, trigonometric "trends").
+  - name: fabricated-metrics-guard
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache bash grep
+      - bash scripts/ci/check_fabricated_metrics.sh
+
   # False-success + identifier-decode guards.
   # The suppression rule is semantic and asymmetric: an authoritative store
   # call that discards or defaults its error fails with "authoritative
