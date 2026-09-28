@@ -47,6 +47,12 @@
 when:
   - event: [push, pull_request, tag, manual]
 
+# Pin every workflow to the container-capable arm64 agent. Without this the
+# scheduler may hand the run to the host-mode `local` agent, which cannot run
+# the postgres/redis service containers, producing a false "database: failure".
+labels:
+  platform: linux/arm64
+
 # PostgreSQL used to validate migrations bootstrap a fresh database and by the
 # UI e2e run. Must provide `vector`, `pg_trgm`, `btree_gist`, `uuid-ossp`.
 services:
