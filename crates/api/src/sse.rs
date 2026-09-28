@@ -453,7 +453,7 @@ impl SseManager {
                                     match jetstream
                                         .publish(
                                             "alerts.dead_letter.malformed",
-                                            payload.clone().into(),
+                                            payload.clone(),
                                         )
                                         .await
                                     {
