@@ -338,7 +338,7 @@ mod tests {
             session_version: 1,
             principal_id: Uuid::new_v4(),
             issued_at: 0,
-            expires_at: None,
+            expires_at: i64::MAX,
         };
 
         let response = get_battlecard(

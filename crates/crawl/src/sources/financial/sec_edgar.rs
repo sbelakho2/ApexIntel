@@ -10,11 +10,16 @@
 //! Uses the EDGAR full-text search API and CIK lookup.
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+use crate::acquisition::{
+    http_failure, retry_after_secs, AcquisitionOutcome, AdapterPrerequisite, SourceAdapter,
+};
 
 /// A filing discovered via EDGAR.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +146,10 @@ impl EdgarMonitor {
     }
 
     /// Search filings for a ticker.
-    pub async fn search_filings(&self, ticker: &str) -> Result<Vec<EdgarFiling>> {
+    ///
+    /// Network, rate-limit, HTTP and parse failures are explicit
+    /// [`AcquisitionOutcome`] variants — never an empty success.
+    pub async fn search_filings(&self, ticker: &str) -> AcquisitionOutcome<EdgarFiling> {
         let filter = self
             .config
             .filing_types
@@ -163,23 +171,35 @@ impl EdgarMonitor {
             if filter.is_empty() { String::new() } else { format!("&forms={}", filter) }
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("EDGAR search request")?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("EDGAR search request failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
+            let retry_after = retry_after_secs(resp.headers());
             debug!(status = %resp.status(), ticker = %ticker, "EDGAR returned non-success");
-            return Ok(Vec::new());
+            return http_failure(resp.status().as_u16(), retry_after, "EDGAR search");
         }
 
-        let text = resp.text().await.context("read EDGAR response")?;
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("EDGAR response read failed: {error}"),
+                    None,
+                );
+            }
+        };
         self.parse_filings(&text, ticker)
     }
 
-    fn parse_filings(&self, json: &str, ticker: &str) -> Result<Vec<EdgarFiling>> {
+    fn parse_filings(&self, json: &str, ticker: &str) -> AcquisitionOutcome<EdgarFiling> {
         #[derive(Deserialize)]
         #[allow(dead_code)]
         struct EdgarSearchResponse {
@@ -217,13 +237,22 @@ impl EdgarMonitor {
             description: Option<String>,
         }
 
-        let search_resp: EdgarSearchResponse =
-            serde_json::from_str(json).context("parse EDGAR JSON response")?;
+        let search_resp: EdgarSearchResponse = match serde_json::from_str(json) {
+            Ok(response) => response,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse EDGAR JSON response: {error}"),
+                    json,
+                );
+            }
+        };
 
         let hits = search_resp.hits;
         let items = match hits {
             Some(h) => h.items.unwrap_or_default(),
-            None => return Ok(Vec::new()),
+            // A response with no `hits` block carries no findings: a genuine
+            // successful zero-findings run, not a failure.
+            None => return AcquisitionOutcome::success_now(Vec::new()),
         };
 
         let now = Utc::now();
@@ -258,7 +287,7 @@ impl EdgarMonitor {
         }).collect();
 
         debug!(ticker = %ticker, count = filings.len(), "EDGAR filings parsed");
-        Ok(filings)
+        AcquisitionOutcome::success_now(filings)
     }
 
     /// Monitor all configured tickers.
@@ -266,8 +295,13 @@ impl EdgarMonitor {
         let mut all_filings = Vec::new();
         for ticker in &self.config.tickers {
             match self.search_filings(ticker).await {
-                Ok(filings) => all_filings.extend(filings),
-                Err(e) => warn!(ticker = %ticker, error = %e, "EDGAR ticker scan failed"),
+                AcquisitionOutcome::Success { items, .. } => all_filings.extend(items),
+                other => warn!(
+                    ticker = %ticker,
+                    outcome = other.as_label(),
+                    message = ?other.failure_message(),
+                    "EDGAR ticker scan did not succeed"
+                ),
             }
         }
         all_filings.sort_by_key(|f| std::cmp::Reverse(f.filing_date));
@@ -289,9 +323,41 @@ impl EdgarMonitor {
     }
 }
 
+/// Request for one EDGAR filing search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgarRequest {
+    pub ticker: String,
+}
+
+#[async_trait]
+impl SourceAdapter for EdgarMonitor {
+    type Item = EdgarFiling;
+    type Request = EdgarRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "sec_edgar"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, request: EdgarRequest) -> AcquisitionOutcome<EdgarFiling> {
+        self.search_filings(&request.ticker).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edgar_monitor_declares_its_prerequisite() {
+        let monitor = EdgarMonitor::new(Default::default()).expect("EDGAR monitor");
+        assert_eq!(monitor.adapter_id(), "sec_edgar");
+        assert!(!monitor.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
+    }
 
     #[test]
     fn edgar_filing_type_filter() {

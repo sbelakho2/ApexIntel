@@ -7,12 +7,14 @@
 //!
 //! The fetcher searches `api.openalex.org/works`, reconstructs the inverted
 //! abstract index that OpenAlex uses for storage, and projects each work onto
-//! a strongly-typed [`OpenAlexWork`].  Network errors degrade gracefully to an
-//! empty result with a `tracing::warn!`.
+//! a strongly-typed [`OpenAlexWork`]. Network, rate-limit, HTTP and parse
+//! failures are explicit
+//! [`AcquisitionOutcome`](crate::acquisition::AcquisitionOutcome) variants — an
+//! empty result is only ever a genuine successful zero-findings run.
 
 use std::time::Duration;
 
-use anyhow::Result;
+use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,9 @@ use serde_json::json;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::acquisition::{
+    http_failure, retry_after_secs, AcquisitionOutcome, AdapterPrerequisite, SourceAdapter,
+};
 use apex_core::entities::{Observation, ObservationType};
 
 /// OpenAlex API root.
@@ -92,8 +97,13 @@ impl OpenAlexClient {
     /// Search OpenAlex works and return at most `limit` results.
     ///
     /// `limit` is clamped to a maximum of 200 (the OpenAlex per-page cap).
-    /// Any network or parse error is logged and yields an empty vec.
-    pub async fn search_works(&self, query: &str, limit: usize) -> Result<Vec<OpenAlexWork>> {
+    /// Network, rate-limit, HTTP and parse failures are explicit
+    /// [`AcquisitionOutcome`] variants — never an empty success.
+    pub async fn search_works(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> AcquisitionOutcome<OpenAlexWork> {
         let per_page = limit.clamp(1, 200);
 
         // Filter to only recent publications (last 90 days) so the system
@@ -113,25 +123,28 @@ impl OpenAlexClient {
             Ok(resp) => resp,
             Err(error) => {
                 warn!(query = %query, error = %error, "openalex: network error");
-                return Ok(Vec::new());
+                return AcquisitionOutcome::fetch_failed(
+                    format!("openalex: network error: {error}"),
+                    None,
+                );
             }
         };
 
         let status = response.status();
-        if status.as_u16() == 429 {
-            warn!(query = %query, "openalex: rate limited (429); skipping");
-            return Ok(Vec::new());
-        }
         if !status.is_success() {
-            warn!(query = %query, status = status.as_u16(), "openalex: non-success status");
-            return Ok(Vec::new());
+            let retry_after = retry_after_secs(response.headers());
+            warn!(query = %query, status = status.as_u16(), "openalex: acquisition failed");
+            return http_failure(status.as_u16(), retry_after, "openalex");
         }
 
         let body: serde_json::Value = match response.json().await {
             Ok(value) => value,
             Err(error) => {
                 warn!(query = %query, error = %error, "openalex: failed to parse JSON");
-                return Ok(Vec::new());
+                return AcquisitionOutcome::parse_failed(
+                    format!("openalex: failed to parse JSON: {error}"),
+                    "",
+                );
             }
         };
 
@@ -143,7 +156,7 @@ impl OpenAlexClient {
 
         let works: Vec<OpenAlexWork> = results.iter().map(Self::parse_work).take(limit).collect();
 
-        Ok(works)
+        AcquisitionOutcome::success_now(works)
     }
 
     /// Project a single raw OpenAlex work object onto [`OpenAlexWork`].
@@ -244,6 +257,31 @@ impl Default for OpenAlexClient {
     }
 }
 
+/// Request for one OpenAlex works search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAlexRequest {
+    pub query: String,
+    pub limit: usize,
+}
+
+#[async_trait]
+impl SourceAdapter for OpenAlexClient {
+    type Item = OpenAlexWork;
+    type Request = OpenAlexRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "openalex"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, request: OpenAlexRequest) -> AcquisitionOutcome<OpenAlexWork> {
+        self.search_works(&request.query, request.limit).await
+    }
+}
+
 /// Reconstruct an abstract from an OpenAlex inverted index.
 ///
 /// The inverted index maps each word to the list of positions it occupies in
@@ -325,6 +363,14 @@ mod tests {
         }
       ]
     }"#;
+
+    #[test]
+    fn openalex_adapter_declares_its_prerequisite() {
+        let client = OpenAlexClient::new();
+        assert_eq!(client.adapter_id(), "openalex");
+        assert!(!client.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(client.adapter_id()).is_some());
+    }
 
     #[test]
     fn parses_sample_openalex_work() {

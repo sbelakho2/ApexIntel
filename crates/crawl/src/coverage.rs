@@ -25,6 +25,7 @@ use std::collections::{BTreeSet, HashMap};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::acquisition::AcquisitionDisposition;
 use crate::sources_registry::{
     effective_capability, source_is_validated, Category, DeploymentCapabilities, Source,
     SourceCapability,
@@ -453,6 +454,15 @@ pub struct FamilyCoverage {
     /// Mean rolling fetch-success rate (percent) over attempted sources.
     pub fetch_success_pct: Option<u8>,
     pub latest_success_at: Option<DateTime<Utc>>,
+    /// Sources whose most recent persisted outcome was a rate limit (429).
+    /// They are never counted as operational successes.
+    pub rate_limited: usize,
+    /// Sources blocked because their adapter requires credentials this
+    /// deployment does not have.
+    pub authentication_blocked: usize,
+    /// Sources the deployment cannot execute at all (missing capability,
+    /// missing proxy, adapter unavailable).
+    pub unavailable: usize,
 }
 
 /// Deployment-level priority-company coverage, computed from the database.
@@ -484,6 +494,12 @@ pub struct CoverageFamilyEvaluation {
     pub min_fetch_success_pct: u8,
     pub parser_success_pct: Option<u8>,
     pub min_parser_success_pct: u8,
+    /// Sources whose last persisted outcome was a rate limit.
+    pub rate_limited: usize,
+    /// Sources blocked on adapter credentials.
+    pub authentication_blocked: usize,
+    /// Sources the deployment cannot execute.
+    pub unavailable: usize,
 }
 
 /// Full coverage evaluation published in the `source_coverage` capability.
@@ -538,6 +554,34 @@ fn pct(numerator: usize, denominator: usize) -> u8 {
     ((numerator as f64 * 100.0 / denominator as f64).round()).clamp(0.0, 100.0) as u8
 }
 
+/// Classify a persisted runtime state by its most recent outcome.
+///
+/// The store records failure kinds as `last_error` prefixes
+/// (`rate_limited:`, `authentication_required:`, `unavailable:`,
+/// `parser_failure:`), so the coverage/readiness matrix can distinguish a 429
+/// or an authentication gap from a transport failure without re-fetching.
+pub fn persisted_outcome_disposition(row: &SourceRuntimeStateRow) -> AcquisitionDisposition {
+    let error = row.last_error.as_deref().unwrap_or("");
+    if error.starts_with("rate_limited") {
+        return AcquisitionDisposition::RateLimited;
+    }
+    if error.starts_with("authentication_required") {
+        return AcquisitionDisposition::AuthenticationBlocked;
+    }
+    if error.starts_with("unavailable") {
+        return AcquisitionDisposition::Unavailable;
+    }
+    if error.starts_with("parser_failure") {
+        return AcquisitionDisposition::Degraded;
+    }
+    match (row.last_success_at, row.last_attempt_at) {
+        (Some(success), Some(attempt)) if success >= attempt => AcquisitionDisposition::Operational,
+        (Some(_), None) => AcquisitionDisposition::Operational,
+        (_, Some(_)) => AcquisitionDisposition::Degraded,
+        _ => AcquisitionDisposition::NotApplicable,
+    }
+}
+
 /// Per-family coverage snapshot for the given registry + runtime state.
 pub fn family_coverage(
     sources: &[Source],
@@ -570,6 +614,17 @@ pub fn family_coverage(
         }
         let runtime = state_by_slug.get(source.slug.as_str()).copied();
         let (validated, operational) = classify_source(source, runtime, deployment_caps, now);
+        let effective = effective_capability(source, runtime, deployment_caps);
+        let disposition = runtime
+            .map(persisted_outcome_disposition)
+            .unwrap_or(AcquisitionDisposition::NotApplicable);
+        let authentication_blocked = effective == SourceCapability::UnavailableMissingCredentials
+            || disposition == AcquisitionDisposition::AuthenticationBlocked;
+        let unavailable = matches!(
+            effective,
+            SourceCapability::UnavailableMissingCapability
+                | SourceCapability::UnavailableMissingProxy
+        ) || disposition == AcquisitionDisposition::Unavailable;
         for family in families {
             let Some(entry) = by_family.get_mut(&family) else {
                 continue;
@@ -579,11 +634,23 @@ pub fn family_coverage(
                 continue;
             }
             entry.registered += 1;
+            if authentication_blocked {
+                entry.authentication_blocked += 1;
+            }
+            if unavailable {
+                entry.unavailable += 1;
+            }
+            if disposition == AcquisitionDisposition::RateLimited {
+                entry.rate_limited += 1;
+            }
             if operational {
                 entry.operational += 1;
             } else if validated {
                 entry.temporarily_degraded += 1;
-            } else {
+            } else if !(authentication_blocked
+                || unavailable
+                || disposition == AcquisitionDisposition::RateLimited)
+            {
                 entry.never_crawled += 1;
             }
         }
@@ -697,6 +764,9 @@ pub fn evaluate_coverage(
             fetch_success_pct,
             parser_success_pct,
             latest_success_at,
+            rate_limited,
+            authentication_blocked,
+            unavailable,
         ) = match snapshot {
             Some(snapshot) => (
                 snapshot.operational,
@@ -708,8 +778,11 @@ pub fn evaluate_coverage(
                 snapshot.fetch_success_pct,
                 snapshot.parser_success_pct,
                 snapshot.latest_success_at,
+                snapshot.rate_limited,
+                snapshot.authentication_blocked,
+                snapshot.unavailable,
             ),
-            None => (0, 0, 0, None, None, None, None),
+            None => (0, 0, 0, None, None, None, None, 0, 0, 0),
         };
 
         if requirement.required {
@@ -741,6 +814,24 @@ pub fn evaluate_coverage(
                 reasons.push(format!(
                     "{} independent domains, minimum {}",
                     independent_domains, requirement.min_independent_domains
+                ));
+            }
+            if authentication_blocked > 0 {
+                reasons.push(format!(
+                    "{} source(s) blocked on adapter credentials",
+                    authentication_blocked
+                ));
+            }
+            if rate_limited > 0 {
+                reasons.push(format!(
+                    "{} source(s) rate limited by upstream",
+                    rate_limited
+                ));
+            }
+            if unavailable > 0 {
+                reasons.push(format!(
+                    "{} source(s) unavailable in this deployment",
+                    unavailable
                 ));
             }
             if operational > 0 {
@@ -798,6 +889,9 @@ pub fn evaluate_coverage(
             min_fetch_success_pct: requirement.min_fetch_success_pct,
             parser_success_pct,
             min_parser_success_pct: requirement.min_parser_success_pct,
+            rate_limited,
+            authentication_blocked,
+            unavailable,
         });
     }
 
@@ -1000,6 +1094,50 @@ mod tests {
             families,
             ..crate::sources_registry::SourceCoverageSummary::default()
         }
+    }
+
+    #[test]
+    fn family_coverage_reflects_non_success_acquisition_outcomes() {
+        let now = Utc::now();
+        let sources = vec![
+            source(
+                "linkedin_company",
+                Category::Procurement,
+                crate::sources_registry::Region::Global,
+            ),
+            source(
+                "rate_limited_feed",
+                Category::Procurement,
+                crate::sources_registry::Region::Global,
+            ),
+        ];
+        // Even a coincidentally recorded success row cannot make an
+        // unauthenticated adapter source operational.
+        let linkedin_row = operational_row("linkedin_company", now);
+        let mut rate_row = operational_row("rate_limited_feed", now);
+        rate_row.last_error = Some("rate_limited: upstream returned HTTP 429".to_string());
+        rate_row.last_success_at = None;
+        rate_row.rolling_success_rate = Some(0.0);
+
+        let coverage = family_coverage(
+            &sources,
+            &[linkedin_row, rate_row],
+            &DeploymentCapabilities {
+                browser: true,
+                proxy: true,
+                credentialed_api_adapters: Default::default(),
+            },
+            now,
+        );
+        let procurement = coverage
+            .iter()
+            .find(|entry| entry.family == CoverageFamily::Procurement)
+            .expect("procurement row");
+
+        assert_eq!(procurement.operational, 0);
+        assert_eq!(procurement.authentication_blocked, 1);
+        assert_eq!(procurement.rate_limited, 1);
+        assert_eq!(procurement.never_crawled, 0);
     }
 
     #[test]

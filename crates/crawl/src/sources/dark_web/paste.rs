@@ -8,11 +8,14 @@
 //! All methods are rate-limited and gracefully degrade when API keys are absent.
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
+
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 
 /// A paste discovered on a paste-sharing platform.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,31 +112,28 @@ impl PasteMonitor {
 
     /// Run all enabled paste scans and return matched entries.
     ///
-    /// Errors from individual platforms are logged and skipped so partial
-    /// results are always returned.
-    pub async fn scan(&self) -> Vec<PasteEntry> {
-        let mut all_entries = Vec::new();
-
+    /// Per-platform failures are explicit [`AcquisitionOutcome`] variants: a
+    /// successful scan with no matches is `Success { items: [] }`, while a
+    /// rate limit, HTTP error or parse failure is never an empty success.
+    pub async fn scan(&self) -> AcquisitionOutcome<PasteEntry> {
+        let mut outcomes = Vec::new();
         if self.config.enable_pastebin {
-            match self.scan_pastebin().await {
-                Ok(entries) => all_entries.extend(entries),
-                Err(e) => warn!(error = %e, "Pastebin scan failed"),
-            }
+            outcomes.push(self.scan_pastebin().await);
         }
-
         if self.config.enable_ghostbin {
-            match self.scan_ghostbin().await {
-                Ok(entries) => all_entries.extend(entries),
-                Err(e) => warn!(error = %e, "Ghostbin scan failed"),
-            }
+            outcomes.push(self.scan_ghostbin().await);
         }
-
-        debug!(total = all_entries.len(), "Paste monitoring complete");
-        all_entries
+        let outcome = crate::acquisition::aggregate(outcomes);
+        debug!(
+            outcome = outcome.as_label(),
+            total = outcome.item_count(),
+            "Paste monitoring complete"
+        );
+        outcome
     }
 
     /// Scan Pastebin for keyword matches.
-    async fn scan_pastebin(&self) -> Result<Vec<PasteEntry>> {
+    async fn scan_pastebin(&self) -> AcquisitionOutcome<PasteEntry> {
         let limit = self.config.max_pastes.min(250);
 
         #[derive(Deserialize)]
@@ -156,21 +156,34 @@ impl PasteMonitor {
             "https://scrape.pastebin.com/api_scraping.php?limit=25".to_string()
         };
 
-        let list_resp = self
-            .client
-            .get(&api_url)
-            .send()
-            .await
-            .context("Pastebin scrape list request")?;
+        let list_resp = match self.client.get(&api_url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("Pastebin scrape list request failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !list_resp.status().is_success() {
             debug!(status = %list_resp.status(), "Pastebin scrape returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(list_resp.headers());
+            return crate::acquisition::http_failure(
+                list_resp.status().as_u16(),
+                retry_after,
+                "Pastebin scrape",
+            );
         }
 
         let pastes: Vec<PastebinEntry> = match list_resp.json().await {
             Ok(p) => p,
-            Err(_) => return Ok(Vec::new()),
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("Pastebin scrape JSON parse failed: {error}"),
+                    "",
+                );
+            }
         };
 
         let mut entries = Vec::new();
@@ -233,11 +246,11 @@ impl PasteMonitor {
             });
         }
 
-        Ok(entries)
+        AcquisitionOutcome::success_now(entries)
     }
 
     /// Scan Ghostbin for keyword matches.
-    async fn scan_ghostbin(&self) -> Result<Vec<PasteEntry>> {
+    async fn scan_ghostbin(&self) -> AcquisitionOutcome<PasteEntry> {
         // Ghostbin's public API — fetch recent pastes.
         let url = "https://ghostbin.com/api/pastes?limit=50";
 
@@ -251,22 +264,40 @@ impl PasteMonitor {
             size: Option<u64>,
         }
 
-        let resp = self
+        let resp = match self
             .client
             .get(url)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("Ghostbin API request")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("Ghostbin API request failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "Ghostbin API returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "Ghostbin API",
+            );
         }
 
         let pastes: Vec<GhostbinPaste> = match resp.json().await {
             Ok(p) => p,
-            Err(_) => return Ok(Vec::new()),
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("Ghostbin API JSON parse failed: {error}"),
+                    "",
+                );
+            }
         };
 
         let mut entries = Vec::new();
@@ -330,13 +361,44 @@ impl PasteMonitor {
             });
         }
 
-        Ok(entries)
+        AcquisitionOutcome::success_now(entries)
+    }
+}
+
+/// Request for one paste-site scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PasteScanRequest;
+
+#[async_trait]
+impl SourceAdapter for PasteMonitor {
+    type Item = PasteEntry;
+    type Request = PasteScanRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "dark_web_paste"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        // Clearnet paste endpoints with optional Pastebin API key.
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, _request: PasteScanRequest) -> AcquisitionOutcome<PasteEntry> {
+        self.scan().await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_adapter_declares_its_prerequisite() {
+        let monitor = PasteMonitor::new(PasteMonitorConfig::default()).expect("paste monitor");
+        assert_eq!(monitor.adapter_id(), "dark_web_paste");
+        assert!(!monitor.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
+    }
 
     #[test]
     fn paste_monitor_config_defaults() {

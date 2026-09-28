@@ -8,11 +8,14 @@
 //! - Automatic paste retrieval
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info};
+
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 
 /// A paste site entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,26 +138,42 @@ impl PasteMonitor {
     }
 
     /// Scan Pastebin for keyword matches.
-    pub async fn scan_pastebin(&mut self) -> Result<Vec<PasteSiteEntry>> {
+    pub async fn scan_pastebin(&mut self) -> AcquisitionOutcome<PasteSiteEntry> {
         // Pastebin API scrapes (simple monitoring via RSS-like scraping)
         let url = "https://scrape.pastebin.com/api_scrape_item.php?i=recent";
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .context("Pastebin scrape request")?;
+        let resp = match self.client.get(url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("Pastebin scrape request failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "Pastebin scrape returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "Pastebin scrape",
+            );
         }
 
-        let text = resp.text().await.context("read Pastebin response")?;
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("read Pastebin response failed: {error}"),
+                    None,
+                );
+            }
+        };
         self.parse_pastebin_pastes(&text).await
     }
 
-    async fn parse_pastebin_pastes(&mut self, text: &str) -> Result<Vec<PasteSiteEntry>> {
+    async fn parse_pastebin_pastes(&mut self, text: &str) -> AcquisitionOutcome<PasteSiteEntry> {
         #[derive(Deserialize)]
         #[allow(dead_code)]
         struct PastebinPaste {
@@ -172,12 +191,23 @@ impl PasteMonitor {
             views: Option<String>,
         }
 
-        let pastes: Vec<PastebinPaste> =
-            serde_json::from_str(text).context("parse Pastebin JSON")?;
+        let pastes: Vec<PastebinPaste> = match serde_json::from_str(text) {
+            Ok(pastes) => pastes,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse Pastebin JSON failed: {error}"),
+                    text,
+                );
+            }
+        };
 
         let mut entries = Vec::new();
         for p in pastes {
-            let paste_id = p.key.ok_or_else(|| anyhow::anyhow!("Missing paste ID"))?;
+            let Some(paste_id) = p.key else {
+                // An entry without an ID cannot be identified: skip it rather
+                // than failing the whole page (the parser contract still held).
+                continue;
+            };
             let title = p.title.clone();
 
             // Fetch content synchronously for non-async context
@@ -253,43 +283,15 @@ impl PasteMonitor {
             count = entries.len(),
             "Pastebin scan complete"
         );
-        Ok(entries)
-    }
-
-    #[allow(dead_code)]
-    async fn fetch_pastebin_content(&self, paste_key: &str) -> Result<String> {
-        let url = format!(
-            "https://scrape.pastebin.com/api_scrape_item.php?i={}",
-            paste_key
-        );
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Pastebin content fetch")?;
-        if !resp.status().is_success() {
-            return Ok(String::new());
-        }
-        resp.text().await.context("read paste content")
+        AcquisitionOutcome::success_now(entries)
     }
 
     /// Scan Ghostbin for keyword matches.
-    pub async fn scan_ghostbin(&mut self) -> Result<Vec<PasteSiteEntry>> {
-        let url = "https://ghostbin.com/paste/new";
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .context("Ghostbin request")?;
-
-        if !resp.status().is_success() {
-            debug!(status = %resp.status(), "Ghostbin returned non-success");
-            return Ok(Vec::new());
-        }
-
-        Ok(Vec::new()) // Ghostbin doesn't have a public scraping API
+    ///
+    /// Ghostbin has no public scraping API, so the adapter is explicitly
+    /// [`AcquisitionOutcome::NotApplicable`] rather than a fake empty success.
+    pub async fn scan_ghostbin(&mut self) -> AcquisitionOutcome<PasteSiteEntry> {
+        AcquisitionOutcome::NotApplicable
     }
 
     /// Get all cached entries.
@@ -308,6 +310,31 @@ impl PasteMonitor {
     /// Return total entry count.
     pub fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+}
+
+/// Request for one paste-sites scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PasteSiteScanRequest;
+
+#[async_trait]
+impl SourceAdapter for PasteMonitor {
+    type Item = PasteSiteEntry;
+    type Request = PasteSiteScanRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "dark_web_paste_sites"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, _request: PasteSiteScanRequest) -> AcquisitionOutcome<PasteSiteEntry> {
+        // `scan_pastebin` needs `&mut self` for its entry cache; clone the
+        // monitor so the adapter contract stays `&self`.
+        let mut monitor = self.clone();
+        monitor.scan_pastebin().await
     }
 }
 
@@ -341,6 +368,14 @@ mod tests {
     fn paste_monitor_constructs() {
         let result = PasteMonitor::new(Default::default());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn paste_sites_adapter_declares_its_prerequisite() {
+        let monitor = PasteMonitor::new(Default::default()).expect("paste sites monitor");
+        assert_eq!(monitor.adapter_id(), "dark_web_paste_sites");
+        assert!(!monitor.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(monitor.adapter_id()).is_some());
     }
 
     #[test]

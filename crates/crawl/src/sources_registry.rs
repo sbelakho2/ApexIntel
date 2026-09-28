@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+use crate::acquisition::AcquisitionDisposition;
 use apex_store::postgres::{PgStore, SourceRuntimeStateRow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -319,12 +320,49 @@ fn env_non_empty(name: &str) -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
+/// Resolve the credential prerequisite of a source from adapter prerequisites
+/// (slug → adapter, then `JsonApi` adapter id) rather than from the static
+/// registry declaration. Returns the requirement plus the adapter descriptor
+/// when one is published.
+fn resolved_credential_requirement(
+    source: &Source,
+) -> (bool, Option<&'static crate::acquisition::AdapterDescriptor>) {
+    if let FetchStrategy::JsonApi(adapter) = source.strategy() {
+        if let Some(descriptor) = crate::acquisition::adapter_descriptor(&adapter.id) {
+            return (
+                descriptor.prerequisite.requires_credentials,
+                Some(descriptor),
+            );
+        }
+        return (adapter.requires_credentials, None);
+    }
+    if let Some(descriptor) = crate::acquisition::adapter_descriptor_for_slug(&source.slug) {
+        return (
+            descriptor.prerequisite.requires_credentials,
+            Some(descriptor),
+        );
+    }
+    (false, None)
+}
+
+fn strategy_adapter_id(source: &Source) -> Option<String> {
+    match source.strategy() {
+        FetchStrategy::JsonApi(adapter) => Some(adapter.id),
+        _ => None,
+    }
+}
+
 /// Resolve the effective capability of a source by combining its declared
-/// capability with the deployment's actual capabilities and the runtime
-/// evidence recorded for it:
+/// capability with the deployment's actual capabilities, the adapter's
+/// published prerequisites and the runtime evidence recorded for it:
 ///
-/// - declared `Blocked`/`Unsupported`/`RequiresCredentials`/`TemporarilyFailed`
-///   states win over runtime evidence,
+/// - declared `Blocked`/`Unsupported`/`TemporarilyFailed` states win over
+///   runtime evidence and over prerequisites,
+/// - an adapter that requires credentials the deployment has not configured →
+///   `unavailable_missing_credentials`, *even when the registry declared the
+///   source `Unvalidated`*,
+/// - a `RequiresCredentials` registry declaration with no credential-requiring
+///   adapter is not trusted: the source stays schedulable/unvalidated,
 /// - `Browser` strategy + browser disabled → `unavailable_missing_capability`
 /// - `JsonApi` requiring credentials that are not configured →
 ///   `unavailable_missing_credentials`
@@ -339,9 +377,36 @@ pub fn effective_capability(
     runtime: Option<&SourceRuntimeStateRow>,
     deployment_caps: &DeploymentCapabilities,
 ) -> SourceCapability {
-    if !source.capability.is_schedulable() {
+    // Hard declarations are authoritative.
+    if matches!(
+        source.capability,
+        SourceCapability::Blocked
+            | SourceCapability::Unsupported
+            | SourceCapability::TemporarilyFailed
+    ) {
         return source.capability;
     }
+
+    // Credential requirements come from the adapter prerequisites, not the
+    // static registry declaration.
+    let (requires_credentials, descriptor) = resolved_credential_requirement(source);
+    if requires_credentials {
+        let configured = descriptor
+            .map(|descriptor| {
+                deployment_caps
+                    .credentialed_api_adapters
+                    .contains(descriptor.id)
+            })
+            .or_else(|| {
+                strategy_adapter_id(source)
+                    .map(|id| deployment_caps.credentialed_api_adapters.contains(&id))
+            })
+            .unwrap_or(false);
+        if !configured {
+            return SourceCapability::UnavailableMissingCredentials;
+        }
+    }
+
     match source.strategy() {
         FetchStrategy::Browser if !deployment_caps.browser => {
             return SourceCapability::UnavailableMissingCapability;
@@ -374,19 +439,56 @@ pub fn effective_capability(
     }
 }
 
+/// Map an acquisition outcome disposition onto the lifecycle capability it
+/// implies for the source.
+///
+/// This is the capability state a *fresh* outcome records; persisted runtime
+/// state remains authoritative for scheduling. A successful outcome maps to
+/// `Operational`, a `NotApplicable` outcome leaves the source unvalidated, and
+/// every non-success outcome maps to a non-operational state — a rate limit or
+/// transport failure to `TemporarilyFailed`, an authentication gap to
+/// `UnavailableMissingCredentials`, and a deployment unavailability to
+/// `UnavailableMissingCapability`.
+pub fn capability_for_disposition(disposition: AcquisitionDisposition) -> SourceCapability {
+    match disposition {
+        AcquisitionDisposition::Operational => SourceCapability::Operational,
+        AcquisitionDisposition::NotApplicable => SourceCapability::Unvalidated,
+        AcquisitionDisposition::Degraded | AcquisitionDisposition::RateLimited => {
+            SourceCapability::TemporarilyFailed
+        }
+        AcquisitionDisposition::Unavailable => SourceCapability::UnavailableMissingCapability,
+        AcquisitionDisposition::AuthenticationBlocked => {
+            SourceCapability::UnavailableMissingCredentials
+        }
+    }
+}
+
 /// Declared capability plus runtime circuit state, ignoring deployment
 /// capabilities and validation evidence. The scheduler deliberately keeps
 /// selecting sources whose deployment capability is missing or that are still
 /// unvalidated: the crawl cycle must see them, persist an unavailable runtime
 /// state, and surface the capability gap in its counters instead of silently
 /// dropping them.
+///
+/// Credential requirements are resolved from adapter prerequisites: a static
+/// `RequiresCredentials` declaration is only kept when the serving adapter
+/// actually needs credentials.
 fn runtime_capability(
     source: &Source,
     runtime: Option<&SourceRuntimeStateRow>,
     now: DateTime<Utc>,
 ) -> SourceCapability {
-    if !source.capability.is_schedulable() {
+    if matches!(
+        source.capability,
+        SourceCapability::Blocked
+            | SourceCapability::Unsupported
+            | SourceCapability::TemporarilyFailed
+    ) {
         return source.capability;
+    }
+    let (requires_credentials, _) = resolved_credential_requirement(source);
+    if requires_credentials {
+        return SourceCapability::RequiresCredentials;
     }
     if let Some(row) = runtime {
         if row
@@ -397,7 +499,11 @@ fn runtime_capability(
             return SourceCapability::TemporarilyFailed;
         }
     }
-    source.capability
+    if source.capability.is_schedulable() {
+        source.capability
+    } else {
+        SourceCapability::Unvalidated
+    }
 }
 
 /// A single crawlable intelligence source.
@@ -3927,8 +4033,15 @@ mod scheduler_tests {
 
     #[test]
     fn coverage_summary_counts_only_validated_sources() {
+        // Credential requirements come from adapter prerequisites (or an
+        // explicit JsonApi adapter declaration), not from the static registry
+        // `capability` field.
         let mut requires_credentials =
             synthetic_source("needs_credentials", Region::Global, Category::News, 2);
+        requires_credentials.fetch_strategy = Some(FetchStrategy::JsonApi(ApiAdapter {
+            id: "unknown_credentialed_api".to_string(),
+            requires_credentials: true,
+        }));
         requires_credentials.capability = SourceCapability::RequiresCredentials;
         let mut blocked = synthetic_source("blocked", Region::Global, Category::News, 2);
         blocked.capability = SourceCapability::Blocked;
@@ -4110,7 +4223,9 @@ mod scheduler_tests {
 
         let mut api_source = synthetic_source("api_feed", Region::Global, Category::Finance, 2);
         api_source.fetch_strategy = Some(FetchStrategy::JsonApi(ApiAdapter {
-            id: "sec_edgar".to_string(),
+            // Not in the adapter catalogue: the explicit JsonApi declaration
+            // is the fallback prerequisite source for unknown adapters.
+            id: "unknown_credentialed_api".to_string(),
             requires_credentials: true,
         }));
         assert_eq!(
@@ -4118,7 +4233,7 @@ mod scheduler_tests {
             SourceCapability::UnavailableMissingCredentials
         );
         let with_credentials = DeploymentCapabilities {
-            credentialed_api_adapters: HashSet::from(["sec_edgar".to_string()]),
+            credentialed_api_adapters: HashSet::from(["unknown_credentialed_api".to_string()]),
             ..DeploymentCapabilities::all_available()
         };
         assert_eq!(
@@ -4147,6 +4262,122 @@ mod scheduler_tests {
                 &DeploymentCapabilities::all_available()
             ),
             SourceCapability::Operational
+        );
+    }
+
+    #[test]
+    fn acquisition_dispositions_map_to_capability_states() {
+        use AcquisitionDisposition::*;
+        assert_eq!(
+            capability_for_disposition(Operational),
+            SourceCapability::Operational
+        );
+        assert_eq!(
+            capability_for_disposition(NotApplicable),
+            SourceCapability::Unvalidated
+        );
+        assert_eq!(
+            capability_for_disposition(Degraded),
+            SourceCapability::TemporarilyFailed
+        );
+        assert_eq!(
+            capability_for_disposition(RateLimited),
+            SourceCapability::TemporarilyFailed,
+            "a 429 is a temporary failure, never a success"
+        );
+        assert_eq!(
+            capability_for_disposition(AuthenticationBlocked),
+            SourceCapability::UnavailableMissingCredentials
+        );
+        assert_eq!(
+            capability_for_disposition(Unavailable),
+            SourceCapability::UnavailableMissingCapability
+        );
+        for disposition in [Degraded, RateLimited, AuthenticationBlocked, Unavailable] {
+            assert!(
+                !capability_for_disposition(disposition).is_schedulable(),
+                "{} must not present as a schedulable operational success",
+                disposition.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn unauthenticated_adapter_sources_can_never_be_operational() {
+        let now = Utc::now();
+        let success_row = |slug: &str| {
+            let mut row = blank_row(slug, now);
+            row.last_attempt_at = Some(now);
+            row.last_success_at = Some(now);
+            row.rolling_success_rate = Some(1.0);
+            row
+        };
+        let no_credentials = DeploymentCapabilities::all_available();
+
+        // `linkedin_company` even without a static RequiresCredentials
+        // declaration: the adapter prerequisite requires credentials.
+        let mut linkedin =
+            synthetic_source("linkedin_company", Region::Global, Category::SocialMedia, 2);
+        linkedin.capability = SourceCapability::Unvalidated;
+        let linkedin_row = success_row("linkedin_company");
+        assert_eq!(
+            effective_capability(&linkedin, Some(&linkedin_row), &no_credentials),
+            SourceCapability::UnavailableMissingCredentials,
+            "an unauthenticated LinkedIn adapter can never be operational"
+        );
+        assert_ne!(
+            effective_capability(&linkedin, Some(&linkedin_row), &no_credentials),
+            SourceCapability::Operational
+        );
+
+        // `twitter_search` as declared in the registry: same rule.
+        let mut twitter =
+            synthetic_source("twitter_search", Region::Global, Category::SocialMedia, 2);
+        twitter.capability = SourceCapability::RequiresCredentials;
+        let twitter_row = success_row("twitter_search");
+        assert_eq!(
+            effective_capability(&twitter, Some(&twitter_row), &no_credentials),
+            SourceCapability::UnavailableMissingCredentials,
+            "an unauthenticated Twitter adapter can never be operational"
+        );
+
+        // With the credentials configured, a successful fetch does promote.
+        let linkedin_credentials = DeploymentCapabilities {
+            credentialed_api_adapters: HashSet::from(["linkedin".to_string()]),
+            ..DeploymentCapabilities::all_available()
+        };
+        assert_eq!(
+            effective_capability(&linkedin, Some(&linkedin_row), &linkedin_credentials),
+            SourceCapability::Operational
+        );
+        let twitter_credentials = DeploymentCapabilities {
+            credentialed_api_adapters: HashSet::from(["twitter".to_string()]),
+            ..DeploymentCapabilities::all_available()
+        };
+        assert_eq!(
+            effective_capability(&twitter, Some(&twitter_row), &twitter_credentials),
+            SourceCapability::Operational
+        );
+    }
+
+    #[test]
+    fn static_requires_credentials_without_adapter_prerequisite_is_not_trusted() {
+        let mut source = synthetic_source(
+            "legacy_declared_requires_credentials",
+            Region::Global,
+            Category::News,
+            2,
+        );
+        source.capability = SourceCapability::RequiresCredentials;
+
+        assert_eq!(
+            effective_capability(&source, None, &DeploymentCapabilities::all_available()),
+            SourceCapability::Unvalidated,
+            "a static declaration with no credential-requiring adapter is not a prerequisite"
+        );
+        assert!(
+            runtime_capability(&source, None, Utc::now()).is_schedulable(),
+            "the source must be schedulable to earn validation"
         );
     }
 

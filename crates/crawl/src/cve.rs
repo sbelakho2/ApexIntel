@@ -7,12 +7,14 @@
 //!
 //! Each CVE is projected onto a strongly-typed [`CveVulnerability`] carrying
 //! the description, CVSS v3.1 score/severity, affected CPE products, and
-//! reference URLs.  Network or parse errors degrade gracefully to an empty
-//! result with a `tracing::warn!`.
+//! reference URLs. Every non-success state (network error, HTTP error, rate
+//! limit, parse failure) is returned as its explicit
+//! [`AcquisitionOutcome`](crate::acquisition::AcquisitionOutcome) variant — an
+//! empty result is only ever a genuine successful zero-findings run.
 
 use std::time::Duration;
 
-use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,9 @@ use serde_json::json;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::acquisition::{
+    http_failure, retry_after_secs, AcquisitionOutcome, AdapterPrerequisite, SourceAdapter,
+};
 use apex_core::entities::{Observation, ObservationType};
 
 /// NVD CVE 2.0 JSON endpoint.
@@ -88,8 +93,9 @@ impl CveClient {
 
     /// Fetch CVEs published within the last `since_days` days.
     ///
-    /// Any network or parse error is logged and yields an empty vec.
-    pub async fn fetch_recent(&self, since_days: u32) -> Result<Vec<CveVulnerability>> {
+    /// Network, rate-limit, HTTP and parse failures are returned as their
+    /// explicit [`AcquisitionOutcome`] variants — never as an empty success.
+    pub async fn fetch_recent(&self, since_days: u32) -> AcquisitionOutcome<CveVulnerability> {
         let page_size = MAX_PAGE_SIZE;
         let now = Utc::now();
         // Guard against pathological inputs: clamp to at least 1 day so we
@@ -108,25 +114,28 @@ impl CveClient {
             Ok(resp) => resp,
             Err(error) => {
                 warn!(error = %error, "cve: network error");
-                return Ok(Vec::new());
+                return AcquisitionOutcome::fetch_failed(
+                    format!("cve: network error: {error}"),
+                    None,
+                );
             }
         };
 
         let status = response.status();
-        if status.as_u16() == 429 {
-            warn!("cve: rate limited (429); skipping");
-            return Ok(Vec::new());
-        }
         if !status.is_success() {
-            warn!(status = status.as_u16(), "cve: non-success status");
-            return Ok(Vec::new());
+            let retry_after = retry_after_secs(response.headers());
+            warn!(status = status.as_u16(), "cve: acquisition failed");
+            return http_failure(status.as_u16(), retry_after, "cve");
         }
 
         let body: serde_json::Value = match response.json().await {
             Ok(value) => value,
             Err(error) => {
                 warn!(error = %error, "cve: failed to parse JSON");
-                return Ok(Vec::new());
+                return AcquisitionOutcome::parse_failed(
+                    format!("cve: failed to parse NVD JSON: {error}"),
+                    "",
+                );
             }
         };
 
@@ -141,7 +150,7 @@ impl CveClient {
             .filter_map(|entry| entry.get("cve").map(Self::parse_cve))
             .collect();
 
-        Ok(cves)
+        AcquisitionOutcome::success_now(cves)
     }
 
     /// Project a single raw NVD `cve` object onto [`CveVulnerability`].
@@ -278,6 +287,30 @@ impl Default for CveClient {
     }
 }
 
+/// Request for one NVD acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CveRequest {
+    pub since_days: u32,
+}
+
+#[async_trait]
+impl SourceAdapter for CveClient {
+    type Item = CveVulnerability;
+    type Request = CveRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "cve"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::NONE
+    }
+
+    async fn acquire(&self, request: CveRequest) -> AcquisitionOutcome<CveVulnerability> {
+        self.fetch_recent(request.since_days).await
+    }
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -335,6 +368,17 @@ mod tests {
         }
       ]
     }"#;
+
+    #[test]
+    fn cve_adapter_declares_its_prerequisite() {
+        let client = CveClient::new();
+        assert_eq!(client.adapter_id(), "cve");
+        assert!(!client.prerequisite().requires_credentials);
+        assert!(
+            crate::acquisition::adapter_descriptor(client.adapter_id()).is_some(),
+            "every SourceAdapter implementation must publish its prerequisite"
+        );
+    }
 
     #[test]
     fn parses_sample_nvd_cve() {

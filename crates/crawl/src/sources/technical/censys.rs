@@ -8,11 +8,14 @@
 //! - Protocol detection
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info};
+
+use crate::acquisition::{AcquisitionOutcome, AdapterPrerequisite, SourceAdapter};
 
 /// Censys API credentials.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,10 +120,18 @@ impl CensysClient {
         format!("Basic {}", encoded)
     }
 
+    /// True when both Censys API credentials are configured.
+    pub fn credentials_configured(&self) -> bool {
+        !self.config.api_id.trim().is_empty() && !self.config.api_secret.trim().is_empty()
+    }
+
     /// Search for certificates by domain.
-    pub async fn search_certificates(&self, query: &str) -> Result<Vec<CensysCertificate>> {
+    pub async fn search_certificates(&self, query: &str) -> AcquisitionOutcome<CensysCertificate> {
+        if !self.credentials_configured() {
+            return AcquisitionOutcome::AuthenticationRequired;
+        }
         let url = "https://search.censys.io/api/v1/search/certificates";
-        let resp = self
+        let resp = match self
             .client
             .get(url)
             .header("Authorization", self.auth_header())
@@ -128,11 +139,24 @@ impl CensysClient {
             .query(&[("per_page", "100")])
             .send()
             .await
-            .context("Censys certificate search")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("Censys certificate search failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), query = %query, "Censys returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "Censys certificates",
+            );
         }
 
         #[derive(Deserialize)]
@@ -141,10 +165,15 @@ impl CensysClient {
             results: Option<Vec<serde_json::Value>>,
         }
 
-        let cert_resp: CensysCertResponse = resp
-            .json()
-            .await
-            .unwrap_or(CensysCertResponse { results: None });
+        let cert_resp: CensysCertResponse = match resp.json().await {
+            Ok(cert_resp) => cert_resp,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse Censys certificate response failed: {error}"),
+                    "",
+                );
+            }
+        };
         let certs: Vec<CensysCertificate> = cert_resp
             .results
             .unwrap_or_default()
@@ -249,13 +278,16 @@ impl CensysClient {
             .collect();
 
         info!(query = %query, count = certs.len(), "Censys certificate search complete");
-        Ok(certs)
+        AcquisitionOutcome::success_now(certs)
     }
 
     /// Search for hosts by query.
-    pub async fn search_hosts(&self, query: &str) -> Result<Vec<CensysHost>> {
+    pub async fn search_hosts(&self, query: &str) -> AcquisitionOutcome<CensysHost> {
+        if !self.credentials_configured() {
+            return AcquisitionOutcome::AuthenticationRequired;
+        }
         let url = "https://search.censys.io/api/v1/search/hosts";
-        let resp = self
+        let resp = match self
             .client
             .get(url)
             .header("Authorization", self.auth_header())
@@ -263,11 +295,24 @@ impl CensysClient {
             .query(&[("per_page", "100")])
             .send()
             .await
-            .context("Censys host search")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                return AcquisitionOutcome::fetch_failed(
+                    format!("Censys host search failed: {error}"),
+                    None,
+                );
+            }
+        };
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), query = %query, "Censys host search returned non-success");
-            return Ok(Vec::new());
+            let retry_after = crate::acquisition::retry_after_secs(resp.headers());
+            return crate::acquisition::http_failure(
+                resp.status().as_u16(),
+                retry_after,
+                "Censys hosts",
+            );
         }
 
         #[derive(Deserialize)]
@@ -276,10 +321,15 @@ impl CensysClient {
             results: Option<Vec<serde_json::Value>>,
         }
 
-        let host_resp: CensysHostResponse = resp
-            .json()
-            .await
-            .unwrap_or(CensysHostResponse { results: None });
+        let host_resp: CensysHostResponse = match resp.json().await {
+            Ok(host_resp) => host_resp,
+            Err(error) => {
+                return AcquisitionOutcome::parse_failed(
+                    format!("parse Censys host response failed: {error}"),
+                    "",
+                );
+            }
+        };
         let hosts: Vec<CensysHost> = host_resp
             .results
             .unwrap_or_default()
@@ -337,7 +387,35 @@ impl CensysClient {
             .collect();
 
         debug!(query = %query, count = hosts.len(), "Censys host search complete");
-        Ok(hosts)
+        AcquisitionOutcome::success_now(hosts)
+    }
+}
+
+/// Request for one Censys certificate search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CensysSearchRequest {
+    pub query: String,
+}
+
+#[async_trait]
+impl SourceAdapter for CensysClient {
+    type Item = CensysCertificate;
+    type Request = CensysSearchRequest;
+
+    fn adapter_id(&self) -> &'static str {
+        "censys"
+    }
+
+    fn prerequisite(&self) -> AdapterPrerequisite {
+        AdapterPrerequisite::CREDENTIALS
+    }
+
+    fn credentials_configured(&self) -> bool {
+        CensysClient::credentials_configured(self)
+    }
+
+    async fn acquire(&self, request: CensysSearchRequest) -> AcquisitionOutcome<CensysCertificate> {
+        self.search_certificates(&request.query).await
     }
 }
 
@@ -381,6 +459,27 @@ mod tests {
         let result = CensysConfig::from_env();
         // Result is Option — None is valid in test environment
         assert!(result.is_none() || result.is_some());
+    }
+
+    #[tokio::test]
+    async fn censys_without_credentials_is_authentication_required() {
+        let client = CensysClient::new(CensysConfig {
+            api_id: String::new(),
+            api_secret: String::new(),
+            timeout_secs: 5,
+        })
+        .expect("Censys client");
+        assert!(!client.credentials_configured());
+        assert_eq!(client.adapter_id(), "censys");
+        assert!(client.prerequisite().requires_credentials);
+        assert!(crate::acquisition::adapter_descriptor(client.adapter_id()).is_some());
+
+        let outcome = client.search_certificates("example.com").await;
+        assert_eq!(
+            outcome.disposition(),
+            crate::acquisition::AcquisitionDisposition::AuthenticationBlocked
+        );
+        assert!(!outcome.is_success());
     }
 
     #[test]

@@ -21,6 +21,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use apex_crawl::acquisition::AcquisitionOutcome;
+
 use crate::{JobKind, JobRun, PgStore};
 
 /// Maximum number of companies to enrich per invocation.
@@ -72,7 +74,7 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
     // ── 2. Global CVE fetch (not company-specific) ─────────────────────────
     let cve_client = apex_crawl::cve::CveClient::new();
     match cve_client.fetch_recent(7).await {
-        Ok(cves) if !cves.is_empty() => {
+        AcquisitionOutcome::Success { items: cves, .. } if !cves.is_empty() => {
             let count = cves.len();
             for cve in &cves {
                 let mut obs = cve.to_observation(None);
@@ -86,11 +88,15 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
             total_observations += count as u64;
             tracing::info!(cve_count = count, "osint_enrichment: fetched recent CVEs");
         }
-        Ok(_) => {
+        AcquisitionOutcome::Success { .. } => {
             tracing::info!("osint_enrichment: no recent CVEs returned");
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "osint_enrichment: CVE fetch failed (continuing)");
+        other => {
+            tracing::warn!(
+                outcome = other.as_label(),
+                detail = ?other.failure_message(),
+                "osint_enrichment: CVE acquisition did not succeed (continuing)"
+            );
         }
     }
 
@@ -122,7 +128,7 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
         // ── 3b. OpenAlex academic publications ─────────────────────────────
         let openalex_client = apex_crawl::openalex::OpenAlexClient::new();
         match openalex_client.search_works(&company.name, 5).await {
-            Ok(works) if !works.is_empty() => {
+            AcquisitionOutcome::Success { items: works, .. } if !works.is_empty() => {
                 for work in &works {
                     let mut obs = work.to_observation(Some(company.id));
                     // B326: stable ID per (company, work) — the same five
@@ -135,9 +141,14 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                     }
                 }
             }
-            Ok(_) => {} // no publications found
-            Err(e) => {
-                tracing::warn!(company = %company.name, error = %e, "osint_enrichment: OpenAlex search failed");
+            AcquisitionOutcome::Success { .. } => {} // no publications found
+            other => {
+                tracing::warn!(
+                    company = %company.name,
+                    outcome = other.as_label(),
+                    detail = ?other.failure_message(),
+                    "osint_enrichment: OpenAlex acquisition did not succeed"
+                );
             }
         }
 
@@ -158,9 +169,9 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                 .fetch_filings_as_observations(ticker, Some(company.id), 10)
                 .await
             {
-                Ok(mut filings) if !filings.is_empty() => {
-                    let count = filings.len();
-                    for filing in filings.iter_mut() {
+                AcquisitionOutcome::Success { mut items, .. } if !items.is_empty() => {
+                    let count = items.len();
+                    for filing in items.iter_mut() {
                         // B326: stable ID per filing accession number.
                         filing.stabilize_id("sec_edgar");
                         if let Err(e) = store.insert_observation(filing).await {
@@ -169,9 +180,14 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                     }
                     company_obs += count as u64;
                 }
-                Ok(_) => {} // no tracked filings
-                Err(e) => {
-                    tracing::warn!(ticker = %ticker, error = %e, "osint_enrichment: SEC EDGAR fetch failed");
+                AcquisitionOutcome::Success { .. } => {} // no tracked filings
+                other => {
+                    tracing::warn!(
+                        ticker = %ticker,
+                        outcome = other.as_label(),
+                        detail = ?other.failure_message(),
+                        "osint_enrichment: SEC EDGAR acquisition did not succeed"
+                    );
                 }
             }
         }

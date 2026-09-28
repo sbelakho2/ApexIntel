@@ -7,9 +7,13 @@
 //! The assessment is split into two layers that are never conflated:
 //!
 //! * [`CorpusQuality`] — properties of the evidence set itself: evidence
-//!   count, independent origins, primary-source share, provenance
-//!   completeness, source-type and geographic diversity, freshness, parser
-//!   confidence and coverage completeness.
+//!   count, independent origin *clusters* (records sharing a content hash,
+//!   near-duplicate text within a timestamp window, canonical publisher, or
+//!   syndication/quoted-upstream publisher count as one origin; distinct
+//!   hosts that merely republish the same story never count as
+//!   corroboration), primary-source share, provenance completeness,
+//!   source-type and geographic diversity, freshness, parser confidence and
+//!   coverage completeness.
 //! * [`ClaimAssessment`] — how the evidence bears on an *actual claim*
 //!   (supports / contradicts / neutral, corroboration, contradiction ratio).
 //!   Without a claim there is nothing to contradict, so
@@ -63,8 +67,10 @@ const PRIMARY_SOURCE_TYPES: &[&str] = &[
 /// One evidence record fed to the assessment functions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceItem {
-    /// Stable origin: a source id, URL or host. Independence is counted over
-    /// the registrable domain (eTLD+1 approximation) of URLs and hosts.
+    /// Stable origin: a source id when known, otherwise a URL. The origin host
+    /// is one clustering signal; content hash, publisher and syndication
+    /// signals take precedence so a syndicated story is one origin even
+    /// across hosts.
     pub origin: Option<String>,
     pub source_type: Option<String>,
     pub region: Option<String>,
@@ -88,6 +94,19 @@ pub struct EvidenceItem {
     /// Coverage dimensions this record is evidence for (e.g. capability
     /// families). Compared case-insensitively against the expected set.
     pub coverage_tags: Vec<String>,
+    /// Content hash for exact-duplicate origin clustering.
+    #[serde(default)]
+    pub content_hash: Option<String>,
+    /// Canonical publisher of the record (e.g. `reuters`), used for origin
+    /// clustering across syndicating sites.
+    #[serde(default)]
+    pub canonical_publisher: Option<String>,
+    /// Upstream publisher/wire this record was syndicated from or quotes.
+    #[serde(default)]
+    pub syndication_of: Option<String>,
+    /// Title text used for near-duplicate origin clustering.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 impl EvidenceItem {
@@ -105,6 +124,10 @@ impl EvidenceItem {
             source_reliability_tier: None,
             derived: false,
             coverage_tags: Vec::new(),
+            content_hash: None,
+            canonical_publisher: None,
+            syndication_of: None,
+            title: None,
         }
     }
 
@@ -154,6 +177,26 @@ impl EvidenceItem {
     /// Alias for [`Self::with_origin`] for URL call sites.
     pub fn with_source_url(mut self, source_url: impl Into<String>) -> Self {
         self.origin = Some(source_url.into());
+        self
+    }
+
+    pub fn with_content_hash(mut self, content_hash: impl Into<String>) -> Self {
+        self.content_hash = Some(content_hash.into());
+        self
+    }
+
+    pub fn with_canonical_publisher(mut self, publisher: impl Into<String>) -> Self {
+        self.canonical_publisher = Some(publisher.into());
+        self
+    }
+
+    pub fn with_syndication_of(mut self, upstream: impl Into<String>) -> Self {
+        self.syndication_of = Some(upstream.into());
+        self
+    }
+
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
         self
     }
 
@@ -229,8 +272,13 @@ impl EvidenceItem {
         if origin.is_empty() {
             return None;
         }
-        if let Some(domain) = registrable_domain(origin) {
-            return Some(domain);
+        if let Ok(url) = Url::parse(origin) {
+            if let Some(host) = url.host_str() {
+                let host = host.trim().to_ascii_lowercase();
+                if !host.is_empty() {
+                    return Some(host);
+                }
+            }
         }
         Some(origin.to_ascii_lowercase())
     }
@@ -454,7 +502,6 @@ pub fn assess_corpus_quality(
         return CorpusQuality::default();
     }
 
-    let mut origins = HashSet::new();
     let mut source_types = HashSet::new();
     let mut regions = HashSet::new();
     let mut covered_tags = HashSet::new();
@@ -469,12 +516,7 @@ pub fn assess_corpus_quality(
     let mut reliability_distribution: BTreeMap<String, usize> = BTreeMap::new();
 
     for item in items {
-        let has_origin = if let Some(origin) = item.independence_origin() {
-            origins.insert(origin);
-            true
-        } else {
-            false
-        };
+        let has_origin = item.independence_origin().is_some();
         if let Some(source_type) = item.source_type.as_deref() {
             let normalized = normalized_tag(source_type);
             if !normalized.is_empty() {
@@ -524,7 +566,22 @@ pub fn assess_corpus_quality(
     }
 
     let evidence_count = items.len();
-    let independent_origin_count = origins.len();
+    // Independence is counted over origin clusters (content hash, publisher,
+    // syndication upstream, near-duplicate text within a timestamp window,
+    // then origin host) — never over registrable domains.
+    let origin_records: Vec<crate::origin_cluster::OriginRecord> = items
+        .iter()
+        .map(|item| crate::origin_cluster::OriginRecord {
+            origin: item.independence_origin(),
+            canonical_publisher: item.canonical_publisher.clone(),
+            syndication_of: item.syndication_of.clone(),
+            content_hash: item.content_hash.clone(),
+            title: item.title.clone(),
+            body: None,
+            observed_at: item.observed_at,
+        })
+        .collect();
+    let independent_origin_count = crate::origin_cluster::independent_origin_count(&origin_records);
     let source_type_diversity = (source_types.len() as f64 / evidence_count as f64).clamp(0.0, 1.0);
     let geographic_diversity = (regions.len() as f64 / evidence_count as f64).clamp(0.0, 1.0);
     let freshness = if freshness_count == 0 {
@@ -834,6 +891,43 @@ mod tests {
     }
 
     #[test]
+    fn syndicated_story_across_three_sites_is_one_origin() {
+        let now = now();
+        let quality = assess_evidence_quality(
+            &[
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://site-a.example/tech/story")
+                    .with_canonical_publisher("reuters")
+                    .with_title("Chipmaker unveils new plant in Arizona")
+                    .with_observed_at(now),
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://site-b.example/business/story")
+                    .with_canonical_publisher("reuters")
+                    .with_title("Chipmaker unveils new plant in Arizona")
+                    .with_observed_at(now),
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://site-c.example/wires/story")
+                    .with_syndication_of("reuters")
+                    .with_title("Chipmaker unveils new plant in Arizona")
+                    .with_observed_at(now),
+            ],
+            &[],
+            now,
+        );
+
+        assert_eq!(quality.corpus.evidence_count, 3);
+        assert_eq!(
+            quality.corpus.independent_origin_count, 1,
+            "Reuters via three sites is one origin"
+        );
+        assert!(
+            quality.independence_ratio() < 0.5,
+            "syndicated copies must not inflate independence: {}",
+            quality.independence_ratio()
+        );
+    }
+
+    #[test]
     fn independence_counts_distinct_origins_not_records() {
         let quality = assess_evidence_quality(
             &[
@@ -850,8 +944,8 @@ mod tests {
 
         assert_eq!(quality.corpus.evidence_count, 3);
         assert_eq!(
-            quality.corpus.independent_origin_count, 2,
-            "subdomains of one registrable domain are not independent corroboration"
+            quality.corpus.independent_origin_count, 3,
+            "three distinct origin hosts are three origin clusters"
         );
 
         let unsourced = assess_evidence_quality(
