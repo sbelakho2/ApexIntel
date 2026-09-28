@@ -55,16 +55,20 @@ pub async fn alert_settings_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> Response {
-    let unack = store
-        .count_warnings(&apex_store::postgres::WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/settings/alerts", unack);
-
     let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&apex_store::postgres::WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web alert settings page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx =
+        PageContext::from_session(&session, "/settings/alerts", unack_state.into_loaded_or(0));
 
     // Load global defaults from DB (fall back to Rust defaults). A failed
     // query is reported as degraded; only "no row configured" uses defaults.

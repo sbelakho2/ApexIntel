@@ -16,7 +16,7 @@ use axum::{
 use super::PageContext;
 use crate::middleware::session::WebSession;
 use crate::system_status::{format_age, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS};
-use apex_core::data_state::DataState;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_crawl::sources::{
     all_sources, crawl_source_budget_from_env, scheduler_backlog, source_coverage_summary,
     DeploymentCapabilities, SchedulerBacklog, SourceCoverageSummary,
@@ -265,6 +265,8 @@ pub struct AdminPage {
     /// Process-wide source-adapter parser health (P0 #26): fetch/parse/success
     /// counters and the parser success rate shown on the admin dashboard.
     pub parser_metrics: apex_crawl::parse_outcome::ParserMetricsSnapshot,
+
+    pub degraded_notice: Option<String>,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
@@ -312,19 +314,29 @@ pub async fn admin_page(
         );
         return (StatusCode::FORBIDDEN, "Admin role required").into_response();
     }
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/admin", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web admin page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/admin", unack_state.into_loaded_or(0));
 
     // Crawl status
-    let crawl = store.get_admin_crawl_status().await.ok();
-    let crawl_statuses: Vec<CrawlStatus> = if let Some(ref cs) = crawl {
-        vec![CrawlStatus {
+    let crawl_state = DataState::from_result(
+        store.get_admin_crawl_status().await,
+        "get_admin_crawl_status failed (web admin page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&crawl_state, &mut degraded_notice);
+    let crawl_statuses: Vec<CrawlStatus> = match &crawl_state {
+        DataState::Loaded(cs) => vec![CrawlStatus {
             source: "Web Crawler".into(),
             status: if cs.latest_crawl_ts.is_some() {
                 "idle".into()
@@ -338,56 +350,71 @@ pub async fn admin_page(
             items_crawled: cs.total_fingerprints,
             error_count: 0,
             next_run: None,
-        }]
-    } else {
-        vec![]
+        }],
+        DataState::Empty | DataState::Degraded { .. } => vec![],
     };
 
     // Recipe performance
-    let recipe_perf = store.get_admin_recipe_performance().await.ok();
-    let recipe_performance: Vec<RecipePerformance> = recipe_perf
-        .as_ref()
-        .map(|rp| {
-            rp.recipes
-                .iter()
-                .map(|r| RecipePerformance {
-                    recipe_id: 0,
-                    name: r.recipe_code.clone(),
-                    total_runs: r.fired_count,
-                    success_count: ((r.precision_score.clamp(0.0, 1.0)) * r.fired_count as f64)
-                        .round() as i64,
-                    failure_count: 0,
-                    avg_duration_ms: 0,
-                    last_run: r
-                        .last_fired
-                        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-                        .unwrap_or_else(|| "—".into()),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let recipe_perf_state = DataState::from_result(
+        store.get_admin_recipe_performance().await,
+        "get_admin_recipe_performance failed (web admin page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&recipe_perf_state, &mut degraded_notice);
+    let recipe_performance: Vec<RecipePerformance> = match &recipe_perf_state {
+        DataState::Loaded(rp) => rp
+            .recipes
+            .iter()
+            .map(|r| RecipePerformance {
+                recipe_id: 0,
+                name: r.recipe_code.clone(),
+                total_runs: r.fired_count,
+                success_count: ((r.precision_score.clamp(0.0, 1.0)) * r.fired_count as f64).round()
+                    as i64,
+                failure_count: 0,
+                avg_duration_ms: 0,
+                last_run: r
+                    .last_fired
+                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "—".into()),
+            })
+            .collect(),
+        DataState::Empty | DataState::Degraded { .. } => vec![],
+    };
 
     // POI coverage
-    let poi_cov = store.get_admin_poi_coverage().await.ok();
-    let poi_coverage: Vec<PoiCoverage> = if let Some(ref pc) = poi_cov {
-        let covered_pct = if pc.total_persons > 0 {
-            (pc.with_artifacts as f64 / pc.total_persons as f64) * 100.0
-        } else {
-            0.0
-        };
-        vec![PoiCoverage {
-            category: "Persons with artifacts".into(),
-            total: pc.total_persons,
-            covered: pc.with_artifacts,
-            coverage_pct: covered_pct,
-        }]
-    } else {
-        vec![]
+    let poi_cov_state = DataState::from_result(
+        store.get_admin_poi_coverage().await,
+        "get_admin_poi_coverage failed (web admin page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&poi_cov_state, &mut degraded_notice);
+    let poi_coverage: Vec<PoiCoverage> = match &poi_cov_state {
+        DataState::Loaded(pc) => {
+            let covered_pct = if pc.total_persons > 0 {
+                (pc.with_artifacts as f64 / pc.total_persons as f64) * 100.0
+            } else {
+                0.0
+            };
+            vec![PoiCoverage {
+                category: "Persons with artifacts".into(),
+                total: pc.total_persons,
+                covered: pc.with_artifacts,
+                coverage_pct: covered_pct,
+            }]
+        }
+        DataState::Empty | DataState::Degraded { .. } => vec![],
     };
 
     // Totals
-    let total_observations = crawl.as_ref().map(|c| c.total_fingerprints).unwrap_or(0);
-    let total_entities = poi_cov.as_ref().map(|p| p.total_persons).unwrap_or(0);
+    let total_observations = match &crawl_state {
+        DataState::Loaded(cs) => cs.total_fingerprints,
+        _ => 0,
+    };
+    let total_entities = match &poi_cov_state {
+        DataState::Loaded(pc) => pc.total_persons,
+        _ => 0,
+    };
 
     // B316: real database/process statistics. Each system metric is measured
     // from a probe instead of being hard-coded to "Connected"/"Ready".
@@ -508,13 +535,14 @@ pub async fn admin_page(
 
     // B316: real ingestion panel — observation volume/freshness per source
     // type replaces the hardcoded SEC EDGAR / DNS DB / News Crawler list.
-    let observation_sources: Vec<SourceItem> = store
-        .get_observation_source_stats()
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to fetch observation source stats: {e}");
-            vec![]
-        })
+    let observation_sources_state = DataState::from_result(
+        store.get_observation_source_stats().await,
+        "get_observation_source_stats failed (web admin page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&observation_sources_state, &mut degraded_notice);
+    let observation_sources: Vec<SourceItem> = observation_sources_state
+        .into_items()
         .into_iter()
         .map(|(kind, records, latest)| {
             let stale = latest
@@ -537,7 +565,16 @@ pub async fn admin_page(
         })
         .collect();
 
-    let governance = store.get_admin_llm_governance_overview(10).await.ok();
+    let governance_state = DataState::from_result(
+        store.get_admin_llm_governance_overview(10).await,
+        "get_admin_llm_governance_overview failed (web admin page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&governance_state, &mut degraded_notice);
+    let governance = match &governance_state {
+        DataState::Loaded(overview) => Some(overview),
+        DataState::Empty | DataState::Degraded { .. } => None,
+    };
     let prompt_versions = governance
         .as_ref()
         .map(|overview| {
@@ -608,13 +645,13 @@ pub async fn admin_page(
 
     let (source_coverage, source_backlog) = {
         let registry = all_sources();
-        let runtime_states = store
-            .load_source_runtime_states()
-            .await
-            .unwrap_or_else(|error| {
-                tracing::error!("Failed to fetch source runtime state: {error}");
-                vec![]
-            });
+        let runtime_states_state = DataState::from_result(
+            store.load_source_runtime_states().await,
+            "load_source_runtime_states failed (web admin page)",
+            Vec::is_empty,
+        );
+        DegradedNotice::capture(&runtime_states_state, &mut degraded_notice);
+        let runtime_states = runtime_states_state.into_items();
         let now = chrono::Utc::now();
         (
             source_coverage_summary(
@@ -633,13 +670,16 @@ pub async fn admin_page(
     };
 
     // Durable notification delivery: dead-lettered rows are operator-replayable.
-    let delivery_dead_letters: Vec<DeliveryDeadLetterItem> = store
-        .list_dead_lettered_notifications(DEAD_LETTER_LIST_LIMIT)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::error!("failed to list dead-lettered notification deliveries: {error}");
-            vec![]
-        })
+    let delivery_dead_letters_state = DataState::from_result(
+        store
+            .list_dead_lettered_notifications(DEAD_LETTER_LIST_LIMIT)
+            .await,
+        "list_dead_lettered_notifications failed (web admin dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&delivery_dead_letters_state, &mut degraded_notice);
+    let delivery_dead_letters: Vec<DeliveryDeadLetterItem> = delivery_dead_letters_state
+        .into_items()
         .into_iter()
         .map(|row| DeliveryDeadLetterItem {
             delivery_key: row.delivery_key,
@@ -653,13 +693,16 @@ pub async fn admin_page(
                 .unwrap_or_else(|| "—".to_string()),
         })
         .collect();
-    let outbox_dead_letters: Vec<OutboxDeadLetterItem> = store
-        .list_dead_lettered_outbox(DEAD_LETTER_LIST_LIMIT)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::error!("failed to list dead-lettered outbox events: {error}");
-            vec![]
-        })
+    let outbox_dead_letters_state = DataState::from_result(
+        store
+            .list_dead_lettered_outbox(DEAD_LETTER_LIST_LIMIT)
+            .await,
+        "list_dead_lettered_outbox failed (web admin dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&outbox_dead_letters_state, &mut degraded_notice);
+    let outbox_dead_letters: Vec<OutboxDeadLetterItem> = outbox_dead_letters_state
+        .into_items()
         .into_iter()
         .map(|row| OutboxDeadLetterItem {
             id: row.id.to_string(),
@@ -709,6 +752,8 @@ pub async fn admin_page(
         delivery_dead_letters,
         outbox_dead_letters,
         parser_metrics: apex_crawl::parse_outcome::PARSER_METRICS.snapshot(),
+
+        degraded_notice,
     };
 
     super::render_template(&tpl)

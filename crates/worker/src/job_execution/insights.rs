@@ -120,11 +120,21 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
                 continue;
             }
 
-            // Get company name for context
+            // Get company name for context. A storage failure is not the same
+            // as "company not found" and must be logged as an error.
             let company_name = match store.get_company(**company_id).await {
                 Ok(Some(c)) => c.name,
-                Ok(None) | Err(_) => {
+                Ok(None) => {
                     tracing::warn!(company_id = %company_id, "insight_generation: company not found");
+                    companies_skipped += 1;
+                    continue;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        company_id = %company_id,
+                        error = %error,
+                        "insight_generation: failed to load company; skipping company"
+                    );
                     companies_skipped += 1;
                     continue;
                 }
@@ -690,12 +700,32 @@ async fn generate_insights_for_company(
     };
 
     let cached_output: Option<CachedInsightOutput> = match cache_key.as_deref() {
-        Some(key) => store
-            .get_llm_cache(key)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|raw| serde_json::from_str(&raw).ok()),
+        Some(key) => match store.get_llm_cache(key).await {
+            Ok(Some(raw)) => match serde_json::from_str(&raw) {
+                Ok(cached) => Some(cached),
+                Err(error) => {
+                    // A corrupt cache row is a miss, but it is logged rather
+                    // than silently discarded.
+                    tracing::warn!(
+                        company = %company_name,
+                        error = %error,
+                        "insight_generation: cached output is not valid JSON; treating as cache miss"
+                    );
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(error) => {
+                // Storage failure is not a cache miss: surface it and skip the
+                // cache instead of pretending the cache was consulted.
+                tracing::warn!(
+                    company = %company_name,
+                    error = %error,
+                    "insight_generation: llm cache read failed; re-running inference"
+                );
+                None
+            }
+        },
         None => None,
     };
 

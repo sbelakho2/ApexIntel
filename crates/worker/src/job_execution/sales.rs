@@ -534,13 +534,21 @@ pub(super) async fn run_person_mention_materialization(
 
             // Dedup against existing persons by normalized name + org.
             let name_key = normalize_name_key(&clean);
-            let exists: bool = sqlx::query_scalar(
+            let exists: bool = match sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM persons WHERE lower(regexp_replace(name, '\\s+', ' ', 'g')) = lower($1))",
             )
             .bind(&name_key)
             .fetch_one(&store.pool)
             .await
-            .unwrap_or(true); // on error, assume exists to avoid dup risk
+            {
+                Ok(exists) => exists,
+                Err(error) => {
+                    run.fail(&format!(
+                        "person_mention_materialization: person dedup lookup failed: {error}"
+                    ));
+                    return run;
+                }
+            };
             if exists {
                 skipped_dup += 1;
                 continue;

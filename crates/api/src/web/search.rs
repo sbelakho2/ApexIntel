@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::autocomplete::AutocompleteIndex;
 use apex_store::postgres::{PgStore, WarningListFilters};
 use apex_store::tantivy_index::SearchIndex;
@@ -111,6 +112,8 @@ pub struct SearchPage {
     pub active_type: String,
     pub took_ms: i64,
     pub saved_searches: Vec<SavedSearchItem>,
+
+    pub degraded_notice: Option<String>,
 }
 
 /// HTMX partial for live-search swaps: facets + results + pager (B302).
@@ -128,6 +131,7 @@ pub struct SearchResultsPartial {
     pub facets: Vec<SearchFacet>,
     pub active_type: String,
     pub took_ms: i64,
+    pub degraded_notice: Option<String>,
 }
 
 // ─── HTMX autocomplete partial template ────────────────────────────────────
@@ -158,14 +162,19 @@ pub async fn search_page(
     Extension(search_index): Extension<Arc<SearchIndex>>,
     axum::extract::Query(params): axum::extract::Query<SearchPageQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/search", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web search page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/search", unack_state.into_loaded_or(0));
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(25).clamp(1, 100);
     let query_str = params.q.unwrap_or_default();
@@ -189,21 +198,22 @@ pub async fn search_page(
             let offset = ((page - 1) * per_page) as usize;
             let limit = per_page as usize;
 
-            let (items, total_hits) = if active_type == "all" {
-                search_index
-                    .search_with_total(&sanitized, limit, offset)
-                    .unwrap_or_else(|e| {
-                        tracing::error!("Search failed: {e}");
-                        (vec![], 0)
-                    })
-            } else {
-                search_index
-                    .search_entity_type_with_total(&sanitized, &active_type, limit, offset)
-                    .unwrap_or_else(|e| {
-                        tracing::error!("Search entity_type failed: {e}");
-                        (vec![], 0)
-                    })
-            };
+            let search_state = DataState::from_result(
+                if active_type == "all" {
+                    search_index.search_with_total(&sanitized, limit, offset)
+                } else {
+                    search_index.search_entity_type_with_total(
+                        &sanitized,
+                        &active_type,
+                        limit,
+                        offset,
+                    )
+                },
+                "search index query failed (web search page)",
+                |(items, _)| items.is_empty(),
+            );
+            DegradedNotice::capture(&search_state, &mut degraded_notice);
+            let (items, total_hits) = search_state.into_loaded_or((vec![], 0));
 
             let mapped: Vec<SearchResultItem> = items
                 .iter()
@@ -228,17 +238,25 @@ pub async fn search_page(
             // B302: real facet counts. One count-only probe per entity type —
             // the previous `build_empty_facets` rendered `(0)` next to every
             // facet even when results existed.
-            let all_total = search_index
-                .search_with_total(&sanitized, 1, 0)
+            let all_total_state = DataState::from_result(
+                search_index.search_with_total(&sanitized, 1, 0),
+                "search index total probe failed (web search page)",
+                |_| false,
+            );
+            DegradedNotice::capture(&all_total_state, &mut degraded_notice);
+            let all_total = all_total_state
                 .map(|(_, total)| total as i64)
-                .unwrap_or(total_hits as i64);
+                .into_loaded_or(total_hits as i64);
             let facet_counts: Vec<(&str, i64)> = ["company", "person", "warning", "insight"]
                 .into_iter()
                 .map(|t| {
-                    let count = search_index
-                        .search_entity_type_with_total(&sanitized, t, 1, 0)
-                        .map(|(_, total)| total as i64)
-                        .unwrap_or(0);
+                    let count_state = DataState::from_result(
+                        search_index.search_entity_type_with_total(&sanitized, t, 1, 0),
+                        "search index facet probe failed (web search page)",
+                        |_| false,
+                    );
+                    DegradedNotice::capture(&count_state, &mut degraded_notice);
+                    let count = count_state.map(|(_, total)| total as i64).into_loaded_or(0);
                     (t, count)
                 })
                 .collect();
@@ -267,16 +285,20 @@ pub async fn search_page(
             facets,
             active_type,
             took_ms,
+            degraded_notice: degraded_notice.clone(),
         };
         super::render_template(&partial)
     } else {
-        let saved_searches = store
-            .list_saved_searches_scoped(&session.user_id, session.role.as_str())
-            .await
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "failed to load saved searches (web search page)");
-                Vec::new()
-            })
+        let saved_searches_state = DataState::from_result(
+            store
+                .list_saved_searches_scoped(&session.user_id, session.role.as_str())
+                .await,
+            "list_saved_searches_scoped failed (web search page)",
+            Vec::is_empty,
+        );
+        DegradedNotice::capture(&saved_searches_state, &mut degraded_notice);
+        let saved_searches = saved_searches_state
+            .into_items()
             .into_iter()
             .map(|record| {
                 let entity_type = record
@@ -310,6 +332,8 @@ pub async fn search_page(
             active_type,
             took_ms,
             saved_searches,
+
+            degraded_notice,
         };
         super::render_template(&tpl)
     }

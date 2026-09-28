@@ -333,6 +333,9 @@ pub struct DossierEntry {
 #[template(path = "partials/company_changes_tab.html")]
 pub struct CompanyChangesTabPartial {
     pub events: Vec<CompanyEvent>,
+    /// Set when the changes query failed, so a storage error never renders as
+    /// "no recent changes".
+    pub degraded_notice: Option<String>,
 }
 
 /// Company dossier tab partial template.
@@ -666,14 +669,18 @@ pub async fn list_companies(
         format!("{}?", current_filters_href)
     };
 
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/companies", unack);
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web companies list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/companies", unack_state.into_loaded_or(0));
 
     let tpl = CompaniesListPage {
         current_path: ctx.current_path,
@@ -797,14 +804,19 @@ pub async fn get_company(
     Path(id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CompanyDetailQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/companies", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web company detail)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/companies", unack_state.into_loaded_or(0));
 
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
@@ -835,8 +847,6 @@ pub async fn get_company(
             );
         }
     };
-
-    let mut degraded_notice: Option<String> = None;
 
     // Fetch sites for this company
     let sites_state = DataState::from_result(
@@ -1365,11 +1375,14 @@ pub async fn company_changes_tab(
         }
     };
 
-    let change_rows = store
-        .get_company_changes(uuid, 50)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let mut degraded_notice: Option<String> = None;
+    let change_rows_state = DataState::from_result(
+        store.get_company_changes(uuid, 50).await,
+        "get_company_changes failed (web company changes tab)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&change_rows_state, &mut degraded_notice);
+    let change_rows = change_rows_state.into_items();
     let events: Vec<CompanyEvent> = change_rows
         .iter()
         .map(|c| CompanyEvent {
@@ -1383,7 +1396,10 @@ pub async fn company_changes_tab(
         })
         .collect();
 
-    let partial = CompanyChangesTabPartial { events };
+    let partial = CompanyChangesTabPartial {
+        events,
+        degraded_notice,
+    };
     super::render_template(&partial)
 }
 

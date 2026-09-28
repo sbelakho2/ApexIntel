@@ -1,6 +1,9 @@
 {# HTMX partial: facets + result list + pager (B302).
    Rendered for both full-page loads (included below) and live-search swaps. #}
 {% import "macros.html" as m %}
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-4 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
 <div class="flex items-center gap-2 mb-4 flex-wrap">
   {% for f in facets %}
   <a href="/search?q={{ query|urlencode }}&entity_type={{ f.slug }}"
@@ -25,7 +28,7 @@
   {% endfor %}
 </div>
 
-{% if results.is_empty() %}
+{% if results.is_empty() && degraded_notice.is_none() %}
 {% call m::empty_state("No Results", "No results found for your search query.") %}
 {% endif %}
 

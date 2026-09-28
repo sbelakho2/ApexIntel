@@ -181,6 +181,7 @@ pub struct WarningDetailQuery {
     pub briefing: Option<bool>,
 }
 
+/// One claim line in the rendered analysis panel.
 // ─── Templates ──────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -1275,11 +1276,18 @@ pub async fn start_investigation_html(
     // Same name/description derivation as the prefilled workspace form, so the
     // one-click and form entry points produce the same workspace.
     let entity_name = match warning.entity_ids.as_deref().unwrap_or_default().first() {
-        Some(entity_id) => store
-            .get_company_names_by_ids(&[*entity_id])
-            .await
-            .ok()
-            .and_then(|names| names.into_iter().next().map(|(_, name, _, _)| name)),
+        Some(entity_id) => match store.get_company_names_by_ids(&[*entity_id]).await {
+            Ok(names) => names.into_iter().next().map(|(_, name, _, _)| name),
+            Err(error) => {
+                // The resolved name is only a convenience label; log the real
+                // failure and fall back to the warning title.
+                tracing::error!(
+                    %error,
+                    "one-click investigation: failed to resolve entity name"
+                );
+                None
+            }
+        },
         None => None,
     };
     let (name, description) =
@@ -1324,14 +1332,24 @@ pub async fn unread_count(
     _session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let count = store
+    match store
         .count_warnings(&WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
-    Html(format!("{}", count))
+    {
+        Ok(count) => Html(format!("{count}")).into_response(),
+        Err(error) => {
+            // A failed count must not render as "0 unread".
+            tracing::error!(error = %error, "count_warnings failed (web unread-count badge)");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("unavailable".to_string()),
+            )
+                .into_response()
+        }
+    }
 }
 /// One rendered claim line: text, its kind label, optional confidence and the
 /// real evidence citations resolved by the analysis service.
@@ -1797,6 +1815,16 @@ pub async fn warning_analysis_status_html(
                 WarningAnalysisPanel::in_flight(&id, &warning.title, &run.id.to_string(), status)
             }
         };
+        super::render_template(&panel)
+    }
+
+    #[cfg(not(feature = "llm"))]
+    {
+        let panel = WarningAnalysisPanel::unavailable(
+            &id,
+            &warning.title,
+            "This build does not include the LLM analysis feature. The warning is unchanged.",
+        );
         super::render_template(&panel)
     }
 

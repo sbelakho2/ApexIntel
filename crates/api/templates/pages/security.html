@@ -16,6 +16,10 @@
 {% block content %}
 {% call m::page_header("Security Center", "shield", "DNS posture, lookalike domains, and KEV relevance monitoring.", "") %}
 
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-4 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+
 <div class="mb-4 apex-card p-3">
   <div class="flex flex-wrap items-center justify-between gap-2">
     <p class="text-[11px] text-rams-muted">Run an on-demand security crawl job and refresh posture findings.</p>
@@ -110,7 +114,7 @@
         <span class="font-bold tabular-nums">{{ risk_low_count }}</span>
       </div>
       {% endif %}
-      {% if risk_critical_count == 0 && risk_high_count == 0 && risk_medium_count == 0 && risk_low_count == 0 %}
+      {% if risk_critical_count == 0 && risk_high_count == 0 && risk_medium_count == 0 && risk_low_count == 0 && degraded_notice.is_none() %}
       <p class="text-xs text-rams-muted">No findings to classify.</p>
       {% endif %}
     </div>
@@ -119,7 +123,7 @@
   <div class="lg:col-span-2 apex-card p-4">
     <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">DNS Posture Checks</h2>
     <div class="space-y-2 max-h-64 overflow-y-auto">
-      {% if dns_posture.is_empty() %}
+      {% if dns_posture.is_empty() && degraded_notice.is_none() %}
       <p class="text-xs text-rams-muted">No DNS posture checks available.</p>
       {% else %}
         {% for d in dns_posture %}
@@ -157,7 +161,7 @@
 </div>
 
 <div class="apex-card p-4 mb-4">
-  {% if findings.is_empty() %}
+  {% if findings.is_empty() && degraded_notice.is_none() %}
   {% call m::empty_state("No security warnings yet", "Security warnings will appear here when checks identify issues.") %}
   {% else %}
   <div class="space-y-3">

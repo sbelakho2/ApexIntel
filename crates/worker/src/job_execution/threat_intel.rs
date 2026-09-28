@@ -195,24 +195,23 @@ async fn assess_supply_chain_heuristic(
     .bind(company.id)
     .bind(since)
     .fetch_all(&store.pool)
-    .await
-    // A failed read propagates: the caller must not count it as "0 risks".
-    ?;
+    .await?;
 
-    let disruption_count = rows
-        .iter()
-        .filter(|row| {
-            use sqlx::Row;
-            // false-success-classification: best-effort — row field default; an
-            // unreadable text column contributes no keyword evidence.
-            let text: String = row.try_get("text").unwrap_or_default();
-            let lower = text.to_lowercase();
-            lower.contains("disruption")
-                || lower.contains("shortage")
-                || lower.contains("delay")
-                || lower.contains("supply chain")
-        })
-        .count();
+    let mut disruption_count = 0usize;
+    for row in &rows {
+        use sqlx::Row;
+        // An unreadable text column is a decode failure: the caller must not
+        // read it as "no disruption evidence".
+        let text: String = row.try_get("text")?;
+        let lower = text.to_lowercase();
+        if lower.contains("disruption")
+            || lower.contains("shortage")
+            || lower.contains("delay")
+            || lower.contains("supply chain")
+        {
+            disruption_count += 1;
+        }
+    }
 
     if disruption_count > 0 {
         let now = chrono::Utc::now();

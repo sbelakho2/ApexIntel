@@ -531,12 +531,18 @@ pub(crate) async fn post_replay(
         }
     };
 
-    let recipe_count = state
-        .store
-        .get_admin_recipe_performance()
-        .await
-        .map(|perf| perf.production_count.max(1) as usize)
-        .unwrap_or(1);
+    let recipe_count = match state.store.get_admin_recipe_performance().await {
+        Ok(perf) => perf.production_count.max(1) as usize,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get_admin_recipe_performance failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load recipe performance",
+                ))),
+            );
+        }
+    };
 
     let job = match state
         .store

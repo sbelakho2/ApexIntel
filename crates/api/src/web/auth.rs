@@ -285,7 +285,16 @@ pub async fn resolve_login(
 
     bootstrap_app_users_from_env(store).await;
 
-    let record = store.find_app_user_by_username(username).await.ok()??;
+    let record = match store.find_app_user_by_username(username).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return None,
+        Err(error) => {
+            // A storage failure must never read as "no such user": fail closed
+            // and record the real reason.
+            tracing::error!(%error, "login rejected: app_users lookup failed");
+            return None;
+        }
+    };
     if !record.enabled {
         tracing::warn!(user_id = %record.id, "login rejected: account disabled");
         return None;
@@ -311,11 +320,14 @@ pub async fn resolve_login(
 
     // The update re-checks `enabled`, so a row disabled between the lookup and
     // the credential check still fails closed.
-    let record = store
-        .record_app_user_login(&record.id)
-        .await
-        .ok()
-        .flatten()?;
+    let record = match store.record_app_user_login(&record.id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::error!(%error, "login rejected: recording the login failed");
+            return None;
+        }
+    };
 
     Some(LoginPrincipal {
         user_id: UserId::from(record.id),
@@ -323,6 +335,25 @@ pub async fn resolve_login(
         role,
         session_version: record.session_version.max(0) as u32,
     })
+}
+
+/// Whether legacy SHA-256 password hashes are accepted.
+///
+/// Production must reject them by default: only an explicit
+/// `ALLOW_LEGACY_PASSWORD_HASHES=true` (or `1`) enables the legacy path, so a
+/// deployment cannot silently keep accepting weak hashes.
+fn legacy_password_hashes_enabled() -> bool {
+    legacy_password_hashes_enabled_value(
+        std::env::var("ALLOW_LEGACY_PASSWORD_HASHES")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Pure decision function for [`legacy_password_hashes_enabled`] (testable
+/// without mutating the process environment).
+fn legacy_password_hashes_enabled_value(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("true") | Some("1"))
 }
 
 /// Verify a password against a stored hash. Accepts Argon2id PHC strings and
@@ -346,6 +377,13 @@ pub fn verify_password_hash(password: &str, stored_hash: &str) -> bool {
     }
 
     if stored_hash.len() == 64 && stored_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !legacy_password_hashes_enabled() {
+            tracing::error!(
+                "legacy SHA-256 password hash rejected — migrate to an Argon2id PHC hash, \
+                 or set ALLOW_LEGACY_PASSWORD_HASHES=true to accept it during an upgrade"
+            );
+            return false;
+        }
         tracing::warn!("legacy SHA-256 password hash accepted — migrate to an Argon2id PHC hash");
         let mut hasher = Sha256::new();
         hasher.update(password.as_bytes());
@@ -450,13 +488,20 @@ pub async fn login_submit(
     // The session length preference is user-private data read under the
     // canonical user id, not the login name.
     let session_ttl_ms = match &store {
-        Some(store) => store
-            .get_user_settings_prefs(&principal.user_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|prefs| session_ttl_ms_for_hours(prefs.session_timeout_hours))
-            .unwrap_or(SESSION_TTL_MS),
+        Some(store) => match store.get_user_settings_prefs(&principal.user_id).await {
+            Ok(Some(prefs)) => session_ttl_ms_for_hours(prefs.session_timeout_hours),
+            Ok(None) => SESSION_TTL_MS,
+            Err(error) => {
+                // A failed preference read must not silently look like "user
+                // has no preference": log it and fall back to the default TTL.
+                tracing::warn!(
+                    user_id = %principal.user_id,
+                    error = %error,
+                    "failed to load session timeout preference; using default TTL"
+                );
+                SESSION_TTL_MS
+            }
+        },
         None => SESSION_TTL_MS,
     };
 
@@ -584,10 +629,28 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sha256_hash_still_verifies() {
+    fn legacy_sha256_hashes_are_rejected_by_default_and_require_explicit_opt_in() {
+        std::env::remove_var("ALLOW_LEGACY_PASSWORD_HASHES");
         let hash = legacy_sha256_hex("legacy-password");
+        assert!(
+            !verify_password_hash("legacy-password", &hash),
+            "SHA-256 must be rejected unless ALLOW_LEGACY_PASSWORD_HASHES is set"
+        );
+
+        std::env::set_var("ALLOW_LEGACY_PASSWORD_HASHES", "true");
         assert!(verify_password_hash("legacy-password", &hash));
         assert!(!verify_password_hash("other-password", &hash));
+        std::env::remove_var("ALLOW_LEGACY_PASSWORD_HASHES");
+    }
+
+    #[test]
+    fn legacy_hash_flag_parsing_is_strict() {
+        assert!(!legacy_password_hashes_enabled_value(None));
+        assert!(!legacy_password_hashes_enabled_value(Some("false")));
+        assert!(!legacy_password_hashes_enabled_value(Some("yes")));
+        assert!(!legacy_password_hashes_enabled_value(Some("")));
+        assert!(legacy_password_hashes_enabled_value(Some("true")));
+        assert!(legacy_password_hashes_enabled_value(Some(" 1 ")));
     }
 
     #[test]

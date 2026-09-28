@@ -158,29 +158,50 @@ pub(crate) async fn list_insights(
         .filter_map(|item| Uuid::parse_str(&item.id).ok())
         .collect();
     if !insight_uuids.is_empty() {
-        if let Ok(bookmarked_ids) = state
+        match state
             .store
             .get_bookmarked_insight_ids(&auth_ctx.user_id, &insight_uuids)
             .await
         {
-            let bookmarked: std::collections::HashSet<String> =
-                bookmarked_ids.iter().map(|id| id.to_string()).collect();
-            for item in &mut items {
-                item.bookmarked = Some(bookmarked.contains(&item.id));
+            Ok(bookmarked_ids) => {
+                let bookmarked: std::collections::HashSet<String> =
+                    bookmarked_ids.iter().map(|id| id.to_string()).collect();
+                for item in &mut items {
+                    item.bookmarked = Some(bookmarked.contains(&item.id));
+                }
+            }
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "get_bookmarked_insight_ids failed: {err:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Failed to load bookmark state",
+                    ))),
+                );
             }
         }
-        if let Ok(quality_scores) = state
+        let quality_scores = match state
             .store
             .get_insight_feedback_scores(&insight_uuids)
             .await
         {
-            for item in &mut items {
-                if let Ok(insight_id) = Uuid::parse_str(&item.id) {
-                    item.quality_score = Some(*quality_scores.get(&insight_id).unwrap_or(&0.5));
-                }
+            Ok(scores) => scores,
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "get_insight_feedback_scores failed: {err:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Failed to load insight quality scores",
+                    ))),
+                );
             }
-            apex_api::routes::insights::rank_insights(&mut items);
+        };
+        for item in &mut items {
+            if let Ok(insight_id) = Uuid::parse_str(&item.id) {
+                item.quality_score = quality_scores.get(&insight_id).copied();
+            }
         }
+        apex_api::routes::insights::rank_insights(&mut items);
     }
 
     if diversify_feed {
@@ -356,13 +377,19 @@ pub(crate) async fn record_insight_feedback(
                     }),
                 )
                 .await;
-            let quality_score = state
-                .store
-                .get_insight_feedback_scores(&[uid])
-                .await
-                .ok()
-                .and_then(|scores| scores.get(&uid).copied())
-                .unwrap_or(0.5);
+            let quality_scores = match state.store.get_insight_feedback_scores(&[uid]).await {
+                Ok(scores) => scores,
+                Err(err) => {
+                    tracing::error!("feedback score load failed: {err:#}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(error_response(ApiError::internal(
+                            "Failed to load insight quality score",
+                        ))),
+                    );
+                }
+            };
+            let quality_score = quality_scores.get(&uid).copied();
             (
                 StatusCode::OK,
                 Json(success_with_meta(
@@ -529,12 +556,19 @@ pub(crate) async fn analyze_insight(
     };
 
     let entity_ids: Vec<Uuid> = insight.entity_ids.clone().unwrap_or_default();
-    let company_names = state
-        .store
-        .get_company_names_by_ids(&entity_ids)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+
+    let company_names = match state.store.get_company_names_by_ids(&entity_ids).await {
+        Ok(names) => names,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "analyze_insight: get_company_names_by_ids failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load insight entities",
+                ))),
+            );
+        }
+    };
     let entity_names: Vec<String> = company_names
         .iter()
         .map(|(_, name, _, _)| name.clone())
@@ -542,12 +576,18 @@ pub(crate) async fn analyze_insight(
 
     let mut all_observations = Vec::new();
     for eid in &entity_ids {
-        let obs = state
-            .store
-            .get_observations_by_entity(*eid, 30)
-            .await
-            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-            .unwrap_or_default();
+        let obs = match state.store.get_observations_by_entity(*eid, 30).await {
+            Ok(obs) => obs,
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "analyze_insight: get_observations_by_entity failed: {err:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Failed to load insight evidence",
+                    ))),
+                );
+            }
+        };
         all_observations.extend(obs);
     }
     all_observations.sort_by_key(|a| std::cmp::Reverse(a.ts_utc));
@@ -565,19 +605,34 @@ pub(crate) async fn analyze_insight(
         });
     }
 
-    let related_warnings = state
+    let related_warnings = match state
         .store
         .get_warnings_by_entity_ids(&entity_ids, 10)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
-    let related_insights = state
-        .store
-        .get_related_insights(&entity_ids, uid, 5)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
-    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
+    {
+        Ok(warnings) => warnings,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "analyze_insight: get_warnings_by_entity_ids failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load related warnings",
+                ))),
+            );
+        }
+    };
+    let related_insights = match state.store.get_related_insights(&entity_ids, uid, 5).await {
+        Ok(insights) => insights,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "analyze_insight: get_related_insights failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load related insights",
+                ))),
+            );
+        }
+    };
     let evidence_urls = insight.evidence_urls.clone().unwrap_or_default();
     let source_count = evidence_urls.len();
 
@@ -844,12 +899,19 @@ pub(crate) async fn investigate_insight(
 
     let entity_ids: Vec<Uuid> = insight.entity_ids.clone().unwrap_or_default();
     let primary_entity_id = entity_ids.first().copied();
-    let company_names = state
-        .store
-        .get_company_names_by_ids(&entity_ids)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+
+    let company_names = match state.store.get_company_names_by_ids(&entity_ids).await {
+        Ok(names) => names,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "investigate_insight: get_company_names_by_ids failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load insight entities",
+                ))),
+            );
+        }
+    };
     let entity_name = company_names
         .first()
         .map(|(_, name, _, _)| name.clone())
@@ -858,12 +920,18 @@ pub(crate) async fn investigate_insight(
     // Load recent observations for the primary entity as investigation evidence.
     let mut evidence_items: Vec<apex_investigation::reasoning::EvidenceItem> = Vec::new();
     if let Some(eid) = primary_entity_id {
-        let obs = state
-            .store
-            .get_observations_by_entity(eid, 30)
-            .await
-            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-            .unwrap_or_default();
+        let obs = match state.store.get_observations_by_entity(eid, 30).await {
+            Ok(obs) => obs,
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "investigate_insight: get_observations_by_entity failed: {err:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Failed to load investigation evidence",
+                    ))),
+                );
+            }
+        };
         for (i, o) in obs.iter().enumerate() {
             evidence_items.push(apex_investigation::reasoning::EvidenceItem {
                 id: format!("obs-{i}"),

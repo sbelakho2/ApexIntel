@@ -3,7 +3,7 @@
 **Audience**: DevOps, System Administrator  
 **Revision**: March 2026  
 **Status**: 🚀 Deployed (multi-service: `apexintel-api`, `apexintel-worker`, `apexintel-llm`)  
-**Domain**: https://starzerp.fi
+**Domain**: https://<PRODUCTION_DOMAIN>
 
 ---
 
@@ -11,23 +11,23 @@
 
 | Item | Value |
 |------|-------|
-| **Domain** | [https://starzerp.fi](https://starzerp.fi) |
+| **Domain** | `https://<PRODUCTION_DOMAIN>` |
 | **VPS Provider** | Hetzner |
-| **VPS IPv4** | `77.42.65.89` |
+| **VPS IPv4** | `<PRODUCTION_HOST>` |
 | **OS** | Ubuntu 24.04 LTS (aarch64 / ARM64) |
 | **Arch** | Ampere Altra (Neoverse-N1) |
-| **SSH User** | `root` |
+| **SSH User** | `<DEPLOY_USER>` |
 | **Colocated with** | CRM-v2 (Starz Morocco CRM) — **completely separate** |
 
 ### 0.1 SSH Key Setup
 
 | Item | Value |
 |------|-------|
-| **Private key** | `~/.ssh/hetzner-db-mac` (local machine) |
-| **Public key** | `~/.ssh/hetzner-db-mac.pub` |
+| **Private key** | `~/.ssh/<DEPLOY_KEY>` (local machine) |
+| **Public key** | `~/.ssh/<DEPLOY_KEY>.pub` |
 
 ```bash
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
+ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<PRODUCTION_HOST>
 ```
 
 ---
@@ -61,7 +61,8 @@ versioned independently.
 | **Certbot** | Latest | Let's Encrypt SSL auto-renewal |
 
 > **Note**: Node.js is **not required**. The Next.js frontend was fully replaced by
-> server-rendered Askama/HTMX templates compiled into the Rust binary (March 2026).
+> server-rendered Askama/HTMX templates compiled into the `apex-api` binary (March
+> 2026); static assets are served by nginx from disk.
 
 ### 0.4 Separation from CRM-v2
 
@@ -72,7 +73,7 @@ versioned independently.
 | **Database** | MySQL `starz_crm` | PostgreSQL `apexintel` |
 | **Systemd services** | `starz-messenger` | `apexintel-api`, `apexintel-worker`, `apexintel-llm` |
 | **Ports (internal)** | PHP-FPM socket | API: 8080, LLM: 8081, NATS: 4222, MinIO: 9000, Redis: 6379, PG: 5432 |
-| **Domain** | starzcrm.com | starzerp.fi |
+| **Domain** | starzcrm.com | https://<PRODUCTION_DOMAIN> |
 | **User** | www-data | apexintel |
 
 ---
@@ -163,21 +164,48 @@ sudo cp build/bin/llama-server /usr/local/bin/
 ### 2.1 PostgreSQL
 
 ```bash
-# Generate a secure password:
-openssl rand -base64 32
+# Generate one secure password per role:
+openssl rand -base64 32   # → DB_PASSWORD (apexintel_app)
+openssl rand -base64 32   # → MIGRATOR_PASSWORD (apexintel_migrator)
 
-# Create database:
+# Create the two roles and the database (as the postgres superuser):
 sudo -u postgres psql <<'SQL'
-CREATE USER apexintel WITH PASSWORD '<YOUR_GENERATED_PASSWORD>';
-CREATE DATABASE apexintel OWNER apexintel;
-GRANT ALL PRIVILEGES ON DATABASE apexintel TO apexintel;
+-- Owner/migration role: owns the database and every migration-created object.
+CREATE ROLE apexintel_migrator LOGIN PASSWORD '<MIGRATOR_PASSWORD>';
+
+-- Runtime role: least privilege, no DDL, cannot bypass RLS.
+CREATE ROLE apexintel_app LOGIN PASSWORD '<DB_PASSWORD>'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+
+CREATE DATABASE apexintel OWNER apexintel_migrator;
+
 \c apexintel
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+
+-- Runtime privileges: connect + DML only (no DDL)
+GRANT CONNECT ON DATABASE apexintel TO apexintel_app;
+GRANT USAGE ON SCHEMA public TO apexintel_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO apexintel_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO apexintel_app;
+
+-- Objects created later by the migrator inherit the same runtime grants,
+-- so migrations applied at API startup need no follow-up GRANTs:
+ALTER DEFAULT PRIVILEGES FOR ROLE apexintel_migrator IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO apexintel_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE apexintel_migrator IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO apexintel_app;
 SQL
 ```
 
-**Connection string**: `postgresql://apexintel:<PASSWORD>@127.0.0.1:5432/apexintel`
+**Connection strings**:
+- Runtime (`apex-api` + `apex-worker`): `postgresql://apexintel_app:<DB_PASSWORD>@127.0.0.1:5432/apexintel`
+- Migrations (API startup path): `postgresql://apexintel_migrator:<MIGRATOR_PASSWORD>@127.0.0.1:5432/apexintel`
+
+**Role contract**: `apexintel_migrator` owns the `apexintel` database and applies
+migrations (DDL allowed). `apexintel_app` is the runtime role used by both the API
+and the worker; it has no DDL rights. If a migration creates objects owned by
+another role, re-run the `GRANT` statements above after applying it.
 
 ### 2.2 Redis
 
@@ -226,35 +254,35 @@ redis-cli ping  # → PONG
 
 ### 3.2 Build & Deploy (Recommended: Cross-compile locally)
 
-The preferred method is cross-compiling on your local machine and uploading the binary:
+The preferred method is cross-compiling on your local machine and uploading the binaries:
 
 ```bash
 # On local machine (macOS with cargo-zigbuild):
-cd ~/IdeaProjects/ApexIntel
+cd <REPO_ROOT>
 
 # Install cross-compilation tools (one time):
 cargo install cargo-zigbuild
 brew install zig  # or equivalent for your OS
 
 # Build release binaries for ARM64 Linux:
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api --features llm --locked
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm --locked
 
 # Upload binaries:
-scp -i ~/.ssh/hetzner-db-mac \
+scp -i ~/.ssh/<DEPLOY_KEY> \
   target/aarch64-unknown-linux-gnu/release/apex-api \
-  root@77.42.65.89:/opt/apexintel/bin/apex-api
-scp -i ~/.ssh/hetzner-db-mac \
+  <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/bin/apex-api
+scp -i ~/.ssh/<DEPLOY_KEY> \
   target/aarch64-unknown-linux-gnu/release/apex-worker \
-  root@77.42.65.89:/opt/apexintel/bin/apex-worker
+  <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/bin/apex-worker
 
 # Upload static assets:
-scp -i ~/.ssh/hetzner-db-mac -r \
+scp -i ~/.ssh/<DEPLOY_KEY> -r \
   crates/api/static/* \
-  root@77.42.65.89:/opt/apexintel/static/
+  <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/static/
 
 # Set permissions on server:
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
+ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<PRODUCTION_HOST> \
   "chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker && \
    chown -R apexintel:apexintel /opt/apexintel/bin /opt/apexintel/static && \
    systemctl restart apexintel-api apexintel-worker"
@@ -264,8 +292,8 @@ ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
 
 ```bash
 cd /opt/apexintel/src
-cargo build --release -p apex-api --features llm
-cargo build --release -p apex-worker
+cargo build --release -p apex-api --features llm --locked
+cargo build --release -p apex-worker --features llm --locked
 cp target/release/apex-api /opt/apexintel/bin/
 cp target/release/apex-worker /opt/apexintel/bin/
 chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker
@@ -323,8 +351,12 @@ Create `/opt/apexintel/config/.env`:
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-# Generate password: openssl rand -base64 32
-DATABASE_URL=postgresql://apexintel:<DB_PASSWORD>@127.0.0.1:5432/apexintel
+# Two roles (see section 2.1):
+#   apexintel_app      — runtime role for apex-api and apex-worker (no DDL rights)
+#   apexintel_migrator — database owner; used only to apply migrations
+# Generate passwords: openssl rand -base64 32
+DATABASE_URL=postgresql://apexintel_app:<DB_PASSWORD>@127.0.0.1:5432/apexintel
+MIGRATION_DATABASE_URL=postgresql://apexintel_migrator:<MIGRATOR_PASSWORD>@127.0.0.1:5432/apexintel
 
 # ─── Service URLs ─────────────────────────────────────────────────────────────
 REDIS_URL=redis://127.0.0.1:6379
@@ -339,7 +371,7 @@ LLM_MODEL=Qwen3-30B-A3B-Q4_K_M
 # ─── API Server ───────────────────────────────────────────────────────────────
 HOST=127.0.0.1
 PORT=8080
-CORS_ORIGIN=https://starzerp.fi
+CORS_ORIGIN=https://<PRODUCTION_DOMAIN>
 API_LOG_LEVEL=info
 SEARCH_INDEX_PATH=/opt/apexintel/data/search
 
@@ -347,10 +379,13 @@ SEARCH_INDEX_PATH=/opt/apexintel/data/search
 # The API binary serves the login page and handles session cookies directly.
 # Username: choose an admin username
 APEX_ADMIN_USERNAME=<YOUR_ADMIN_USERNAME>
-# Password hash: Argon2id PHC string (preferred), single-quoted for dotenvy.
+# Password hash: Argon2id PHC string, single-quoted for dotenvy.
 # Generate in-repo: cargo run -p apex-api --example hash_password -- 'yourpassword'
 # Or with the argon2 CLI: echo -n 'yourpassword' | argon2 "$(openssl rand -hex 16)" -id -e
-# Legacy SHA-256 (deprecated, still accepted): echo -n 'yourpassword' | sha256sum | cut -d' ' -f1
+# Legacy SHA-256 hashes are REJECTED unless ALLOW_LEGACY_PASSWORD_HASHES=true.
+# That escape hatch exists only for explicitly-enabled upgrades of old
+# deployments — keep it false in production (Argon2id PHC hashes only).
+ALLOW_LEGACY_PASSWORD_HASHES=false
 APEX_ADMIN_PASSWORD_HASH='$argon2id$v=19$m=19456,t=2,p=1$<SALT>$<HASH>'
 # Session secret: openssl rand -hex 32
 SESSION_SECRET=<GENERATE_64_CHAR_HEX_SECRET>
@@ -412,13 +447,15 @@ chown apexintel:apexintel /opt/apexintel/config/.env
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DATABASE_URL` | ✅ | PostgreSQL connection string |
+| `DATABASE_URL` | ✅ | Runtime PostgreSQL connection string (`apexintel_app` role; no DDL rights) |
+| `MIGRATION_DATABASE_URL` | ✅ | Migration connection string (`apexintel_migrator` role); used by the API startup path to apply migrations |
 | `REDIS_URL` | ✅ | Redis connection URL |
 | `NATS_URL` | ✅ | NATS messaging URL |
 | `HOST` / `PORT` | ✅ | Bind address (127.0.0.1:8080) |
-| `CORS_ORIGIN` | ✅ | Allowed CORS origin (`https://starzerp.fi`) |
+| `CORS_ORIGIN` | ✅ | Allowed CORS origin (`https://<PRODUCTION_DOMAIN>`) |
 | `APEX_ADMIN_USERNAME` | ✅ | Web login username |
-| `APEX_ADMIN_PASSWORD_HASH` | ✅ | Argon2id PHC hash of the web login password (legacy SHA-256 hex still accepted, deprecated) |
+| `APEX_ADMIN_PASSWORD_HASH` | ✅ | Argon2id PHC hash of the web login password |
+| `ALLOW_LEGACY_PASSWORD_HASHES` | ➖ | `false` (recommended): legacy SHA-256 hashes are rejected; set `true` only for explicitly-enabled upgrades (Argon2id PHC hashes only in production) |
 | `WEB_USERS_JSON` | ➖ | Optional multi-user login: JSON array of `{id, username, password_hash, role}`; overrides `APEX_ADMIN_*` |
 | `SESSION_SECRET` | ✅ | 64-char hex for HMAC cookie signing |
 | `COOKIE_SECURE` | ➖ | Set `1` behind HTTPS: session cookie becomes `__Host-apex_session` with `Secure` |
@@ -606,8 +643,8 @@ The nginx config is maintained in the repository at `config/runtime/nginx-apexin
 Create `/etc/nginx/sites-available/apexintel`:
 
 ```nginx
-# ApexIntel – starzerp.fi
-# Rust/Axum serves HTML + API + static (no more Next.js)
+# ApexIntel – <PRODUCTION_DOMAIN>
+# Rust/Axum serves HTML + API; nginx serves static assets (no more Next.js)
 
 upstream apexintel_api {
     server 127.0.0.1:8080;
@@ -615,7 +652,7 @@ upstream apexintel_api {
 }
 
 server {
-    server_name starzerp.fi www.starzerp.fi;
+    server_name <PRODUCTION_DOMAIN> www.<PRODUCTION_DOMAIN>;
 
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -663,7 +700,7 @@ server {
         client_max_body_size 64k;
 
         # CORS — hardcoded to known origin, never reflect $http_origin (CORS reflection vulnerability)
-        add_header Access-Control-Allow-Origin "https://starzerp.fi" always;
+        add_header Access-Control-Allow-Origin "https://<PRODUCTION_DOMAIN>" always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Api-Key" always;
         add_header Access-Control-Allow-Credentials "true" always;
@@ -692,19 +729,19 @@ server {
 
     listen [::]:443 ssl;
     listen 443 ssl;
-    ssl_certificate /etc/letsencrypt/live/starzerp.fi/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/starzerp.fi/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/<PRODUCTION_DOMAIN>/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/<PRODUCTION_DOMAIN>/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
 
 server {
-    if ($host = starzerp.fi) {
+    if ($host = <PRODUCTION_DOMAIN>) {
         return 301 https://$host$request_uri;
     }
     listen 80;
     listen [::]:80;
-    server_name starzerp.fi www.starzerp.fi;
+    server_name <PRODUCTION_DOMAIN> www.<PRODUCTION_DOMAIN>;
     return 404;
 }
 ```
@@ -718,7 +755,7 @@ nginx -t && systemctl reload nginx
 ### 6.1 SSL Certificate
 
 ```bash
-sudo certbot --nginx -d starzerp.fi -d www.starzerp.fi
+sudo certbot --nginx -d <PRODUCTION_DOMAIN> -d www.<PRODUCTION_DOMAIN>
 ```
 
 ---
@@ -734,18 +771,18 @@ The trained Qwen3-30B-A3B model weights are on the vast.ai instance.
 cd /tmp && git clone https://github.com/ggerganov/llama.cpp.git
 cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j$(nproc)
 
-python3 convert_hf_to_gguf.py /workspace/outputs/merged_phase1/ \
-  --outfile /workspace/outputs/Qwen3-30B-A3B-f16.gguf --outtype f16
+python3 convert_hf_to_gguf.py <TRAINING_OUTPUT_DIR>/merged_phase1/ \
+  --outfile <TRAINING_OUTPUT_DIR>/Qwen3-30B-A3B-f16.gguf --outtype f16
 
 ./build/bin/llama-quantize \
-  /workspace/outputs/Qwen3-30B-A3B-f16.gguf \
-  /workspace/outputs/Qwen3-30B-A3B-Q4_K_M.gguf Q4_K_M
+  <TRAINING_OUTPUT_DIR>/Qwen3-30B-A3B-f16.gguf \
+  <TRAINING_OUTPUT_DIR>/Qwen3-30B-A3B-Q4_K_M.gguf Q4_K_M
 ```
 
 Transfer to Hetzner:
 ```bash
-scp -i /path/to/hetzner-key /workspace/outputs/Qwen3-30B-A3B-Q4_K_M.gguf \
-  root@77.42.65.89:/opt/apexintel/model/
+scp -i ~/.ssh/<DEPLOY_KEY> <TRAINING_OUTPUT_DIR>/Qwen3-30B-A3B-Q4_K_M.gguf \
+  <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/model/
 ```
 
 ### 7.2 Verify Model
@@ -768,19 +805,19 @@ curl http://127.0.0.1:8081/v1/chat/completions \
 
 ```bash
 # 1. Server setup (sections 1.3–1.8)
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
+ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<PRODUCTION_HOST>
 
 # 2. Database setup (section 2)
 # 3. Environment config (section 4)
 # 4. Install systemd services (section 5)
 # 5. Cross-compile and upload:
 # (on local machine)
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
-scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-api root@77.42.65.89:/opt/apexintel/bin/
-scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-worker root@77.42.65.89:/opt/apexintel/bin/
-scp -i ~/.ssh/hetzner-db-mac -r crates/api/static/* root@77.42.65.89:/opt/apexintel/static/
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "chown -R apexintel:apexintel /opt/apexintel && chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker"
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api --features llm --locked
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm --locked
+scp -i ~/.ssh/<DEPLOY_KEY> target/aarch64-unknown-linux-gnu/release/apex-api <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/bin/
+scp -i ~/.ssh/<DEPLOY_KEY> target/aarch64-unknown-linux-gnu/release/apex-worker <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/bin/
+scp -i ~/.ssh/<DEPLOY_KEY> -r crates/api/static/* <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/static/
+ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<PRODUCTION_HOST> "chown -R apexintel:apexintel /opt/apexintel && chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker"
 
 # 6. Configure nginx + SSL (section 6)
 # 7. Start services
@@ -791,31 +828,31 @@ systemctl start nats minio apexintel-api apexintel-worker apexintel-llm
 
 ```bash
 # On local machine:
-cd ~/IdeaProjects/ApexIntel
+cd <REPO_ROOT>
 
 # 1. Build
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api --features llm --locked
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm --locked
 
 # 2. Upload
-scp -i ~/.ssh/hetzner-db-mac \
+scp -i ~/.ssh/<DEPLOY_KEY> \
   target/aarch64-unknown-linux-gnu/release/apex-api \
-  root@77.42.65.89:/tmp/apex-api-new
-scp -i ~/.ssh/hetzner-db-mac \
+  <DEPLOY_USER>@<PRODUCTION_HOST>:/tmp/apex-api-new
+scp -i ~/.ssh/<DEPLOY_KEY> \
   target/aarch64-unknown-linux-gnu/release/apex-worker \
-  root@77.42.65.89:/tmp/apex-worker-new
+  <DEPLOY_USER>@<PRODUCTION_HOST>:/tmp/apex-worker-new
 
 # 3. Preflight the schema (mandatory for the fail-closed boot)
 #    With APEX_SKIP_MIGRATIONS=true (production) the new binaries refuse to
 #    start unless the applied migration history matches their embedded
 #    migrations (latest version + every checksum). If the DB is behind,
 #    apply the pending migrations (rehearsed on a restored backup) first.
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
+ssh -i ~/.ssh/<DEPLOY_KEY> root@<PRODUCTION_HOST> \
   'psql "$(grep ^DATABASE_URL= /opt/apexintel/config/.env | cut -d= -f2-)" \
      -Atc "SELECT max(version) FROM _sqlx_migrations WHERE success"'
 
 # 4. Install & restart
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 << 'EOF'
+ssh -i ~/.ssh/<DEPLOY_KEY> root@<PRODUCTION_HOST> << 'EOF'
 systemctl stop apexintel-api apexintel-worker
 cp /tmp/apex-api-new /opt/apexintel/bin/apex-api
 cp /tmp/apex-worker-new /opt/apexintel/bin/apex-worker
@@ -866,7 +903,7 @@ scripts/ops/record_deployment.sh \
 # 6. Give the running API that identity, then verify it. systemd reads
 #    EnvironmentFile at process start, so the restart is required; appending
 #    is safe because the later value wins.
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "cat >> /opt/apexintel/config/.env <<EOF
+ssh -i ~/.ssh/<DEPLOY_KEY> root@<PRODUCTION_HOST> "cat >> /opt/apexintel/config/.env <<EOF
 APEX_GIT_SHA=${APEX_GIT_SHA}
 APEX_BUILD_TIMESTAMP=${APEX_BUILD_TIMESTAMP}
 APEX_CI_PIPELINE_ID=${APEX_CI_PIPELINE_ID}
@@ -874,7 +911,7 @@ APEX_ARTIFACT_DIGEST=${APEX_ARTIFACT_DIGEST}
 APEX_DEPLOYED_AT=${APEX_DEPLOYED_AT}
 EOF
 systemctl restart apexintel-api"
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
+ssh -i ~/.ssh/<DEPLOY_KEY> root@<PRODUCTION_HOST> \
   'curl -sf http://127.0.0.1:8080/api/version | jq'
 # Expected: git_sha, build_timestamp and artifact_digest match the values
 # echoed by the recorder and the release-evidence bundle, and configured is
@@ -884,8 +921,8 @@ ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
 ### Updating Static Assets Only
 
 ```bash
-scp -i ~/.ssh/hetzner-db-mac -r crates/api/static/* root@77.42.65.89:/opt/apexintel/static/
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "chown -R apexintel:apexintel /opt/apexintel/static"
+scp -i ~/.ssh/<DEPLOY_KEY> -r crates/api/static/* <DEPLOY_USER>@<PRODUCTION_HOST>:/opt/apexintel/static/
+ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<PRODUCTION_HOST> "chown -R apexintel:apexintel /opt/apexintel/static"
 # No service restart needed — nginx serves static files directly
 ```
 
@@ -903,11 +940,11 @@ systemctl status apexintel-api apexintel-worker apexintel-llm nats minio postgre
 
 ```bash
 # Detailed capability matrix
-curl -s https://starzerp.fi/api/health | jq
+curl -s https://<PRODUCTION_DOMAIN>/api/health | jq
 # Expected: {"status":"Healthy","version":"0.1.0","checks":[...]}
 
 # Profile-aware readiness probe (503 when a required capability is not proven)
-curl -s -o /dev/null -w '%{http_code}\n' https://starzerp.fi/api/health/ready
+curl -s -o /dev/null -w '%{http_code}\n' https://<PRODUCTION_DOMAIN>/api/health/ready
 # APEX_PROFILE=core (default) requires database, schema lineage, worker
 # heartbeat, embeddings and search index. APEX_PROFILE=full composes the
 # product surfaces and additionally requires the LLM endpoint, NATS, browser
@@ -922,11 +959,11 @@ curl -s -o /dev/null -w '%{http_code}\n' https://starzerp.fi/api/health/ready
 # mismatch verdict.
 
 # Product surface probes (same measured capabilities, scoped per surface)
-curl -s https://starzerp.fi/process/live       # 200 while the API serves
-curl -s https://starzerp.fi/process/ready      # database, worker, scheduled jobs
-curl -s https://starzerp.fi/data/healthy       # freshness, sources, index, browser
-curl -s https://starzerp.fi/intelligence/healthy  # LLM, embeddings, alert engine
-curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher, notification delivery
+curl -s https://<PRODUCTION_DOMAIN>/process/live       # 200 while the API serves
+curl -s https://<PRODUCTION_DOMAIN>/process/ready      # database, worker, scheduled jobs
+curl -s https://<PRODUCTION_DOMAIN>/data/healthy       # freshness, sources, index, browser
+curl -s https://<PRODUCTION_DOMAIN>/intelligence/healthy  # LLM, embeddings, alert engine
+curl -s https://<PRODUCTION_DOMAIN>/delivery/healthy   # NATS, outbox publisher, notification delivery
 # Expected: {"surface":"...","status":"ok","checks":[...]}
 # Policy thresholds are configurable without a rebuild (defaults in parens):
 #   APEX_LLM_PROBE_TTL_SECS (60)         APEX_LLM_PROBE_TIMEOUT_SECS (5)
@@ -953,7 +990,7 @@ curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher, notific
 #   APEX_CRITICAL_JOB_MAX_AGE_SECS (7200)
 # Running deployment provenance (git SHA, build timestamp, CI pipeline,
 # artifact digest, deploy time)
-curl -s https://starzerp.fi/api/version | jq
+curl -s https://<PRODUCTION_DOMAIN>/api/version | jq
 # Expected: {"service":"apex-api","git_sha":"<sha>",
 #            "build_timestamp":"<rfc3339-or-epoch>","ci_pipeline_id":"<n>",
 #            "artifact_digest":"sha256:<hex>","deployed_at":"<rfc3339>",
@@ -975,14 +1012,14 @@ writing heartbeats).
 ### 9.3 Web UI
 
 ```bash
-curl -sI https://starzerp.fi/login
+curl -sI https://<PRODUCTION_DOMAIN>/login
 # Expected: HTTP/2 200, content-type: text/html
 ```
 
 ### 9.4 Static Assets
 
 ```bash
-curl -sI https://starzerp.fi/static/css/tailwind.css
+curl -sI https://<PRODUCTION_DOMAIN>/static/css/tailwind.css
 # Expected: HTTP/2 200, Cache-Control: public, immutable, max-age=31536000
 ```
 
@@ -1000,7 +1037,7 @@ curl -s http://127.0.0.1:8081/v1/chat/completions \
 
 ```bash
 # ─── SSH Access ─────────────────────────────────────────────
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
+ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<PRODUCTION_HOST>
 
 # ─── Service Management ────────────────────────────────────
 sudo systemctl restart apexintel-api
@@ -1086,10 +1123,10 @@ echo "Memory: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
 
 | Service | Address | Notes |
 |---------|---------|-------|
-| **SSH** | `ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89` | |
-| **Vast.ai** | `ssh -p 39097 -i ~/.ssh/vastai_new root@198.53.64.194` | Model weights source |
-| **HTTPS** | `https://starzerp.fi` | Production URL |
-| **API + Web UI** | `http://127.0.0.1:8080` (internal) | Single Axum server |
+| **SSH** | `ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<PRODUCTION_HOST>` | |
+| **Vast.ai** | `ssh -i ~/.ssh/<DEPLOY_KEY> <DEPLOY_USER>@<MODEL_HOST>` | Model weights source |
+| **HTTPS** | `https://<PRODUCTION_DOMAIN>` | Production URL |
+| **API + Web UI** | `http://127.0.0.1:8080` (internal) | `apex-api` Axum server |
 | **LLM** | `http://127.0.0.1:8081` (internal) | llama-server |
 | **PostgreSQL** | `127.0.0.1:5432` | DB: `apexintel` |
 | **Redis** | `127.0.0.1:6379` | |
@@ -1100,11 +1137,13 @@ echo "Memory: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
 
 ### March 2026 — Server-rendered UI Migration (multi-service)
 
-The Next.js frontend was fully replaced by Askama (Jinja2-like) templates + HTMX,
-compiled into the Rust `apex-api` binary:
+The Next.js frontend was fully replaced by Askama (Jinja2-like) templates + HTMX.
+Templates are compiled into the `apex-api` binary; static assets are **not**
+compiled in and ship alongside the binaries:
 
 - **Removed**: Node.js, Next.js, `apexintel-frontend` systemd service, `/opt/apexintel/frontend/`
-- **Added**: 45 HTML templates in `crates/api/templates/`, 11 static assets in `crates/api/static/`
+- **Added**: 45 HTML templates in `crates/api/templates/`, compiled into `apex-api`
+- **Added**: 11 static assets in `crates/api/static/`, deployed to `/opt/apexintel/static/` and served by nginx from disk
 - **Added**: Cookie-based session auth in the API binary (login/logout endpoints)
 - **Changed**: Nginx now routes all traffic to one upstream (port 8080)
 - **Changed**: Static assets served directly by nginx from `/opt/apexintel/static/`
@@ -1119,11 +1158,11 @@ compiled into the Rust `apex-api` binary:
 - [x] PostgreSQL + Redis configured
 - [x] NATS installed
 - [x] MinIO installed
-- [x] Rust binary deployed (apex-api, 16 MB ARM64)
+- [x] Rust binaries deployed (apex-api + apex-worker, ARM64)
 - [x] Static assets deployed (/opt/apexintel/static/)
 - [x] Environment configured (.env with auth credentials)
-- [x] Systemd service updated (ReadOnlyPaths for static)
-- [x] Nginx updated (single upstream, static alias)
+- [x] Systemd services updated (ReadOnlyPaths for static)
+- [x] Nginx updated (apex-api upstream, static alias)
 - [x] SSL certificate active
 - [x] Old Next.js frontend removed from server
 - [x] Old frontend systemd service removed

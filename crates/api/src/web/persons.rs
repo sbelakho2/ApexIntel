@@ -509,22 +509,26 @@ pub async fn list_persons(
     Extension(store): Extension<Arc<PgStore>>,
     Query(query): Query<PersonListQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
     let buying_center_mode = query.view.as_deref() == Some("buying-centers");
     let route = if buying_center_mode {
         "/buying-centers"
     } else {
         "/persons"
     };
-    let ctx = PageContext::from_session(&session, route, unack);
-
     let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web persons list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, route, unack_state.into_loaded_or(0));
+
     let all_rows_state = DataState::from_result(
         store
             .list_persons(
@@ -826,14 +830,19 @@ pub async fn get_person(
     Path(id): Path<String>,
     Query(query): Query<PersonDetailQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/persons", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web person detail)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/persons", unack_state.into_loaded_or(0));
 
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
@@ -864,8 +873,6 @@ pub async fn get_person(
             );
         }
     };
-
-    let mut degraded_notice: Option<String> = None;
 
     let organization_name = match person.primary_org_id {
         Some(org_id) => {

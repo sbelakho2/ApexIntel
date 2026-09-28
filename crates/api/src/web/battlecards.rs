@@ -17,6 +17,7 @@ use uuid::Uuid;
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
 use crate::routes::battlecards::BattlecardResponse;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::PgStore;
 
 // ─── Query ──────────────────────────────────────────────────────────────────
@@ -67,6 +68,9 @@ pub struct BattlecardsListPage {
     pub page: i64,
     pub per_page: i64,
     pub active_status: String,
+    /// Set when a backing query failed, so a storage error never renders as
+    /// "no battlecards".
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Template)]
@@ -93,13 +97,20 @@ pub async fn list_battlecards(
     Extension(session): Extension<WebSession>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let warning_count = store
-        .count_warnings(&apex_store::postgres::WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
+    let mut degraded_notice: Option<String> = None;
+
+    let warning_count_state = DataState::from_result(
+        store
+            .count_warnings(&apex_store::postgres::WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web battlecards list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&warning_count_state, &mut degraded_notice);
+    let warning_count = warning_count_state.into_loaded_or(0);
 
     let ctx = PageContext::from_session(&session, "/battlecards", warning_count);
 
@@ -107,33 +118,44 @@ pub async fn list_battlecards(
     let per_page_u32 = query.per_page.unwrap_or(50).clamp(1, 100);
     let active_status = query.status.clone().unwrap_or_default();
 
-    let total = store
-        .count_battlecards(query.status.as_deref(), None)
-        .await
-        .unwrap_or(0) as i64;
+    let total_state = DataState::from_result(
+        store.count_battlecards(query.status.as_deref(), None).await,
+        "count_battlecards failed (web battlecards list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&total_state, &mut degraded_notice);
+    let total = total_state.into_loaded_or(0) as i64;
 
-    let rows = store
-        .list_battlecards(query.status.as_deref(), None, page_u32, per_page_u32)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let rows_state = DataState::from_result(
+        store
+            .list_battlecards(query.status.as_deref(), None, page_u32, per_page_u32)
+            .await,
+        "list_battlecards failed (web battlecards list)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&rows_state, &mut degraded_notice);
+    let rows = rows_state.into_items();
 
     let page = page_u32 as i64;
     let per_page = per_page_u32 as i64;
 
     // Collect all competitor_ids to batch-fetch company names
     let competitor_ids: Vec<Uuid> = rows.iter().map(|r| r.competitor_id).collect();
-    let company_names: std::collections::HashMap<Uuid, String> =
-        match store.get_company_names_by_ids(&competitor_ids).await {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|(id, name, _region, _company_type)| (id, name))
-                .collect(),
-            Err(e) => {
-                tracing::warn!("Failed to fetch competitor names for battlecards: {e:#}");
-                std::collections::HashMap::new()
-            }
-        };
+    let company_names: std::collections::HashMap<Uuid, String> = if competitor_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let names_state = DataState::from_result(
+            store.get_company_names_by_ids(&competitor_ids).await,
+            "get_company_names_by_ids failed (web battlecards list)",
+            Vec::is_empty,
+        );
+        DegradedNotice::capture(&names_state, &mut degraded_notice);
+        names_state
+            .into_items()
+            .into_iter()
+            .map(|(id, name, _region, _company_type)| (id, name))
+            .collect()
+    };
 
     let battlecards: Vec<BattlecardListItem> = rows
         .into_iter()
@@ -179,6 +201,7 @@ pub async fn list_battlecards(
         page,
         per_page,
         active_status,
+        degraded_notice,
     };
 
     if is_htmx_request(&headers) {

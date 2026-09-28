@@ -54,7 +54,7 @@ pub(super) async fn run_breach_scan(
         .collect();
 
     if domains.is_empty() {
-        let companies = store
+        let companies = match store
             .list_companies(
                 &apex_store::postgres::CompanyListFilters {
                     regions: vec![],
@@ -67,7 +67,15 @@ pub(super) async fn run_breach_scan(
                 0,
             )
             .await
-            .unwrap_or_default();
+        {
+            Ok(companies) => companies,
+            Err(error) => {
+                run.fail(&format!(
+                    "breach_scan: failed to load monitored domains: {error}"
+                ));
+                return run;
+            }
+        };
         domains = companies
             .iter()
             .filter_map(|c| {
@@ -170,7 +178,7 @@ pub(super) async fn run_sanctions_screen(
         .collect();
 
     if entity_names.is_empty() {
-        let companies = store
+        let companies = match store
             .list_companies(
                 &apex_store::postgres::CompanyListFilters {
                     regions: vec![],
@@ -183,10 +191,18 @@ pub(super) async fn run_sanctions_screen(
                 0,
             )
             .await
-            .unwrap_or_default();
+        {
+            Ok(companies) => companies,
+            Err(error) => {
+                run.fail(&format!(
+                    "sanctions_screen: failed to load screened entities: {error}"
+                ));
+                return run;
+            }
+        };
         entity_names.extend(companies.iter().map(|c| (c.name.clone(), Some(c.id))));
 
-        let persons = store
+        let persons = match store
             .list_persons(
                 &apex_store::postgres::PersonListFilters {
                     regions: vec![],
@@ -201,7 +217,15 @@ pub(super) async fn run_sanctions_screen(
                 0,
             )
             .await
-            .unwrap_or_default();
+        {
+            Ok(persons) => persons,
+            Err(error) => {
+                run.fail(&format!(
+                    "sanctions_screen: failed to load screened persons: {error}"
+                ));
+                return run;
+            }
+        };
         entity_names.extend(persons.iter().map(|p| (p.name.clone(), Some(p.id))));
     }
 

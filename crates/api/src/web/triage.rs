@@ -224,14 +224,18 @@ pub async fn list_triage(
     let current_status = params.status.unwrap_or_else(|| "all".to_string());
 
     // Nav badge shows unacknowledged warnings, not the triage queue size.
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let pctx = PageContext::from_session(&session, "/triage", unack);
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web triage page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let pctx = PageContext::from_session(&session, "/triage", unack_state.into_loaded_or(0));
     let (current_path, username, warning_count, theme, can_admin) = page_from_ctx(&pctx);
 
     if is_htmx_request(&headers) {

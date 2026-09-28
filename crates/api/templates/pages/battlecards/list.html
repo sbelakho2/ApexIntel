@@ -16,6 +16,12 @@
 {% block content %}
 {% call m::page_header("Battlecards", "layers", "Competitive intelligence battlecards — structured analysis of competitor positioning, feature gaps, and win/loss trends.", "") %}
 
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-4 border-l-4 border-rams-orange px-4 py-3 text-sm text-rams-muted" role="alert" data-degraded="true">
+  {{ notice }}
+</div>
+{% endif %}
+
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Total", total.to_string(), "metric-rail-steel") %}
   <div class="apex-stat">

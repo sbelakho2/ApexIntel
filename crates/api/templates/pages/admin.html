@@ -16,6 +16,10 @@
 {% block content %}
 {% call m::page_header("Admin Panel", "settings", "System administration — data quality, jobs, and platform status.", "") %}
 
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+
 {# B316: real process/database statistics — the previous tiles were hardcoded
    demo values (12 connections, 87% cache hit, 4 workers). #}
 <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">

@@ -74,20 +74,32 @@ pub(crate) async fn list_sites(
     };
     let company_id = parse_optional_uuid_filter(params.company_id.as_deref());
     let region = params.region.as_deref();
-    let total = state
-        .store
-        .count_sites(company_id, region)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total = match state.store.count_sites(company_id, region).await {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count sites: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal("Failed to count sites"))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_sites(company_id, region, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list sites: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal("Failed to list sites"))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -118,20 +130,36 @@ pub(crate) async fn list_capabilities(
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
     let company_id = parse_optional_uuid_filter(params.company_id.as_deref());
-    let total = state
-        .store
-        .count_capabilities(company_id)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total = match state.store.count_capabilities(company_id).await {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count capabilities: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to count capabilities",
+                ))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_capabilities(company_id, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list capabilities: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to list capabilities",
+                ))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -165,20 +193,36 @@ pub(crate) async fn list_certifications_all(
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
     let company_id = parse_optional_uuid_filter(params.company_id.as_deref());
-    let total = state
-        .store
-        .count_certifications(company_id)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total = match state.store.count_certifications(company_id).await {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count certifications: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to count certifications",
+                ))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_certifications(company_id, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list certifications: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to list certifications",
+                ))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -210,20 +254,40 @@ pub(crate) async fn list_observations(
     };
     let entity_id = parse_optional_uuid_filter(params.entity_id.as_deref());
     let observation_type = params.observation_type.as_deref();
-    let total = state
+    let total = match state
         .store
         .count_observations(entity_id, observation_type)
         .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count observations: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to count observations",
+                ))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_observations(entity_id, observation_type, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list observations: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to list observations",
+                ))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -257,20 +321,36 @@ pub(crate) async fn list_product_families(
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
     let company_id = parse_optional_uuid_filter(params.company_id.as_deref());
-    let total = state
-        .store
-        .count_product_families(company_id)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total = match state.store.count_product_families(company_id).await {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count product families: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to count product families",
+                ))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_product_families(company_id, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list product families: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to list product families",
+                ))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -304,20 +384,36 @@ pub(crate) async fn list_logistics_nodes(
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
     let country_code = params.country_code.as_deref();
-    let total = state
-        .store
-        .count_logistics_nodes(country_code)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total = match state.store.count_logistics_nodes(country_code).await {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count logistics nodes: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to count logistics nodes",
+                ))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_logistics_nodes(country_code, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list logistics nodes: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to list logistics nodes",
+                ))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -348,20 +444,36 @@ pub(crate) async fn list_regulations(
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
     let jurisdiction = params.jurisdiction.as_deref();
-    let total = state
-        .store
-        .count_regulations(jurisdiction)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total = match state.store.count_regulations(jurisdiction).await {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count regulations: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to count regulations",
+                ))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_regulations(jurisdiction, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list regulations: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to list regulations",
+                ))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -392,20 +504,36 @@ pub(crate) async fn list_poi_artifacts(
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
     let person_id = parse_optional_uuid_filter(params.person_id.as_deref());
-    let total = state
-        .store
-        .count_poi_artifacts(person_id)
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total = match state.store.count_poi_artifacts(person_id).await {
+        Ok(total) => total.max(0) as u64,
+        Err(err) => {
+            tracing::error!("Failed to count POI artifacts: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to count POI artifacts",
+                ))),
+            );
+        }
+    };
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
+    let items = match state
         .store
         .list_poi_artifacts(person_id, per_page as i64, offset)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::error!("Failed to list POI artifacts: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to list POI artifacts",
+                ))),
+            );
+        }
+    };
     let payload = PagedResponse {
         items,
         total,
@@ -433,7 +561,7 @@ pub(crate) async fn get_dashboard(
     let stats = match state.store.get_dashboard_stats().await {
         Ok(stats) => stats,
         Err(err) => {
-            tracing::error!(request_id = %request_id, "dashboard stats failed: {err:#}");
+            tracing::error!(request_id = %request_id, "dashboard stats: {err:#}");
             let api_err = ApiError::internal("Failed to load dashboard stats");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,

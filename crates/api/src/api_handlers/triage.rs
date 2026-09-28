@@ -171,6 +171,12 @@ fn parse_status(s: Option<&str>) -> Option<TriageStatus> {
 
 // ─── Handlers ─────────────────────────────────────────────────────────────
 
+/// Log a queue/storage failure server-side and return a generic client error.
+fn triage_internal(context: &str, error: impl std::fmt::Display) -> ApiError {
+    tracing::error!(error = %error, "{context}");
+    ApiError::internal(context)
+}
+
 /// GET /api/triage — list triage queue items.
 pub(crate) async fn list_triage(
     State(state): State<AppState>,
@@ -190,7 +196,18 @@ pub(crate) async fn list_triage(
     let items = queue
         .list(status_filter.clone(), per_page as usize, offset)
         .await;
-    let total = queue.count(status_filter).await.unwrap_or(0);
+    let total = match queue.count(status_filter).await {
+        Ok(total) => total,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(triage_internal(
+                    "Failed to count triage items",
+                    e,
+                ))),
+            );
+        }
+    };
 
     match items {
         Ok(items) => {
@@ -218,7 +235,10 @@ pub(crate) async fn list_triage(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }
@@ -234,7 +254,10 @@ pub(crate) async fn get_triage_stats(
         Ok(stats) => (StatusCode::OK, Json(success(stats_to_response(stats)))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }
@@ -258,7 +281,10 @@ pub(crate) async fn get_triage_item(
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }
@@ -288,7 +314,10 @@ pub(crate) async fn override_triage_score(
         Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }
@@ -305,7 +334,10 @@ pub(crate) async fn acknowledge_triage_item(
         Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }
@@ -322,7 +354,10 @@ pub(crate) async fn resolve_triage_item(
         Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }
@@ -339,7 +374,10 @@ pub(crate) async fn dismiss_triage_item(
         Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }
@@ -355,7 +393,10 @@ pub(crate) async fn get_triage_bands(
         Ok(bands) => (StatusCode::OK, Json(success(bands))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response(ApiError::internal(e.to_string()))),
+            Json(error_response(triage_internal(
+                "Failed to count triage items",
+                e,
+            ))),
         ),
     }
 }

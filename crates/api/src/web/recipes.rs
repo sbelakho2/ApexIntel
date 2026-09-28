@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters};
 
 // ─── Query params ───────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ pub struct RecipesListPage {
     pub fpr_points: String,
     pub recipe_chart_w: i64,
     pub recipe_perf_trend: Vec<RecipePerfRow>,
+    pub degraded_notice: Option<String>,
 }
 
 /// HTMX partial — just the results fragment.
@@ -117,6 +119,7 @@ pub struct RecipesListPartial {
     pub fpr_points: String,
     pub recipe_chart_w: i64,
     pub recipe_perf_trend: Vec<RecipePerfRow>,
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Template)]
@@ -128,6 +131,7 @@ pub struct RecipeNewPage {
     pub warning_count: i64,
     pub theme: String,
     pub status_strip: crate::system_status::StatusStrip,
+    pub degraded_notice: Option<String>,
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -139,32 +143,40 @@ pub async fn list_recipes(
     Extension(store): Extension<Arc<PgStore>>,
     axum::extract::Query(params): axum::extract::Query<RecipesQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/recipes", unack);
-    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web recipes list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/recipes", unack_state.into_loaded_or(0));
     let active_status = params.status.clone().unwrap_or_default();
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(25).clamp(1, 100);
 
-    let recipe_stat_rows = store.get_recipe_stats().await.unwrap_or_else(|e| {
-        tracing::error!("Failed to load recipe stats: {e}");
-        vec![]
-    });
-    let quality_summary = store
-        .get_recipe_quality_summary()
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to load recipe quality summary: {e}");
-            apex_store::postgres::RecipeQualitySummaryRow {
-                avg_precision_pct: 0,
-                coverage_pct: 0,
-            }
+    let recipe_stat_state = DataState::from_result(
+        store.get_recipe_stats().await,
+        "get_recipe_stats failed (web recipes list)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&recipe_stat_state, &mut degraded_notice);
+    let recipe_stat_rows = recipe_stat_state.into_items();
+    let quality_state = DataState::from_result(
+        store.get_recipe_quality_summary().await,
+        "get_recipe_quality_summary failed (web recipes list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&quality_state, &mut degraded_notice);
+    let quality_summary =
+        quality_state.into_loaded_or(apex_store::postgres::RecipeQualitySummaryRow {
+            avg_precision_pct: 0,
+            coverage_pct: 0,
         });
 
     let mut all_recipes: Vec<RecipeListItem> = recipe_stat_rows
@@ -306,6 +318,7 @@ pub async fn list_recipes(
         fpr_points,
         recipe_chart_w,
         recipe_perf_trend,
+        degraded_notice: degraded_notice.clone(),
     };
 
     if is_htmx_request(&headers) {
@@ -330,6 +343,7 @@ pub async fn list_recipes(
             fpr_points: tpl.fpr_points.clone(),
             recipe_chart_w: tpl.recipe_chart_w,
             recipe_perf_trend: tpl.recipe_perf_trend.clone(),
+            degraded_notice: tpl.degraded_notice.clone(),
         };
         super::render_template(&partial)
     } else {
@@ -343,14 +357,19 @@ pub async fn new_recipe(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/recipes", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web new recipe page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/recipes", unack_state.into_loaded_or(0));
 
     let tpl = RecipeNewPage {
         current_path: ctx.current_path,
@@ -359,6 +378,7 @@ pub async fn new_recipe(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        degraded_notice,
     };
 
     let _ = is_htmx_request(&headers);

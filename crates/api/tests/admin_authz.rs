@@ -267,8 +267,11 @@ async fn admin_page_redirects_to_login_without_session() {
 }
 
 #[tokio::test]
-async fn login_accepts_argon2id_and_legacy_sha256_hashes() {
+async fn login_accepts_argon2id_and_only_explicitly_enabled_legacy_sha256_hashes() {
     ensure_session_secret();
+    // The legacy SHA-256 path is production-rejected by default (audit
+    // requirement): start from a clean flag state.
+    std::env::remove_var("ALLOW_LEGACY_PASSWORD_HASHES");
 
     let argon2_hash = apex_api::web::auth::hash_password("s3cret").expect("hash password");
     // Legacy deployments stored the plain SHA-256 hex digest of the password;
@@ -306,10 +309,25 @@ async fn login_accepts_argon2id_and_legacy_sha256_hashes() {
     assert!(set_cookie.contains("HttpOnly"));
     assert!(set_cookie.contains("SameSite=Lax"));
 
+    // Legacy SHA-256 is rejected while the flag is unset.
     let response = login_router()
         .oneshot(login_request("legacy", "legacy-pass"))
         .await
         .expect("legacy login");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "legacy SHA-256 must be rejected unless ALLOW_LEGACY_PASSWORD_HASHES is explicitly enabled"
+    );
+    assert!(body_text(response).await.contains("Invalid credentials"));
+
+    // Explicit opt-in restores the upgrade path.
+    std::env::set_var("ALLOW_LEGACY_PASSWORD_HASHES", "true");
+    let response = login_router()
+        .oneshot(login_request("legacy", "legacy-pass"))
+        .await
+        .expect("legacy login with opt-in");
+    std::env::remove_var("ALLOW_LEGACY_PASSWORD_HASHES");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
     let response = login_router()

@@ -12,6 +12,7 @@ use url::form_urlencoded::byte_serialize;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters};
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +110,7 @@ pub struct CompetitorsPage {
     pub overlap_filters: Vec<CompetitorFilterChip>,
     pub active_filters: usize,
     pub reset_href: String,
+    pub degraded_notice: Option<String>,
 }
 
 /// HTMX partial — just the results fragment.
@@ -128,6 +130,7 @@ pub struct CompetitorsListPartial {
     pub overlap_filters: Vec<CompetitorFilterChip>,
     pub active_filters: usize,
     pub reset_href: String,
+    pub degraded_notice: Option<String>,
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
@@ -139,24 +142,35 @@ pub async fn list_competitors(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<CompetitorsQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/competitors", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web competitors page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/competitors", unack_state.into_loaded_or(0));
 
     // Fetch competitor companies
-    let competitor_rows = store.list_competitors(100, 0).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to list competitors: {e}");
-        vec![]
-    });
-    let total = store
-        .count_competitors()
-        .await
-        .unwrap_or(competitor_rows.len() as i64);
+    let competitor_rows_state = DataState::from_result(
+        store.list_competitors(100, 0).await,
+        "list_competitors failed (web competitors page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&competitor_rows_state, &mut degraded_notice);
+    let competitor_rows = competitor_rows_state.into_items();
+    let total_state = DataState::from_result(
+        store.count_competitors().await,
+        "count_competitors failed (web competitors page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&total_state, &mut degraded_notice);
+    let total = total_state.into_loaded_or(competitor_rows.len() as i64);
 
     let n = competitor_rows.len();
     let group_w: i64 = 46;
@@ -293,13 +307,13 @@ pub async fn list_competitors(
     };
 
     // Fetch recent competitor changes
-    let (change_rows, _total_changes) = store
-        .get_all_competitor_changes_paged(1, 20)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to list competitor changes: {e}");
-            (vec![], 0)
-        });
+    let change_rows_state = DataState::from_result(
+        store.get_all_competitor_changes_paged(1, 20).await,
+        "get_all_competitor_changes_paged failed (web competitors page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&change_rows_state, &mut degraded_notice);
+    let change_rows = change_rows_state.into_loaded_or((vec![], 0)).0;
     let recent_changes: Vec<CompetitorChange> = change_rows
         .iter()
         .map(|ch| CompetitorChange {
@@ -331,6 +345,7 @@ pub async fn list_competitors(
         overlap_filters,
         active_filters,
         reset_href,
+        degraded_notice: degraded_notice.clone(),
     };
 
     if is_htmx_request(&headers) {
@@ -348,6 +363,7 @@ pub async fn list_competitors(
             overlap_filters: tpl.overlap_filters.clone(),
             active_filters: tpl.active_filters,
             reset_href: tpl.reset_href.clone(),
+            degraded_notice: tpl.degraded_notice.clone(),
         };
         super::render_template(&partial)
     } else {

@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::trends::{
     BucketType, TrendComparisonQuery, TrendDataPoint, TrendQuery, TrendSummary,
 };
@@ -75,6 +76,7 @@ pub struct TrendsPage {
 
     // ── entity breakdown ──
     pub entity_data: Vec<EntityTrendRow>,
+    pub degraded_notice: Option<String>,
 }
 
 /// Display-friendly metric option.
@@ -177,6 +179,7 @@ pub async fn trends_page(
     Query(params): Query<TrendsPageParams>,
 ) -> impl IntoResponse {
     let ctx = PageContext::from_session(&session, "/trends", 0);
+    let mut degraded_notice: Option<String> = None;
 
     let selected_metric = params.metric.unwrap_or_else(|| "warnings".to_string());
     let selected_bucket = params.bucket.unwrap_or_else(|| "monthly".to_string());
@@ -216,10 +219,13 @@ pub async fn trends_page(
         limit: Some(500),
     };
 
-    let data_points = store.query_trends(&trend_query).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to query trends: {e}");
-        vec![]
-    });
+    let data_points_state = DataState::from_result(
+        store.query_trends(&trend_query).await,
+        "query_trends failed (web trends page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&data_points_state, &mut degraded_notice);
+    let data_points = data_points_state.into_items();
 
     // Pre-compute bar chart geometry (Askama 0.12 cannot do `as` casts, .max(), .min())
     let bar_count = data_points.len() as i64;
@@ -259,19 +265,19 @@ pub async fn trends_page(
         })
         .collect();
 
-    let summary = store
-        .get_trend_summary(&trend_query)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to get trend summary: {e}");
-            TrendSummary {
-                total: 0,
-                average: 0.0,
-                min: 0,
-                max: 0,
-                data_points: 0,
-            }
-        });
+    let summary_state = DataState::from_result(
+        store.get_trend_summary(&trend_query).await,
+        "get_trend_summary failed (web trends page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&summary_state, &mut degraded_notice);
+    let summary = summary_state.into_loaded_or(TrendSummary {
+        total: 0,
+        average: 0.0,
+        min: 0,
+        max: 0,
+        data_points: 0,
+    });
 
     // Compute MoM comparison (current month vs previous month)
     let today = to_date;
@@ -289,29 +295,33 @@ pub async fn trends_page(
         entity_id: None,
     };
 
-    let mom_comparison =
-        store
-            .get_trend_comparison(&mom_query)
-            .await
-            .ok()
-            .map(|c| TrendComparisonView {
-                label: "Month-over-Month".to_string(),
-                current_total: format_number(c.current_total),
-                previous_total: format_number(c.previous_total),
-                change_pct: format!("{:.1}%", c.percent_change),
-                change_abs: format_number(c.absolute_change.abs()),
-                direction: c.direction.clone(),
-                direction_class: match c.direction.as_str() {
-                    "up" => "text-rams-green".to_string(),
-                    "down" => "text-rams-red".to_string(),
-                    _ => "text-muted-foreground".to_string(),
-                },
-                icon: match c.direction.as_str() {
-                    "up" => "trending-up".to_string(),
-                    "down" => "trending-down".to_string(),
-                    _ => "minus".to_string(),
-                },
-            });
+    let mom_state = DataState::from_result(
+        store.get_trend_comparison(&mom_query).await,
+        "get_trend_comparison (MoM) failed (web trends page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&mom_state, &mut degraded_notice);
+    let mom_comparison = match mom_state {
+        DataState::Loaded(c) => Some(TrendComparisonView {
+            label: "Month-over-Month".to_string(),
+            current_total: format_number(c.current_total),
+            previous_total: format_number(c.previous_total),
+            change_pct: format!("{:.1}%", c.percent_change),
+            change_abs: format_number(c.absolute_change.abs()),
+            direction: c.direction.clone(),
+            direction_class: match c.direction.as_str() {
+                "up" => "text-rams-green".to_string(),
+                "down" => "text-rams-red".to_string(),
+                _ => "text-muted-foreground".to_string(),
+            },
+            icon: match c.direction.as_str() {
+                "up" => "trending-up".to_string(),
+                "down" => "trending-down".to_string(),
+                _ => "minus".to_string(),
+            },
+        }),
+        DataState::Empty | DataState::Degraded { .. } => None,
+    };
 
     // Compute YoY comparison (current year vs previous year)
     let current_year_start = today
@@ -332,35 +342,44 @@ pub async fn trends_page(
         entity_id: None,
     };
 
-    let yoy_comparison =
-        store
-            .get_trend_comparison(&yoy_query)
-            .await
-            .ok()
-            .map(|c| TrendComparisonView {
-                label: "Year-over-Year".to_string(),
-                current_total: format_number(c.current_total),
-                previous_total: format_number(c.previous_total),
-                change_pct: format!("{:.1}%", c.percent_change),
-                change_abs: format_number(c.absolute_change.abs()),
-                direction: c.direction.clone(),
-                direction_class: match c.direction.as_str() {
-                    "up" => "text-rams-green".to_string(),
-                    "down" => "text-rams-red".to_string(),
-                    _ => "text-muted-foreground".to_string(),
-                },
-                icon: match c.direction.as_str() {
-                    "up" => "trending-up".to_string(),
-                    "down" => "trending-down".to_string(),
-                    _ => "minus".to_string(),
-                },
-            });
+    let yoy_state = DataState::from_result(
+        store.get_trend_comparison(&yoy_query).await,
+        "get_trend_comparison (YoY) failed (web trends page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&yoy_state, &mut degraded_notice);
+    let yoy_comparison = match yoy_state {
+        DataState::Loaded(c) => Some(TrendComparisonView {
+            label: "Year-over-Year".to_string(),
+            current_total: format_number(c.current_total),
+            previous_total: format_number(c.previous_total),
+            change_pct: format!("{:.1}%", c.percent_change),
+            change_abs: format_number(c.absolute_change.abs()),
+            direction: c.direction.clone(),
+            direction_class: match c.direction.as_str() {
+                "up" => "text-rams-green".to_string(),
+                "down" => "text-rams-red".to_string(),
+                _ => "text-muted-foreground".to_string(),
+            },
+            icon: match c.direction.as_str() {
+                "up" => "trending-up".to_string(),
+                "down" => "trending-down".to_string(),
+                _ => "minus".to_string(),
+            },
+        }),
+        DataState::Empty | DataState::Degraded { .. } => None,
+    };
 
     let metrics = available_metrics(&selected_metric);
 
     // Entity breakdown — top entities by metric
-    let entity_data =
-        fetch_entity_breakdown(&store, &selected_metric, &bucket_type, from_date, to_date).await;
+    let entity_state = DataState::from_result(
+        fetch_entity_breakdown(&store, &selected_metric, &bucket_type, from_date, to_date).await,
+        "fetch_entity_breakdown failed (web trends page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&entity_state, &mut degraded_notice);
+    let entity_data = entity_state.into_items();
 
     let page = TrendsPage {
         current_path: "/trends".to_string(),
@@ -389,6 +408,7 @@ pub async fn trends_page(
         yoy_comparison,
         available_metrics: metrics,
         entity_data,
+        degraded_notice,
     };
 
     super::render_template(&page)
@@ -401,10 +421,10 @@ async fn fetch_entity_breakdown(
     bucket_type: &str,
     from_date: NaiveDate,
     to_date: NaiveDate,
-) -> Vec<EntityTrendRow> {
+) -> Result<Vec<EntityTrendRow>, String> {
     // Only fetch entity breakdown for observation/warning metrics
     if metric != "observations" && metric != "warnings" {
-        return vec![];
+        return Ok(vec![]);
     }
 
     // Entity breakdowns for both metrics are keyed by company.
@@ -424,7 +444,7 @@ async fn fetch_entity_breakdown(
     // We use the entity-level rollup data to get top entities by total.
     // Since we can't easily do GROUP BY across multiple rows in a single query_trends call,
     // we'll use a direct SQL query for the entity breakdown.
-    let rows = match sqlx::query_as::<_, (String, String, i64)>(
+    let rows = sqlx::query_as::<_, (String, String, i64)>(
         r#"SELECT
                COALESCE(entity_type, 'unknown'),
                COALESCE(entity_id, 'unknown'),
@@ -446,20 +466,15 @@ async fn fetch_entity_breakdown(
     .bind(query.to_date)
     .fetch_all(&store.pool)
     .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("Failed to fetch entity breakdown: {e}");
-            return vec![];
-        }
-    };
+    .map_err(|e| format!("failed to fetch entity breakdown: {e}"))?;
 
-    rows.into_iter()
+    Ok(rows
+        .into_iter()
         .map(|(entity_type, entity_id, total)| EntityTrendRow {
             entity_type,
             entity_id,
             metric_name: metric.to_string(),
             total,
         })
-        .collect()
+        .collect())
 }

@@ -13,6 +13,7 @@ use axum::{response::IntoResponse, Extension};
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{InsightListFilters, PgStore};
 
 // ─── Display types ───────────────────────────────────────────────────────────
@@ -101,6 +102,7 @@ pub struct ExecutiveDashboardPage {
     pub trending_topics: Vec<TrendingTopic>,
     pub recent_wins_losses: Vec<RecentWinLoss>,
     pub recommended_actions: Vec<RecommendedAction>,
+    pub degraded_notice: Option<String>,
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
@@ -112,44 +114,56 @@ pub async fn executive_dashboard(
 ) -> impl IntoResponse {
     // ── Fetch data sources with graceful degradation ──────────────────────
 
-    let stats_data = store.get_dashboard_stats().await.unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch dashboard stats: {e}");
-        Default::default()
-    });
+    let mut degraded_notice: Option<String> = None;
 
-    let opportunities = store
-        .list_strategic_opportunities(false, 20)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to fetch strategic opportunities: {e}");
-            vec![]
-        });
+    let stats_state = DataState::from_result(
+        store.get_dashboard_stats().await,
+        "get_dashboard_stats failed (web executive dashboard)",
+        |_| false,
+    );
+    DegradedNotice::capture(&stats_state, &mut degraded_notice);
+    let stats_data = stats_state.into_loaded_or_default();
 
-    let threats = store.list_critical_threats(20).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch critical threats: {e}");
-        vec![]
-    });
+    let opportunities_state = DataState::from_result(
+        store.list_strategic_opportunities(false, 20).await,
+        "list_strategic_opportunities failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&opportunities_state, &mut degraded_notice);
+    let opportunities = opportunities_state.into_items();
+
+    let threats_state = DataState::from_result(
+        store.list_critical_threats(20).await,
+        "list_critical_threats failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&threats_state, &mut degraded_notice);
+    let threats = threats_state.into_items();
 
     // Fetch recent insights for trending topics & competitor mention volume
     let insight_filters = InsightListFilters {
         exclude_internal: true,
         ..Default::default()
     };
-    let recent_insights = store
-        .list_insights(&insight_filters, 100, 0)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to fetch insights: {e}");
-            vec![]
-        });
+    let recent_insights_state = DataState::from_result(
+        store.list_insights(&insight_filters, 100, 0).await,
+        "list_insights failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&recent_insights_state, &mut degraded_notice);
+    let recent_insights = recent_insights_state.into_items();
 
     // B312: competitor names come from the tracked competitor set, not a
     // hardcoded demo list that only matched one specific deployment.
-    let competitor_names: Vec<String> = store
-        .list_competitors(50, 0)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default()
+
+    let competitor_names_state = DataState::from_result(
+        store.list_competitors(50, 0).await,
+        "list_competitors failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&competitor_names_state, &mut degraded_notice);
+    let competitor_names: Vec<String> = competitor_names_state
+        .into_items()
         .into_iter()
         .map(|c| c.name)
         .collect();
@@ -452,6 +466,7 @@ pub async fn executive_dashboard(
         trending_topics,
         recent_wins_losses,
         recommended_actions,
+        degraded_notice,
     };
 
     super::render_template(&page)

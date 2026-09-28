@@ -16,6 +16,7 @@ use serde::Deserialize;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 
 // ─── Template data ──────────────────────────────────────────────────────────
@@ -194,6 +195,7 @@ pub struct SecurityPage {
     pub risk_high_count: i64,
     pub risk_medium_count: i64,
     pub risk_low_count: i64,
+    pub degraded_notice: Option<String>,
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
@@ -205,23 +207,28 @@ pub async fn security_page(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<SecurityQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/security", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web security page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/security", unack_state.into_loaded_or(0));
 
     // DNS posture observations
-    let dns_obs = store
-        .get_dns_posture_entries(200)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to load DNS posture: {e}");
-            vec![]
-        });
+    let dns_state = DataState::from_result(
+        store.get_dns_posture_entries(200).await,
+        "get_dns_posture_entries failed (web security page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&dns_state, &mut degraded_notice);
+    let dns_obs = dns_state.into_items();
     let dns_posture: Vec<DnsPostureItem> = dns_obs
         .iter()
         .map(|o| {
@@ -250,14 +257,18 @@ pub async fn security_page(
         })
         .collect();
 
-    // KEV observations. A failed read is kept as `None` for the source-state
-    // report so it can never render as a clean "no findings" scan.
+    // KEV observations. A failed read is recorded as a degraded state (and the
+    // source-state report keeps it as `None`) so it can never render as a
+    // clean "no findings" scan.
     let kev_result = store.get_kev_relevance(200).await;
     let cve_findings = kev_result.as_ref().ok().map(|rows| rows.len() as u64);
-    let kev_obs = kev_result.unwrap_or_else(|e| {
-        tracing::error!("Failed to load KEV data: {e}");
-        vec![]
-    });
+    let kev_state = DataState::from_result(
+        kev_result,
+        "get_kev_relevance failed (web security page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&kev_state, &mut degraded_notice);
+    let kev_obs = kev_state.into_items();
     let kev_items: Vec<KevItem> = kev_obs
         .iter()
         .map(|o| {
@@ -317,10 +328,13 @@ pub async fn security_page(
         .collect();
 
     // Lookalike domains
-    let lookalike_obs = store.get_lookalike_domains(500).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to load lookalike domains: {e}");
-        vec![]
-    });
+    let lookalike_state = DataState::from_result(
+        store.get_lookalike_domains(500).await,
+        "get_lookalike_domains failed (web security page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&lookalike_state, &mut degraded_notice);
+    let lookalike_obs = lookalike_state.into_items();
     let lookalike_domains: Vec<LookalikeDomain> = lookalike_obs
         .iter()
         .map(|o| {
@@ -377,22 +391,24 @@ pub async fn security_page(
         .map(|o| o.ts_utc.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "—".into());
 
-    let warning_findings = store
-        .list_warnings(
-            &WarningListFilters {
-                warning_types: vec!["security".to_string()],
-                ..Default::default()
-            },
-            Some(WarningOrderBy::CreatedAt),
-            true,
-            100,
-            0,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to load security warnings: {e}");
-            vec![]
-        });
+    let warning_findings_state = DataState::from_result(
+        store
+            .list_warnings(
+                &WarningListFilters {
+                    warning_types: vec!["security".to_string()],
+                    ..Default::default()
+                },
+                Some(WarningOrderBy::CreatedAt),
+                true,
+                100,
+                0,
+            )
+            .await,
+        "list_warnings (security findings) failed (web security page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&warning_findings_state, &mut degraded_notice);
+    let warning_findings = warning_findings_state.into_items();
 
     let mut findings: Vec<SecurityFinding> = warning_findings
         .into_iter()
@@ -557,6 +573,7 @@ pub async fn security_page(
         risk_high_count,
         risk_medium_count,
         risk_low_count,
+        degraded_notice,
     };
 
     let _ = is_htmx_request(&headers);

@@ -1,6 +1,10 @@
 {# ── HTMX partial: competitors list results fragment ──────────────────── #}
 {% import "macros.html" as m %}
 
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-4 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Competitors", total.to_string(), "metric-rail-steel") %}
   {% call m::metric_card("High Threat (≥70)", high_threat_count.to_string(), "metric-rail-red") %}
@@ -59,7 +63,7 @@
 {% endif %}
 
 <div class="apex-card p-4">
-  {% if competitors.is_empty() %}
+  {% if competitors.is_empty() && degraded_notice.is_none() %}
     {% call m::empty_state("No competitors identified yet", "Competitors will appear as data is ingested.") %}
   {% else %}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

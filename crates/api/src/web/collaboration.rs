@@ -401,21 +401,40 @@ pub async fn list_workspaces(
     _headers: HeaderMap,
     Query(params): Query<WorkspaceListQuery>,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/workspaces", warning_count);
 
     let status_filter = params.status.as_deref();
-    let workspaces = store
-        .list_investigation_workspaces(100)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+
+    let workspaces = match store.list_investigation_workspaces(100).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load workspaces failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let filtered: Vec<_> = if let Some(status) = status_filter {
         workspaces
@@ -549,13 +568,24 @@ pub async fn new_workspace_page(
     Extension(store): Extension<Arc<PgStore>>,
     Query(query): Query<WorkspaceNewQuery>,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/workspaces/new", warning_count);
 
     let entity_id = query.entity_id.clone().unwrap_or_default();
@@ -695,13 +725,24 @@ pub async fn get_workspace(
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, &format!("/workspaces/{}", id), warning_count);
 
     let workspace_id = match Uuid::parse_str(&id) {
@@ -718,21 +759,45 @@ pub async fn get_workspace(
         }
     };
 
-    let assignments = store
-        .list_workspace_assignments(workspace_id)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
-    let shares = store
-        .list_investigation_shares(workspace_id)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
-    let activity = store
+    let assignments = match store.list_workspace_assignments(workspace_id).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load assignments failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
+    let shares = match store.list_investigation_shares(workspace_id).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load shares failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
+    let activity = match store
         .list_activity_feed(Some(workspace_id), None, None, 50)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load activity failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let w_item = WorkspaceItem {
         id: workspace.id.to_string(),
@@ -948,21 +1013,43 @@ pub async fn list_queue(
     _headers: HeaderMap,
     Query(params): Query<QueueListQuery>,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/queue", warning_count);
 
     let status_filter = params.status.as_deref();
-    let items = store
+
+    let items = match store
         .list_priority_queue_items(&session.user_id, status_filter, 100)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load items failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let total = items.len();
     let pending_count = items.iter().filter(|i| i.status == "pending").count();
@@ -1079,13 +1166,24 @@ pub async fn list_activity(
     _headers: HeaderMap,
     Query(params): Query<ActivityFeedQuery>,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/activity", warning_count);
 
     // A malformed workspace filter must not silently widen the feed to every
@@ -1101,11 +1199,21 @@ pub async fn list_activity(
     };
     let limit = params.limit.unwrap_or(100);
 
-    let items = store
+    let items = match store
         .list_activity_feed(workspace_id, params.team_id.as_deref(), None, limit)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load items failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let a_items: Vec<ActivityItem> = items
         .into_iter()
@@ -1141,20 +1249,38 @@ pub async fn list_supplier_risks(
     Extension(store): Extension<Arc<PgStore>>,
     _headers: HeaderMap,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/supplier-risk", warning_count);
 
-    let entries = store
-        .list_supplier_risk_entries(None, 100)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let entries = match store.list_supplier_risk_entries(None, 100).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load entries failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let total = entries.len();
     let active_count = entries.iter().filter(|e| e.status == "active").count();
@@ -1244,20 +1370,38 @@ pub async fn list_pipeline(
     Extension(store): Extension<Arc<PgStore>>,
     _headers: HeaderMap,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/pipeline", warning_count);
 
-    let opportunities = store
-        .list_pipeline_opportunities(None, None, 100)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let opportunities = match store.list_pipeline_opportunities(None, None, 100).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load opportunities failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let total = opportunities.len();
 
@@ -1373,20 +1517,38 @@ pub async fn list_evidence(
     Extension(store): Extension<Arc<PgStore>>,
     _headers: HeaderMap,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/evidence", warning_count);
 
-    let items = store
-        .list_source_evidence(None, None, None, 100)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let items = match store.list_source_evidence(None, None, None, 100).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load items failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let total = items.len();
 
@@ -1468,20 +1630,38 @@ pub async fn list_team_assignments(
     Extension(store): Extension<Arc<PgStore>>,
     _headers: HeaderMap,
 ) -> impl IntoResponse {
-    let warning_count = store
+    let warning_count = match store
         .count_warnings(&apex_store::postgres::WarningListFilters {
             acknowledged: Some(false),
             ..Default::default()
         })
         .await
-        .unwrap_or(0);
+    {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!("count_warnings failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load navigation state",
+                "web-collaboration",
+            );
+        }
+    };
     let ctx = PageContext::from_session(&session, "/team-assignments", warning_count);
 
-    let assignments = store
-        .list_team_assignments(None, None)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let assignments = match store.list_team_assignments(None, None).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!("load assignments failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
 
     let total = assignments.len();
 

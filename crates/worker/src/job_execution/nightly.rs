@@ -1236,7 +1236,18 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     if !companies_with_new_obs.is_empty() {
         let company_ids: Vec<Uuid> = companies_with_new_obs.iter().copied().collect();
         // Get all persons linked to these companies
-        if let Ok(person_names) = store.get_person_names_by_company_ids(&company_ids).await {
+        let person_names_result = store.get_person_names_by_company_ids(&company_ids).await;
+        if let Err(error) = &person_names_result {
+            // Reflected in the run summary's error count: an integration that
+            // silently did nothing must not look like a clean crawl.
+            errors += 1;
+            tracing::error!(
+                %error,
+                companies = company_ids.len(),
+                "crawl_cycle: failed to load person names for observation→POI integration"
+            );
+        }
+        if let Ok(person_names) = person_names_result {
             for (_org_id, person_name) in &person_names {
                 let name_lower = person_name.to_lowercase();
                 if !name_lower.is_empty() && name_lower.len() > 4 {

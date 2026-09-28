@@ -154,14 +154,23 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
 
         // ── 3c. SEC EDGAR filings (if US public company) ───────────────────
         // Look up the ticker from company metadata if available.
-        let ticker: Option<String> =
-            sqlx::query_scalar(r#"SELECT metadata->>'sec_ticker' FROM companies WHERE id = $1"#)
-                .bind(company.id)
-                .fetch_optional(&store.pool)
-                .await
-                .ok()
-                .flatten()
-                .filter(|t: &String| !t.trim().is_empty());
+        let ticker_row = sqlx::query_scalar::<_, Option<String>>(
+            r#"SELECT metadata->>'sec_ticker' FROM companies WHERE id = $1"#,
+        )
+        .bind(company.id)
+        .fetch_optional(&store.pool)
+        .await;
+        let ticker: Option<String> = match ticker_row {
+            Ok(row) => row.flatten().filter(|t: &String| !t.trim().is_empty()),
+            Err(error) => {
+                tracing::warn!(
+                    company = %company.name,
+                    %error,
+                    "osint_enrichment: SEC ticker lookup failed"
+                );
+                None
+            }
+        };
 
         if let Some(ref ticker) = ticker {
             let edgar_client = apex_crawl::sec_edgar::SecEdgarClient::new();

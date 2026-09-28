@@ -6,6 +6,10 @@
 {% block content %}
 {% call m::page_header("Historical Trends", "bar-chart-3", "Long-term trend analysis across all metrics", "") %}
 
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+
 <!-- ── Filter Bar ─────────────────────────────────────────────────────── -->
 <form method="get" action="/trends" id="trends-filter-form" class="apex-card p-4 mb-6">
   <div class="trends-filter-bar">
@@ -95,7 +99,7 @@
     </h2>
   </div>
   <div class="apex-card-body">
-    {% if data_points.is_empty() %}
+    {% if data_points.is_empty() && degraded_notice.is_none() %}
     <div class="apex-card p-8 text-center">
       <p class="text-sm font-semibold text-rams-muted">No trend data available for the selected period. Run the trend aggregation job to populate data.</p>
     </div>

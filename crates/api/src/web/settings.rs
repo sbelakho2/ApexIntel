@@ -27,6 +27,7 @@ use crate::middleware::session::{
     appearance_cookie_headers, WebSession, MAX_SESSION_HOURS, MIN_SESSION_HOURS,
 };
 use crate::system_status::{format_age, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS};
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, UserPreferencesRecord, UserSettingsPrefs, WarningListFilters};
 
 // ─── Personal preference vocabulary ─────────────────────────────────────────
@@ -472,6 +473,9 @@ pub struct SettingsPage {
     // ── feedback ──
     pub save_success: Option<String>,
     pub save_error: Option<String>,
+    /// Set when a preference/health read failed, so defaults are never
+    /// mistaken for the stored configuration.
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -609,6 +613,7 @@ fn render_settings_page(
     health: &SystemHealthView,
     save_success: Option<String>,
     save_error: Option<String>,
+    degraded_notice: Option<String>,
 ) -> SettingsPage {
     let theme = record
         .map(|record| record.theme.as_str())
@@ -672,6 +677,7 @@ fn render_settings_page(
         system_config_sections: system_config_sections(),
         save_success,
         save_error,
+        degraded_notice,
     }
 }
 
@@ -685,14 +691,21 @@ fn append_appearance_cookies(response: &mut Response, theme: &str, table_layout:
 
 // ─── Handler ────────────────────────────────────────────────────────────────
 
-async fn unacknowledged_warnings(store: &PgStore) -> i64 {
-    store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0)
+/// Unacknowledged-warning count for nav chrome. A failure is logged and
+/// captured as a degraded notice by the caller; it never silently becomes 0.
+async fn unacknowledged_warnings(store: &PgStore, degraded_notice: &mut Option<String>) -> i64 {
+    let state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web settings page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&state, degraded_notice);
+    state.into_loaded_or(0)
 }
 
 /// GET /settings — personal preferences (all users) + read-only system
@@ -702,24 +715,41 @@ pub async fn settings_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let unack = unacknowledged_warnings(&store).await;
+    let mut degraded_notice: Option<String> = None;
+    let unack = unacknowledged_warnings(&store, &mut degraded_notice).await;
     let ctx = PageContext::from_session(&session, "/settings", unack);
 
-    let record = store
-        .get_user_preferences_record(&session.user_id)
-        .await
-        .ok()
-        .flatten();
-    let prefs = store
-        .get_user_settings_prefs_scoped(&session.user_id, session.role.as_str())
-        .await
-        .ok()
-        .flatten()
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let record_state = DataState::from_result(
+        store.get_user_preferences_record(&session.user_id).await,
+        "get_user_preferences_record failed (web settings page)",
+        Option::is_none,
+    );
+    DegradedNotice::capture(&record_state, &mut degraded_notice);
+    let record = match record_state {
+        DataState::Loaded(record) => record,
+        DataState::Empty | DataState::Degraded { .. } => None,
+    };
+
+    let prefs_state = DataState::from_result(
+        store
+            .get_user_settings_prefs_scoped(&session.user_id, session.role.as_str())
+            .await,
+        "get_user_settings_prefs_scoped failed (web settings page)",
+        Option::is_none,
+    );
+    DegradedNotice::capture(&prefs_state, &mut degraded_notice);
+    let prefs = prefs_state.into_loaded_or_default().unwrap_or_default();
     let health = SystemHealthView::probe(&store).await;
 
-    let page = render_settings_page(ctx, record.as_ref(), &prefs, &health, None, None);
+    let page = render_settings_page(
+        ctx,
+        record.as_ref(),
+        &prefs,
+        &health,
+        None,
+        None,
+        degraded_notice,
+    );
     let theme = page.theme.clone();
     let table_layout = page.table_layout.clone();
     let mut response = super::render_template(&page);
@@ -733,22 +763,58 @@ pub async fn save_settings(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<SettingsForm>,
 ) -> impl IntoResponse {
-    let unack = unacknowledged_warnings(&store).await;
+    let mut degraded_notice: Option<String> = None;
+    let unack = unacknowledged_warnings(&store, &mut degraded_notice).await;
     let ctx = PageContext::from_session(&session, "/settings", unack);
     let health = SystemHealthView::probe(&store).await;
 
-    let existing_record = store
-        .get_user_preferences_record(&session.user_id)
-        .await
-        .ok()
-        .flatten();
-    let previous = store
-        .get_user_settings_prefs(&session.user_id)
-        .await
-        .ok()
-        .flatten()
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    // Fail closed: saving on top of an unreadable existing record would
+    // overwrite stored preferences with defaults, so nothing is written.
+    let existing_record = match store.get_user_preferences_record(&session.user_id).await {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::error!(
+                username = %session.username,
+                error = %error,
+                "get_user_preferences_record failed during save; refusing to overwrite stored settings"
+            );
+            return super::render_template(&render_settings_page(
+                ctx,
+                None,
+                &UserSettingsPrefs::default(),
+                &health,
+                None,
+                Some(
+                    "Could not load your saved settings. Nothing was saved; please retry."
+                        .to_string(),
+                ),
+                Some("A storage read failed, so the form was not submitted.".to_string()),
+            ));
+        }
+    };
+    let previous = match store.get_user_settings_prefs(&session.username).await {
+        Ok(Some(prefs)) => prefs,
+        Ok(None) => UserSettingsPrefs::default(),
+        Err(error) => {
+            tracing::error!(
+                username = %session.username,
+                error = %error,
+                "get_user_settings_prefs failed during save; refusing to overwrite stored settings"
+            );
+            return super::render_template(&render_settings_page(
+                ctx,
+                existing_record.as_ref(),
+                &UserSettingsPrefs::default(),
+                &health,
+                None,
+                Some(
+                    "Could not load your saved settings. Nothing was saved; please retry."
+                        .to_string(),
+                ),
+                Some("A storage read failed, so the form was not submitted.".to_string()),
+            ));
+        }
+    };
 
     let theme = normalize_choice(
         form.theme.as_deref(),
@@ -778,6 +844,7 @@ pub async fn save_settings(
                 &health,
                 None,
                 Some("Add at least one digest recipient when email digest is enabled.".to_string()),
+                degraded_notice,
             ));
         }
         let invalid: Vec<String> = recipients
@@ -796,6 +863,7 @@ pub async fn save_settings(
                     "Invalid recipient email(s): {}",
                     invalid.join(", ")
                 )),
+                degraded_notice,
             ));
         }
         if !is_valid_hhmm(&prefs.email_digest_time_cet) {
@@ -806,6 +874,7 @@ pub async fn save_settings(
                 &health,
                 None,
                 Some("Digest send time must use HH:MM format (CET).".to_string()),
+                degraded_notice,
             ));
         }
         if prefs.notification_frequency.eq_ignore_ascii_case("weekly")
@@ -818,15 +887,30 @@ pub async fn save_settings(
                 &health,
                 None,
                 Some("For weekly digest, select a valid weekday.".to_string()),
+                degraded_notice,
             ));
         }
     }
 
-    if let Ok(Some(existing)) = store
+    match store
         .get_user_settings_prefs_scoped(&session.user_id, session.role.as_str())
         .await
     {
-        prefs.email_digest_last_sent_at = existing.email_digest_last_sent_at;
+        Ok(Some(existing)) => {
+            prefs.email_digest_last_sent_at = existing.email_digest_last_sent_at;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            // Keep the value loaded above; surface that the scoped read failed
+            // rather than fabricating a fresh timestamp state.
+            tracing::warn!(
+                username = %session.username,
+                error = %error,
+                "get_user_settings_prefs_scoped failed during save; keeping previously loaded digest state"
+            );
+            degraded_notice =
+                Some("Some scoped preferences could not be re-read before saving.".to_string());
+        }
     }
 
     if let Err(e) = store
@@ -850,6 +934,7 @@ pub async fn save_settings(
             &health,
             None,
             Some("Failed to save settings. Please retry.".to_string()),
+            degraded_notice,
         ));
     }
 
@@ -870,6 +955,7 @@ pub async fn save_settings(
         &health,
         Some("Preferences saved.".to_string()),
         None,
+        degraded_notice,
     );
     let table_layout = page.table_layout.clone();
     let mut response = super::render_template(&page);

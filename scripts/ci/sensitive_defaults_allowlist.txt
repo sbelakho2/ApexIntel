@@ -4,9 +4,9 @@
 # Only non-database awaits may be listed. A storage/DB call must never be
 # defaulted into neutral data.
 
-crates/worker/src/job_execution/tender_scan.rs:252  # HTTP request future: a failed send yields None and the caller skips that URL (no persisted state is fabricated)
-crates/worker/src/job_execution/tender_scan.rs:262  # HTTP body read for the optional tender fetch on :252; failure skips the page instead of substituting data
-crates/worker/src/job_execution/nightly.rs:106  # tokio Semaphore acquire_owned: the semaphore is never closed, so a panic here is unreachable and unrelated to storage
-crates/worker/src/job_execution/nightly.rs:2119  # inside #[cfg(test)] mod tests: test fixture assertion, not a storage call
-crates/worker/src/job_execution/nightly.rs:2145  # inside #[cfg(test)] mod tests: test fixture assertion, not a storage call
-crates/worker/src/job_execution/nightly.rs:2187  # inside #[cfg(test)] mod tests: local test server bind, not a storage call
+crates/worker/src/job_execution/tender_scan.rs:253  # HTTP request future: a failed send yields None and the caller skips that URL (no persisted state is fabricated)
+crates/worker/src/job_execution/tender_scan.rs:263  # HTTP body read for the optional tender fetch on :253; failure skips the page instead of substituting data
+crates/worker/src/job_execution/nightly.rs:115  # tokio Semaphore acquire_owned: the semaphore is never closed, so a panic here is unreachable and unrelated to storage
+crates/worker/src/job_execution/nightly.rs:2270  # inside #[cfg(test)] mod tests: test fixture assertion, not a storage call
+crates/worker/src/job_execution/nightly.rs:2296  # inside #[cfg(test)] mod tests: test fixture assertion, not a storage call
+crates/worker/src/job_execution/nightly.rs:2338  # inside #[cfg(test)] mod tests: local test server bind, not a storage call

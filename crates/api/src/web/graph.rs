@@ -13,9 +13,7 @@ use chrono::Utc;
 use super::PageContext;
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
-use apex_store::postgres::{
-    CompanyListFilters, InsightListFilters, PersonListFilters, PgStore, WarningListFilters,
-};
+use apex_store::postgres::{CompanyListFilters, PersonListFilters, PgStore, WarningListFilters};
 use uuid::Uuid;
 
 // ─── Template data ──────────────────────────────────────────────────────────
@@ -131,16 +129,19 @@ pub async fn graph_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/graph", unack);
-
     let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web graph page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/graph", unack_state.into_loaded_or(0));
 
     let edges_state = DataState::from_result(
         store.list_all_edges(500).await,
@@ -172,17 +173,6 @@ pub async fn graph_page(
     );
     DegradedNotice::capture(&persons_total_state, &mut degraded_notice);
     let persons_total = persons_total_state.into_loaded_or(0);
-    let _warnings_total = store
-        .count_warnings(&WarningListFilters::default())
-        .await
-        .unwrap_or(0);
-    let _insights_total = store
-        .count_insights(&InsightListFilters {
-            exclude_internal: true,
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
 
     let node_ids: Vec<Uuid> = {
         let mut seen = HashSet::new();

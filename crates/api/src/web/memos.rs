@@ -10,6 +10,7 @@ use axum::{extract::Query, response::IntoResponse, Extension};
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters};
 
 // ─── Template data ──────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ pub struct MemosPage {
 
     pub memos: Vec<MemoListItem>,
     pub total: i64,
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -64,27 +66,27 @@ pub async fn list_memos(
     Extension(store): Extension<Arc<PgStore>>,
     Query(query): Query<MemoQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/memos", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web memos page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let ctx = PageContext::from_session(&session, "/memos", unack_state.into_loaded_or(0));
 
-    // A failed or malformed memo list is surfaced, not rendered as "no memos".
-    let (memo_rows, total) = match store.list_weekly_memos(50, 0).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("Failed to list weekly memos: {e:#}");
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                axum::response::Html("Failed to load weekly memos".to_string()),
-            )
-                .into_response();
-        }
-    };
+    let memos_state = DataState::from_result(
+        store.list_weekly_memos(50, 0).await,
+        "list_weekly_memos failed (web memos page)",
+        |(rows, _)| rows.is_empty(),
+    );
+    DegradedNotice::capture(&memos_state, &mut degraded_notice);
+    let (memo_rows, total) = memos_state.into_loaded_or((vec![], 0));
 
     let memos: Vec<MemoListItem> = memo_rows
         .iter()
@@ -119,6 +121,7 @@ pub async fn list_memos(
         briefing_mode: query.briefing.unwrap_or(false),
         memos,
         total,
+        degraded_notice,
     };
 
     super::render_template(&tpl)
@@ -130,27 +133,27 @@ pub async fn list_memos_partial(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
-    let _ctx = PageContext::from_session(&session, "/memos", unack);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web memos list partial)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let _ctx = PageContext::from_session(&session, "/memos", unack_state.into_loaded_or(0));
 
-    // A failed or malformed memo list is surfaced, not rendered as "no memos".
-    let (memo_rows, total) = match store.list_weekly_memos(50, 0).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("Failed to list weekly memos: {e:#}");
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                axum::response::Html("Failed to load weekly memos".to_string()),
-            )
-                .into_response();
-        }
-    };
+    let memos_state = DataState::from_result(
+        store.list_weekly_memos(50, 0).await,
+        "list_weekly_memos failed (web memos list partial)",
+        |(rows, _)| rows.is_empty(),
+    );
+    DegradedNotice::capture(&memos_state, &mut degraded_notice);
+    let (memo_rows, total) = memos_state.into_loaded_or((vec![], 0));
 
     let memos: Vec<MemoListItem> = memo_rows
         .iter()
@@ -175,7 +178,11 @@ pub async fn list_memos_partial(
         })
         .collect();
 
-    let tpl = MemosListPartial { memos, total };
+    let tpl = MemosListPartial {
+        memos,
+        total,
+        degraded_notice,
+    };
     super::render_template(&tpl)
 }
 
@@ -185,4 +192,5 @@ pub async fn list_memos_partial(
 pub struct MemosListPartial {
     pub memos: Vec<MemoListItem>,
     pub total: i64,
+    pub degraded_notice: Option<String>,
 }
