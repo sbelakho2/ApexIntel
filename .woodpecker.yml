@@ -170,6 +170,9 @@ steps:
       RUSTFLAGS: "-C debuginfo=0 -C link-arg=-Wl,--no-keep-memory"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # Cap parallel rustc jobs: the apex-api/apex-worker test binaries peak
+      # high enough to OOM-kill a rustc under concurrent pipeline steps.
+      CARGO_BUILD_JOBS: "3"
     commands:
       - rustup component add rustfmt clippy
       # Formatting
