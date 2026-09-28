@@ -69,6 +69,7 @@ run cargo test -p apex-store \
   --test auth_hardening_integration \
   --test insight_claim_evidence_integration \
   --test warning_analysis_run_integration \
+  --test warning_evidence_integration \
   --test evidence_lineage_integration \
   --test notification_delivery_integration \
   --test event_outbox_integration \
@@ -95,6 +96,10 @@ run cargo test -p apex-api --test app_users_login_integration --locked -- --igno
 # Disabled rows, stale session versions, role downgrade/promotion and legacy
 # cookies, all resolved against the real `app_users` table.
 run cargo test -p apex-api --test session_authority_integration --locked -- --ignored --test-threads=1
+
+# ── Warning analysis consumes explicit warning_evidence links ────────────────
+run cargo test -p apex-api --test warning_evidence_analysis_integration --features llm \
+  --locked -- --ignored --test-threads=1
 
 # ── Learning evaluation promotion gate ───────────────────────────────────────
 # Frozen evaluation sets, versioned metric runs and the promotion/rejection

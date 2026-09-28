@@ -22,10 +22,19 @@
 //! "data sufficiency" labels, and the 300-second blocking timeout no longer
 //! exist here. Evidence counts are reported as counts, while quality is
 //! measured by the reusable [`EvidenceQuality`] model in `apex-core`.
+//!
+//! Warning evidence is first-class (migration 082): a warning's source URLs are
+//! resolved at creation into `source document -> observation -> warning_evidence`
+//! links, and the analysis consumes those linked observation ids as its direct
+//! evidence set. Entity-derived observations are only a fallback for warnings
+//! that carry no explicit links. Evidence identity uses real row identity or a
+//! canonical content hash plus origin cluster (never a 120-character prefix),
+//! and an empty evidence set is deterministically reported as
+//! [`AnalysisStatus::InsufficientEvidence`] without calling the model.
 
 #![cfg(feature = "llm")]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -46,12 +55,9 @@ use apex_store::postgres::{
 
 /// Version of the prompt/JSON contract. Bump when the contract changes so new
 /// generations are comparable against (not merged with) old ones.
-pub const ANALYSIS_PROMPT_VERSION: &str = "warning-analysis-v2";
+pub const ANALYSIS_PROMPT_VERSION: &str = "warning-analysis-v3";
 
-/// Output schema version stored with each run. Bumped to 3 when
-/// `evidence_quality` became the corpus/claim split with typed measurements
-/// (old rows still parse: every new field defaults, so an old run reports
-/// unmeasured dimensions rather than fabricated midpoints).
+/// Output schema version stored with each run.
 pub const ANALYSIS_OUTPUT_SCHEMA_VERSION: u32 = 3;
 
 /// Documented bounded-evidence caps. The prompt states how many items were
@@ -61,6 +67,21 @@ pub const MAX_EVIDENCE_OBSERVATIONS: usize = 60;
 pub const MAX_EVIDENCE_INSIGHTS: usize = 10;
 pub const MAX_OBSERVATION_EXCERPT_CHARS: usize = 600;
 pub const MAX_INSIGHT_SUMMARY_CHARS: usize = 400;
+
+/// Deterministic evidence-adequacy policy (claim-level).
+///
+/// * An `observed` claim must cite at least one **observation** (a direct
+///   item); a derived insight cannot make a claim observed.
+/// * An `inference` claim citing a single item must carry an explicit
+///   confidence at or below [`INFERENCE_SINGLE_ITEM_CONFIDENCE_CAP`]: the
+///   platform may not state a strong inference from one uncorroborated item.
+/// * An `inference` claim at or above
+///   [`HIGH_CONFIDENCE_INFERENCE_THRESHOLD`] must cite at least
+///   [`HIGH_CONFIDENCE_MIN_ORIGINS`] independent origins (distinct
+///   registrable domains).
+pub const INFERENCE_SINGLE_ITEM_CONFIDENCE_CAP: f64 = 0.6;
+pub const HIGH_CONFIDENCE_INFERENCE_THRESHOLD: f64 = 0.8;
+pub const HIGH_CONFIDENCE_MIN_ORIGINS: usize = 2;
 
 /// Bounds on the model's structured output.
 pub const MAX_CLAIMS: usize = 12;
@@ -89,6 +110,72 @@ pub const DEFAULT_STALE_RUN_SECONDS: i64 = 1800;
 /// `attempts × timeout` plus backoff, so the threshold must clear that.
 pub fn stale_run_seconds(model_timeout_secs: u32) -> i64 {
     (model_timeout_secs as i64 * MODEL_MAX_ATTEMPTS + 300).max(DEFAULT_STALE_RUN_SECONDS)
+}
+
+/// Deterministic status of an analysis run.
+///
+/// [`AnalysisStatus::InsufficientEvidence`] is decided by the preflight before
+/// any model call: when the warning has neither observations nor insights, the
+/// run reports the gap instead of asking a model to write claims it cannot
+/// ground. It is a completed, persisted outcome (cached like any other result).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisStatus {
+    #[default]
+    Completed,
+    InsufficientEvidence,
+}
+
+impl AnalysisStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::InsufficientEvidence => "insufficient_evidence",
+        }
+    }
+
+    pub fn is_insufficient(self) -> bool {
+        matches!(self, Self::InsufficientEvidence)
+    }
+}
+
+/// Where the analysis's direct evidence came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceScope {
+    /// Explicit `warning_evidence` links (the upstream model): source document
+    /// -> observation -> warning link.
+    WarningEvidence,
+    /// Fallback: observations attached to the warning's entity ids.
+    EntityObservations,
+    /// Neither explicit links nor entity observations exist.
+    #[default]
+    None,
+}
+
+impl EvidenceScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WarningEvidence => "warning_evidence",
+            Self::EntityObservations => "entity_observations",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Deterministic preflight: an analysis with no observations and no insights
+/// has nothing the model could cite, so it is reported as
+/// [`AnalysisStatus::InsufficientEvidence`] without calling the model.
+///
+/// The check is over the evidence set that would be sent: `available` counts
+/// can only be zero when nothing was sent, and a prompt budget that dropped
+/// everything leaves the model equally unable to ground a claim.
+pub fn preflight_status(bundle: &EvidenceBundle) -> AnalysisStatus {
+    if bundle.observations.is_empty() && bundle.insights.is_empty() {
+        AnalysisStatus::InsufficientEvidence
+    } else {
+        AnalysisStatus::Completed
+    }
 }
 
 /// Best-effort stale-run housekeeping shared by enqueue and both status
@@ -193,17 +280,69 @@ pub fn parse_analysis_payload(raw: &str) -> Result<AnalysisPayload> {
         .with_context(|| "analysis payload is not a valid typed JSON object (prose/fences/unknown fields are rejected)")
 }
 
+/// Everything the validator needs to know about the evidence the model saw:
+/// which ids resolve, and which origin each observation belongs to.
+#[derive(Debug, Clone, Default)]
+pub struct EvidenceIndex {
+    pub observation_ids: HashSet<Uuid>,
+    pub insight_ids: HashSet<Uuid>,
+    /// Registrable domain per observation. `None` means the observation has no
+    /// resolvable origin, which is treated as one shared `unknown` origin (it
+    /// cannot establish independence).
+    pub observation_origins: HashMap<Uuid, Option<String>>,
+}
+
+impl EvidenceIndex {
+    pub fn from_bundle(bundle: &EvidenceBundle) -> Self {
+        let observation_ids = bundle.observation_ids();
+        let insight_ids = bundle.insight_ids();
+        let mut observation_origins = HashMap::with_capacity(bundle.observations.len());
+        for observation in &bundle.observations {
+            observation_origins.insert(observation.id, observation_source_domain(observation));
+        }
+        Self {
+            observation_ids,
+            insight_ids,
+            observation_origins,
+        }
+    }
+
+    /// Distinct independent origins among the cited observations: registrable
+    /// domains, with every origin-less observation sharing the `unknown`
+    /// bucket. Derived insights do not contribute origins.
+    fn independent_origin_count(&self, evidence: &[EvidenceRef]) -> usize {
+        let mut origins: HashSet<String> = HashSet::new();
+        for reference in evidence {
+            if let EvidenceRef::Observation(id) = reference {
+                origins.insert(
+                    self.observation_origins
+                        .get(id)
+                        .cloned()
+                        .flatten()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                );
+            }
+        }
+        origins.len()
+    }
+}
+
 /// Validate a parsed payload against the evidence the model was given.
 ///
 /// * Every cited evidence id must resolve to a real observation or insight.
-/// * `observed`/`inference` claims must cite at least one evidence id.
+/// * `observed` claims must cite at least one observation (a direct item);
+///   a derived insight cannot make a claim observed.
+/// * `inference` claims must cite at least two items, or exactly one with an
+///   explicit confidence at or below
+///   [`INFERENCE_SINGLE_ITEM_CONFIDENCE_CAP`]. At or above
+///   [`HIGH_CONFIDENCE_INFERENCE_THRESHOLD`] they must cite at least
+///   [`HIGH_CONFIDENCE_MIN_ORIGINS`] independent origins.
 /// * `recommendation` claims may cite none but stay marked as recommendations.
 /// * Confidence values must be finite and within `0.0..=1.0`.
 /// * Output size is bounded per section.
 pub fn validate_analysis_payload(
     payload: AnalysisPayload,
-    observation_ids: &HashSet<Uuid>,
-    insight_ids: &HashSet<Uuid>,
+    index: &EvidenceIndex,
 ) -> Result<ValidatedAnalysis> {
     if payload.claims.is_empty() {
         anyhow::bail!("analysis must contain at least one claim");
@@ -233,24 +372,9 @@ pub fn validate_analysis_payload(
         );
     }
 
-    let claims = validate_section(
-        payload.claims,
-        ClaimSection::Claim,
-        observation_ids,
-        insight_ids,
-    )?;
-    let impact = validate_section(
-        payload.impact,
-        ClaimSection::Impact,
-        observation_ids,
-        insight_ids,
-    )?;
-    let actions = validate_section(
-        payload.actions,
-        ClaimSection::Action,
-        observation_ids,
-        insight_ids,
-    )?;
+    let claims = validate_section(payload.claims, ClaimSection::Claim, index)?;
+    let impact = validate_section(payload.impact, ClaimSection::Impact, index)?;
+    let actions = validate_section(payload.actions, ClaimSection::Action, index)?;
 
     let mut limitations = Vec::with_capacity(payload.limitations.len());
     for limitation in payload.limitations {
@@ -275,8 +399,7 @@ pub fn validate_analysis_payload(
 fn validate_section(
     claims: Vec<PayloadClaim>,
     section: ClaimSection,
-    observation_ids: &HashSet<Uuid>,
-    insight_ids: &HashSet<Uuid>,
+    index: &EvidenceIndex,
 ) -> Result<Vec<AnalysisClaimRecord>> {
     let mut validated = Vec::with_capacity(claims.len());
     for claim in claims {
@@ -291,10 +414,12 @@ fn validate_section(
             );
         }
         let mut evidence = Vec::with_capacity(claim.evidence_ids.len());
+        let mut direct_items = 0usize;
         for id in claim.evidence_ids {
-            if observation_ids.contains(&id) {
+            if index.observation_ids.contains(&id) {
+                direct_items += 1;
                 evidence.push(EvidenceRef::Observation(id));
-            } else if insight_ids.contains(&id) {
+            } else if index.insight_ids.contains(&id) {
                 evidence.push(EvidenceRef::Insight(id));
             } else {
                 anyhow::bail!(
@@ -305,6 +430,51 @@ fn validate_section(
                 );
             }
         }
+
+        // Claim-kind policy beyond "has evidence": direct items for observed
+        // claims, and confidence/origin requirements for inference.
+        match claim.claim_kind {
+            PayloadClaimKind::Observed => {
+                if direct_items == 0 {
+                    anyhow::bail!(
+                        "analysis observed claim '{}' cites no evidence resolving to an observation; \
+                         observed claims must cite at least one direct observation",
+                        text
+                    );
+                }
+            }
+            PayloadClaimKind::Inference => {
+                if evidence.len() < 2 {
+                    let capped = claim.confidence.is_some_and(|confidence| {
+                        confidence <= INFERENCE_SINGLE_ITEM_CONFIDENCE_CAP
+                    });
+                    if !capped {
+                        anyhow::bail!(
+                            "analysis inference claim '{}' cites a single evidence item and no \
+                             explicit confidence <= {INFERENCE_SINGLE_ITEM_CONFIDENCE_CAP}; a \
+                             single-item inference must cap its confidence",
+                            text
+                        );
+                    }
+                }
+                if claim
+                    .confidence
+                    .is_some_and(|confidence| confidence >= HIGH_CONFIDENCE_INFERENCE_THRESHOLD)
+                {
+                    let origins = index.independent_origin_count(&evidence);
+                    if origins < HIGH_CONFIDENCE_MIN_ORIGINS {
+                        anyhow::bail!(
+                            "analysis high-confidence inference claim '{}' cites {origins} \
+                             independent origin(s); confidence >= {HIGH_CONFIDENCE_INFERENCE_THRESHOLD} \
+                             requires {HIGH_CONFIDENCE_MIN_ORIGINS}",
+                            text
+                        );
+                    }
+                }
+            }
+            PayloadClaimKind::Recommendation => {}
+        }
+
         let record = AnalysisClaimRecord::new(
             text,
             evidence,
@@ -339,6 +509,11 @@ pub struct EvidenceBundle {
     pub source_domains: Vec<String>,
     /// `(domain, tier)` from `source_reliability_stats`.
     pub source_reliability: Vec<(String, String)>,
+    /// Number of explicit `warning_evidence` links found for the warning. When
+    /// non-zero, the linked observations are the direct evidence set.
+    pub warning_evidence_count: usize,
+    /// Where the direct evidence came from.
+    pub evidence_scope: EvidenceScope,
 }
 
 impl EvidenceBundle {
@@ -349,11 +524,96 @@ impl EvidenceBundle {
     pub fn insight_ids(&self) -> HashSet<Uuid> {
         self.insights.iter().map(|row| row.id).collect()
     }
+
+    /// Everything the validator needs: resolvable ids plus per-observation
+    /// origins for the independence rules.
+    pub fn evidence_index(&self) -> EvidenceIndex {
+        EvidenceIndex::from_bundle(self)
+    }
+}
+
+/// Canonical JSON rendering: object keys sorted recursively so logically
+/// identical content hashes identically regardless of serialization order.
+fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let fields: Vec<String> = keys
+                .into_iter()
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        serde_json::Value::String(key.clone()),
+                        canonical_json(&map[key])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        serde_json::Value::Array(items) => {
+            let rendered: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", rendered.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Canonical content hash of an observation: sha256 over the canonicalized
+/// `(observation_type, value)` payload (sorted keys, stable across
+/// serialization order).
+pub fn canonical_observation_content_hash(observation: &ObservationRow) -> String {
+    let canonical = canonical_json(&serde_json::json!({
+        "observation_type": observation.observation_type,
+        "value": observation.value,
+    }));
+    hex::encode(Sha256::digest(canonical.as_bytes()))
+}
+
+/// The origin cluster an observation belongs to: its registrable source
+/// domain when resolvable. `None` means the origin cannot be established, so
+/// the observation keeps its real row identity instead of being suppressed.
+pub fn observation_origin_cluster(observation: &ObservationRow) -> Option<String> {
+    observation_source_domain(observation)
+}
+
+/// Real dedup identity for one observation.
+///
+/// * When an origin is resolvable, the identity is the canonical content hash
+///   plus the origin cluster: byte-identical content from the same origin is
+///   the same signal (semantic suppression), while content that only shares a
+///   long prefix is *not* collapsed.
+/// * Without a resolvable origin the identity is the real row id: origin
+///   cannot be established, so no semantic suppression is allowed.
+pub fn observation_dedup_identity(observation: &ObservationRow) -> String {
+    match observation_origin_cluster(observation) {
+        Some(origin) => format!(
+            "content:{}:{origin}",
+            canonical_observation_content_hash(observation)
+        ),
+        None => format!("id:{}", observation.id),
+    }
+}
+
+/// Deduplicate observations by real identity (id, or canonical content hash +
+/// origin cluster) instead of a truncated JSON prefix. Newest-first order is
+/// preserved.
+pub fn dedup_observations(observations: Vec<ObservationRow>) -> Vec<ObservationRow> {
+    let mut seen = HashSet::new();
+    observations
+        .into_iter()
+        .filter(|observation| seen.insert(observation_dedup_identity(observation)))
+        .collect()
 }
 
 /// Gather the full bounded evidence set: up to
 /// [`MAX_EVIDENCE_OBSERVATIONS`] deduplicated observations and
 /// [`MAX_EVIDENCE_INSIGHTS`] related insights, newest first.
+///
+/// Direct evidence comes from the warning's explicit `warning_evidence` links
+/// (migration 082). Entity observations are only a fallback for warnings with
+/// no explicit links, so a warning with a source URL and no entity ids still
+/// has citable evidence.
 pub async fn gather_evidence(store: &PgStore, warning: &WarningRow) -> Result<EvidenceBundle> {
     let entity_ids: Vec<Uuid> = warning.entity_ids.clone().unwrap_or_default();
 
@@ -366,34 +626,36 @@ pub async fn gather_evidence(store: &PgStore, warning: &WarningRow) -> Result<Ev
         .map(|(_, name, _, _)| name.clone())
         .collect();
 
-    let mut all_observations = Vec::new();
-    for entity_id in &entity_ids {
-        let observations = store
-            .get_observations_by_entity(*entity_id, 60)
-            .await
-            .with_context(|| {
-                format!("warning analysis: failed to load observations for entity {entity_id}")
-            })?;
-        all_observations.extend(observations);
-    }
+    let linked_observations = store
+        .list_warning_evidence_observations(warning.id)
+        .await
+        .context("warning analysis: failed to load warning evidence links")?;
+    let warning_evidence_count = linked_observations.len();
+
+    let (mut all_observations, evidence_scope) = if !linked_observations.is_empty() {
+        (linked_observations, EvidenceScope::WarningEvidence)
+    } else {
+        let mut observations = Vec::new();
+        for entity_id in &entity_ids {
+            let entity_observations = store
+                .get_observations_by_entity(*entity_id, 60)
+                .await
+                .with_context(|| {
+                    format!("warning analysis: failed to load observations for entity {entity_id}")
+                })?;
+            observations.extend(entity_observations);
+        }
+        let scope = if entity_ids.is_empty() {
+            EvidenceScope::None
+        } else {
+            EvidenceScope::EntityObservations
+        };
+        (observations, scope)
+    };
     all_observations.sort_by_key(|observation| std::cmp::Reverse(observation.ts_utc));
-    {
-        let mut seen = HashSet::new();
-        all_observations.retain(|observation| {
-            let key = format!(
-                "{}:{}",
-                observation.observation_type,
-                observation
-                    .value
-                    .to_string()
-                    .chars()
-                    .take(120)
-                    .collect::<String>()
-            );
-            seen.insert(key)
-        });
-    }
+    let all_observations = dedup_observations(all_observations);
     let observations_available = all_observations.len();
+    let mut all_observations = all_observations;
     all_observations.truncate(MAX_EVIDENCE_OBSERVATIONS);
 
     let all_insights = store
@@ -433,6 +695,8 @@ pub async fn gather_evidence(store: &PgStore, warning: &WarningRow) -> Result<Ev
         entity_names,
         source_domains: domains,
         source_reliability,
+        warning_evidence_count,
+        evidence_scope,
     })
 }
 
@@ -526,7 +790,7 @@ pub fn assess_bundle_quality(
 /// the model sees and must not defeat dedupe on repeated clicks.
 pub fn evidence_digest(warning: &WarningRow, bundle: &EvidenceBundle) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"warning-analysis-digest-v2\n");
+    hasher.update(b"warning-analysis-digest-v3\n");
     hasher.update(format!(
         "warning|{}|{}|{}|{}|{}|{}|{:.6}\n",
         warning.id,
@@ -536,6 +800,12 @@ pub fn evidence_digest(warning: &WarningRow, bundle: &EvidenceBundle) -> String 
         warning.description.as_deref().unwrap_or(""),
         warning.region.as_deref().unwrap_or(""),
         warning.confidence.unwrap_or(0.0),
+    ));
+    hasher.update(format!(
+        "evidence-scope|{}|{}|{}\n",
+        bundle.evidence_scope.as_str(),
+        bundle.warning_evidence_count,
+        bundle.observations_available,
     ));
     for url in warning.source_urls.as_deref().unwrap_or_default() {
         hasher.update(format!("source|{url}\n"));
@@ -602,7 +872,8 @@ fn observation_excerpt(observation: &ObservationRow) -> String {
 fn evidence_block(bundle: &EvidenceBundle) -> String {
     let mut parts = Vec::new();
     parts.push(format!(
-        "OBSERVATIONS (direct evidence; showing {} of {} available):",
+        "OBSERVATIONS (direct evidence; source: {}; showing {} of {} available):",
+        bundle.evidence_scope.as_str(),
         bundle.observations.len(),
         bundle.observations_available
     ));
@@ -675,26 +946,33 @@ pub fn build_prompts(
             system.push_str(&format!("- {}\n", area.trim()));
         }
     }
-    system.push_str(
+    system.push_str(&format!(
         "\nReturn exactly one JSON object and nothing else — no prose, no markdown, no code \
          fences, no fields beyond the schema.\n\
          Schema:\n\
-         {\n\
-           \"claims\":    [{\"text\": string, \"claim_kind\": \"observed\"|\"inference\"|\"recommendation\", \"evidence_ids\": [uuid], \"confidence\": number}],\n\
+         {{\n\
+           \"claims\":    [{{\"text\": string, \"claim_kind\": \"observed\"|\"inference\"|\"recommendation\", \"evidence_ids\": [uuid], \"confidence\": number}}],\n\
            \"impact\":    [same claim shape],\n\
            \"actions\":   [same claim shape],\n\
            \"limitations\": [string]\n\
-         }\n\
+         }}\n\
          Rules:\n\
-         - A claim labelled \"observed\" or \"inference\" MUST cite at least one evidence_id taken \
-           verbatim from the OBSERVATIONS/RELATED INSIGHTS lists.\n\
+         - A claim labelled \"observed\" MUST cite at least one observation id from the \
+           OBSERVATIONS list; a derived RELATED INSIGHT cannot make a claim observed.\n\
+         - A claim labelled \"inference\" MUST cite at least one evidence_id taken verbatim \
+           from the evidence lists. With exactly one cited item it MUST carry an explicit \
+           confidence of {single_item_cap} or lower; confidence >= {high_threshold} requires \
+           cited observations from at least {min_origins} independent source domains.\n\
          - Never invent evidence_ids: every id must appear in the evidence lists.\n\
          - \"recommendation\" claims (suggested actions) may cite zero evidence_ids but must be \
            labelled \"recommendation\".\n\
          - confidence is 0.0–1.0; omit it rather than guessing.\n\
          - If the evidence is insufficient for a claim, put the gap in limitations instead of \
            asserting it.",
-    );
+        single_item_cap = INFERENCE_SINGLE_ITEM_CONFIDENCE_CAP,
+        high_threshold = HIGH_CONFIDENCE_INFERENCE_THRESHOLD,
+        min_origins = HIGH_CONFIDENCE_MIN_ORIGINS,
+    ));
 
     let entity_names_str = if bundle.entity_names.is_empty() {
         "unspecified entities".to_string()
@@ -817,6 +1095,17 @@ pub struct RenderedClaim {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WarningAnalysisOutput {
     pub schema_version: u32,
+    /// Deterministic run status ([`AnalysisStatus::InsufficientEvidence`] when
+    /// the preflight found nothing citable).
+    #[serde(default)]
+    pub analysis_status: AnalysisStatus,
+    /// Where the direct evidence came from: explicit `warning_evidence` links
+    /// or the entity-observation fallback.
+    #[serde(default)]
+    pub evidence_scope: EvidenceScope,
+    /// Explicit `warning_evidence` rows available for the warning.
+    #[serde(default)]
+    pub warning_evidence_count: usize,
     pub claims: Vec<RenderedClaim>,
     pub impact: Vec<RenderedClaim>,
     pub actions: Vec<RenderedClaim>,
@@ -1038,49 +1327,28 @@ struct FinishedAnalysis {
     records: Vec<AnalysisClaimRecord>,
 }
 
-async fn run_analysis(context: &AnalysisRunContext) -> Result<FinishedAnalysis> {
-    let (system_prompt, user_prompt) =
-        build_prompts(&context.profile, &context.warning, &context.bundle);
+/// Deterministic limitation recorded for an insufficient-evidence run.
+pub const INSUFFICIENT_EVIDENCE_LIMITATION: &str =
+    "No observations or related insights were available for this warning, so no analysis was generated.";
 
-    let mut model_config = context.model.clone();
-    // Deterministic-ish structured extraction. No timeout override: the run is
-    // asynchronous, so the configured model timeout applies as-is.
-    model_config.temperature = 0.2;
-    model_config.max_tokens = 2048;
-    let client = OpenAiCompatibleClient::new(model_config);
-
-    let raw = client
-        .generate_json(&system_prompt, &user_prompt)
-        .await
-        .context("warning analysis: LLM call failed")?;
-
-    let payload = parse_analysis_payload(&raw)?;
-    let validated = validate_analysis_payload(
-        payload,
-        &context.bundle.observation_ids(),
-        &context.bundle.insight_ids(),
-    )?;
-
-    let quality = assess_bundle_quality(&context.bundle, &context.warning.title, Utc::now());
-    let output = WarningAnalysisOutput {
+fn base_output(
+    context: &AnalysisRunContext,
+    status: AnalysisStatus,
+    claims: Vec<RenderedClaim>,
+    impact: Vec<RenderedClaim>,
+    actions: Vec<RenderedClaim>,
+    limitations: Vec<String>,
+) -> WarningAnalysisOutput {
+    WarningAnalysisOutput {
         schema_version: ANALYSIS_OUTPUT_SCHEMA_VERSION,
-        claims: validated
-            .claims
-            .iter()
-            .map(|claim| render_claim(&context.bundle, claim))
-            .collect(),
-        impact: validated
-            .impact
-            .iter()
-            .map(|claim| render_claim(&context.bundle, claim))
-            .collect(),
-        actions: validated
-            .actions
-            .iter()
-            .map(|claim| render_claim(&context.bundle, claim))
-            .collect(),
-        limitations: validated.limitations.clone(),
-        evidence_quality: quality,
+        analysis_status: status,
+        evidence_scope: context.bundle.evidence_scope,
+        warning_evidence_count: context.bundle.warning_evidence_count,
+        claims,
+        impact,
+        actions,
+        limitations,
+        evidence_quality: assess_bundle_quality(&context.bundle, &context.warning.title, Utc::now()),
         warning_source_count: context
             .warning
             .source_urls
@@ -1103,7 +1371,67 @@ async fn run_analysis(context: &AnalysisRunContext) -> Result<FinishedAnalysis> 
         model: context.model.model_name.clone(),
         prompt_version: ANALYSIS_PROMPT_VERSION.to_string(),
         evidence_digest: evidence_digest(&context.warning, &context.bundle),
-    };
+    }
+}
+
+async fn run_analysis(context: &AnalysisRunContext) -> Result<FinishedAnalysis> {
+    // Deterministic preflight (audit item 3): with no observations and no
+    // insights there is nothing the model could cite, so the run reports
+    // InsufficientEvidence without paying for an LLM call.
+    if preflight_status(&context.bundle).is_insufficient() {
+        let output = base_output(
+            context,
+            AnalysisStatus::InsufficientEvidence,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![INSUFFICIENT_EVIDENCE_LIMITATION.to_string()],
+        );
+        return Ok(FinishedAnalysis {
+            output,
+            records: Vec::new(),
+        });
+    }
+
+    let (system_prompt, user_prompt) =
+        build_prompts(&context.profile, &context.warning, &context.bundle);
+
+    let mut model_config = context.model.clone();
+    // Deterministic-ish structured extraction. No timeout override: the run is
+    // asynchronous, so the configured model timeout applies as-is.
+    model_config.temperature = 0.2;
+    model_config.max_tokens = 2048;
+    let client = OpenAiCompatibleClient::new(model_config);
+
+    let raw = client
+        .generate_json(&system_prompt, &user_prompt)
+        .await
+        .context("warning analysis: LLM call failed")?;
+
+    let payload = parse_analysis_payload(&raw)?;
+    let index = context.bundle.evidence_index();
+    let validated = validate_analysis_payload(payload, &index)?;
+
+    let output = base_output(
+        context,
+        AnalysisStatus::Completed,
+        validated
+            .claims
+            .iter()
+            .map(|claim| render_claim(&context.bundle, claim))
+            .collect(),
+        validated
+            .impact
+            .iter()
+            .map(|claim| render_claim(&context.bundle, claim))
+            .collect(),
+        validated
+            .actions
+            .iter()
+            .map(|claim| render_claim(&context.bundle, claim))
+            .collect(),
+        validated.limitations.clone(),
+    );
 
     Ok(FinishedAnalysis {
         output,
@@ -1138,6 +1466,18 @@ mod tests {
             .collect()
     }
 
+    /// The evidence index for the unit-test payloads: one observation with a
+    /// resolvable origin and one related insight.
+    fn evidence_index() -> EvidenceIndex {
+        let mut observation_origins = HashMap::new();
+        observation_origins.insert(Uuid::nil(), Some("example.com".to_string()));
+        EvidenceIndex {
+            observation_ids: observation_ids(),
+            insight_ids: insight_ids(),
+            observation_origins,
+        }
+    }
+
     fn valid_payload_json(evidence_id: Uuid) -> String {
         json!({
             "claims": [
@@ -1145,7 +1485,7 @@ mod tests {
                 {"text": "Capacity may tighten", "claim_kind": "inference", "evidence_ids": [evidence_id.to_string()], "confidence": 0.6}
             ],
             "impact": [
-                {"text": "Lead times could extend", "claim_kind": "inference", "evidence_ids": [evidence_id.to_string()]}
+                {"text": "Lead times could extend", "claim_kind": "inference", "evidence_ids": [evidence_id.to_string()], "confidence": 0.5}
             ],
             "actions": [
                 {"text": "Qualify a second supplier", "claim_kind": "recommendation"}
@@ -1157,7 +1497,7 @@ mod tests {
 
     fn validate(json: &str) -> Result<ValidatedAnalysis> {
         let payload = parse_analysis_payload(json)?;
-        validate_analysis_payload(payload, &observation_ids(), &insight_ids())
+        validate_analysis_payload(payload, &evidence_index())
     }
 
     #[test]
@@ -1228,7 +1568,7 @@ mod tests {
     fn citations_may_resolve_to_related_insights() {
         let insight = Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").unwrap();
         let raw = json!({
-            "claims": [{"text": "Cross-referenced conclusion", "claim_kind": "inference", "evidence_ids": [insight.to_string()]}],
+            "claims": [{"text": "Cross-referenced conclusion", "claim_kind": "inference", "evidence_ids": [insight.to_string()], "confidence": 0.5}],
             "impact": [],
             "actions": [],
             "limitations": []
@@ -1239,6 +1579,96 @@ mod tests {
             validated.claims[0].evidence,
             vec![EvidenceRef::Insight(insight)]
         );
+    }
+
+    #[test]
+    fn observed_claim_citing_only_a_derived_insight_is_rejected() {
+        let insight = Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").unwrap();
+        let raw = json!({
+            "claims": [{"text": "Stated as a fact", "claim_kind": "observed", "evidence_ids": [insight.to_string()], "confidence": 0.8}],
+            "impact": [],
+            "actions": [],
+            "limitations": []
+        })
+        .to_string();
+        let error = validate(&raw).expect_err("a derived insight cannot make a claim observed");
+        assert!(
+            format!("{error:#}").contains("at least one direct observation"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn inference_with_one_item_requires_an_explicit_confidence_cap() {
+        let id = Uuid::nil();
+        let uncapped = json!({
+            "claims": [{"text": "Single-source inference", "claim_kind": "inference", "evidence_ids": [id.to_string()]}],
+            "impact": [],
+            "actions": [],
+            "limitations": []
+        })
+        .to_string();
+        let error = validate(&uncapped).expect_err("single-item inference without a cap");
+        assert!(
+            format!("{error:#}").contains("single-item inference"),
+            "{error:#}"
+        );
+
+        let too_sure = json!({
+            "claims": [{"text": "Single-source inference", "claim_kind": "inference", "evidence_ids": [id.to_string()], "confidence": 0.75}],
+            "impact": [],
+            "actions": [],
+            "limitations": []
+        })
+        .to_string();
+        assert!(validate(&too_sure).is_err(), "above-cap single item");
+
+        let capped = json!({
+            "claims": [{"text": "Single-source inference", "claim_kind": "inference", "evidence_ids": [id.to_string()], "confidence": 0.5}],
+            "impact": [],
+            "actions": [],
+            "limitations": []
+        })
+        .to_string();
+        validate(&capped).expect("capped single-item inference is allowed");
+    }
+
+    #[test]
+    fn high_confidence_inference_requires_two_independent_origins() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut index = EvidenceIndex {
+            observation_ids: [first, second].into_iter().collect(),
+            ..EvidenceIndex::default()
+        };
+        index
+            .observation_origins
+            .insert(first, Some("example.com".to_string()));
+        index
+            .observation_origins
+            .insert(second, Some("example.com".to_string()));
+
+        let same_origin = json!({
+            "claims": [{"text": "Confident claim", "claim_kind": "inference", "evidence_ids": [first.to_string(), second.to_string()], "confidence": 0.9}],
+            "impact": [],
+            "actions": [],
+            "limitations": []
+        })
+        .to_string();
+        let payload = parse_analysis_payload(&same_origin).unwrap();
+        let error = validate_analysis_payload(payload, &index)
+            .expect_err("one origin cannot support high-confidence inference");
+        assert!(
+            format!("{error:#}").contains("independent origin"),
+            "{error:#}"
+        );
+
+        index
+            .observation_origins
+            .insert(second, Some("other.example.org".to_string()));
+        let payload = parse_analysis_payload(&same_origin).unwrap();
+        validate_analysis_payload(payload, &index)
+            .expect("two independent origins support high-confidence inference");
     }
 
     #[test]
@@ -1328,8 +1758,15 @@ mod tests {
             system_prompt: "You are a test analyst.".to_string(),
             focus_areas: vec!["supply chains".to_string()],
         };
-        let observations: Vec<ObservationRow> =
-            (0..40).map(|_| test_observation(Uuid::new_v4())).collect();
+        let observations: Vec<ObservationRow> = (0..40)
+            .map(|index| {
+                test_observation_with(
+                    Uuid::new_v4(),
+                    &format!("observation {index}"),
+                    "https://example.com/a",
+                )
+            })
+            .collect();
         let newest_id = observations[0].id;
         let bundle = test_bundle(observations, 40);
 
@@ -1387,6 +1824,160 @@ mod tests {
         assert!(system.contains("\"recommendation\""));
     }
 
+    #[test]
+    fn prompt_names_the_evidence_scope_and_claim_rules() {
+        let profile = IntelligenceProfile {
+            name: "Test".to_string(),
+            system_prompt: "You are a test analyst.".to_string(),
+            focus_areas: vec![],
+        };
+        let mut bundle = test_bundle(vec![test_observation(Uuid::nil())], 1);
+        bundle.evidence_scope = EvidenceScope::WarningEvidence;
+        bundle.warning_evidence_count = 1;
+        let (system, user) = build_prompts(&profile, &test_warning(), &bundle);
+        assert!(
+            user.contains("source: warning_evidence"),
+            "prompt must name the evidence scope: {user}"
+        );
+        assert!(system.contains("at least one observation id"));
+        assert!(system.contains("exactly one cited item"));
+        assert!(system.contains("independent source domains"));
+    }
+
+    #[test]
+    fn preflight_reports_insufficient_evidence_without_a_model_call() {
+        let empty = test_bundle(Vec::new(), 0);
+        assert_eq!(
+            preflight_status(&empty),
+            AnalysisStatus::InsufficientEvidence
+        );
+
+        let with_observation = test_bundle(vec![test_observation(Uuid::new_v4())], 1);
+        assert_eq!(
+            preflight_status(&with_observation),
+            AnalysisStatus::Completed
+        );
+
+        let with_insight = EvidenceBundle {
+            insights: vec![test_insight()],
+            insights_available: 1,
+            ..test_bundle(Vec::new(), 0)
+        };
+        assert_eq!(preflight_status(&with_insight), AnalysisStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn insufficient_evidence_short_circuits_before_the_model() {
+        // The model config points at a dead endpoint: if the executor called
+        // the model this test would fail (or hang until the timeout), so a
+        // fast Ok proves the preflight skipped the call.
+        let context = AnalysisRunContext {
+            run_id: Uuid::new_v4(),
+            warning: test_warning(),
+            bundle: test_bundle(Vec::new(), 0),
+            model: ModelConfig {
+                model_name: "unreachable".to_string(),
+                provider: apex_llm::LlmProvider::OpenAi,
+                base_url: "http://127.0.0.1:9".to_string(),
+                api_key: None,
+                max_tokens: 16,
+                temperature: 0.0,
+                timeout_seconds: 1,
+            },
+            profile: IntelligenceProfile {
+                name: "Test".to_string(),
+                system_prompt: "You are a test analyst.".to_string(),
+                focus_areas: Vec::new(),
+            },
+        };
+
+        let finished = run_analysis(&context)
+            .await
+            .expect("preflight must succeed");
+        assert_eq!(
+            finished.output.analysis_status,
+            AnalysisStatus::InsufficientEvidence
+        );
+        assert!(finished.records.is_empty());
+        assert!(finished.output.claims.is_empty());
+        assert!(finished
+            .output
+            .limitations
+            .iter()
+            .any(|limitation| limitation == INSUFFICIENT_EVIDENCE_LIMITATION));
+    }
+
+    #[test]
+    fn dedup_keeps_observations_that_only_share_a_long_prefix() {
+        let prefix = "x".repeat(200);
+        let first = test_observation_with(
+            Uuid::new_v4(),
+            &format!("{prefix} alpha tail"),
+            "https://example.com/a",
+        );
+        let second = test_observation_with(
+            Uuid::new_v4(),
+            &format!("{prefix} beta tail"),
+            "https://example.com/a",
+        );
+        let deduped = dedup_observations(vec![first, second]);
+        assert_eq!(
+            deduped.len(),
+            2,
+            "content that only shares a 120-char prefix must not collapse"
+        );
+    }
+
+    #[test]
+    fn dedup_suppresses_identical_content_from_the_same_origin() {
+        let first =
+            test_observation_with(Uuid::new_v4(), "identical payload", "https://example.com/a");
+        let second =
+            test_observation_with(Uuid::new_v4(), "identical payload", "https://example.com/b");
+        // Different URLs but the same registrable origin: semantic duplicate.
+        assert_eq!(dedup_observations(vec![first, second]).len(), 1);
+    }
+
+    #[test]
+    fn dedup_keeps_identical_content_from_different_origins() {
+        let first =
+            test_observation_with(Uuid::new_v4(), "identical payload", "https://example.com/a");
+        let second = test_observation_with(
+            Uuid::new_v4(),
+            "identical payload",
+            "https://other.example.org/b",
+        );
+        assert_eq!(dedup_observations(vec![first, second]).len(), 2);
+    }
+
+    #[test]
+    fn canonical_content_hash_ignores_json_key_order() {
+        let mut first = test_observation_with(Uuid::new_v4(), "payload", "https://example.com/a");
+        first.value = json!({"a": 2, "b": 1});
+        let mut second = test_observation_with(Uuid::new_v4(), "payload", "https://example.com/a");
+        second.value = json!({"b": 1, "a": 2});
+        assert_eq!(
+            canonical_observation_content_hash(&first),
+            canonical_observation_content_hash(&second)
+        );
+    }
+
+    #[test]
+    fn digest_tracks_the_evidence_scope() {
+        let warning = test_warning();
+        let bundle = test_bundle(vec![test_observation(Uuid::new_v4())], 1);
+        let first = evidence_digest(&warning, &bundle);
+
+        let mut linked = bundle.clone();
+        linked.evidence_scope = EvidenceScope::WarningEvidence;
+        linked.warning_evidence_count = 1;
+        assert_ne!(
+            first,
+            evidence_digest(&warning, &linked),
+            "linked warning evidence must change the digest"
+        );
+    }
+
     fn test_warning() -> WarningRow {
         WarningRow {
             id: Uuid::new_v4(),
@@ -1414,16 +2005,37 @@ mod tests {
     }
 
     fn test_observation(id: Uuid) -> ObservationRow {
+        test_observation_with(id, "A real observation", "https://example.com/a")
+    }
+
+    fn test_observation_with(id: Uuid, text: &str, source_url: &str) -> ObservationRow {
         ObservationRow {
             id,
             observation_type: "signal".to_string(),
             entity_id: None,
             entity_type: None,
             ts_utc: Utc::now(),
-            value: json!({"text": "A real observation"}),
-            provenance: json!({"source_url": "https://example.com/a"}),
+            value: json!({"text": text}),
+            provenance: json!({"source_url": source_url}),
             confidence: Some(0.7),
             created_at: Some(Utc::now()),
+        }
+    }
+
+    fn test_insight() -> apex_store::postgres::InsightRow {
+        apex_store::postgres::InsightRow {
+            id: Uuid::new_v4(),
+            title: "Related insight".to_string(),
+            summary: "Derived finding".to_string(),
+            insight_type: Some("supply_chain".to_string()),
+            region: None,
+            confidence: Some(0.6),
+            evidence_urls: None,
+            entity_ids: None,
+            tags: None,
+            metadata: None,
+            created_at: Some(Utc::now()),
+            updated_at: Some(Utc::now()),
         }
     }
 
@@ -1436,6 +2048,8 @@ mod tests {
             entity_names: Vec::new(),
             source_domains: vec!["example.com".to_string()],
             source_reliability: Vec::new(),
+            warning_evidence_count: 0,
+            evidence_scope: EvidenceScope::EntityObservations,
         }
     }
 }
