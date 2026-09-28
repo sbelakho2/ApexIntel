@@ -1291,6 +1291,7 @@ pub fn evaluate_source_coverage(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::routes::capabilities::CapabilityState;
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use chrono::TimeZone;
@@ -1550,9 +1551,13 @@ mod tests {
         let status = probe_llm(None, &ReadinessPolicy::default()).await;
         assert_ne!(status.status, "ok");
         if cfg!(feature = "llm") {
-            assert_eq!(status.status, "degraded");
+            // The llm feature is compiled in but no model is configured:
+            // that is a configuration gap, not a measured degradation.
+            assert_eq!(status.status, "not_configured");
+            assert_eq!(status.state(), CapabilityState::NotConfigured);
         } else {
             assert_eq!(status.status, "disabled");
+            assert_eq!(status.state(), CapabilityState::Disabled);
         }
         reset_probe_cache();
     }
