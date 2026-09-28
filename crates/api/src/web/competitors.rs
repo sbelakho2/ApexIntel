@@ -266,7 +266,7 @@ pub async fn list_competitors(
             let threat_h = risk.map_or(0, |r| r * chart_area_h / 100);
             let overlap_h = overlap.map_or(0, |o| o * chart_area_h / 100);
             let strategic_context = match (risk, overlap) {
-                (Some(r), Some(o)) if r >= 70 => {
+                (Some(r), Some(_)) if r >= 70 => {
                     "High-threat competitor requiring close monitoring".to_string()
                 }
                 (Some(r), _) if r >= 40 => {
@@ -465,7 +465,7 @@ mod tests {
     /// unmeasured cards instead of counting them as zero.
     #[test]
     fn measured_values_are_preserved_and_unmeasured_are_skipped() {
-        let measured = vec![Some(80_i64), None, Some(40)];
+        let measured = [Some(80_i64), None, Some(40)];
         let values: Vec<i64> = measured.iter().filter_map(|value| *value).collect();
         assert_eq!(values.len(), 2, "unmeasured entries are skipped");
         assert_eq!(values.iter().sum::<i64>() / values.len() as i64, 60);
