@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+use crate::analysis::registrable_domain;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -199,12 +200,20 @@ fn near_duplicate(left: &OriginRecord, right: &OriginRecord) -> bool {
     }
 }
 
+/// Same-publisher identity at the registrable-domain level: the fallback
+/// identity is the eTLD+1 of the origin host, so subdomains of one publisher
+/// (news.example.com, investor.example.com, blog.example.com) are one origin
+/// unless a stronger signal separates them.
 fn same_origin(left: &OriginRecord, right: &OriginRecord) -> bool {
     match (
         left.origin.as_deref().and_then(normalize_origin),
         right.origin.as_deref().and_then(normalize_origin),
     ) {
-        (Some(left), Some(right)) => left == right,
+        (Some(left), Some(right)) => {
+            let left_domain = registrable_domain(&left).unwrap_or(left);
+            let right_domain = registrable_domain(&right).unwrap_or(right);
+            left_domain == right_domain
+        }
         _ => false,
     }
 }
@@ -349,7 +358,7 @@ fn cluster_key(record: &OriginRecord) -> Option<String> {
         .origin
         .as_deref()
         .and_then(normalize_origin)
-        .map(|origin| format!("origin:{origin}"))
+        .map(|origin| format!("origin:{}", registrable_domain(&origin).unwrap_or(origin)))
 }
 
 /// Number of independent origin clusters that carry an identity.

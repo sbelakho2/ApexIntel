@@ -334,10 +334,7 @@ impl SourceHealthMonitor {
             m.health_score = self
                 .calculate_score(m)
                 .map_or(Measurement::NotMeasured, Measurement::measured);
-            m.status = m
-                .health_score
-                .value_copied()
-                .map_or(HealthStatus::Unknown, HealthStatus::from_score);
+            m.status = self.status_for(m);
             m.last_check = Utc::now();
         }
 
@@ -383,10 +380,7 @@ impl SourceHealthMonitor {
             m.health_score = self
                 .calculate_score(m)
                 .map_or(Measurement::NotMeasured, Measurement::measured);
-            m.status = m
-                .health_score
-                .value_copied()
-                .map_or(HealthStatus::Unknown, HealthStatus::from_score);
+            m.status = self.status_for(m);
             m.last_check = Utc::now();
         }
 
@@ -501,6 +495,23 @@ impl SourceHealthMonitor {
             return None;
         }
         Some((weighted_sum / weight_total).clamp(0.0, 1.0))
+    }
+
+    /// Runtime status for a metrics snapshot.
+    ///
+    /// A measured composite score decides the status. Below the score minimum
+    /// the composite is unmeasured, but observed consecutive failures remain a
+    /// measured fact: one failure is `Degraded`, two or more `Unhealthy` —
+    /// never `Unknown`, and never a fabricated neutral score.
+    fn status_for(&self, m: &HealthMetrics) -> HealthStatus {
+        if let Some(score) = m.health_score.value_copied() {
+            return HealthStatus::from_score(score);
+        }
+        match m.consecutive_failures {
+            0 => HealthStatus::Unknown,
+            1 => HealthStatus::Degraded,
+            _ => HealthStatus::Unhealthy,
+        }
     }
 
     /// Mean response time over the current window's real crawl results.

@@ -330,6 +330,10 @@ pub struct ClaimAssessment {
     pub supporting_count: usize,
     pub neutral_count: usize,
     pub contradicting_count: usize,
+    /// Distinct origin clusters among *supporting* evidence only.
+    pub independent_support_count: usize,
+    /// Distinct origin clusters among *contradicting* evidence only.
+    pub independent_contradiction_count: usize,
     /// Independent support relative to the set. Measured only when a claim was
     /// assessed; `InsufficientEvidence` when supporting records exist but none
     /// carried a measured relevance weight.
@@ -451,19 +455,28 @@ impl EvidenceQuality {
         dimensions
     }
 
-    /// Shared quality label used by UI badges. The "high" gate only applies
-    /// the contradiction rule when the ratio was actually measured.
+    /// Shared quality label used by UI badges.
+    ///
+    /// Measurement completeness is a hard gate, not a footnote: a score built
+    /// from a few favourable dimensions while the rest are unknown cannot be
+    /// "high" or "moderate". Unknown dimensions reduce certainty instead of
+    /// disappearing from the denominator.
     pub fn quality_label(&self) -> &'static str {
         let score = self.composite_score();
+        let completeness = measurement_completeness(&self.corpus, &self.claim).ratio;
         let contradiction_blocks_high = self
             .claim
             .contradiction_ratio
             .value_copied()
             .map(|ratio| ratio >= 0.15)
             .unwrap_or(false);
-        if score >= 0.8 && !contradiction_blocks_high {
+        let high_evidence_conditions = completeness >= 0.80
+            && self.corpus.independent_origin_count >= 2
+            && self.corpus.freshness.is_measured()
+            && self.corpus.parser_confidence.is_measured();
+        if score >= 0.80 && high_evidence_conditions && !contradiction_blocks_high {
             "high"
-        } else if score >= 0.6 {
+        } else if score >= 0.60 && completeness >= 0.60 {
             "moderate"
         } else if score >= 0.35 {
             "emerging"
@@ -656,16 +669,20 @@ pub fn assess_claim(claim: Option<&str>, items: &[EvidenceItem]) -> ClaimAssessm
     let mut support_count = 0usize;
     let mut contradiction_count = 0usize;
     let mut neutral_count = 0usize;
-    let mut independent_origins = HashSet::new();
+    // Independence is counted *within each stance*: contradicting origins
+    // must never increase supporting corroboration (and vice versa).
+    let mut support_origins = HashSet::new();
+    let mut contradiction_origins = HashSet::new();
+    let mut neutral_origins = HashSet::new();
 
     for item in items {
-        if let Some(origin) = item.independence_origin() {
-            independent_origins.insert(origin);
-        }
         let relevance = item.relevance.value_copied();
         match item.stance {
             EvidenceStance::Supports => {
                 support_count += 1;
+                if let Some(origin) = item.independence_origin() {
+                    support_origins.insert(origin);
+                }
                 if let Some(relevance) = relevance {
                     support_weight += relevance.clamp(0.0, 1.0).max(0.2);
                     weighted_support_count += 1;
@@ -673,22 +690,28 @@ pub fn assess_claim(claim: Option<&str>, items: &[EvidenceItem]) -> ClaimAssessm
             }
             EvidenceStance::Contradicts => {
                 contradiction_count += 1;
+                if let Some(origin) = item.independence_origin() {
+                    contradiction_origins.insert(origin);
+                }
                 if let Some(relevance) = relevance {
                     contradiction_weight += relevance.clamp(0.0, 1.0).max(0.2);
                     weighted_contradiction_count += 1;
                 }
             }
             EvidenceStance::Neutral => {
+                // Neutral evidence is context: it contributes neither support
+                // nor contradiction weight (it only affects coverage).
                 neutral_count += 1;
-                if let Some(relevance) = relevance {
-                    support_weight += relevance.clamp(0.0, 1.0) * 0.35;
-                    weighted_support_count += 1;
+                if let Some(origin) = item.independence_origin() {
+                    neutral_origins.insert(origin);
                 }
             }
         }
     }
 
     let claim_present = claim.is_some();
+    let independent_support_count = support_origins.len().min(support_count);
+    let independent_contradiction_count = contradiction_origins.len().min(contradiction_count);
     let corroboration_score = if !claim_present {
         Measurement::not_measured()
     } else if support_count == 0 {
@@ -696,10 +719,12 @@ pub fn assess_claim(claim: Option<&str>, items: &[EvidenceItem]) -> ClaimAssessm
     } else if weighted_support_count == 0 {
         Measurement::insufficient_evidence()
     } else {
-        let independent_support = (independent_origins.len().min(support_count) as f64
-            / items.len() as f64)
-            .clamp(0.0, 1.0);
-        let support_strength = (support_weight / support_count as f64).clamp(0.0, 1.0);
+        // Independent support relative to the *supporting* records: three
+        // copies of one source must not corroborate better than one, and
+        // contradicting origins are not part of this numerator.
+        let independent_support =
+            (independent_support_count as f64 / support_count as f64).clamp(0.0, 1.0);
+        let support_strength = (support_weight / weighted_support_count as f64).clamp(0.0, 1.0);
         Measurement::measured(
             (0.55 * independent_support + 0.45 * support_strength).clamp(0.0, 1.0),
         )
@@ -723,6 +748,8 @@ pub fn assess_claim(claim: Option<&str>, items: &[EvidenceItem]) -> ClaimAssessm
         supporting_count: support_count,
         neutral_count,
         contradicting_count: contradiction_count,
+        independent_support_count,
+        independent_contradiction_count,
         corroboration_score,
         contradiction_ratio,
     }
@@ -944,8 +971,28 @@ mod tests {
 
         assert_eq!(quality.corpus.evidence_count, 3);
         assert_eq!(
-            quality.corpus.independent_origin_count, 3,
-            "three distinct origin hosts are three origin clusters"
+            quality.corpus.independent_origin_count, 2,
+            "subdomains of one registrable domain are one publisher, not two origins"
+        );
+
+        // A genuinely different registrable domain is a third origin.
+        let three_publishers = assess_evidence_quality(
+            &[
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://news.example.com/report-a"),
+                EvidenceItem::new(0.9, EvidenceStance::Supports)
+                    .with_origin("https://blog.example.com/report-b"),
+                EvidenceItem::new(0.8, EvidenceStance::Supports)
+                    .with_origin("https://beta.example.org/report"),
+                EvidenceItem::new(0.8, EvidenceStance::Supports)
+                    .with_origin("https://gamma.example.net/report"),
+            ],
+            &[],
+            now(),
+        );
+        assert_eq!(
+            three_publishers.corpus.independent_origin_count, 3,
+            "distinct publishers stay independent"
         );
 
         let unsourced = assess_evidence_quality(

@@ -419,12 +419,16 @@ mod tests {
     #[test]
     fn module_exposes_no_warning_text_hash() {
         let source = include_str!("warning_evidence.rs");
+        // Needles are assembled so this test's own source cannot satisfy its
+        // assertions.
+        let content_hash_helper = ["warning_evidence", "content_hash"].join("_");
+        let citation_type = ["WARNING", "SOURCE", "CITATION", "OBSERVATION", "TYPE"].join("_");
         assert!(
-            !source.contains("warning_evidence_content_hash"),
+            !source.contains(&content_hash_helper),
             "hashing warning title/description as 'content' is fabrication"
         );
         assert!(
-            !source.contains("WARNING_SOURCE_CITATION_OBSERVATION_TYPE"),
+            !source.contains(&citation_type),
             "the synthetic citation observation type must not exist"
         );
     }

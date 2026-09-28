@@ -286,9 +286,9 @@ pub fn parse_analysis_payload(raw: &str) -> Result<AnalysisPayload> {
 pub struct EvidenceIndex {
     pub observation_ids: HashSet<Uuid>,
     pub insight_ids: HashSet<Uuid>,
-    /// Registrable domain per observation. `None` means the observation has no
-    /// resolvable origin, which is treated as one shared `unknown` origin (it
-    /// cannot establish independence).
+    /// Canonical origin record per observation, clustered through
+    /// [`apex_core::origin_cluster`]. `None` means the observation has no
+    /// resolvable origin (it cannot establish independence).
     pub observation_origins: HashMap<Uuid, Option<String>>,
 }
 
@@ -307,23 +307,32 @@ impl EvidenceIndex {
         }
     }
 
-    /// Distinct independent origins among the cited observations: registrable
-    /// domains, with every origin-less observation sharing the `unknown`
-    /// bucket. Derived insights do not contribute origins.
+    /// Distinct independent origins among the cited observations, through the
+    /// canonical [`apex_core::origin_cluster`] service (registrable-domain
+    /// fallback, content-hash/publisher/syndication signals). Derived
+    /// insights do not contribute origins.
+    ///
+    /// This is the same definition of "independent evidence" used by corpus
+    /// quality, so the validator can never accept a claim as independently
+    /// corroborated while the corpus model counts it as one origin.
     fn independent_origin_count(&self, evidence: &[EvidenceRef]) -> usize {
-        let mut origins: HashSet<String> = HashSet::new();
-        for reference in evidence {
-            if let EvidenceRef::Observation(id) = reference {
-                origins.insert(
-                    self.observation_origins
-                        .get(id)
-                        .cloned()
-                        .flatten()
-                        .unwrap_or_else(|| "unknown".to_string()),
-                );
-            }
-        }
-        origins.len()
+        let records: Vec<apex_core::origin_cluster::OriginRecord> = evidence
+            .iter()
+            .filter_map(|reference| match reference {
+                EvidenceRef::Observation(id) => Some(id),
+                EvidenceRef::Insight(_) => None,
+            })
+            .map(|id| apex_core::origin_cluster::OriginRecord {
+                origin: self.observation_origins.get(id).cloned().flatten(),
+                content_hash: None,
+                canonical_publisher: None,
+                syndication_of: None,
+                title: None,
+                body: None,
+                observed_at: None,
+            })
+            .collect();
+        apex_core::origin_cluster::independent_origin_count(&records)
     }
 }
 
