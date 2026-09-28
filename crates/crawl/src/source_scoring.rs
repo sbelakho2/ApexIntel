@@ -25,6 +25,7 @@
 //!
 //! Pure functions — no database, no side effects.
 
+use apex_core::measurement::Measurement;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -33,47 +34,65 @@ use std::collections::{HashMap, HashSet};
 // ────────────────────────────────────────────
 
 /// Raw telemetry for a single crawl source, collected over a rolling window.
+///
+/// Every analytical field is a [`Measurement`]: a source with no metric row in
+/// the window has *unmeasured* yield/freshness/novelty/error, never zero
+/// values. The configured crawl interval is deployment configuration (always
+/// known) and stays a plain number.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceTelemetry {
     pub source_id: String,
     pub domain: String,
     /// Total observations ingested from this source in the window.
-    pub observations_ingested: u64,
+    pub observations_ingested: Measurement<u64>,
     /// Observations that triggered at least one recipe fire.
-    pub observations_in_fires: u64,
+    pub observations_in_fires: Measurement<u64>,
     /// Observations that appeared in promoted recipes.
-    pub observations_in_promotions: u64,
-    /// Median time-to-ingest in seconds (freshness proxy).
-    pub median_ingest_latency_secs: f64,
-    /// Fraction of crawl attempts that failed (4xx/5xx/timeout).
-    pub error_rate: f64,
-    /// Set of distinct [`ObservationType`] variants this source produces.
-    pub observation_types_produced: Vec<String>,
+    pub observations_in_promotions: Measurement<u64>,
+    /// Median time-to-ingest in seconds (freshness proxy). Not used by the
+    /// composite score; carried for reporting.
+    pub median_ingest_latency_secs: Measurement<f64>,
+    /// Fraction of crawl attempts that failed (4xx/5xx/timeout). Unmeasured is
+    /// never treated as "zero errors".
+    pub error_rate: Measurement<f64>,
+    /// Set of distinct observation types this source produces.
+    pub observation_types_produced: Measurement<Vec<String>>,
     /// Hours since the last successful crawl.
-    pub hours_since_last_crawl: f64,
-    /// Current crawl interval in hours.
+    pub hours_since_last_crawl: Measurement<f64>,
+    /// Current crawl interval in hours (configuration, always known).
     pub crawl_interval_hours: f64,
 }
 
 /// Scored and ranked crawl source.
+///
+/// `score` and its components are [`Measurement`]s: a source without enough
+/// measured history is **ineligible** and carries no score — the ranker never
+/// renormalizes a couple of favourable dimensions into an apparently strong
+/// score, and it reports completeness separately from the score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoredSource {
     pub source_id: String,
     pub domain: String,
     /// Yield ratio: observations_in_fires / observations_ingested.
-    pub yield_ratio: f64,
+    pub yield_ratio: Measurement<f64>,
     /// Freshness: higher = more responsive source.
-    pub freshness: f64,
+    pub freshness: Measurement<f64>,
     /// Novelty: higher = produces observation types that other sources don't.
-    pub novelty: f64,
+    pub novelty: Measurement<f64>,
     /// Diversity: how many different observation types this source contributes.
-    pub diversity: f64,
-    /// Error rate (penalty).
-    pub error_rate: f64,
-    /// Composite score.
-    pub score: f64,
-    /// Suggested crawl interval in hours.
-    pub suggested_interval_hours: f64,
+    pub diversity: Measurement<f64>,
+    /// Error rate (penalty). `NotMeasured` never means zero.
+    pub error_rate: Measurement<f64>,
+    /// Composite over the measured components (weights renormalized).
+    pub score: Measurement<f64>,
+    /// Fraction (0.0..=1.0) of the five score components that were measured.
+    pub measurement_completeness: f64,
+    /// True when the source has enough measured history for a score.
+    pub eligible: bool,
+    /// Why the source is ineligible, when it is.
+    pub ineligibility_reason: Option<String>,
+    /// Suggested crawl interval; `None` for ineligible sources.
+    pub suggested_interval_hours: Option<f64>,
 }
 
 /// Scoring configuration.
@@ -90,6 +109,10 @@ pub struct ScoringConfig {
     pub min_interval_hours: f64,
     /// Freshness decay half-life in hours.
     pub freshness_halflife_hours: f64,
+    /// Minimum measured observations before a source is eligible for a score.
+    /// Below this, the ranker reports "insufficient evidence" instead of
+    /// scoring noise.
+    pub min_observations_for_score: u64,
 }
 
 impl Default for ScoringConfig {
@@ -103,6 +126,7 @@ impl Default for ScoringConfig {
             max_interval_hours: 168.0, // weekly
             min_interval_hours: 1.0,   // hourly
             freshness_halflife_hours: 48.0,
+            min_observations_for_score: 1,
         }
     }
 }
@@ -147,8 +171,10 @@ pub fn score_and_rank(telemetry: &[SourceTelemetry], config: &ScoringConfig) -> 
     // Build a global map: obs_type → how many sources produce it.
     let mut type_source_count: HashMap<&str, usize> = HashMap::new();
     for t in telemetry {
-        for ot in &t.observation_types_produced {
-            *type_source_count.entry(ot.as_str()).or_default() += 1;
+        if let Some(types) = t.observation_types_produced.value() {
+            for ot in types {
+                *type_source_count.entry(ot.as_str()).or_default() += 1;
+            }
         }
     }
     let total_sources = telemetry.len();
@@ -156,50 +182,109 @@ pub fn score_and_rank(telemetry: &[SourceTelemetry], config: &ScoringConfig) -> 
     let mut scored: Vec<ScoredSource> = telemetry
         .iter()
         .map(|t| {
-            let ingested = t.observations_ingested.max(1) as f64;
+            let ingested = t.observations_ingested.value_copied();
+            let fires = t.observations_in_fires.value_copied();
 
-            // Yield: fraction of observations that triggered recipe fires.
-            let yield_ratio = t.observations_in_fires as f64 / ingested;
-
-            // Freshness: exponential decay from hours since last crawl.
-            let freshness = (-t.hours_since_last_crawl.max(0.0) * (2.0f64.ln())
-                / config.freshness_halflife_hours)
-                .exp()
-                .clamp(0.0, 1.0);
-
-            // Novelty: average "uniqueness" of the observation types this source produces.
-            // If a type is produced by only 1 source → novelty=1; by all sources → novelty→0.
-            let novelty = if t.observation_types_produced.is_empty() {
-                0.0
-            } else {
-                let sum: f64 = t
-                    .observation_types_produced
-                    .iter()
-                    .map(|ot| {
-                        let n = *type_source_count.get(ot.as_str()).unwrap_or(&1) as f64;
-                        1.0 - (n - 1.0) / total_sources as f64
-                    })
-                    .sum();
-                (sum / t.observation_types_produced.len() as f64).clamp(0.0, 1.0)
+            let (yield_ratio, ingested_measured) = match (ingested, fires) {
+                (Some(ingested), Some(fires)) => {
+                    if ingested >= config.min_observations_for_score {
+                        (
+                            Measurement::measured(fires as f64 / ingested.max(1) as f64),
+                            Some(ingested),
+                        )
+                    } else {
+                        (Measurement::insufficient_evidence(), Some(ingested))
+                    }
+                }
+                _ => (Measurement::NotMeasured, None),
             };
 
-            // Diversity: normalised count of distinct observation types.
-            // Cap denominator at 16 (total ObservationType variants).
-            let diversity = (t.observation_types_produced.len() as f64 / 16.0).clamp(0.0, 1.0);
+            // Freshness: exponential decay from hours since last crawl; an
+            // unknown age is not "fresh".
+            let freshness = match t.hours_since_last_crawl.value_copied() {
+                Some(hours) => Measurement::measured(
+                    (-hours.max(0.0) * (2.0f64.ln()) / config.freshness_halflife_hours)
+                        .exp()
+                        .clamp(0.0, 1.0),
+                ),
+                None => Measurement::NotMeasured,
+            };
 
-            let error_rate = t.error_rate.clamp(0.0, 1.0);
+            // Novelty and diversity need the measured produced-type set.
+            let (novelty, diversity) = match t.observation_types_produced.value() {
+                Some(types) => {
+                    let novelty = if types.is_empty() {
+                        Measurement::measured(0.0)
+                    } else {
+                        let sum: f64 = types
+                            .iter()
+                            .map(|ot| {
+                                let n = *type_source_count.get(ot.as_str()).unwrap_or(&1) as f64;
+                                1.0 - (n - 1.0) / total_sources as f64
+                            })
+                            .sum();
+                        Measurement::measured((sum / types.len() as f64).clamp(0.0, 1.0))
+                    };
+                    let diversity =
+                        Measurement::measured((types.len() as f64 / 16.0).clamp(0.0, 1.0));
+                    (novelty, diversity)
+                }
+                None => (Measurement::NotMeasured, Measurement::NotMeasured),
+            };
 
-            let score = (config.weight_yield * yield_ratio
-                + config.weight_freshness * freshness
-                + config.weight_novelty * novelty
-                + config.weight_diversity * diversity
-                - config.weight_error * error_rate)
-                .clamp(0.0, 1.0);
+            let error_rate = match t.error_rate.value_copied() {
+                Some(rate) => Measurement::measured(rate.clamp(0.0, 1.0)),
+                None => Measurement::NotMeasured,
+            };
 
-            // Suggested interval: inversely proportional to score.
-            // score=1 → min_interval; score=0 → max_interval.
-            let interval_range = config.max_interval_hours - config.min_interval_hours;
-            let suggested_interval_hours = config.max_interval_hours - score * interval_range;
+            // Composite over measured components only, with weights
+            // renormalized — completeness is reported separately and the score
+            // stays `NotMeasured` when nothing was measured.
+            let components: [(f64, &Measurement<f64>); 4] = [
+                (config.weight_yield, &yield_ratio),
+                (config.weight_freshness, &freshness),
+                (config.weight_novelty, &novelty),
+                (config.weight_diversity, &diversity),
+            ];
+            let mut weighted_sum = 0.0;
+            let mut weight_total = 0.0;
+            let mut measured_components = 0u32;
+            for (weight, component) in &components {
+                if let Some(value) = component.value() {
+                    weighted_sum += weight * value;
+                    weight_total += weight;
+                    measured_components += 1;
+                }
+            }
+            if let Some(rate) = error_rate.value() {
+                weighted_sum -= config.weight_error * rate;
+                weight_total += config.weight_error;
+                measured_components += 1;
+            }
+            let measurement_completeness = f64::from(measured_components) / 5.0;
+            let eligible = ingested_measured
+                .is_some_and(|ingested| ingested >= config.min_observations_for_score)
+                && measured_components > 0;
+            let ineligibility_reason = if eligible {
+                None
+            } else if ingested_measured.is_some() {
+                Some(format!(
+                    "fewer than {} observations measured in the window",
+                    config.min_observations_for_score
+                ))
+            } else {
+                Some("no measured telemetry in the window".to_string())
+            };
+            let score = if eligible && weight_total > 0.0 {
+                Measurement::measured((weighted_sum / weight_total).clamp(0.0, 1.0))
+            } else {
+                Measurement::NotMeasured
+            };
+
+            let suggested_interval_hours = score.value().map(|score| {
+                let interval_range = config.max_interval_hours - config.min_interval_hours;
+                config.max_interval_hours - score * interval_range
+            });
 
             ScoredSource {
                 source_id: t.source_id.clone(),
@@ -210,17 +295,28 @@ pub fn score_and_rank(telemetry: &[SourceTelemetry], config: &ScoringConfig) -> 
                 diversity,
                 error_rate,
                 score,
+                measurement_completeness,
+                eligible,
+                ineligibility_reason,
                 suggested_interval_hours,
             }
         })
         .collect();
 
-    // Sort descending by score, deterministic tiebreak by source_id (B292).
+    // Sort: eligible sources by score (descending), then ineligible ones
+    // deterministically by id.
     scored.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.source_id.cmp(&b.source_id))
+        let a_score = a.score.value_copied();
+        let b_score = b.score.value_copied();
+        match (a_score, b_score) {
+            (Some(a_score), Some(b_score)) => b_score
+                .partial_cmp(&a_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.source_id.cmp(&b.source_id)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.source_id.cmp(&b.source_id),
+        }
     });
     scored
 }
@@ -322,10 +418,13 @@ pub fn compute_adjustments(
     scored
         .iter()
         .filter_map(|s| {
+            // Ineligible sources carry no interval suggestion.
+            let suggested = s.suggested_interval_hours?;
+            let score = s.score.value_copied()?;
             let current = *current_intervals.get(s.source_id.as_str()).unwrap_or(&24.0);
-            let pct_change = ((s.suggested_interval_hours - current) / current).abs();
+            let pct_change = ((suggested - current) / current).abs();
             if pct_change > 0.10 {
-                let direction = if s.suggested_interval_hours < current {
+                let direction = if suggested < current {
                     "increase frequency"
                 } else {
                     "decrease frequency"
@@ -334,10 +433,14 @@ pub fn compute_adjustments(
                     source_id: s.source_id.clone(),
                     domain: s.domain.clone(),
                     current_interval_hours: current,
-                    new_interval_hours: s.suggested_interval_hours,
+                    new_interval_hours: suggested,
                     reason: format!(
-                        "{}: score={:.3}, yield={:.3}, novelty={:.3}, errors={:.3}",
-                        direction, s.score, s.yield_ratio, s.novelty, s.error_rate
+                        "score {:.3} ({:.0}% of components measured) suggests to {direction} \
+                         from {:.1}h to {:.1}h",
+                        score,
+                        s.measurement_completeness * 100.0,
+                        current,
+                        suggested,
                     ),
                 })
             } else {
@@ -355,46 +458,53 @@ pub fn compute_adjustments(
 mod tests {
     use super::*;
 
+    fn m<T>(value: T) -> Measurement<T> {
+        Measurement::measured(value)
+    }
+
     fn sample_telemetry() -> Vec<SourceTelemetry> {
         vec![
             SourceTelemetry {
                 source_id: "reuters".into(),
                 domain: "reuters.com".into(),
-                observations_ingested: 1000,
-                observations_in_fires: 200,
-                observations_in_promotions: 50,
-                median_ingest_latency_secs: 30.0,
-                error_rate: 0.01,
-                observation_types_produced: vec![
+                observations_ingested: m(1000),
+                observations_in_fires: m(200),
+                observations_in_promotions: m(50),
+                median_ingest_latency_secs: m(30.0),
+                error_rate: m(0.01),
+                observation_types_produced: m(vec![
                     "JobPost".into(),
                     "CommodityPrice".into(),
                     "CompetitorEvent".into(),
-                ],
-                hours_since_last_crawl: 2.0,
+                ]),
+                hours_since_last_crawl: m(2.0),
                 crawl_interval_hours: 4.0,
             },
             SourceTelemetry {
                 source_id: "obscure-blog".into(),
                 domain: "random-blog.net".into(),
-                observations_ingested: 50,
-                observations_in_fires: 0,
-                observations_in_promotions: 0,
-                median_ingest_latency_secs: 3600.0,
-                error_rate: 0.40,
-                observation_types_produced: vec!["WebChange".into()],
-                hours_since_last_crawl: 200.0,
+                observations_ingested: m(50),
+                observations_in_fires: m(0),
+                observations_in_promotions: m(0),
+                median_ingest_latency_secs: m(3600.0),
+                error_rate: m(0.40),
+                observation_types_produced: m(vec!["WebChange".into()]),
+                hours_since_last_crawl: m(200.0),
                 crawl_interval_hours: 24.0,
             },
             SourceTelemetry {
                 source_id: "tunisian-tenders".into(),
                 domain: "tenders.gov.tn".into(),
-                observations_ingested: 300,
-                observations_in_fires: 100,
-                observations_in_promotions: 30,
-                median_ingest_latency_secs: 120.0,
-                error_rate: 0.05,
-                observation_types_produced: vec!["TenderPosted".into(), "ProcurementSignal".into()],
-                hours_since_last_crawl: 6.0,
+                observations_ingested: m(300),
+                observations_in_fires: m(100),
+                observations_in_promotions: m(30),
+                median_ingest_latency_secs: m(120.0),
+                error_rate: m(0.05),
+                observation_types_produced: m(vec![
+                    "TenderPosted".into(),
+                    "ProcurementSignal".into(),
+                ]),
+                hours_since_last_crawl: m(6.0),
                 crawl_interval_hours: 12.0,
             },
         ]
@@ -418,7 +528,10 @@ mod tests {
         let tel = sample_telemetry();
         let scored = score_and_rank(&tel, &ScoringConfig::default());
         // reuters (2h since crawl) should be fresher than obscure-blog (200h).
-        assert!(scored[0].freshness > scored[2].freshness);
+        assert!(
+            scored[0].freshness.value_copied().unwrap()
+                > scored[2].freshness.value_copied().unwrap()
+        );
     }
 
     #[test]
@@ -427,19 +540,20 @@ mod tests {
         let tel = vec![SourceTelemetry {
             source_id: "unique".into(),
             domain: "unique.com".into(),
-            observations_ingested: 100,
-            observations_in_fires: 10,
-            observations_in_promotions: 5,
-            median_ingest_latency_secs: 60.0,
-            error_rate: 0.0,
-            observation_types_produced: vec!["PatentPublished".into()], // unique type
-            hours_since_last_crawl: 1.0,
+            observations_ingested: m(100),
+            observations_in_fires: m(10),
+            observations_in_promotions: m(5),
+            median_ingest_latency_secs: m(60.0),
+            error_rate: m(0.0),
+            observation_types_produced: m(vec!["PatentPublished".into()]), // unique type
+            hours_since_last_crawl: m(1.0),
             crawl_interval_hours: 4.0,
         }];
         let scored = score_and_rank(&tel, &ScoringConfig::default());
         assert_eq!(scored.len(), 1);
+        let novelty = scored[0].novelty.value_copied().unwrap();
         assert!(
-            (scored[0].novelty - 1.0).abs() < 0.01,
+            (novelty - 1.0).abs() < 0.01,
             "Sole producer should get novelty ≈ 1.0"
         );
     }
@@ -449,7 +563,10 @@ mod tests {
         let tel = sample_telemetry();
         let scored = score_and_rank(&tel, &ScoringConfig::default());
         // Higher-scored sources should get shorter intervals.
-        assert!(scored[0].suggested_interval_hours < scored[2].suggested_interval_hours);
+        assert!(
+            scored[0].suggested_interval_hours.unwrap()
+                < scored[2].suggested_interval_hours.unwrap()
+        );
     }
 
     #[test]

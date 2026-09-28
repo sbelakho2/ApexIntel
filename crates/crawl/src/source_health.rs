@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use apex_core::measurement::Measurement;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -73,12 +74,16 @@ pub struct HealthMetrics {
     pub source_id: String,
     /// Current health status
     pub status: HealthStatus,
-    /// Composite health score (0.0 - 1.0)
-    pub health_score: f64,
-    /// Success rate over the monitoring window
-    pub success_rate: f64,
-    /// Average response time in milliseconds
-    pub avg_response_time_ms: f64,
+    /// Composite health score (0.0 - 1.0). `NotMeasured` until
+    /// `min_attempts_for_score` real attempts exist — an unattempted source has
+    /// no score, not a neutral 0.5.
+    pub health_score: Measurement<f64>,
+    /// Success rate over the monitoring window. `NotMeasured` until at least
+    /// one attempt has been recorded.
+    pub success_rate: Measurement<f64>,
+    /// Average response time in milliseconds, measured from the window's real
+    /// crawl results. `NotMeasured` when no timed attempt exists.
+    pub avg_response_time_ms: Measurement<f64>,
     /// Number of consecutive failures
     pub consecutive_failures: u32,
     /// Number of consecutive successes
@@ -93,8 +98,8 @@ pub struct HealthMetrics {
     pub total_successes: u64,
     /// Total failed crawls in window
     pub total_failures: u64,
-    /// Uptime percentage
-    pub uptime_percent: f64,
+    /// Uptime percentage. `NotMeasured` until a success rate exists.
+    pub uptime_percent: Measurement<f64>,
     /// Time since last activity
     pub time_since_last_activity: Duration,
     /// Last check timestamp
@@ -111,9 +116,11 @@ impl Default for HealthMetrics {
         Self {
             source_id: String::new(),
             status: HealthStatus::Unknown,
-            health_score: 0.5,
-            success_rate: 1.0,
-            avg_response_time_ms: 0.0,
+            // A source that has never been attempted has no measured health:
+            // not 100% uptime, not a 0.5 neutral score.
+            health_score: Measurement::NotMeasured,
+            success_rate: Measurement::NotMeasured,
+            avg_response_time_ms: Measurement::NotMeasured,
             consecutive_failures: 0,
             consecutive_successes: 0,
             last_success: None,
@@ -121,7 +128,7 @@ impl Default for HealthMetrics {
             total_attempts: 0,
             total_successes: 0,
             total_failures: 0,
-            uptime_percent: 100.0,
+            uptime_percent: Measurement::NotMeasured,
             time_since_last_activity: Duration::MAX,
             last_check: Utc::now(),
             last_outcome: None,
@@ -299,6 +306,7 @@ impl SourceHealthMonitor {
         self.record_result(result).await;
 
         {
+            let avg_response = self.average_response_time_ms(&source_id).await;
             let mut metrics = self.metrics.write().await;
             let m = metrics.entry(source_id.clone()).or_default();
             m.source_id = source_id.clone();
@@ -310,9 +318,11 @@ impl SourceHealthMonitor {
 
             // Update health score inline
             if m.total_attempts > 0 {
-                m.success_rate = m.total_successes as f64 / m.total_attempts as f64;
+                m.success_rate =
+                    Measurement::measured(m.total_successes as f64 / m.total_attempts as f64);
             }
-            m.uptime_percent = m.success_rate * 100.0;
+            m.uptime_percent = m.success_rate.clone().map(|rate| rate * 100.0);
+            m.avg_response_time_ms = avg_response;
             m.time_since_last_activity = if let Some(last) = m.last_success {
                 Utc::now()
                     .signed_duration_since(last)
@@ -321,8 +331,13 @@ impl SourceHealthMonitor {
             } else {
                 Duration::ZERO
             };
-            m.health_score = self.calculate_score(m);
-            m.status = HealthStatus::from_score(m.health_score);
+            m.health_score = self
+                .calculate_score(m)
+                .map_or(Measurement::NotMeasured, Measurement::measured);
+            m.status = m
+                .health_score
+                .value_copied()
+                .map_or(HealthStatus::Unknown, HealthStatus::from_score);
             m.last_check = Utc::now();
         }
 
@@ -340,6 +355,7 @@ impl SourceHealthMonitor {
         self.record_result(result).await;
 
         {
+            let avg_response = self.average_response_time_ms(&source_id).await;
             let mut metrics = self.metrics.write().await;
             let m = metrics.entry(source_id.clone()).or_default();
             m.source_id = source_id.clone();
@@ -351,9 +367,11 @@ impl SourceHealthMonitor {
 
             // Update health score inline
             if m.total_attempts > 0 {
-                m.success_rate = m.total_successes as f64 / m.total_attempts as f64;
+                m.success_rate =
+                    Measurement::measured(m.total_successes as f64 / m.total_attempts as f64);
             }
-            m.uptime_percent = m.success_rate * 100.0;
+            m.uptime_percent = m.success_rate.clone().map(|rate| rate * 100.0);
+            m.avg_response_time_ms = avg_response;
             m.time_since_last_activity = if let Some(last) = m.last_failure {
                 Utc::now()
                     .signed_duration_since(last)
@@ -362,8 +380,13 @@ impl SourceHealthMonitor {
             } else {
                 Duration::ZERO
             };
-            m.health_score = self.calculate_score(m);
-            m.status = HealthStatus::from_score(m.health_score);
+            m.health_score = self
+                .calculate_score(m)
+                .map_or(Measurement::NotMeasured, Measurement::measured);
+            m.status = m
+                .health_score
+                .value_copied()
+                .map_or(HealthStatus::Unknown, HealthStatus::from_score);
             m.last_check = Utc::now();
         }
 
@@ -438,40 +461,59 @@ impl SourceHealthMonitor {
         entries.retain(|r| r.timestamp > cutoff_ts);
     }
 
-    fn calculate_score(&self, m: &HealthMetrics) -> f64 {
-        // Need minimum attempts for meaningful score
+    fn calculate_score(&self, m: &HealthMetrics) -> Option<f64> {
+        // A score needs a minimum number of real attempts; below that the
+        // source has no measured health at all.
         if m.total_attempts < self.config.min_attempts_for_score as u64 {
-            return 0.5; // Neutral
+            return None;
         }
+        let success_rate = m.success_rate.value_copied()?;
 
-        let mut score = 0.0;
+        // Weighted components; unmeasured components are excluded and the
+        // weights renormalized rather than substituting a neutral value.
+        let mut weighted_sum = 0.0;
+        let mut weight_total = 0.0;
 
         // Success rate factor (0-0.5)
-        let success_weight = 0.5;
-        score += m.success_rate * success_weight;
+        weighted_sum += success_rate * 0.5;
+        weight_total += 0.5;
 
         // Consecutive success bonus (0-0.2)
         let consecutive_bonus = (m.consecutive_successes as f64 / 10.0).min(1.0) * 0.2;
-        score += consecutive_bonus;
+        weighted_sum += consecutive_bonus;
+        weight_total += 0.2;
 
-        // Response time factor (0-0.2)
-        // Assume 5000ms is the worst acceptable response time
-        let response_factor = if m.avg_response_time_ms > 0.0 {
-            ((self.config.max_response_time_ms as f64
-                - m.avg_response_time_ms
-                    .min(self.config.max_response_time_ms as f64))
-                / self.config.max_response_time_ms as f64)
-                .max(0.0)
-        } else {
-            0.5 // Neutral if no data
-        };
-        score += response_factor * 0.2;
+        // Response time factor (0-0.2) — only when a real measurement exists.
+        if let Some(avg_response_time_ms) = m.avg_response_time_ms.value_copied() {
+            let max_response = self.config.max_response_time_ms as f64;
+            let response_factor =
+                ((max_response - avg_response_time_ms.min(max_response)) / max_response).max(0.0);
+            weighted_sum += response_factor * 0.2;
+            weight_total += 0.2;
+        }
 
         // Consecutive failure penalty (0-0.1)
         let failure_penalty = (m.consecutive_failures as f64 / 10.0).min(1.0) * 0.1;
-        score -= failure_penalty;
+        weighted_sum -= failure_penalty;
+        weight_total += 0.1;
 
-        score.clamp(0.0, 1.0)
+        if weight_total <= 0.0 {
+            return None;
+        }
+        Some((weighted_sum / weight_total).clamp(0.0, 1.0))
+    }
+
+    /// Mean response time over the current window's real crawl results.
+    async fn average_response_time_ms(&self, source_id: &str) -> Measurement<f64> {
+        let history = self.history.read().await;
+        let Some(entries) = history.get(source_id) else {
+            return Measurement::NotMeasured;
+        };
+        if entries.is_empty() {
+            return Measurement::NotMeasured;
+        }
+        let total: u64 = entries.iter().map(|r| r.response_time_ms).sum();
+        Measurement::measured(total as f64 / entries.len() as f64)
     }
 
     // ── Status Management ──────────────────────────────────────────────────
@@ -523,10 +565,14 @@ impl SourceHealthMonitor {
             .filter(|m| m.status == HealthStatus::Unknown)
             .count() as u64;
 
-        let avg_score = if total > 0 {
-            metrics.values().map(|m| m.health_score).sum::<f64>() / total as f64
+        let measured_scores: Vec<f64> = metrics
+            .values()
+            .filter_map(|m| m.health_score.value_copied())
+            .collect();
+        let avg_score = if measured_scores.is_empty() {
+            None
         } else {
-            0.0
+            Some(measured_scores.iter().sum::<f64>() / measured_scores.len() as f64)
         };
 
         HealthStatistics {
@@ -628,7 +674,7 @@ impl SourceHealthMonitor {
             m.status = HealthStatus::Unknown;
             m.consecutive_failures = 0;
             m.consecutive_successes = 0;
-            m.health_score = 0.5;
+            m.health_score = Measurement::NotMeasured;
         }
     }
 
@@ -745,7 +791,7 @@ pub struct HealthStatistics {
     pub unhealthy: u64,
     pub dead: u64,
     pub unknown: u64,
-    pub avg_health_score: f64,
+    pub avg_health_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

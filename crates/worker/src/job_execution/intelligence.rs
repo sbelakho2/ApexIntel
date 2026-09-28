@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use apex_core::measurement::Measurement;
+use apex_crawl::source_scoring::{score_and_rank, ScoringConfig, SourceTelemetry};
 use apex_crawl::sources::filter_by_tier;
 use apex_store::postgres::{NewCrawlMetric, PgStore, RealSourceTelemetry};
 
@@ -94,35 +96,41 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
                 .unwrap_or(src.url.as_str())
                 .to_string();
             let measured = by_slug.get(src.slug.as_str()).copied();
-            let ingested = measured
-                .map(|r| r.observations_ingested as u64)
-                .unwrap_or(0);
-            let fires = measured
-                .map(|r| r.observations_in_fires as u64)
-                .unwrap_or(0);
-            let promotions = measured
-                .map(|r| r.observations_in_promotions as u64)
-                .unwrap_or(0);
-            let obs_types = measured
-                .map(|r| r.observation_types_produced.clone())
-                .unwrap_or_else(|| vec!["web_change".to_string()]);
+            let ingested = measured.map_or(Measurement::NotMeasured, |r| {
+                Measurement::measured(r.observations_ingested as u64)
+            });
+            let fires = measured.map_or(Measurement::NotMeasured, |r| {
+                Measurement::measured(r.observations_in_fires as u64)
+            });
+            let promotions = measured.map_or(Measurement::NotMeasured, |r| {
+                Measurement::measured(r.observations_in_promotions as u64)
+            });
+            let obs_types = measured.map_or(Measurement::NotMeasured, |r| {
+                Measurement::measured(r.observation_types_produced.clone())
+            });
             let last_crawl = measured.and_then(|r| r.last_crawl_at);
-            let hours_since_last_crawl = last_crawl
-                .map(|t| (now - t).num_minutes().max(0) as f64 / 60.0)
-                // No crawl yet for this source in the window: report a real large
-                // value rather than an invented "2.0 or 6.0".
-                .unwrap_or(window_days as f64 * 24.0);
+            let hours_since_last_crawl = match last_crawl {
+                Some(t) => Measurement::measured((now - t).num_minutes().max(0) as f64 / 60.0),
+                // No successful crawl for this source in the window is an
+                // unmeasured freshness, never an invented "very stale" value.
+                None => Measurement::not_measured(),
+            };
 
+            // Measured fields come straight from the window's metrics; the
+            // configured interval is configuration, not a measurement.
+            // `median_ingest_latency_secs` and the fetch error rate are not
+            // instrumented at the HTTP layer yet — they are `NotMeasured`, never
+            // 0 or a transformed scheduling constant.
             SourceTelemetry {
                 source_id: src.slug.clone(),
                 domain,
                 observations_ingested: ingested,
                 observations_in_fires: fires,
                 observations_in_promotions: promotions,
-                median_ingest_latency_secs: src.min_interval_minutes as f64 * 30.0,
-                // Real per-source fetch error rate is not yet instrumented at the
-                // HTTP layer; report 0.0 rather than fabricating a 0.05 constant.
-                error_rate: 0.0,
+                median_ingest_latency_secs: measured
+                    .and_then(|r| r.median_ingest_latency_secs)
+                    .map_or(Measurement::NotMeasured, Measurement::measured),
+                error_rate: Measurement::not_measured(),
                 observation_types_produced: obs_types,
                 hours_since_last_crawl,
                 crawl_interval_hours: src.min_interval_minutes as f64 / 60.0,
@@ -137,18 +145,33 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
     tracing::info!(
         sources = scored.len(),
         top_source = top.map(|s| s.source_id.as_str()).unwrap_or("none"),
-        top_score = top.map(|s| s.score).unwrap_or(0.0),
+        top_score = top
+            .and_then(|s| s.score.value_copied())
+            .map_or("not measured".to_string(), |score| format!("{score:.3}")),
         bottom_source = bottom.map(|s| s.source_id.as_str()).unwrap_or("none"),
-        bottom_score = bottom.map(|s| s.score).unwrap_or(0.0),
+        bottom_score = bottom
+            .and_then(|s| s.score.value_copied())
+            .map_or("not measured".to_string(), |score| format!("{score:.3}")),
         "source_scoring: complete (real telemetry)"
     );
+    let score_text = |source: Option<&apex_crawl::source_scoring::ScoredSource>| {
+        source
+            .map(|s| {
+                format!(
+                    "{} ({})",
+                    s.source_id,
+                    s.score
+                        .value_copied()
+                        .map_or("not measured".to_string(), |score| format!("{score:.3}"))
+                )
+            })
+            .unwrap_or_else(|| "none".to_string())
+    };
     let summary = format!(
-        "source_scoring: ranked {} sources from real telemetry; top={} ({:.3}), bottom={} ({:.3}); crawl_metric_write_failures={}",
+        "source_scoring: ranked {} sources from real telemetry; top={}, bottom={}; crawl_metric_write_failures={}",
         scored.len(),
-        top.map(|s| s.source_id.as_str()).unwrap_or("none"),
-        top.map(|s| s.score).unwrap_or(0.0),
-        bottom.map(|s| s.source_id.as_str()).unwrap_or("none"),
-        bottom.map(|s| s.score).unwrap_or(0.0),
+        score_text(top),
+        score_text(bottom),
         crawl_metric_write_failures,
     );
     if crawl_metric_write_failures > 0 {

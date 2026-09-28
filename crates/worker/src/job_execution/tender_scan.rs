@@ -26,9 +26,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{JobKind, JobRun, PgStore};
-use apex_crawl::acquisition::{
-    AcquisitionOutcome, AcquisitionRunCounters, AcquisitionRunDecision,
-};
+use apex_crawl::acquisition::{AcquisitionOutcome, AcquisitionRunCounters, AcquisitionRunDecision};
 
 /// Stable namespace for UUIDv5 deterministic observation IDs. Any fixed UUID
 /// works — it just must not collide with `Uuid::NAMESPACE_DNS` etc. that other
@@ -240,18 +238,17 @@ async fn crawl_portal(
     let mut any_success = false;
     let mut first_failure: Option<AcquisitionOutcome<RawPosting>> = None;
 
-    let record =
-        |outcome: AcquisitionOutcome<RawPosting>,
-         postings: &mut Vec<RawPosting>,
-         any_success: &mut bool,
-         first_failure: &mut Option<AcquisitionOutcome<RawPosting>>| {
-            if outcome.is_success() {
-                *any_success = true;
-                postings.extend(outcome.into_items());
-            } else if first_failure.is_none() {
-                *first_failure = Some(outcome);
-            }
-        };
+    let record = |outcome: AcquisitionOutcome<RawPosting>,
+                  postings: &mut Vec<RawPosting>,
+                  any_success: &mut bool,
+                  first_failure: &mut Option<AcquisitionOutcome<RawPosting>>| {
+        if outcome.is_success() {
+            *any_success = true;
+            postings.extend(outcome.into_items());
+        } else if first_failure.is_none() {
+            *first_failure = Some(outcome);
+        }
+    };
 
     // Try the keyword search endpoint first (most precise), then the fallback
     // listings URL. We pick a small subset of queries per portal to stay polite.

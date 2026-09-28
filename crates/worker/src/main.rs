@@ -56,7 +56,6 @@ use apex_crawl::poi_expansion::{PoiExpansionEngine, SeedPoi};
 use apex_crawl::proxy::ProxyRotator;
 use apex_crawl::sanctions::SanctionsList;
 use apex_crawl::sanctions::SanctionsScreener;
-use apex_crawl::source_scoring::{score_and_rank, ScoringConfig, SourceTelemetry};
 use apex_crawl::sources::all_sources;
 #[cfg(feature = "llm")]
 use apex_crawl::tor_client::TorClient;
