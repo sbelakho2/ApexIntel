@@ -25,13 +25,24 @@ COPY crates/ crates/
 # context, not just the single augmentation file.
 COPY config/ config/
 COPY migrations/ migrations/
-RUN cargo build --release --bin apex-worker --features llm --locked 2>&1
+# Cache mounts keep the multi-gigabyte target dir and the cargo registry on
+# the builder's cache volume instead of the container's writable layer; a
+# small runner disk would otherwise fill and fail the release gate with
+# ENOSPC. The final binaries are copied to /usr/local/bin in the same step
+# because cache mounts are not part of the image.
+RUN --mount=type=cache,id=apex-target,sharing=shared,target=/build/target \
+    --mount=type=cache,id=apex-cargo-registry,sharing=shared,target=/usr/local/cargo/registry \
+    cargo build --release --bin apex-worker --features llm --locked 2>&1 \
+    && cp target/release/apex-worker /usr/local/bin/apex-worker
 
 # Test harness for the container-level browser integration check. This stage is
 # only built for the `browser-check` target, so production builds (default or
 # `--target runtime`) never compile the probe or apex-crawl's dev-dependencies.
 FROM builder AS browser-probe
-RUN cargo build --release --example browser_container_check -p apex-crawl --locked 2>&1
+RUN --mount=type=cache,id=apex-target,sharing=shared,target=/build/target \
+    --mount=type=cache,id=apex-cargo-registry,sharing=shared,target=/usr/local/cargo/registry \
+    cargo build --release --example browser_container_check -p apex-crawl --locked 2>&1 \
+    && cp target/release/examples/browser_container_check /usr/local/bin/browser-container-check
 
 FROM debian:bookworm-slim AS runtime
 # Chromium + its runtime libraries: required by the persistent CDP renderer.
@@ -44,7 +55,7 @@ RUN apt-get update && \
 RUN groupadd -r apexintel && useradd -r -g apexintel -d /opt/apexintel apexintel
 WORKDIR /opt/apexintel
 
-COPY --from=builder /build/target/release/apex-worker /usr/local/bin/apex-worker
+COPY --from=builder /usr/local/bin/apex-worker /usr/local/bin/apex-worker
 COPY config/ /opt/apexintel/config/
 
 RUN mkdir -p /opt/apexintel/data /opt/apexintel/logs && \
@@ -68,7 +79,7 @@ CMD ["apex-worker"]
 # (late network + lazy-loaded DOM) through the real persistent Chromium
 # renderer shipped in this image.
 FROM runtime AS browser-check
-COPY --from=browser-probe /build/target/release/examples/browser_container_check /usr/local/bin/browser-container-check
+COPY --from=browser-probe /usr/local/bin/browser-container-check /usr/local/bin/browser-container-check
 ENTRYPOINT ["/usr/local/bin/browser-container-check"]
 CMD []
 
