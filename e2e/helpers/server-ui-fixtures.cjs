@@ -207,6 +207,11 @@ async function seedDatabase() {
         SEED.warnings.map((w) => w.id),
       ]);
       await client.query('DELETE FROM insights WHERE id = $1::uuid', [SEED.insight.id]);
+      // PostgreSQL integration suites run against the same database before the
+      // browser gates and can leave insights behind (e.g. RLS scoping rows
+      // with a NULL summary) that the insights page refuses to decode. The
+      // browser state must be deterministic, so drop every non-seed insight.
+      await client.query('DELETE FROM insights WHERE id <> $1::uuid', [SEED.insight.id]);
       // Must come after the insight delete (claims cascade, then the evidence
       // link no longer RESTRICTs the observation delete).
       await client.query('DELETE FROM observations WHERE id = $1::uuid', [
