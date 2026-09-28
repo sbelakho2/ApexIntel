@@ -1,27 +1,45 @@
-//! Explicit warning evidence links (audit warning-evidence item, migration 082).
+//! Explicit warning evidence links (audit P0-5/P0-6, migrations 083 + 085).
 //!
-//! Every source URL attached to a warning is resolved to a real, citable
-//! evidence chain at warning-creation time:
+//! A source URL is not evidence. Every `warning_evidence` link is either
 //!
-//!   `sources` (source document, `content_hash`) -> `observations` (observation
-//!   extracted from that document) -> `warning_evidence` (link to the warning)
+//!   * `resolved` — backed by a **real** object:
+//!     - a real observation extracted from the source document (matched by the
+//!       observation's recorded `provenance.url`), or
+//!     - an explicitly referenced observation / fetched source document passed
+//!       by the producer, or
+//!     - a fetched `sources` document for the URL whose `content_hash` is the
+//!       hash of the actual fetched body; or
+//!   * `unresolved` — only a URL is known and source acquisition has not
+//!     succeeded. Unresolved links carry no observation, no hash, and an
+//!     explicit reason.
 //!
-//! Analysis then consumes the linked observation ids instead of relying on
-//! `warnings.source_urls` strings, so a warning with a primary source URL and
-//! no entity ids still has citable evidence. The link is idempotent per
-//! `(warning_id, source_url)` and uses a deterministic observation id, so a
-//! deterministically deduplicated warning that merges on recurrence
-//! re-affirms its existing evidence instead of duplicating it.
+//! The linker never fabricates an observation from the warning's own text and
+//! never timestamps evidence `NOW()`: the evidence objects carry their own
+//! extraction/fetch times. Migration 085 removed the fabricated
+//! `WarningSourceCitation` rows this module used to create.
+//!
+//! The chain analysis consumes:
+//!
+//!   sources (fetched document + body hash) -> observations (real extract) ->
+//!   warning_evidence -> warning
 
 use super::*;
 use apex_core::analysis::registrable_domain;
-use sha2::{Digest, Sha256};
 
-/// Observation type used for the observation extracted from a warning's own
-/// source document. It is a real observation row, so analysis citations to it
-/// pass the same foreign-key and claim-kind integrity checks as any other
-/// observation.
-pub const WARNING_SOURCE_CITATION_OBSERVATION_TYPE: &str = "WarningSourceCitation";
+/// An explicit evidence reference supplied by a warning producer that already
+/// knows which real object the warning is grounded in.
+///
+/// A bare URL is intentionally not representable here: if only a URL is
+/// available, pass it as a source URL and the linker records the link as
+/// `unresolved` until acquisition succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+pub enum WarningEvidenceRef {
+    /// An observation row that really exists (extracted from a document).
+    Observation(Uuid),
+    /// A fetched `sources` document row that really exists.
+    SourceDocument(Uuid),
+}
 
 /// A persisted warning evidence link with its source document reference.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
@@ -29,156 +47,311 @@ pub struct WarningEvidenceRow {
     pub id: Uuid,
     pub warning_id: Uuid,
     pub source_id: Option<Uuid>,
-    pub observation_id: Uuid,
-    pub source_url: String,
-    pub content_hash: String,
+    pub observation_id: Option<Uuid>,
+    pub source_url: Option<String>,
+    pub content_hash: Option<String>,
+    pub evidence_kind: String,
+    pub status: String,
+    pub unresolved_reason: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
-/// Canonical content hash preserved for one warning evidence link: sha256 over
-/// the canonical citation content (warning title, description, source URL),
-/// with a version prefix so the domain of the hash is explicit.
-pub fn warning_evidence_content_hash(
-    title: &str,
-    description: Option<&str>,
+/// The real extracted observation for a source URL, if the crawl pipeline
+/// produced one. Matched strictly on the observation's recorded provenance
+/// URL — never on the warning's own text.
+async fn observation_for_source_url(
+    conn: &mut sqlx::PgConnection,
     source_url: &str,
-) -> String {
-    let canonical = format!(
-        "warning-evidence-v1\n{}\n{}\n{}",
-        title.trim(),
-        description.unwrap_or("").trim(),
-        source_url.trim()
-    );
-    hex::encode(Sha256::digest(canonical.as_bytes()))
-}
-
-/// Deterministic observation id for the citation extracted from one source URL
-/// of one warning. Stable across retries and warning merges, so the same
-/// `(warning, url)` pair always resolves to the same observation row.
-pub fn warning_evidence_observation_id(warning_id: Uuid, source_url: &str) -> Uuid {
-    Uuid::new_v5(
-        &Uuid::NAMESPACE_URL,
-        format!("warning-evidence:{warning_id}:{}", source_url.trim()).as_bytes(),
+) -> Result<Option<(Uuid, Option<String>)>> {
+    let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT id, provenance->>'content_hash' \
+         FROM observations \
+         WHERE provenance->>'url' = $1 \
+         ORDER BY ts_utc DESC, created_at DESC, id ASC \
+         LIMIT 1",
     )
+    .bind(source_url)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row)
 }
 
-/// Ensure the warning has one `warning_evidence` link per source URL, with the
-/// source document resolved (or created) and an observation extracted from it.
+/// A fetched source document for the URL: only rows that actually hold fetched
+/// content (a `content_hash`), excluding the synthetic citation rows created
+/// by the old linker.
+async fn fetched_source_document(
+    conn: &mut sqlx::PgConnection,
+    source_url: &str,
+) -> Result<Option<(Uuid, String)>> {
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, content_hash FROM sources \
+         WHERE url = $1 \
+           AND content_hash IS NOT NULL AND btrim(content_hash) <> '' \
+           AND COALESCE(source_kind, '') <> 'warning_citation' \
+         ORDER BY fetched_at DESC NULLS LAST, id ASC \
+         LIMIT 1",
+    )
+    .bind(source_url)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row)
+}
+
+/// Upsert one resolved link keyed by its real reference.
+#[allow(clippy::too_many_arguments)]
+async fn upsert_resolved_link(
+    conn: &mut sqlx::PgConnection,
+    warning_id: Uuid,
+    source_id: Option<Uuid>,
+    observation_id: Option<Uuid>,
+    source_url: Option<&str>,
+    content_hash: Option<&str>,
+    evidence_kind: &str,
+) -> Result<()> {
+    // `ON CONFLICT` needs a single arbiter; the reference-scoped unique
+    // indexes each cover one column, so resolve by explicit lookup first.
+    let existing: Option<Uuid> = if let Some(observation_id) = observation_id {
+        sqlx::query_scalar(
+            "SELECT id FROM warning_evidence WHERE warning_id = $1 AND observation_id = $2 LIMIT 1",
+        )
+        .bind(warning_id)
+        .bind(observation_id)
+        .fetch_optional(&mut *conn)
+        .await?
+    } else if let Some(source_id) = source_id {
+        sqlx::query_scalar(
+            "SELECT id FROM warning_evidence WHERE warning_id = $1 AND source_id = $2 LIMIT 1",
+        )
+        .bind(warning_id)
+        .bind(source_id)
+        .fetch_optional(&mut *conn)
+        .await?
+    } else {
+        None
+    };
+
+    // A URL previously recorded as `unresolved` is upgraded in place when the
+    // real object appears; the unique index on (warning_id, source_url) would
+    // otherwise reject the resolved insert.
+    let existing = match existing {
+        Some(id) => Some(id),
+        None => match source_url {
+            Some(source_url) => {
+                sqlx::query_scalar(
+                    "SELECT id FROM warning_evidence \
+                 WHERE warning_id = $1 AND source_url = $2 LIMIT 1",
+                )
+                .bind(warning_id)
+                .bind(source_url)
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+            None => None,
+        },
+    };
+
+    match existing {
+        Some(id) => {
+            // One link per (warning, real reference). When a URL resolves to
+            // both an observation and its source document, the row carries
+            // both and keeps the stronger `observation` kind.
+            sqlx::query(
+                "UPDATE warning_evidence SET \
+                     source_id = COALESCE($2, source_id), \
+                     observation_id = COALESCE($3, observation_id), \
+                     source_url = COALESCE($4, source_url), \
+                     content_hash = COALESCE($5, content_hash), \
+                     evidence_kind = CASE \
+                         WHEN COALESCE($3, observation_id) IS NOT NULL THEN 'observation' \
+                         ELSE 'source_document' END, \
+                     status = 'resolved', \
+                     unresolved_reason = NULL \
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(source_id)
+            .bind(observation_id)
+            .bind(source_url)
+            .bind(content_hash)
+            .execute(&mut *conn)
+            .await?;
+        }
+        None => {
+            sqlx::query(
+                "INSERT INTO warning_evidence \
+                     (warning_id, source_id, observation_id, source_url, content_hash, \
+                      evidence_kind, status) \
+                 VALUES ($1, $2, $3, $4, $5, $6, 'resolved')",
+            )
+            .bind(warning_id)
+            .bind(source_id)
+            .bind(observation_id)
+            .bind(source_url)
+            .bind(content_hash)
+            .bind(evidence_kind)
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Record an `unresolved` link for a URL whose source acquisition has not
+/// succeeded. Idempotent per `(warning_id, source_url)`; it never overwrites a
+/// resolved link for the same URL.
+async fn upsert_unresolved_link(
+    conn: &mut sqlx::PgConnection,
+    warning_id: Uuid,
+    source_url: &str,
+    reason: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO warning_evidence \
+             (warning_id, source_url, evidence_kind, status, unresolved_reason) \
+         VALUES ($1, $2, 'source_document', 'unresolved', $3) \
+         ON CONFLICT (warning_id, source_url) WHERE source_url IS NOT NULL DO UPDATE SET \
+             unresolved_reason = EXCLUDED.unresolved_reason \
+         WHERE warning_evidence.status <> 'resolved'",
+    )
+    .bind(warning_id)
+    .bind(source_url)
+    .bind(reason)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Ensure the warning has truthful `warning_evidence` links.
+///
+/// Explicit references (real observations / fetched documents the producer
+/// already holds) are linked first. Each `source_urls` entry is then resolved
+/// against objects that actually exist: a real observation extracted from the
+/// URL, or a fetched `sources` document for the URL. Anything else is recorded
+/// as `unresolved` — **no** observation is synthesized from the warning text
+/// and no timestamp is invented.
 ///
 /// Runs on any connection so callers can wrap it in the warning-upsert
-/// transaction (the alert path commits warning + evidence + outbox together).
-/// Idempotent: re-running re-affirms existing links instead of duplicating
-/// them, and preserves the content hash of the citation.
+/// transaction. Idempotent: re-running re-affirms existing links, a resolved
+/// link is never downgraded to unresolved, and no fabricated rows are written.
 pub async fn link_warning_evidence_on(
     conn: &mut sqlx::PgConnection,
     warning_id: Uuid,
-    title: &str,
-    description: Option<&str>,
-    entity_ids: &[Uuid],
-    confidence: Option<f64>,
+    explicit_refs: &[WarningEvidenceRef],
     source_urls: &[String],
 ) -> Result<usize> {
     let mut linked = 0usize;
-    let entity_id = entity_ids.first().copied();
-    let entity_type = entity_id.map(|_| "company".to_string());
+
+    for evidence_ref in explicit_refs {
+        match evidence_ref {
+            WarningEvidenceRef::Observation(observation_id) => {
+                // The reference must point at a real row; a dangling id must
+                // not be recorded as evidence.
+                let exists: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+                    "SELECT provenance->>'url', provenance->>'content_hash' \
+                     FROM observations WHERE id = $1",
+                )
+                .bind(observation_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+                if let Some((url, content_hash)) = exists {
+                    upsert_resolved_link(
+                        conn,
+                        warning_id,
+                        None,
+                        Some(*observation_id),
+                        url.as_deref(),
+                        content_hash.as_deref(),
+                        "observation",
+                    )
+                    .await?;
+                    linked += 1;
+                }
+            }
+            WarningEvidenceRef::SourceDocument(source_id) => {
+                let exists: Option<(String, Option<String>)> =
+                    sqlx::query_as("SELECT url, content_hash FROM sources WHERE id = $1")
+                        .bind(source_id)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                if let Some((url, content_hash)) = exists {
+                    upsert_resolved_link(
+                        conn,
+                        warning_id,
+                        Some(*source_id),
+                        None,
+                        Some(url.as_str()),
+                        content_hash.as_deref(),
+                        "source_document",
+                    )
+                    .await?;
+                    linked += 1;
+                }
+            }
+        }
+    }
 
     for source_url in source_urls {
         let source_url = source_url.trim();
         if source_url.is_empty() {
             continue;
         }
-        let content_hash = warning_evidence_content_hash(title, description, source_url);
-        let observation_id = warning_evidence_observation_id(warning_id, source_url);
 
-        // Resolve the source document first (idempotent upsert by URL).
-        let existing_source: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM sources WHERE url = $1 ORDER BY fetched_at DESC LIMIT 1",
+        // 1. A real observation extracted from this URL is the strongest link.
+        if let Some((observation_id, content_hash)) =
+            observation_for_source_url(conn, source_url).await?
+        {
+            upsert_resolved_link(
+                conn,
+                warning_id,
+                None,
+                Some(observation_id),
+                Some(source_url),
+                content_hash.as_deref(),
+                "observation",
+            )
+            .await?;
+            linked += 1;
+            continue;
+        }
+
+        // 2. A fetched source document with real content is document-level
+        //    evidence (content hash of the fetched body).
+        if let Some((source_id, content_hash)) = fetched_source_document(conn, source_url).await? {
+            upsert_resolved_link(
+                conn,
+                warning_id,
+                Some(source_id),
+                None,
+                Some(source_url),
+                Some(content_hash.as_str()),
+                "source_document",
+            )
+            .await?;
+            linked += 1;
+            continue;
+        }
+
+        // 3. Only a URL is known: record that truthfully.
+        upsert_unresolved_link(
+            conn,
+            warning_id,
+            source_url,
+            "no fetched source document or extracted observation for URL",
         )
-        .bind(source_url)
-        .fetch_optional(&mut *conn)
         .await?;
-
-        let excerpt = description
-            .map(|value| value.trim().chars().take(600).collect::<String>())
-            .filter(|value| !value.is_empty());
-        let source_id = match existing_source {
-            Some(id) => id,
-            None => {
-                let metadata = serde_json::json!({
-                    "warning_id": warning_id,
-                    "origin": "warning_evidence",
-                });
-                sqlx::query_scalar::<_, Uuid>(
-                    "INSERT INTO sources (url, source_kind, content_hash, excerpt, metadata) \
-                     VALUES ($1, 'warning_citation', $2, $3, $4) \
-                     RETURNING id",
-                )
-                .bind(source_url)
-                .bind(&content_hash)
-                .bind(&excerpt)
-                .bind(&metadata)
-                .fetch_one(&mut *conn)
-                .await?
-            }
-        };
-
-        let domain = registrable_domain(source_url);
-        let value = serde_json::json!({
-            "title": title.trim(),
-            "description": description.unwrap_or("").trim(),
-            "excerpt": excerpt,
-            "source_url": source_url,
-            "content_hash": content_hash,
-        });
-        let provenance = serde_json::json!({
-            "source_url": source_url,
-            "source_domain": domain,
-            "source_id": source_id,
-            "content_hash": content_hash,
-            "warning_id": warning_id,
-            "evidence_kind": "warning_source_citation",
-        });
-        sqlx::query(
-            "INSERT INTO observations \
-                 (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence, created_at) \
-             VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, NOW()) \
-             ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(observation_id)
-        .bind(WARNING_SOURCE_CITATION_OBSERVATION_TYPE)
-        .bind(entity_id)
-        .bind(&entity_type)
-        .bind(&value)
-        .bind(&provenance)
-        .bind(confidence)
-        .execute(&mut *conn)
-        .await?;
-
-        let result = sqlx::query(
-            "INSERT INTO warning_evidence \
-                 (warning_id, source_id, observation_id, source_url, content_hash) \
-             VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (warning_id, source_url) DO UPDATE SET \
-                 source_id = EXCLUDED.source_id, \
-                 observation_id = EXCLUDED.observation_id, \
-                 content_hash = EXCLUDED.content_hash",
-        )
-        .bind(warning_id)
-        .bind(source_id)
-        .bind(observation_id)
-        .bind(source_url)
-        .bind(&content_hash)
-        .execute(&mut *conn)
-        .await?;
-        linked += result.rows_affected() as usize;
     }
+
     Ok(linked)
 }
 
 impl PgStore {
     /// Citable observation rows linked to a warning through `warning_evidence`,
-    /// newest first. This is the analysis's direct evidence set when the
-    /// warning has explicit links.
+    /// newest first. Only `resolved` links backed by a **real** observation are
+    /// returned: a source document that has not been parsed yet is not a direct
+    /// observation, and an unresolved URL is not evidence at all.
+    ///
+    /// This is the analysis's direct evidence set when the warning has explicit
+    /// links.
     pub async fn list_warning_evidence_observations(
         &self,
         warning_id: Uuid,
@@ -189,6 +362,8 @@ impl PgStore {
              FROM warning_evidence e \
              JOIN observations o ON o.id = e.observation_id \
              WHERE e.warning_id = $1 \
+               AND e.status = 'resolved' \
+               AND e.observation_id IS NOT NULL \
              ORDER BY o.ts_utc DESC, e.created_at DESC, o.id ASC",
         )
         .bind(warning_id)
@@ -197,10 +372,14 @@ impl PgStore {
         Ok(rows)
     }
 
-    /// Persisted evidence links for a warning, with their source references.
+    /// Persisted evidence links for a warning, with their source references and
+    /// resolution status. Includes unresolved links so callers can surface
+    /// "evidence not yet acquired" instead of pretending the warning is
+    /// grounded.
     pub async fn list_warning_evidence(&self, warning_id: Uuid) -> Result<Vec<WarningEvidenceRow>> {
         let rows = sqlx::query_as::<_, WarningEvidenceRow>(
-            "SELECT id, warning_id, source_id, observation_id, source_url, content_hash, created_at \
+            "SELECT id, warning_id, source_id, observation_id, source_url, content_hash, \
+                    evidence_kind, status, unresolved_reason, created_at \
              FROM warning_evidence WHERE warning_id = $1 ORDER BY created_at ASC, id ASC",
         )
         .bind(warning_id)
@@ -208,44 +387,45 @@ impl PgStore {
         .await?;
         Ok(rows)
     }
+
+    /// Traceability label for one URL resolved outside a warning insert (used
+    /// by admin/debug surfaces): the registrable domain of a source URL.
+    pub fn source_url_domain(source_url: &str) -> Option<String> {
+        registrable_domain(source_url)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The linker's public types make a bare URL unrepresentable as evidence.
     #[test]
-    fn content_hash_is_stable_and_content_sensitive() {
-        let first = warning_evidence_content_hash("Title", Some("Desc"), "https://example.com/a");
-        let second = warning_evidence_content_hash("Title", Some("Desc"), "https://example.com/a");
-        assert_eq!(first, second, "same citation content must hash identically");
-        assert_eq!(first.len(), 64, "sha256 hex digest");
-
+    fn evidence_refs_are_only_real_objects() {
+        let observation = WarningEvidenceRef::Observation(Uuid::new_v4());
+        let document = WarningEvidenceRef::SourceDocument(Uuid::new_v4());
+        let serialized = serde_json::to_value(observation).unwrap();
+        assert_eq!(serialized["kind"], "observation");
+        assert!(serialized.get("id").is_some());
         assert_ne!(
-            first,
-            warning_evidence_content_hash("Title", Some("Changed"), "https://example.com/a")
-        );
-        assert_ne!(
-            first,
-            warning_evidence_content_hash("Title", Some("Desc"), "https://example.com/b")
+            serde_json::to_value(document).unwrap()["kind"],
+            serde_json::to_value(observation).unwrap()["kind"]
         );
     }
 
+    /// There is deliberately no content-hash helper over warning text: the
+    /// only acceptable hash is one recorded on the fetched source or the real
+    /// observation.
     #[test]
-    fn observation_id_is_deterministic_per_warning_and_url() {
-        let warning = Uuid::new_v4();
-        let first = warning_evidence_observation_id(warning, "https://example.com/a");
-        assert_eq!(
-            first,
-            warning_evidence_observation_id(warning, "https://example.com/a")
+    fn module_exposes_no_warning_text_hash() {
+        let source = include_str!("warning_evidence.rs");
+        assert!(
+            !source.contains("warning_evidence_content_hash"),
+            "hashing warning title/description as 'content' is fabrication"
         );
-        assert_ne!(
-            first,
-            warning_evidence_observation_id(warning, "https://example.com/b")
-        );
-        assert_ne!(
-            first,
-            warning_evidence_observation_id(Uuid::new_v4(), "https://example.com/a")
+        assert!(
+            !source.contains("WARNING_SOURCE_CITATION_OBSERVATION_TYPE"),
+            "the synthetic citation observation type must not exist"
         );
     }
 }

@@ -632,19 +632,12 @@ impl PgStore {
             .execute(&mut *conn)
             .await?;
 
-            // Upstream evidence model (audit warning-evidence item): the merged
-            // warning resolves each source URL into a source document ->
-            // observation -> `warning_evidence` link, so the analysis has
-            // citable evidence even when no entity ids are attached.
-            let (final_urls, final_entity_ids, final_confidence): (
-                Vec<String>,
-                Vec<Uuid>,
-                Option<f64>,
-            ) = sqlx::query_as(
-                "SELECT COALESCE(source_urls, ARRAY[]::TEXT[]), \
-                        COALESCE(entity_ids, ARRAY[]::UUID[]), \
-                        confidence \
-                 FROM warnings WHERE id = $1",
+            // Truthful evidence model (audit P0-5/P0-6): re-affirm the real
+            // evidence links for this warning. URLs resolve only against
+            // fetched source documents or observations that actually exist;
+            // anything else stays `unresolved`.
+            let final_urls: (Vec<String>,) = sqlx::query_as(
+                "SELECT COALESCE(source_urls, ARRAY[]::TEXT[]) FROM warnings WHERE id = $1",
             )
             .bind(existing_id)
             .fetch_one(&mut *conn)
@@ -652,11 +645,8 @@ impl PgStore {
             super::warning_evidence::link_warning_evidence_on(
                 &mut *conn,
                 existing_id,
-                &normalized_title,
-                normalized_description.as_deref(),
-                &final_entity_ids,
-                final_confidence,
-                &final_urls,
+                &[],
+                &final_urls.0,
             )
             .await?;
             return Ok(WarningInsertOutcome {
@@ -688,16 +678,13 @@ impl PgStore {
         .execute(&mut *conn)
         .await?;
 
-        // Upstream evidence model (audit warning-evidence item): resolve each
-        // source URL into a source document -> observation -> warning_evidence
-        // link so a warning with only a source URL has citable evidence.
+        // Truthful evidence model (audit P0-5/P0-6): resolve each source URL
+        // against fetched source documents or real extracted observations;
+        // unresolved URLs are recorded as such and no evidence is synthesized.
         super::warning_evidence::link_warning_evidence_on(
             &mut *conn,
             id,
-            &normalized_title,
-            normalized_description.as_deref(),
-            normalized_entity_ids.as_deref().unwrap_or_default(),
-            confidence,
+            &[],
             normalized_source_urls.as_deref().unwrap_or_default(),
         )
         .await?;

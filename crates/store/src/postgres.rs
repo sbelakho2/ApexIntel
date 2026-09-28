@@ -286,10 +286,7 @@ pub mod trends;
 mod warning_analysis;
 mod warning_evidence;
 mod warnings;
-pub use warning_evidence::{
-    warning_evidence_content_hash, warning_evidence_observation_id, WarningEvidenceRow,
-    WARNING_SOURCE_CITATION_OBSERVATION_TYPE,
-};
+pub use warning_evidence::{link_warning_evidence_on, WarningEvidenceRef, WarningEvidenceRow};
 pub use warnings::WarningInsertOutcome;
 
 // Source-runtime scheduling row types and backoff policy (migration 047).

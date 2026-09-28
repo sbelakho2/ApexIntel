@@ -43,10 +43,27 @@ while IFS= read -r path; do
 done < <(git grep -l -E 'crates/frontend|apex-frontend' -- . ":!experiments" ":!${SELF}" 2>/dev/null || true)
 
 # ── 3. wasm/trunk wired into shipped build surfaces ───────────────────────
+#
+# Compile-only wasm proofs are allowed and required (`cargo check -p
+# apex-shared --target wasm32-unknown-unknown` keeps the cross-platform
+# boundary honest). Browser-artifact tooling — trunk, wasm-pack, wasm-bindgen
+# bundling — is not: production ships no browser artifact.
 for f in .woodpecker.yml package.json Dockerfile.api Dockerfile.worker docker-compose.yml; do
   [ -f "${f}" ] || continue
-  if grep -Eqi 'wasm32|trunk' "${f}"; then
-    fail "${f} wires a wasm32/trunk build; no browser artifact is shipped"
+  if grep -Eqi 'trunk|wasm-pack|wasm-bindgen' "${f}"; then
+    fail "${f} wires browser-artifact tooling (trunk/wasm-pack/wasm-bindgen); no browser artifact is shipped"
+  fi
+  if grep -q 'wasm32' "${f}"; then
+    while IFS= read -r line; do
+      trimmed="${line#"${line%%[![:space:]]*}"}"
+      case "${trimmed}" in
+        \#*) continue ;;
+      esac
+      case "${line}" in
+        *"cargo check"*"wasm32-unknown-unknown"*|*"rustup target add wasm32-unknown-unknown"*) ;;
+        *) fail "${f} wires a wasm32 build that is not a compile-only check: ${line}" ;;
+      esac
+    done < <(grep 'wasm32' "${f}")
   fi
 done
 

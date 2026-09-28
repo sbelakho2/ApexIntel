@@ -1,10 +1,12 @@
 //! Opt-in integration test: warning analysis consumes explicit
-//! `warning_evidence` links (audit warning-evidence item, migration 082).
+//! `warning_evidence` links (audit P0-5/P0-6, migrations 083 + 085).
 //!
 //! Proves the end-to-end analysis contract against a real database:
-//!   * a warning whose only provenance is a `source_url` (no entity ids) yields
-//!     a warning-evidence bundle whose linked observation is the direct evidence
-//!     the prompt exposes and claims can cite;
+//!   * a warning whose source URL resolves to a **real extracted observation**
+//!     yields a warning-evidence bundle whose linked observation is the direct
+//!     evidence the prompt exposes and claims can cite;
+//!   * a warning whose URL has no fetched document or observation is
+//!     `unresolved` and contributes no direct evidence;
 //!   * a warning with no links and no entity observations is deterministically
 //!     reported as `InsufficientEvidence` by the preflight.
 //!
@@ -47,7 +49,7 @@ async fn cleanup(pool: &PgPool, warning_id: Uuid, urls: &[&str]) {
         .await
         .expect("delete warning cascades evidence");
     for url in urls {
-        sqlx::query("DELETE FROM observations WHERE provenance->>'source_url' = $1")
+        sqlx::query("DELETE FROM observations WHERE provenance->>'url' = $1")
             .bind(url)
             .execute(pool)
             .await
@@ -77,6 +79,36 @@ async fn source_url_only_warning_analysis_cites_the_linked_evidence() {
 
     let url = format!("https://analysis.example.com/doc/{}", Uuid::new_v4());
     let title = format!("Analysis evidence warning {}", Uuid::new_v4());
+
+    // The URL has a real fetched document and a real extracted observation;
+    // the warning links to that observation, never to its own text.
+    let doc_hash = "d".repeat(64);
+    sqlx::query(
+        "INSERT INTO sources (url, source_kind, content_hash, excerpt, fetched_at, metadata) \
+         VALUES ($1, 'web_page', $2, 'excerpt', now(), '{}'::jsonb)",
+    )
+    .bind(&url)
+    .bind(&doc_hash)
+    .execute(&pool)
+    .await
+    .expect("insert source document");
+    let observation_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO observations \
+             (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence, created_at) \
+         VALUES ($1, 'web_change', NULL, NULL, now() - interval '2 days', $2, $3, 0.9, now())",
+    )
+    .bind(observation_id)
+    .bind(serde_json::json!({"change": "shortage reported by the primary document"}))
+    .bind(serde_json::json!({
+        "source": "web_change",
+        "url": url,
+        "content_hash": doc_hash,
+    }))
+    .execute(&pool)
+    .await
+    .expect("insert real observation");
+
     let outcome = store
         .insert_warning_with_outcome(
             "supply_chain",
@@ -119,12 +151,17 @@ async fn source_url_only_warning_analysis_cites_the_linked_evidence() {
         .expect("load links")
         .pop()
         .expect("one link");
-    assert_eq!(bundle.observations[0].id, link.observation_id);
+    assert_eq!(link.status, "resolved");
+    assert_eq!(link.evidence_kind, "observation");
+    let linked_observation = link.observation_id.expect("resolved to a real observation");
+    assert_eq!(linked_observation, observation_id);
+    assert_eq!(bundle.observations[0].id, linked_observation);
+    assert_eq!(link.content_hash.as_deref(), Some(doc_hash.as_str()));
 
     // The prompt exposes the linked id: the model can cite exactly this row.
     let (system, user) = build_prompts(&test_profile(), &warning, &bundle);
     assert!(
-        user.contains(&link.observation_id.to_string()),
+        user.contains(&linked_observation.to_string()),
         "prompt must expose the linked observation id"
     );
     assert!(user.contains("source: warning_evidence"));
@@ -136,7 +173,7 @@ async fn source_url_only_warning_analysis_cites_the_linked_evidence() {
             "claims": [{
                 "text": "The primary document reports a shortage",
                 "claim_kind": "observed",
-                "evidence_ids": [link.observation_id.to_string()],
+                "evidence_ids": [linked_observation.to_string()],
                 "confidence": 0.8
             }],
             "impact": [],
@@ -152,7 +189,7 @@ async fn source_url_only_warning_analysis_cites_the_linked_evidence() {
     assert_eq!(
         validated.claims[0].evidence,
         vec![apex_core::claims::EvidenceRef::Observation(
-            link.observation_id
+            linked_observation
         )]
     );
     assert_eq!(preflight_status(&bundle), AnalysisStatus::Completed);

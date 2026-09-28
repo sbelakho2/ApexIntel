@@ -451,10 +451,7 @@ impl SseManager {
                                         "Malformed alert payload — dead-lettering"
                                     );
                                     match jetstream
-                                        .publish(
-                                            "alerts.dead_letter.malformed",
-                                            payload.clone(),
-                                        )
+                                        .publish("alerts.dead_letter.malformed", payload.clone())
                                         .await
                                     {
                                         Ok(_) => {}
