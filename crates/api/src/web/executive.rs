@@ -29,13 +29,17 @@ pub struct ExecutiveStatCard {
     pub direction: String,
 }
 
-/// A competitor ranked by mention-volume.
+/// A competitor ranked by *mention volume* — attention in tracked reporting,
+/// not a strategic risk score. The label deliberately says "mention
+/// intensity" so the dashboard never presents visibility as risk.
 #[derive(Debug, Clone)]
 pub struct CompetitorMention {
     pub name: String,
     pub mention_count: i64,
     pub trend_direction: String,
-    pub risk_level: String,
+    /// Relative mention-volume band versus the most-mentioned competitor
+    /// (`high` / `medium` / `low`).
+    pub mention_intensity: String,
     /// Bar width percentage for visualisation (0–100).
     pub bar_pct: i64,
 }
@@ -175,6 +179,13 @@ pub async fn executive_dashboard(
 
     let total_opportunities = opportunities.len();
     let active_threats = threats.len();
+    // `list_critical_threats` returns every *active* threat regardless of
+    // severity, so the critical count must come from the severities rather
+    // than reusing the total.
+    let critical_threats = threats
+        .iter()
+        .filter(|threat| threat.severity.eq_ignore_ascii_case("critical"))
+        .count();
     let companies_tracked = stats_data.total_companies;
     let avg_confidence = {
         let confidence_values: Vec<f64> = opportunities
@@ -204,7 +215,11 @@ pub async fn executive_dashboard(
             value: active_threats.to_string(),
             icon: "alert-triangle".into(),
             accent_class: "metric-rail-red".into(),
-            delta: Some(format!("{} critical", active_threats)),
+            delta: Some(if critical_threats == active_threats {
+                format!("{critical_threats} critical")
+            } else {
+                format!("{critical_threats} critical · {active_threats} active")
+            }),
             direction: "up".into(),
         },
         ExecutiveStatCard {
@@ -285,7 +300,7 @@ pub async fn executive_dashboard(
                 trend_direction: "flat".into(),
                 // Relative-to-top volume bands (share of the noisiest
                 // competitor), not absolute mention counts.
-                risk_level: if raw_pct >= 67 {
+                mention_intensity: if raw_pct >= 67 {
                     "high".into()
                 } else if raw_pct >= 34 {
                     "medium".into()
@@ -383,10 +398,12 @@ pub async fn executive_dashboard(
                     ((this_week - prev_week) as f64 / prev_week as f64 * 100.0).round() as i64;
                 format!("{}{}%", if delta >= 0 { "+" } else { "" }, delta)
             };
+            // The card shows a week-over-week delta, so the count beside it
+            // must be the same window's count — not the broader loaded window.
             let _ = count;
             TrendingTopic {
                 topic,
-                mention_count: this_week.max(count),
+                mention_count: this_week,
                 change_pct,
             }
         })

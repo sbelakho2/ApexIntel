@@ -62,11 +62,11 @@
               <span class="text-xs font-bold tabular-nums text-rams-muted">{{ c.mention_count }}</span>
             </div>
             <div class="mt-1.5 w-full rounded-sm bg-rams-panel overflow-hidden">
-              <div class="exec-competitor-bar {% if c.risk_level == "high" %}metric-swatch-red{% else if c.risk_level == "medium" %}metric-swatch-amber{% else %}metric-swatch-steel{% endif %}" style="width: {{ c.bar_pct }}%"></div>
+              <div class="exec-competitor-bar {% if c.mention_intensity == "high" %}metric-swatch-red{% else if c.mention_intensity == "medium" %}metric-swatch-amber{% else %}metric-swatch-steel{% endif %}" style="width: {{ c.bar_pct }}%"></div>
             </div>
           </div>
-          <span class="shrink-0 text-[10px] font-bold uppercase tracking-[0.08em] {% if c.risk_level == "high" %}apex-text-danger{% else if c.risk_level == "medium" %}apex-text-warning{% else %}text-rams-muted{% endif %}">
-            {{ c.risk_level }}
+          <span class="shrink-0 text-[10px] font-bold uppercase tracking-[0.08em] {% if c.mention_intensity == "high" %}apex-text-danger{% else if c.mention_intensity == "medium" %}apex-text-warning{% else %}text-rams-muted{% endif %}">
+            {{ c.mention_intensity }}
           </span>
         </div>
         {% endfor %}
