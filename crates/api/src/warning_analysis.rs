@@ -33,10 +33,11 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use apex_core::analysis::{
-    assess_evidence_quality, registrable_domain, EvidenceQuality, EvidenceRecord, EvidenceStance,
-};
+use apex_core::analysis::registrable_domain;
 use apex_core::claims::{AnalysisClaimRecord, ClaimKind, ClaimSection, EvidenceRef};
+use apex_core::evidence_quality::{
+    assess_evidence_quality_for_claim, EvidenceItem, EvidenceQuality, EvidenceStance,
+};
 use apex_core::intelligence_profile::IntelligenceProfile;
 use apex_llm::{LlmClient, ModelConfig, OpenAiCompatibleClient};
 use apex_store::postgres::{
@@ -47,8 +48,11 @@ use apex_store::postgres::{
 /// generations are comparable against (not merged with) old ones.
 pub const ANALYSIS_PROMPT_VERSION: &str = "warning-analysis-v2";
 
-/// Output schema version stored with each run.
-pub const ANALYSIS_OUTPUT_SCHEMA_VERSION: u32 = 2;
+/// Output schema version stored with each run. Bumped to 3 when
+/// `evidence_quality` became the corpus/claim split with typed measurements
+/// (old rows still parse: every new field defaults, so an old run reports
+/// unmeasured dimensions rather than fabricated midpoints).
+pub const ANALYSIS_OUTPUT_SCHEMA_VERSION: u32 = 3;
 
 /// Documented bounded-evidence caps. The prompt states how many items were
 /// actually sent versus how many were available, and the run row persists both
@@ -468,40 +472,45 @@ fn source_reliability_tier(bundle: &EvidenceBundle, domain: Option<&str>) -> Opt
 }
 
 /// Reusable evidence-quality assessment over the exact evidence set the model
-/// saw: observations are direct evidence, related insights are derived.
-pub fn assess_bundle_quality(bundle: &EvidenceBundle, now: DateTime<Utc>) -> EvidenceQuality {
-    let mut records: Vec<EvidenceRecord> = Vec::new();
+/// saw, evaluated against the warning title as the claim: observations are
+/// direct evidence, related insights are derived.
+///
+/// A missing observation/insight confidence stays missing: the record still
+/// counts for corpus dimensions, but it is never assigned a synthesized 0.6
+/// relevance weight.
+pub fn assess_bundle_quality(
+    bundle: &EvidenceBundle,
+    claim: &str,
+    now: DateTime<Utc>,
+) -> EvidenceQuality {
+    let mut items: Vec<EvidenceItem> = Vec::new();
     for observation in &bundle.observations {
         let domain = observation_source_domain(observation);
         let tier = source_reliability_tier(bundle, domain.as_deref());
-        let mut record = EvidenceRecord::new(
-            observation.confidence.unwrap_or(0.6),
-            EvidenceStance::Supports,
-        )
-        .with_source_type(observation.observation_type.clone())
-        .with_observed_at(observation.ts_utc)
-        .with_source_reliability(tier);
+        let mut item = EvidenceItem::new_optional(observation.confidence, EvidenceStance::Supports)
+            .with_source_type(observation.observation_type.clone())
+            .with_observed_at(observation.ts_utc)
+            .with_source_reliability(tier);
         if let Some(url) = observation_source_url(observation) {
-            record = record.with_source_url(url);
+            item = item.with_source_url(url);
         } else if let Some(domain) = domain {
-            record = record.with_source_url(domain);
+            item = item.with_source_url(domain);
         }
-        records.push(record);
+        items.push(item);
     }
     for insight in &bundle.insights {
-        let mut record =
-            EvidenceRecord::new(insight.confidence.unwrap_or(0.6), EvidenceStance::Supports)
-                .with_source_type(format!(
-                    "insight:{}",
-                    insight.insight_type.as_deref().unwrap_or("insight")
-                ))
-                .derived();
+        let mut item = EvidenceItem::new_optional(insight.confidence, EvidenceStance::Supports)
+            .with_source_type(format!(
+                "insight:{}",
+                insight.insight_type.as_deref().unwrap_or("insight")
+            ))
+            .derived();
         if let Some(created_at) = insight.created_at {
-            record = record.with_observed_at(created_at);
+            item = item.with_observed_at(created_at);
         }
-        records.push(record);
+        items.push(item);
     }
-    assess_evidence_quality(&records, now)
+    assess_evidence_quality_for_claim(&items, &[], claim, now)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1052,7 +1061,7 @@ async fn run_analysis(context: &AnalysisRunContext) -> Result<FinishedAnalysis> 
         &context.bundle.insight_ids(),
     )?;
 
-    let quality = assess_bundle_quality(&context.bundle, Utc::now());
+    let quality = assess_bundle_quality(&context.bundle, &context.warning.title, Utc::now());
     let output = WarningAnalysisOutput {
         schema_version: ANALYSIS_OUTPUT_SCHEMA_VERSION,
         claims: validated

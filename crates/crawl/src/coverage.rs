@@ -29,9 +29,17 @@ use crate::sources_registry::{
     effective_capability, source_is_validated, Category, DeploymentCapabilities, Source,
     SourceCapability,
 };
-use apex_core::analysis::EvidenceStance;
-use apex_core::evidence_quality::{assess_evidence_quality, EvidenceItem, EvidenceQuality};
+use apex_core::config::ConfigErrors;
+use apex_core::evidence_quality::{
+    assess_evidence_quality_for_claim, EvidenceItem, EvidenceQuality, EvidenceStance,
+};
 use apex_store::postgres::SourceRuntimeStateRow;
+
+/// Minimum number of attempted sources before a family's fetch/parser ratios
+/// count as a measurement. Below this the family is degraded regardless of the
+/// ratio: a single successful fetch out of one attempt is not production
+/// evidence, and an unmeasured family must never satisfy a production gate.
+pub const MIN_COVERAGE_SAMPLE: usize = 5;
 
 /// Capability families the coverage matrix reasons about. These are the
 /// intel domains the product promises to cover, independent of how the
@@ -311,77 +319,118 @@ impl CoveragePolicy {
         self.families.iter().find(|row| row.family == family)
     }
 
-    /// Resolve per-family overrides from `APEX_COVERAGE_*`; invalid values
-    /// keep the default (a malformed threshold must not take readiness down).
-    pub fn from_env() -> Self {
+    /// Resolve per-family overrides from `APEX_COVERAGE_*`.
+    ///
+    /// Absent variables keep their default. A present-but-malformed value
+    /// (for example `APEX_COVERAGE_PROCUREMENT_FETCH_SUCCESS_PCT=banana`) is a
+    /// configuration error: silently substituting the default would change a
+    /// production readiness gate without telling the operator. All errors are
+    /// collected so one resolution pass reports every problem at once.
+    pub fn from_env() -> std::result::Result<Self, ConfigErrors> {
+        let mut errors = ConfigErrors::new();
         let mut policy = Self::default();
         for row in &mut policy.families {
             let token = row.family.env_token();
-            row.required = env_bool(&format!("APEX_COVERAGE_{token}_REQUIRED"), row.required);
+            row.required = env_bool(
+                &format!("APEX_COVERAGE_{token}_REQUIRED"),
+                row.required,
+                &mut errors,
+            );
             row.min_operational_sources = env_usize(
                 &format!("APEX_COVERAGE_{token}_MIN"),
                 row.min_operational_sources,
+                &mut errors,
             );
             row.max_freshness_age_secs = env_i64(
                 &format!("APEX_COVERAGE_{token}_FRESHNESS_SECS"),
                 row.max_freshness_age_secs,
+                &mut errors,
             );
-            row.min_fetch_success_pct = env_u8(
+            row.min_fetch_success_pct = env_percentage(
                 &format!("APEX_COVERAGE_{token}_FETCH_SUCCESS_PCT"),
                 row.min_fetch_success_pct,
+                &mut errors,
             );
-            row.min_parser_success_pct = env_u8(
+            row.min_parser_success_pct = env_percentage(
                 &format!("APEX_COVERAGE_{token}_PARSER_SUCCESS_PCT"),
                 row.min_parser_success_pct,
+                &mut errors,
             );
             row.min_independent_domains = env_usize(
                 &format!("APEX_COVERAGE_{token}_MIN_DOMAINS"),
                 row.min_independent_domains,
+                &mut errors,
             );
         }
-        policy.min_priority_company_coverage_pct = env_u8(
+        policy.min_priority_company_coverage_pct = env_percentage(
             "APEX_COVERAGE_PRIORITY_COMPANY_PCT",
             policy.min_priority_company_coverage_pct,
+            &mut errors,
         );
         policy.priority_company_window_secs = env_i64(
             "APEX_COVERAGE_PRIORITY_COMPANY_WINDOW_SECS",
             policy.priority_company_window_secs,
+            &mut errors,
         );
-        policy
+        errors.into_result().map(|()| policy)
     }
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
+fn env_bool(name: &str, default: bool, errors: &mut ConfigErrors) -> bool {
     match std::env::var(name) {
+        Err(_) => default,
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => true,
             "0" | "false" | "no" | "off" => false,
-            _ => default,
+            _ => {
+                errors.push(name, raw, "one of true/false/1/0/yes/no/on/off");
+                default
+            }
         },
-        Err(_) => default,
     }
 }
 
-fn env_i64(name: &str, default: i64) -> i64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(default)
+fn env_i64(name: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(name, raw, "an integer");
+                default
+            }
+        },
+    }
 }
 
-fn env_u8(name: &str, default: u8) -> u8 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u8>().ok())
-        .filter(|value| *value <= 100)
-        .unwrap_or(default)
+fn env_percentage(name: &str, default: u8, errors: &mut ConfigErrors) -> u8 {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<u8>() {
+            Ok(value) if value <= 100 => value,
+            Ok(_) => {
+                errors.push(name, raw, "an integer percentage in 0..=100");
+                default
+            }
+            Err(_) => {
+                errors.push(name, raw, "an integer percentage in 0..=100");
+                default
+            }
+        },
+    }
 }
 
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(default)
+fn env_usize(name: &str, default: usize, errors: &mut ConfigErrors) -> usize {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(value) => value,
+            Err(_) => {
+                errors.push(name, raw, "a non-negative integer");
+                default
+            }
+        },
+    }
 }
 
 /// Per-family snapshot of the source universe.
@@ -423,6 +472,10 @@ pub struct CoverageFamilyEvaluation {
     pub reasons: Vec<String>,
     pub operational: usize,
     pub min_operational_sources: usize,
+    /// Sources with at least one recorded attempt.
+    pub attempted: usize,
+    /// Minimum attempts before the fetch/parser ratios are a measurement.
+    pub min_coverage_sample: usize,
     pub independent_domains: usize,
     pub min_independent_domains: usize,
     pub freshness_age_secs: Option<i64>,
@@ -639,6 +692,7 @@ pub fn evaluate_coverage(
         let (
             operational,
             independent_domains,
+            attempted,
             freshness_age_secs,
             fetch_success_pct,
             parser_success_pct,
@@ -647,6 +701,7 @@ pub fn evaluate_coverage(
             Some(snapshot) => (
                 snapshot.operational,
                 snapshot.independent_domains,
+                snapshot.attempted,
                 snapshot
                     .latest_success_at
                     .map(|latest| (now - latest).num_seconds().max(0)),
@@ -654,7 +709,7 @@ pub fn evaluate_coverage(
                 snapshot.parser_success_pct,
                 snapshot.latest_success_at,
             ),
-            None => (0, 0, None, None, None, None),
+            None => (0, 0, 0, None, None, None, None),
         };
 
         if requirement.required {
@@ -668,6 +723,18 @@ pub fn evaluate_coverage(
                 reasons.push(format!(
                     "{} operational sources, minimum {}",
                     operational, requirement.min_operational_sources
+                ));
+            }
+            // A family whose fetch/parser ratios rest on fewer than
+            // `MIN_COVERAGE_SAMPLE` attempts is unmeasured, not healthy: an
+            // unmeasured family can never satisfy the production readiness
+            // gate. (Families with no operational source already fail on the
+            // operational count; this reason targets families that look
+            // present but have no measured fetch/parser history.)
+            if operational > 0 && attempted < MIN_COVERAGE_SAMPLE {
+                reasons.push(format!(
+                    "{} attempted source(s), minimum coverage sample {}",
+                    attempted, MIN_COVERAGE_SAMPLE
                 ));
             }
             if independent_domains < requirement.min_independent_domains {
@@ -721,6 +788,8 @@ pub fn evaluate_coverage(
             reasons,
             operational,
             min_operational_sources: requirement.min_operational_sources,
+            attempted,
+            min_coverage_sample: MIN_COVERAGE_SAMPLE,
             independent_domains,
             min_independent_domains: requirement.min_independent_domains,
             freshness_age_secs,
@@ -813,10 +882,15 @@ fn coverage_matrix_summary(evaluations: &[CoverageFamilyEvaluation]) -> String {
 /// Summarise the operational evidence base through the shared
 /// [`EvidenceQuality`] model (audit P1-10 consumer: source coverage).
 ///
-/// Operational sources are supporting evidence; validated-but-degraded
-/// sources contradict the "coverage is healthy" statement, which keeps
-/// `contradiction_ratio` meaningful. Expected coverage is the set of required
-/// families, so `coverage_completeness` measures the matrix directly.
+/// Operational sources are supporting evidence for the claim "the deployment
+/// covers the required families"; validated-but-degraded sources contradict
+/// that claim, so `contradiction_ratio` is measured against a real claim.
+/// Expected coverage is the set of required families, so
+/// `coverage_completeness` measures the matrix directly.
+///
+/// Fetch/parser ratios are measurements, not defaults: a family with no
+/// recorded attempt keeps the corresponding dimension `NotMeasured` instead of
+/// a synthetic 50% prior.
 fn coverage_evidence_quality(
     summary: &crate::sources_registry::SourceCoverageSummary,
     policy: &CoveragePolicy,
@@ -827,14 +901,18 @@ fn coverage_evidence_quality(
         let requirement = policy.requirement(entry.family);
         let required = requirement.map(|row| row.required).unwrap_or(false);
         if entry.operational > 0 {
-            let fetch = entry.fetch_success_pct.unwrap_or(50).min(100) as f64 / 100.0;
-            let mut item = EvidenceItem::new(fetch, EvidenceStance::Supports)
-                .with_source_type(entry.family.as_str())
-                .with_parser_confidence(
-                    entry.parser_success_pct.unwrap_or(50).min(100) as f64 / 100.0,
-                )
-                .with_coverage_tag(entry.family.as_str())
-                .primary();
+            let mut item = EvidenceItem::new_optional(
+                entry
+                    .fetch_success_pct
+                    .map(|pct| f64::from(pct.min(100)) / 100.0),
+                EvidenceStance::Supports,
+            )
+            .with_source_type(entry.family.as_str())
+            .with_coverage_tag(entry.family.as_str())
+            .primary();
+            if let Some(parser_pct) = entry.parser_success_pct {
+                item = item.with_parser_confidence(f64::from(parser_pct.min(100)) / 100.0);
+            }
             if let Some(latest) = entry.latest_success_at {
                 item = item.with_observed_at(latest);
             }
@@ -863,7 +941,12 @@ fn coverage_evidence_quality(
         .filter(|row| row.required)
         .map(|row| row.family.as_str().to_string())
         .collect();
-    assess_evidence_quality(&items, &expected, now)
+    assess_evidence_quality_for_claim(
+        &items,
+        &expected,
+        "the deployment covers the required source families",
+        now,
+    )
 }
 
 #[cfg(test)]
@@ -995,7 +1078,17 @@ mod tests {
         assert_eq!(report.required_families, 10);
         assert_eq!(report.satisfied_required_families, 10);
         assert_eq!(report.priority_company_pct, Some(80));
-        assert!((report.evidence_quality.coverage_completeness - 1.0).abs() < 1e-9);
+        assert!(
+            (report
+                .evidence_quality
+                .corpus
+                .coverage_completeness
+                .value_copied()
+                .unwrap_or_default()
+                - 1.0)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
@@ -1149,5 +1242,97 @@ mod tests {
         assert_eq!(procurement.fetch_success_pct, Some(100));
         assert_eq!(procurement.latest_success_at, Some(now));
         assert_eq!(procurement.independent_domains, 1);
+    }
+
+    #[test]
+    fn unmeasured_family_cannot_satisfy_readiness() {
+        let now = Utc::now();
+        // Every family looks operational with a fresh success, but no source
+        // has ever been attempted: the fetch/parser ratios are unmeasured, so
+        // the readiness gate must fail instead of treating the families as
+        // healthy on a synthetic 50%.
+        let families: Vec<FamilyCoverage> = CoverageFamily::ALL
+            .into_iter()
+            .map(|family| FamilyCoverage {
+                family,
+                declared: 5,
+                registered: 5,
+                operational: 5,
+                independent_domains: 5,
+                attempted: 0,
+                parser_success_pct: None,
+                fetch_success_pct: None,
+                latest_success_at: Some(now),
+                ..FamilyCoverage::default()
+            })
+            .collect();
+
+        let report = evaluate_coverage(
+            &summary_with(families, 55),
+            &CoveragePolicy::default(),
+            PriorityCompanyCoverage::default(),
+            now,
+        );
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.satisfied_required_families, 0);
+        let procurement = report
+            .families
+            .iter()
+            .find(|row| row.family == CoverageFamily::Procurement)
+            .expect("procurement evaluation");
+        assert_eq!(procurement.attempted, 0);
+        assert_eq!(procurement.min_coverage_sample, MIN_COVERAGE_SAMPLE);
+        assert!(procurement
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("minimum coverage sample")));
+        assert_eq!(
+            report.evidence_quality.corpus.parser_confidence,
+            apex_core::measurement::Measurement::not_measured(),
+            "no parser results must stay NotMeasured, not 0.5"
+        );
+        assert!(report
+            .evidence_quality
+            .completeness
+            .missing_dimensions
+            .iter()
+            .any(|name| name == "parser_confidence"));
+    }
+
+    #[test]
+    fn malformed_coverage_threshold_is_a_configuration_error() {
+        use std::sync::{LazyLock, Mutex};
+        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let name = "APEX_COVERAGE_PROCUREMENT_FETCH_SUCCESS_PCT";
+        std::env::set_var(name, "banana");
+        let result = CoveragePolicy::from_env();
+        std::env::remove_var(name);
+
+        let errors = result.expect_err("banana is not a percentage");
+        assert_eq!(errors.errors.len(), 1);
+        assert_eq!(errors.errors[0].variable, name);
+        assert_eq!(errors.errors[0].value, "banana");
+    }
+
+    #[test]
+    fn out_of_range_coverage_threshold_is_a_configuration_error() {
+        use std::sync::{LazyLock, Mutex};
+        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let name = "APEX_COVERAGE_PATENTS_PARSER_SUCCESS_PCT";
+        std::env::set_var(name, "150");
+        let result = CoveragePolicy::from_env();
+        std::env::remove_var(name);
+
+        let errors = result.expect_err("150 is outside 0..=100");
+        assert!(errors.errors.iter().any(|error| error.variable == name));
     }
 }

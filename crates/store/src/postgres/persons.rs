@@ -1,9 +1,9 @@
 use super::*;
 use apex_core::analysis::{
-    assess_evidence_quality, compare_temporal_windows, fuse_weak_signals,
-    score_competing_hypotheses, source_group_from_url, EvidenceRecord, EvidenceStance,
+    compare_temporal_windows, fuse_weak_signals, score_competing_hypotheses, source_group_from_url,
     HypothesisInput, SignalFrame,
 };
+use apex_core::evidence_quality::{assess_evidence_quality, EvidenceItem, EvidenceStance};
 
 fn normalize_person_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
@@ -100,10 +100,10 @@ fn build_person_dossier_analysis(
     recent_changes: &[PersonChangeRow],
 ) -> DossierAnalysis {
     let now = Utc::now();
-    let mut evidence_records: Vec<EvidenceRecord> = artifacts
+    let mut evidence_records: Vec<EvidenceItem> = artifacts
         .iter()
         .map(|artifact| {
-            let mut record = EvidenceRecord::new(0.65, EvidenceStance::Supports)
+            let mut record = EvidenceItem::new(0.65, EvidenceStance::Supports)
                 .with_source_url(artifact.url.clone())
                 .with_source_type(artifact.artifact_type.clone())
                 .with_observed_at(artifact.ts_utc);
@@ -115,10 +115,10 @@ fn build_person_dossier_analysis(
         .collect();
     evidence_records.extend(role_history.iter().filter_map(|role| {
         role.source_url.as_ref().map(|url| {
-            let mut record =
-                EvidenceRecord::new(role.confidence.unwrap_or(0.6), EvidenceStance::Supports)
-                    .with_source_url(url.clone())
-                    .with_source_type("role_history");
+            // Missing confidence stays missing: no synthesized 0.6 weight.
+            let mut record = EvidenceItem::new_optional(role.confidence, EvidenceStance::Supports)
+                .with_source_url(url.clone())
+                .with_source_type("role_history");
             if let Some(updated_at) = role.updated_at.or(role.start_date) {
                 record = record.with_observed_at(updated_at);
             }
@@ -133,7 +133,7 @@ fn build_person_dossier_analysis(
             .into_iter()
             .map(move |url| {
                 let mut record =
-                    EvidenceRecord::new(entry.confidence.unwrap_or(0.6), EvidenceStance::Supports)
+                    EvidenceItem::new_optional(entry.confidence, EvidenceStance::Supports)
                         .with_source_url(url)
                         .with_source_type(entry.category.clone());
                 if let Some(created_at) = entry.created_at {
@@ -145,7 +145,7 @@ fn build_person_dossier_analysis(
     evidence_records.extend(recent_changes.iter().filter_map(|change| {
         change.source_url.as_ref().map(|url| {
             let mut record =
-                EvidenceRecord::new(change.confidence.unwrap_or(0.6), EvidenceStance::Supports)
+                EvidenceItem::new_optional(change.confidence, EvidenceStance::Supports)
                     .with_source_url(url.clone())
                     .with_source_type(change.change_type.clone());
             if let Some(detected_at) = change.detected_at.or(change.created_at) {
@@ -154,7 +154,7 @@ fn build_person_dossier_analysis(
             record
         })
     }));
-    let evidence_quality = assess_evidence_quality(&evidence_records, now);
+    let evidence_quality = assess_evidence_quality(&evidence_records, &[], now);
 
     let temporal_delta = person_temporal_delta(role_history, dossier_entries, recent_changes);
 
@@ -222,9 +222,9 @@ fn build_person_dossier_analysis(
 
     let summary = format!(
         "Evidence posture is {} ({:.2}) with {} independent sources. Activity is {} and {} correlated weak-signal cluster(s) are being fused for analyst review.",
-        evidence_quality.quality_label,
-        evidence_quality.overall_score,
-        evidence_quality.independent_source_count,
+        evidence_quality.quality_label(),
+        evidence_quality.composite_score(),
+        evidence_quality.corpus.independent_origin_count,
         temporal_delta.label,
         correlated_signals.len(),
     );

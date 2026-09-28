@@ -16,10 +16,12 @@ use apex_core::analysis::{
     compare_temporal_windows, fuse_weak_signals, score_competing_hypotheses, source_group_from_url,
     HypothesisInput, HypothesisScorecard, SignalFrame, TemporalDelta,
 };
-// Shared ten-dimension evidence-quality model (audit P1-10): memo evidence
-// scoring must use the same semantics as source-coverage reporting instead of
-// feature-local thresholds.
-use apex_core::evidence_quality::{assess_evidence_quality, EvidenceItem, EvidenceStance};
+// Canonical evidence-quality model (audit P1 measurement): memo evidence
+// scoring must use the same corpus/claim semantics as source-coverage
+// reporting instead of feature-local thresholds.
+use apex_core::evidence_quality::{
+    assess_evidence_quality_for_claim, EvidenceItem, EvidenceStance,
+};
 use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -546,7 +548,9 @@ fn card_evidence_quality(card: &InsightCard) -> apex_core::evidence_quality::Evi
             item
         })
         .collect();
-    assess_evidence_quality(&items, &[], now)
+    // The card's title is the claim the citations support, so corroboration
+    // and the contradiction ratio are measured against an actual claim.
+    assess_evidence_quality_for_claim(&items, &[], &card.title, now)
 }
 
 pub fn build_temporal_summary(cards: &[InsightCard]) -> TemporalSummary {

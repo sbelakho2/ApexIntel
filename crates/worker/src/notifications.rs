@@ -17,6 +17,7 @@
 //! LLM-enhanced alert bodies are available when the `llm` feature is active.
 
 use anyhow::{Context, Result};
+use apex_core::config::ConfigErrors;
 use apex_core::sla::SeveritySlaConfig;
 use chrono::{DateTime, Utc};
 use lettre::message::{header::ContentType, Mailbox, SinglePart};
@@ -729,21 +730,39 @@ pub async fn send_slack_alert(alert: &PendingAlert) -> anyhow::Result<()> {
 // SLA enforcement
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn shared_sla_config_from_env() -> SeveritySlaConfig {
-    fn parse_env(key: &str, default: i64) -> i64 {
-        std::env::var(key)
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(default)
+/// Resolve the shared SLA windows from the environment.
+///
+/// An absent variable keeps its default; a present-but-malformed value is a
+/// configuration error instead of a silent fallback, because these windows
+/// gate breach detection.
+fn shared_sla_config_from_env() -> std::result::Result<SeveritySlaConfig, ConfigErrors> {
+    fn parse_env(key: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
+        match std::env::var(key) {
+            Err(_) => default,
+            Ok(raw) => match raw.trim().parse::<i64>() {
+                Ok(value) if value > 0 => value,
+                _ => {
+                    errors.push(key, raw, "a positive integer");
+                    default
+                }
+            },
+        }
     }
 
     let defaults = SeveritySlaConfig::default();
-    SeveritySlaConfig {
-        critical_seconds: parse_env("SLA_CRITICAL_SECONDS", defaults.critical_seconds),
-        high_seconds: parse_env("SLA_HIGH_SECONDS", defaults.high_seconds),
-        medium_seconds: parse_env("SLA_MEDIUM_SECONDS", defaults.medium_seconds),
-        low_seconds: parse_env("SLA_LOW_SECONDS", defaults.low_seconds),
-    }
+    let mut errors = ConfigErrors::new();
+    let config = SeveritySlaConfig {
+        critical_seconds: parse_env(
+            "SLA_CRITICAL_SECONDS",
+            defaults.critical_seconds,
+            &mut errors,
+        ),
+        high_seconds: parse_env("SLA_HIGH_SECONDS", defaults.high_seconds, &mut errors),
+        medium_seconds: parse_env("SLA_MEDIUM_SECONDS", defaults.medium_seconds, &mut errors),
+        low_seconds: parse_env("SLA_LOW_SECONDS", defaults.low_seconds, &mut errors),
+    };
+    errors.into_result()?;
+    Ok(config)
 }
 
 /// A warning record fetched from the database for SLA evaluation.
@@ -834,8 +853,8 @@ impl SlaEnforcer {
         Self { windows }
     }
 
-    pub fn from_env() -> Self {
-        Self::new(shared_sla_config_from_env())
+    pub fn from_env() -> std::result::Result<Self, ConfigErrors> {
+        Ok(Self::new(shared_sla_config_from_env()?))
     }
 
     /// The resolved SLA windows this enforcer applies.
@@ -1311,5 +1330,22 @@ mod tests {
         };
         let enforcer = SlaEnforcer::new(windows);
         assert_eq!(enforcer.windows().deadline_seconds("high"), 123);
+    }
+
+    #[test]
+    fn malformed_sla_window_is_a_configuration_error() {
+        use std::sync::{LazyLock, Mutex};
+        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let name = "SLA_CRITICAL_SECONDS";
+        std::env::set_var(name, "tomorrow");
+        let result = shared_sla_config_from_env();
+        std::env::remove_var(name);
+
+        let errors = result.expect_err("'tomorrow' is not a number of seconds");
+        assert_eq!(errors.errors[0].variable, name);
     }
 }

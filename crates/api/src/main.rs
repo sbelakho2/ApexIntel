@@ -435,8 +435,12 @@ async fn build_state() -> Result<AppState> {
     // ─── Readiness truth wiring ───────────────────────────────────────────
     // Probes measure real capability: the policy carries configurable
     // thresholds, the browser state can run a real render self-test, and the
-    // LLM/embedding probes target the configured endpoint/model.
-    let policy = Arc::new(ReadinessPolicy::from_env());
+    // LLM/embedding probes target the configured endpoint/model. A malformed
+    // threshold is a startup error: readiness must not apply a silent default.
+    let policy = Arc::new(
+        ReadinessPolicy::from_env()
+            .map_err(|errors| anyhow::anyhow!("invalid readiness configuration: {errors}"))?,
+    );
     tracing::info!(
         search_index_max_lag_secs = policy.search_index_max_lag_secs,
         crawl_freshness_max_age_secs = policy.crawl_freshness_max_age_secs,

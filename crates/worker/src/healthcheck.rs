@@ -7,9 +7,11 @@
 //! tick exceeds its work budget), or another replica masking a stalled
 //! instance all surface as an unhealthy container.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use sqlx::Connection;
+
+use apex_core::config::ConfigErrors;
 
 use apex_store::postgres::{
     latest_service_instance_heartbeat, notification_delivery_backlog_on, outbox_backlog_on,
@@ -92,18 +94,26 @@ pub fn evaluate_heartbeat(
 /// rows; `NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED` (default 25) bounds terminal
 /// failures awaiting operator replay. Exceeding either makes the readiness
 /// probe fail so a stuck delivery pipeline is not reported healthy.
-pub fn backlog_readiness_thresholds_from_env() -> (i64, i64) {
-    fn parse(key: &str, default: i64) -> i64 {
-        std::env::var(key)
-            .ok()
-            .and_then(|value| value.trim().parse::<i64>().ok())
-            .filter(|value| *value >= 0)
-            .unwrap_or(default)
+pub fn backlog_readiness_thresholds_from_env() -> std::result::Result<(i64, i64), ConfigErrors> {
+    let mut errors = ConfigErrors::new();
+    let max_overdue = parse_non_negative("NOTIFICATION_DELIVERY_MAX_OVERDUE", 250, &mut errors);
+    let max_dead_lettered =
+        parse_non_negative("NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED", 25, &mut errors);
+    errors.into_result()?;
+    Ok((max_overdue, max_dead_lettered))
+}
+
+fn parse_non_negative(key: &str, default: i64, errors: &mut ConfigErrors) -> i64 {
+    match std::env::var(key) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<i64>() {
+            Ok(value) if value >= 0 => value,
+            _ => {
+                errors.push(key, raw, "a non-negative integer");
+                default
+            }
+        },
     }
-    (
-        parse("NOTIFICATION_DELIVERY_MAX_OVERDUE", 250),
-        parse("NOTIFICATION_DELIVERY_MAX_DEAD_LETTERED", 25),
-    )
 }
 
 /// Evaluate the notification delivery backlog against readiness thresholds.
@@ -135,18 +145,12 @@ pub fn evaluate_delivery_backlog(
 /// A healthy drain keeps `unpublished` near zero; `overdue` counts rows that
 /// have been claimable for more than five minutes. Dead-lettered rows await an
 /// operator replay (admin UI).
-pub fn outbox_readiness_thresholds_from_env() -> (i64, i64) {
-    fn parse(key: &str, default: i64) -> i64 {
-        std::env::var(key)
-            .ok()
-            .and_then(|value| value.trim().parse::<i64>().ok())
-            .filter(|value| *value >= 0)
-            .unwrap_or(default)
-    }
-    (
-        parse("OUTBOX_MAX_OVERDUE", 250),
-        parse("OUTBOX_MAX_DEAD_LETTERED", 25),
-    )
+pub fn outbox_readiness_thresholds_from_env() -> std::result::Result<(i64, i64), ConfigErrors> {
+    let mut errors = ConfigErrors::new();
+    let max_overdue = parse_non_negative("OUTBOX_MAX_OVERDUE", 250, &mut errors);
+    let max_dead_lettered = parse_non_negative("OUTBOX_MAX_DEAD_LETTERED", 25, &mut errors);
+    errors.into_result()?;
+    Ok((max_overdue, max_dead_lettered))
 }
 
 /// Evaluate the alert outbox backlog against readiness thresholds.
@@ -190,7 +194,8 @@ pub async fn check_worker_heartbeat(
     let backlog = notification_delivery_backlog_on(&mut conn, now)
         .await
         .context("failed to read the notification delivery backlog")?;
-    let (max_overdue, max_dead_lettered) = backlog_readiness_thresholds_from_env();
+    let (max_overdue, max_dead_lettered) = backlog_readiness_thresholds_from_env()
+        .map_err(|errors| anyhow!("invalid readiness configuration: {errors}"))?;
     evaluate_delivery_backlog(backlog, max_overdue, max_dead_lettered)
         .context("notification delivery readiness check failed")?;
 
@@ -199,7 +204,8 @@ pub async fn check_worker_heartbeat(
     let outbox = outbox_backlog_on(&mut conn, now - chrono::Duration::minutes(5))
         .await
         .context("failed to read the alert outbox backlog")?;
-    let (max_overdue, max_dead_lettered) = outbox_readiness_thresholds_from_env();
+    let (max_overdue, max_dead_lettered) = outbox_readiness_thresholds_from_env()
+        .map_err(|errors| anyhow!("invalid readiness configuration: {errors}"))?;
     evaluate_outbox_backlog(outbox, max_overdue, max_dead_lettered)
         .context("alert outbox readiness check failed")?;
 
@@ -342,5 +348,24 @@ mod tests {
         let error = evaluate_outbox_backlog(dead, 250, 25)
             .expect_err("outbox dead letters above threshold must fail readiness");
         assert!(error.to_string().contains("outbox dead-lettered"));
+    }
+
+    #[test]
+    fn malformed_readiness_threshold_is_a_configuration_error() {
+        use std::sync::{LazyLock, Mutex};
+        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let name = "NOTIFICATION_DELIVERY_MAX_OVERDUE";
+        std::env::set_var(name, "many");
+        let result = backlog_readiness_thresholds_from_env();
+        std::env::remove_var(name);
+
+        let errors = result.expect_err("'many' is not an integer");
+        assert_eq!(errors.errors.len(), 1);
+        assert_eq!(errors.errors[0].variable, name);
+        assert_eq!(errors.errors[0].value, "many");
     }
 }

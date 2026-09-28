@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::Serialize;
 use uuid::Uuid;
 
+use apex_core::config::ConfigErrors;
 use apex_core::measurement::Measurement;
 use apex_crawl::dns::{
     extract_dmarc_record, extract_spf_record, DkimStatus, DnsLookupOutcome, StructuredDnsResolver,
@@ -11,6 +12,23 @@ use apex_crawl::dns::{
 
 use crate::intelligence_ingress::{IngressCounters, IntelligenceIngress, NewWarning};
 use crate::*;
+
+/// Parse one numeric security threshold from the environment.
+///
+/// An absent variable keeps its default; a present-but-malformed value is a
+/// configuration error (never a silent fallback) so the job reports the
+/// misconfiguration instead of running with a threshold nobody chose.
+fn security_threshold<T>(
+    name: &str,
+    default: T,
+    parse: impl Fn(&str) -> Option<T>,
+    expected: &str,
+) -> std::result::Result<T, ConfigErrors> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(raw) => parse(raw.trim()).ok_or_else(|| ConfigErrors::single(name, raw, expected)),
+    }
+}
 
 pub(super) async fn run_breach_scan(
     kind: &JobKind,
@@ -192,10 +210,24 @@ pub(super) async fn run_sanctions_screen(
         return run;
     }
 
-    let threshold: f64 = std::env::var("SANCTIONS_THRESHOLD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.92);
+    let threshold: f64 = match security_threshold(
+        "SANCTIONS_THRESHOLD",
+        0.92_f64,
+        |raw| {
+            raw.parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        },
+        "a finite number in 0..=1",
+    ) {
+        Ok(threshold) => threshold,
+        Err(errors) => {
+            run.fail(&format!(
+                "sanctions_screen: invalid configuration: {errors}"
+            ));
+            return run;
+        }
+    };
 
     let screener = match SanctionsScreener::load_from_web().await {
         Ok(s) => s.with_threshold(threshold),
@@ -332,11 +364,25 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
         }
     };
 
-    let enforcer = SlaEnforcer::from_env();
-    let reminder_ahead_seconds = std::env::var("SLA_REMINDER_AHEAD_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(900);
+    let enforcer = match SlaEnforcer::from_env() {
+        Ok(enforcer) => enforcer,
+        Err(errors) => {
+            run.fail(&format!("sla_enforcement: invalid configuration: {errors}"));
+            return run;
+        }
+    };
+    let reminder_ahead_seconds = match security_threshold(
+        "SLA_REMINDER_AHEAD_SECONDS",
+        900_i64,
+        |raw| raw.parse::<i64>().ok().filter(|value| *value >= 0),
+        "a non-negative integer",
+    ) {
+        Ok(seconds) => seconds,
+        Err(errors) => {
+            run.fail(&format!("sla_enforcement: invalid configuration: {errors}"));
+            return run;
+        }
+    };
 
     let mut pending_alerts = Vec::new();
 
@@ -1359,15 +1405,35 @@ pub(super) async fn run_lookalike_domain_scan(
     let ct = apex_crawl::ct::CtMonitor::new(apex_crawl::ct::CtMonitorConfig::default());
     // Evidence checks (RDAP + HTTP + CT) are much heavier than a DNS
     // round-trip, so they are capped separately from registration checks.
-    let max_checks_per_domain: usize = std::env::var("LOOKALIKE_MAX_CHECKS_PER_DOMAIN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(15);
-    let max_evidence_checks: usize = std::env::var("LOOKALIKE_MAX_EVIDENCE_CHECKS_PER_DOMAIN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5)
-        .min(max_checks_per_domain);
+    let max_checks_per_domain: usize = match security_threshold(
+        "LOOKALIKE_MAX_CHECKS_PER_DOMAIN",
+        15_usize,
+        |raw| raw.parse::<usize>().ok().filter(|value| *value > 0),
+        "a positive integer",
+    ) {
+        Ok(value) => value,
+        Err(errors) => {
+            run.fail(&format!(
+                "lookalike_domain_scan: invalid configuration: {errors}"
+            ));
+            return run;
+        }
+    };
+    let max_evidence_checks: usize = match security_threshold(
+        "LOOKALIKE_MAX_EVIDENCE_CHECKS_PER_DOMAIN",
+        5_usize,
+        |raw| raw.parse::<usize>().ok(),
+        "a non-negative integer",
+    ) {
+        Ok(value) => value,
+        Err(errors) => {
+            run.fail(&format!(
+                "lookalike_domain_scan: invalid configuration: {errors}"
+            ));
+            return run;
+        }
+    }
+    .min(max_checks_per_domain);
 
     // Redirects are disabled so the redirect target itself is observable
     // evidence instead of being silently followed.
@@ -1708,5 +1774,36 @@ mod tests {
         assert!(parse_rdap_date("2024-03-01T10:00:00Z").is_some());
         assert!(parse_rdap_date("2024-03-01").is_some());
         assert!(parse_rdap_date("not-a-date").is_none());
+    }
+
+    #[test]
+    fn malformed_security_threshold_is_a_configuration_error() {
+        use std::sync::{LazyLock, Mutex};
+        static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let name = "SANCTIONS_THRESHOLD";
+        std::env::set_var(name, "not-a-number");
+        let result = security_threshold(
+            name,
+            0.92_f64,
+            |raw| {
+                raw.parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+            },
+            "a finite number in 0..=1",
+        );
+        std::env::remove_var(name);
+
+        let errors = result.expect_err("not-a-number is not a threshold");
+        assert_eq!(errors.errors[0].variable, name);
+
+        // Unset variables still keep their defaults.
+        let default = security_threshold(name, 0.92_f64, |_| None, "anything")
+            .expect("absent variable keeps the default");
+        assert!((default - 0.92).abs() < f64::EPSILON);
     }
 }
