@@ -969,51 +969,50 @@ pub(super) async fn run_kev_catalog_fetch(kind: &JobKind, store: &Arc<PgStore>) 
     run.start();
     let url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
 
-    // CISA blocks Hetzner IPs and the proxy provider blocks HTTP CONNECT to .gov,
-    // so we shell out to curl with --socks5 which reliably tunnels through the proxy.
-    let body = if let Some(proxy_url) = crate::build_paid_proxy_url_from_env() {
-        let socks_url = proxy_url.replacen("http://", "", 1);
-        tracing::info!("kev_catalog_fetch: fetching via SOCKS5 proxy");
-        let output = tokio::process::Command::new("curl")
-            .args([
-                "-s",
-                "--socks5",
-                &socks_url,
-                "-A",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                "--connect-timeout",
-                "30",
-                "-m",
-                "90",
-                url,
-            ])
-            .output()
-            .await;
-        match output {
-            Ok(out) if out.status.success() => Ok(out.stdout),
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                Err(format!("curl exit {}: {}", out.status, stderr.trim()))
+    // CISA blocks the production host's IP and the proxy provider blocks HTTP
+    // CONNECT to .gov, so the KEV fetch goes through the same paid SOCKS5 proxy
+    // the rest of the crawler uses — via the shared reqwest stack, not an
+    // external `curl` binary whose absence silently disabled the job.
+    let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(90))
+        .user_agent(user_agent);
+    if let Some(proxy_url) = crate::build_paid_proxy_url_from_env() {
+        let host = proxy_url
+            .replacen("http://", "", 1)
+            .replacen("https://", "", 1);
+        let socks_url = format!("socks5h://{host}");
+        match reqwest::Proxy::all(&socks_url) {
+            Ok(proxy) => {
+                tracing::info!("kev_catalog_fetch: fetching via SOCKS5 proxy");
+                builder = builder.proxy(proxy);
             }
-            Err(e) => Err(format!("failed to spawn curl: {e}")),
+            Err(error) => {
+                run.fail(&format!(
+                    "kev_catalog_fetch: invalid proxy configuration {proxy_url:?}: {error}"
+                ));
+                return run;
+            }
         }
     } else {
         tracing::info!("kev_catalog_fetch: fetching directly (no proxy configured)");
-        match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(90))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-            .build()
-        {
-            Ok(client) => match client.get(url).send().await {
-                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                    Ok(b) => Ok(b.to_vec()),
-                    Err(e) => Err(format!("failed to read response body: {e}")),
-                },
-                Ok(resp) => Err(format!("HTTP {} from CISA", resp.status())),
-                Err(e) => Err(format!("request failed: {e}")),
-            },
-            Err(e) => Err(format!("failed to build HTTP client: {e}")),
+    }
+    let client = match builder.build() {
+        Ok(client) => client,
+        Err(error) => {
+            run.fail(&format!(
+                "kev_catalog_fetch: failed to build the HTTP client: {error}"
+            ));
+            return run;
         }
+    };
+    let body = match client.get(url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+            Ok(bytes) => Ok(bytes.to_vec()),
+            Err(error) => Err(format!("failed to read response body: {error}")),
+        },
+        Ok(resp) => Err(format!("HTTP {} from CISA", resp.status())),
+        Err(error) => Err(format!("request failed: {error}")),
     };
 
     match body {
