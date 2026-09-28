@@ -206,18 +206,35 @@ mod tests {
     #[test]
     fn retry_seconds_round_up_for_sub_second_remainders() {
         let now = Utc::now();
-        let mut state = LoginThrottleState::default();
-        state.backoff_until = Some(now + Duration::nanoseconds(999_999_000));
-        assert_eq!(state.status(now).retry_after_secs, 1);
+        let with_backoff = |until: DateTime<Utc>| LoginThrottleState {
+            backoff_until: Some(until),
+            ..Default::default()
+        };
 
-        state.backoff_until = Some(now + Duration::milliseconds(1));
-        assert_eq!(state.status(now).retry_after_secs, 1);
-
-        state.backoff_until = Some(now + Duration::seconds(2));
-        assert_eq!(state.status(now).retry_after_secs, 2);
-
-        state.backoff_until = Some(now - Duration::milliseconds(1));
-        assert_eq!(state.status(now).retry_after_secs, 0);
+        assert_eq!(
+            with_backoff(now + Duration::nanoseconds(999_999_000))
+                .status(now)
+                .retry_after_secs,
+            1
+        );
+        assert_eq!(
+            with_backoff(now + Duration::milliseconds(1))
+                .status(now)
+                .retry_after_secs,
+            1
+        );
+        assert_eq!(
+            with_backoff(now + Duration::seconds(2))
+                .status(now)
+                .retry_after_secs,
+            2
+        );
+        assert_eq!(
+            with_backoff(now - Duration::milliseconds(1))
+                .status(now)
+                .retry_after_secs,
+            0
+        );
     }
 
     #[test]
