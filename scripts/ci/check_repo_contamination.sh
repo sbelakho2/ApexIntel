@@ -14,6 +14,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
+# Container steps run as root while the agent checks the workspace out as the
+# host user; without this, every git call fails with "dubious ownership" and
+# git-based checks silently see an empty repository.
+git config --global --add safe.directory '*' 2>/dev/null || true
+
+
 SELF="scripts/ci/check_repo_contamination.sh"
 failed=0
 

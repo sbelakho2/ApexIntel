@@ -50,6 +50,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
+# Container steps run as root while the agent checks the workspace out as the
+# host user; without this, every git call fails with "dubious ownership" and
+# git-based checks silently see an empty repository.
+git config --global --add safe.directory '*' 2>/dev/null || true
+
+
 SCHEMA_VERSION=1
 CANONICAL_GATES="exact-sha rustfmt clippy-default clippy-all-features unit-tests all-features-tests pg-canonical migration-bootstrap browser-integration ui-journey tailwind-assets wasm-shared container-browser"
 
