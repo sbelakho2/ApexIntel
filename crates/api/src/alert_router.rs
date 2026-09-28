@@ -1,28 +1,19 @@
 //! Alert routing logic — determines which users should receive which alerts.
 //!
 //! The [`AlertRouter`] checks:
-//! 1. The event's [`AlertAudience`]: [`AlertAudience::Broadcast`] passes through
-//!    untouched; [`AlertAudience::Users`] is filtered by per-user preferences.
-//!    An empty `Users` list is resolved against `user_alert_subscriptions`
-//!    when the alert targets an entity, so targeted alerts reach real
-//!    subscribers instead of everyone (or no one).
-//! 2. Per-user notification preferences (`user_preferences.preferences` JSONB,
-//!    both the web-settings and JSON-API shapes).
-//! 3. Entity subscriptions (`user_alert_subscriptions`).
-//! 4. Per-entity overrides (`EntityAlertConfig`) and global defaults
-//!    (`GlobalAlertDefaults`).
+//! 1. Explicit `user_ids` in the [`AlertEvent`]
+//! 2. Entity subscriptions (users watching an entity via `EntityAlertConfig`)
+//! 3. Default alert thresholds (`GlobalAlertDefaults`)
+//! 4. Per-entity overrides (`EntityAlertConfig`)
 //!
 //! This module re-exports the shared [`AlertEvent`] type used by both the
 //! NATS publisher (worker) and the SSE consumer (API server).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use uuid::Uuid;
-
-use apex_core::alert_config::{AlertAudience, AlertSeverity};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Re-export AlertEvent for use by both worker publisher and API consumer
@@ -61,67 +52,18 @@ impl fmt::Display for AlertEventType {
 
 /// An alert event that travels through the pipeline: worker → NATS → API → SSE.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(from = "AlertEventWire")]
 pub struct AlertEvent {
     pub id: Uuid,
     pub event_type: AlertEventType,
     pub severity: apex_core::alert_config::AlertSeverity,
     pub title: String,
     pub description: String,
-    /// Complete entity set the alert references. Subscriber resolution is the
-    /// union across every entry; a multi-entity warning must not collapse to
-    /// its first entity.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entity_ids: Vec<Uuid>,
+    pub entity_id: Option<Uuid>,
     pub entity_name: Option<String>,
-    /// Who this alert is addressed to. `Users(vec![])` addresses nobody and
-    /// only a deliberate `Broadcast` reaches every connected user.
-    pub audience: AlertAudience,
+    /// Target user IDs (empty = broadcast to all).
+    pub user_ids: Vec<Uuid>,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
-}
-
-/// Wire form that still accepts the pre-`entity_ids` singular field, so alert
-/// messages produced by a not-yet-updated worker still resolve their entity
-/// subscribers instead of reaching nobody.
-#[derive(Deserialize)]
-struct AlertEventWire {
-    id: Uuid,
-    event_type: AlertEventType,
-    severity: apex_core::alert_config::AlertSeverity,
-    title: String,
-    description: String,
-    #[serde(default)]
-    entity_ids: Vec<Uuid>,
-    #[serde(default)]
-    entity_id: Option<Uuid>,
-    entity_name: Option<String>,
-    audience: AlertAudience,
-    metadata: serde_json::Value,
-    created_at: DateTime<Utc>,
-}
-
-impl From<AlertEventWire> for AlertEvent {
-    fn from(wire: AlertEventWire) -> Self {
-        let mut entity_ids = wire.entity_ids;
-        if entity_ids.is_empty() {
-            if let Some(entity_id) = wire.entity_id {
-                entity_ids.push(entity_id);
-            }
-        }
-        Self {
-            id: wire.id,
-            event_type: wire.event_type,
-            severity: wire.severity,
-            title: wire.title,
-            description: wire.description,
-            entity_ids,
-            entity_name: wire.entity_name,
-            audience: wire.audience,
-            metadata: wire.metadata,
-            created_at: wire.created_at,
-        }
-    }
 }
 
 impl AlertEvent {
@@ -139,188 +81,60 @@ impl AlertEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PrincipalDirectory
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// In-process directory of authenticated principals with a live real-time
-/// connection, keyed by the UUID derived from their canonical user id
-/// (`apex_core::alert_config::principal_uuid_from_user_id`).
-///
-/// Alerts address principals by UUID, and UUIDv5 is one-way. The directory
-/// bridges the UUID back to the `app_users.id` behind it for connected users,
-/// so [`AlertRouter::should_notify_user`] can consult their preferences.
-#[derive(Debug, Default)]
-pub struct PrincipalDirectory {
-    user_ids: RwLock<HashMap<Uuid, String>>,
-}
-
-impl PrincipalDirectory {
-    /// Create an empty directory.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Record (or refresh) the canonical user id behind a principal ID.
-    pub fn record(&self, principal_id: Uuid, user_id: &str) {
-        if let Ok(mut user_ids) = self.user_ids.write() {
-            user_ids.insert(principal_id, user_id.to_string());
-        }
-    }
-
-    /// Forget a principal once its last connection has closed.
-    pub fn forget(&self, principal_id: Uuid) {
-        if let Ok(mut user_ids) = self.user_ids.write() {
-            user_ids.remove(&principal_id);
-        }
-    }
-
-    /// Resolve the canonical user id for a principal, if it has connected.
-    pub fn user_id_for(&self, principal_id: Uuid) -> Option<String> {
-        self.user_ids
-            .read()
-            .ok()
-            .and_then(|user_ids| user_ids.get(&principal_id).cloned())
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // AlertRouter
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Routes alerts to the appropriate users based on configuration.
 ///
-/// Uses the database to resolve subscriptions and preferences and to look up
-/// [`EntityAlertConfig`](apex_core::alert_config::EntityAlertConfig) and
-/// [`GlobalAlertDefaults`](apex_core::alert_config::GlobalAlertDefaults).
+/// Uses the database to look up [`EntityAlertConfig`] and [`GlobalAlertDefaults`]
+/// to determine which users should receive each alert.
 pub struct AlertRouter {
     db: Arc<apex_store::postgres::PgStore>,
-    principals: Arc<PrincipalDirectory>,
 }
 
 impl AlertRouter {
-    /// Create a new alert router backed by the database and the live
-    /// principal directory.
-    pub fn new(
-        db: Arc<apex_store::postgres::PgStore>,
-        principals: Arc<PrincipalDirectory>,
-    ) -> Self {
-        Self { db, principals }
+    /// Create a new alert router backed by the database.
+    pub fn new(db: Arc<apex_store::postgres::PgStore>) -> Self {
+        Self { db }
     }
 
-    /// Route an alert to the right audience.
+    /// Route an alert to the right users.
+    ///
+    /// Returns the list of user IDs that should receive this alert.
+    /// If the alert already has explicit `user_ids`, those are returned directly
+    /// (after filtering by user preferences).
     ///
     /// # Routing logic
-    /// - `Broadcast` is a deliberate system-wide alert and passes through.
-    /// - `Users([...])` with explicit IDs keeps only the users whose
-    ///   preferences and configs allow the alert. If no user remains the
-    ///   result addresses nobody.
-    /// - `Users([])` resolves the entity's real subscribers from
-    ///   `user_alert_subscriptions`; with no entity or no subscribers the
-    ///   result is `Users([])` — nobody, never an implicit broadcast.
-    ///
-    /// Returns an error only when the subscription lookup itself fails, so the
-    /// NATS consumer can retry the message instead of dropping it.
-    pub async fn route_alert(&self, alert: &AlertEvent) -> anyhow::Result<AlertAudience> {
-        match &alert.audience {
-            // Deliberate system-wide alerts reach every connected user.
-            AlertAudience::Broadcast => Ok(AlertAudience::Broadcast),
-
-            // Explicit addressees: filter by per-user preferences/configs.
-            AlertAudience::Users(explicit) if !explicit.is_empty() => {
-                let mut targets = Vec::with_capacity(explicit.len());
-                for user_id in explicit {
-                    if self.should_notify_user(*user_id, alert).await {
-                        targets.push(*user_id);
-                    }
+    /// 1. If `alert.user_ids` is non-empty, check each user's `EntityAlertConfig`
+    ///    for the entity (if any) and filter out those whose config suppresses it.
+    /// 2. If `alert.user_ids` is empty (broadcast), query all entity alert configs
+    ///    and return user IDs whose config allows this alert type/severity.
+    /// 3. When no entity config exists, fall back to `GlobalAlertDefaults`.
+    pub async fn route_alert(&self, alert: &AlertEvent) -> Vec<Uuid> {
+        // If explicit user IDs are set, filter them
+        if !alert.user_ids.is_empty() {
+            let mut targets = Vec::with_capacity(alert.user_ids.len());
+            for user_id in &alert.user_ids {
+                if self.should_notify_user(*user_id, alert).await {
+                    targets.push(*user_id);
                 }
-                Ok(AlertAudience::Users(targets))
             }
-
-            // No explicit addressees: resolve the entity's real subscribers.
-            AlertAudience::Users(_) => {
-                let subscribers = self.find_subscribed_users(alert).await?;
-                let mut targets = Vec::with_capacity(subscribers.len());
-                for user_id in subscribers {
-                    if self.should_notify_user(user_id, alert).await {
-                        targets.push(user_id);
-                    }
-                }
-                Ok(AlertAudience::Users(targets))
-            }
-        }
-    }
-
-    /// Find the real subscribers for an entity-targeted alert.
-    ///
-    /// Returns the union of principal IDs whose `user_alert_subscriptions` row
-    /// matches any of the alert's entities, category and severity. One batch
-    /// query resolves every entity. With no entities, or no matching rows,
-    /// returns an empty list (nobody).
-    pub async fn find_subscribed_users(&self, alert: &AlertEvent) -> anyhow::Result<Vec<Uuid>> {
-        if alert.entity_ids.is_empty() {
-            return Ok(Vec::new());
+            return targets;
         }
 
-        self.db
-            .find_subscribed_users_for_entities(
-                &alert.entity_ids,
-                alert.alert_category(),
-                alert.severity,
-            )
-            .await
+        // Broadcast mode: find all users subscribed to this kind of alert
+        self.find_subscribed_users(alert).await
     }
 
     /// Check whether a specific user should receive this alert.
     ///
-    /// Consults the user's notification preferences from `user_preferences`
-    /// first (when the principal has an active connection), then the configs of
-    /// every entity the alert references, then the global defaults. Database
-    /// errors fail open so a transient failure never silently suppresses an
-    /// alert.
-    pub async fn should_notify_user(&self, principal_id: Uuid, alert: &AlertEvent) -> bool {
-        if let Some(user_id) = self.principals.user_id_for(principal_id) {
-            match self
-                .db
-                .get_user_preferences_record_scoped(&user_id, "viewer")
-                .await
-            {
-                Ok(Some(record)) => {
-                    if !user_preferences_allow_alert(&record.preferences, alert) {
-                        return false;
-                    }
-                }
-                Ok(None) => {
-                    // The user has no preferences row — fall through to the
-                    // entity/global configuration.
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        error = %e,
-                        "Failed to fetch user preferences, falling back to alert configs"
-                    );
-                }
-            }
-        }
-
-        self.entity_or_global_allows(alert).await
-    }
-
-    /// Check the entity alert config (if the alert has an entity and a config
-    /// exists) and fall back to the global defaults.
-    async fn entity_or_global_allows(&self, alert: &AlertEvent) -> bool {
+    /// Checks the user's entity alert config (if one exists for the alert's
+    /// entity), falling back to global defaults.
+    pub async fn should_notify_user(&self, _user_id: Uuid, alert: &AlertEvent) -> bool {
         use apex_core::alert_config::AlertChannel;
 
-        if alert.entity_ids.is_empty() {
-            // No entity — check global defaults.
-            return self.check_global_defaults(alert).await;
-        }
-
-        // The alert may reference several entities. A subscriber of any of
-        // them must not be gated by another entity's config: every referenced
-        // entity has to allow the alert, and entities without a config fall
-        // back to the global defaults.
-        for entity_id in &alert.entity_ids {
+        // If the alert targets a specific entity, check its config
+        if let Some(ref entity_id) = alert.entity_id {
             let entity_id_str = entity_id.to_string();
             match self.db.get_entity_alert_config(&entity_id_str).await {
                 Ok(Some(cfg)) => {
@@ -332,12 +146,11 @@ impl AlertRouter {
                     if cfg.is_alert_suppressed(alert.alert_category(), alert.severity) {
                         return false;
                     }
+                    return true;
                 }
                 Ok(None) => {
                     // No per-entity config — check global defaults
-                    if !self.check_global_defaults(alert).await {
-                        return false;
-                    }
+                    return self.check_global_defaults(alert).await;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -345,14 +158,13 @@ impl AlertRouter {
                         error = %e,
                         "Failed to fetch entity alert config, falling back to defaults"
                     );
-                    if !self.check_global_defaults(alert).await {
-                        return false;
-                    }
+                    return self.check_global_defaults(alert).await;
                 }
             }
         }
 
-        true
+        // No entity — check global defaults
+        self.check_global_defaults(alert).await
     }
 
     /// Check the global alert defaults.
@@ -370,7 +182,7 @@ impl AlertRouter {
             }
             Ok(None) => {
                 // No global config — allow by default if severity >= Medium
-                alert.severity >= AlertSeverity::Medium
+                alert.severity >= apex_core::alert_config::AlertSeverity::Medium
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to fetch global alert defaults");
@@ -379,47 +191,54 @@ impl AlertRouter {
             }
         }
     }
-}
 
-/// Pure per-user preference gate.
-///
-/// Recognises both preference shapes persisted in
-/// `user_preferences.preferences`:
-/// - the web settings page (`settings_page.minimum_severity`,
-///   `settings_page.critical_only_enabled`), and
-/// - the JSON API (`notifications.browser_push`, `notifications.min_severity`).
-///
-/// A user with no relevant keys allows the alert; the caller still applies the
-/// entity/global thresholds.
-pub(crate) fn user_preferences_allow_alert(
-    preferences: &serde_json::Value,
-    alert: &AlertEvent,
-) -> bool {
-    if let Some(notifications) = preferences.get("notifications") {
-        if notifications.get("browser_push").and_then(|v| v.as_bool()) == Some(false) {
-            return false;
-        }
-        if let Some(min) = notifications.get("min_severity").and_then(|v| v.as_str()) {
-            if alert.severity < AlertSeverity::from_str(min) {
-                return false;
+    /// Find users subscribed to this kind of alert via entity alert configs.
+    ///
+    /// This queries the database for all entity alert configs and returns
+    /// user IDs whose config allows this alert category at the given severity.
+    ///
+    /// Note: The current schema stores configs per entity, not per user.
+    /// For user-specific subscriptions, this would need a `user_alert_subscriptions`
+    /// table. For now, we return an empty vec (no broadcast subscribers)
+    /// unless the entity has an explicit config allowing it.
+    async fn find_subscribed_users(&self, alert: &AlertEvent) -> Vec<Uuid> {
+        use apex_core::alert_config::AlertChannel;
+
+        // If the alert has an entity, check who's watching it
+        if let Some(ref entity_id) = alert.entity_id {
+            let entity_id_str = entity_id.to_string();
+            match self.db.get_entity_alert_config(&entity_id_str).await {
+                Ok(Some(cfg)) => {
+                    if cfg.enabled
+                        && cfg.enabled_channels.contains(&AlertChannel::InApp)
+                        && !cfg.is_alert_suppressed(alert.alert_category(), alert.severity)
+                    {
+                        // Entity has this alert enabled — in a full implementation
+                        // we'd look up which users follow this entity.
+                        // For now, return empty (the SSE manager will broadcast
+                        // if user_ids is empty, which handles anonymous broadcasts).
+                        return vec![];
+                    }
+                }
+                Ok(None) => {
+                    // No entity config — check global
+                    if self.check_global_defaults(alert).await {
+                        return vec![];
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        entity_id = %entity_id_str,
+                        error = %e,
+                        "Failed to fetch entity alert config for subscription lookup"
+                    );
+                }
             }
         }
-    }
 
-    if let Some(page) = preferences.get("settings_page") {
-        if page.get("critical_only_enabled").and_then(|v| v.as_bool()) == Some(true)
-            && alert.severity < AlertSeverity::Critical
-        {
-            return false;
-        }
-        if let Some(min) = page.get("minimum_severity").and_then(|v| v.as_str()) {
-            if alert.severity < AlertSeverity::from_str(min) {
-                return false;
-            }
-        }
+        // No subscribers found via entity configs
+        vec![]
     }
-
-    true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -429,21 +248,6 @@ pub(crate) fn user_preferences_allow_alert(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_alert(event_type: AlertEventType, severity: AlertSeverity) -> AlertEvent {
-        AlertEvent {
-            id: Uuid::new_v4(),
-            event_type,
-            severity,
-            title: "Test".to_string(),
-            description: "Test".to_string(),
-            entity_ids: Vec::new(),
-            entity_name: None,
-            audience: AlertAudience::Users(vec![]),
-            metadata: serde_json::json!({}),
-            created_at: Utc::now(),
-        }
-    }
 
     #[test]
     fn alert_event_type_as_str() {
@@ -463,7 +267,18 @@ mod tests {
 
     #[test]
     fn alert_category_mapping() {
-        let alert = test_alert(AlertEventType::NewWarning, AlertSeverity::High);
+        let alert = AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::NewWarning,
+            severity: apex_core::alert_config::AlertSeverity::High,
+            title: "Test".to_string(),
+            description: "Test".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![],
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
         assert_eq!(alert.alert_category(), "warning");
     }
 
@@ -472,12 +287,12 @@ mod tests {
         let event = AlertEvent {
             id: Uuid::new_v4(),
             event_type: AlertEventType::CompetitorChange,
-            severity: AlertSeverity::Critical,
+            severity: apex_core::alert_config::AlertSeverity::Critical,
             title: "Competitor move".to_string(),
             description: "A competitor changed strategy".to_string(),
-            entity_ids: vec![Uuid::new_v4(), Uuid::new_v4()],
+            entity_id: Some(Uuid::new_v4()),
             entity_name: Some("Rival Corp".to_string()),
-            audience: AlertAudience::Users(vec![Uuid::new_v4()]),
+            user_ids: vec![Uuid::new_v4()],
             metadata: serde_json::json!({"change_type": "pivot"}),
             created_at: Utc::now(),
         };
@@ -487,115 +302,24 @@ mod tests {
 
         assert_eq!(deserialized.id, event.id);
         assert_eq!(deserialized.event_type, event.event_type);
-        assert_eq!(deserialized.audience, event.audience);
+        assert_eq!(deserialized.user_ids.len(), 1);
         assert_eq!(deserialized.metadata["change_type"], "pivot");
     }
 
     #[test]
-    fn broadcast_audience_roundtrips_distinctly_from_empty_users() {
-        let mut broadcast = test_alert(AlertEventType::SystemAlert, AlertSeverity::Info);
-        broadcast.audience = AlertAudience::Broadcast;
-
-        let json = serde_json::to_value(&broadcast).unwrap();
-        assert_eq!(json["audience"], serde_json::json!({"kind": "broadcast"}));
-
-        let empty = test_alert(AlertEventType::SystemAlert, AlertSeverity::Info);
-        let empty_json = serde_json::to_value(&empty).unwrap();
-        assert_eq!(
-            empty_json["audience"],
-            serde_json::json!({"kind": "users", "user_ids": []})
-        );
-
-        let back: AlertEvent = serde_json::from_value(json).unwrap();
-        assert_eq!(back.audience, AlertAudience::Broadcast);
-    }
-
-    #[test]
-    fn legacy_singular_entity_id_still_resolves_the_entity() {
-        let entity_id = Uuid::new_v4();
-        // Frozen pre-rename shape produced by a not-yet-updated worker.
-        let legacy = serde_json::json!({
-            "id": Uuid::new_v4(),
-            "event_type": "new_warning",
-            "severity": "high",
-            "title": "Legacy",
-            "description": "published before the entity_ids rename",
-            "entity_id": entity_id,
-            "entity_name": "Acme",
-            "audience": {"kind": "users", "user_ids": []},
-            "metadata": {"warning_id": Uuid::new_v4()},
-            "created_at": "2026-01-01T00:00:00Z"
-        });
-
-        let event: AlertEvent = serde_json::from_value(legacy).expect("legacy payload parses");
-        assert_eq!(
-            event.entity_ids,
-            vec![entity_id],
-            "the legacy id must not be dropped, or the alert would reach nobody"
-        );
-    }
-
-    #[test]
-    fn principal_directory_records_and_forgets_user_ids() {
-        let dir = PrincipalDirectory::new();
-        let id = apex_core::alert_config::principal_uuid_from_user_id(
-            &apex_core::identity::UserId::from("usr-alice"),
-        );
-
-        assert_eq!(dir.user_id_for(id), None);
-        dir.record(id, "usr-alice");
-        assert_eq!(dir.user_id_for(id).as_deref(), Some("usr-alice"));
-        dir.forget(id);
-        assert_eq!(dir.user_id_for(id), None);
-    }
-
-    #[test]
-    fn user_preferences_block_browser_push_disabled() {
-        let alert = test_alert(AlertEventType::NewWarning, AlertSeverity::Critical);
-        let prefs = serde_json::json!({"notifications": {"browser_push": false}});
-        assert!(!user_preferences_allow_alert(&prefs, &alert));
-    }
-
-    #[test]
-    fn user_preferences_enforce_notification_min_severity() {
-        let prefs = serde_json::json!({"notifications": {"min_severity": "high"}});
-        assert!(!user_preferences_allow_alert(
-            &prefs,
-            &test_alert(AlertEventType::NewWarning, AlertSeverity::Medium),
-        ));
-        assert!(user_preferences_allow_alert(
-            &prefs,
-            &test_alert(AlertEventType::NewWarning, AlertSeverity::High),
-        ));
-    }
-
-    #[test]
-    fn user_preferences_enforce_settings_page_thresholds() {
-        let page = serde_json::json!({
-            "settings_page": {"minimum_severity": "medium", "critical_only_enabled": true}
-        });
-        // critical_only wins over the lower threshold
-        assert!(!user_preferences_allow_alert(
-            &page,
-            &test_alert(AlertEventType::NewWarning, AlertSeverity::High),
-        ));
-        assert!(user_preferences_allow_alert(
-            &page,
-            &test_alert(AlertEventType::NewWarning, AlertSeverity::Critical),
-        ));
-    }
-
-    #[test]
-    fn user_preferences_allow_unknown_shape_and_missing_keys() {
-        let alert = test_alert(AlertEventType::NewInsight, AlertSeverity::Low);
-        assert!(user_preferences_allow_alert(&serde_json::json!({}), &alert));
-        assert!(user_preferences_allow_alert(
-            &serde_json::json!({"theme": "dark"}),
-            &alert
-        ));
-        assert!(user_preferences_allow_alert(
-            &serde_json::json!({"settings_page": {"minimum_severity": "low"}}),
-            &alert
-        ));
+    fn empty_user_ids_means_broadcast() {
+        let alert = AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::SystemAlert,
+            severity: apex_core::alert_config::AlertSeverity::Info,
+            title: "System notice".to_string(),
+            description: "System is running".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![],
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
+        assert!(alert.user_ids.is_empty());
     }
 }

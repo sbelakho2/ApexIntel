@@ -44,6 +44,192 @@ async fn column_exists(pool: &sqlx::PgPool, table: &str, column: &str) -> bool {
     .unwrap()
 }
 
+fn with_database(url: &str, database: &str) -> String {
+    let (prefix, rest) = url.rsplit_once('/').expect("database URL must contain '/'");
+    let query = rest.find('?').map(|index| &rest[index..]).unwrap_or("");
+    format!("{prefix}/{database}{query}")
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn production_schema_snapshot_upgrades_to_head() {
+    // P0 upgrade contract: a deployed production database (schema snapshot at
+    // revision 045, sanitised and committed under tests/fixtures) must upgrade
+    // cleanly when the migrator runs. Only the still-pending migrations may
+    // apply; already-applied revisions are validated by checksum.
+    let base_url = std::env::var("TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .expect("TEST_DATABASE_URL or DATABASE_URL must be set");
+
+    let scratch_db = format!("apex_upgrade_{}", uuid::Uuid::new_v4().simple());
+    let admin_url = with_database(&base_url, "postgres");
+    let scratch_url = with_database(&base_url, &scratch_db);
+
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&admin_url)
+        .await
+        .expect("connect to postgres maintenance database");
+    sqlx::query(&format!("CREATE DATABASE \"{scratch_db}\""))
+        .execute(&admin)
+        .await
+        .expect("create scratch upgrade database (user needs CREATEDB)");
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&scratch_url)
+        .await
+        .expect("connect to scratch upgrade database");
+
+    // ── Restore the sanitised production-schema snapshot ──────────────────
+    // `pg_dump` embeds `SELECT set_config('search_path', '', false)`, which is
+    // session-scoped; run the reset in the same script so the pooled connection
+    // stays usable for the migrator's unqualified `_sqlx_migrations` queries.
+    let fixture = include_str!("fixtures/production_schema_045.sql");
+    let restore_script = format!("{fixture}\nSET search_path = public;\n");
+    sqlx::raw_sql(&restore_script)
+        .execute(&pool)
+        .await
+        .expect("restore production schema snapshot");
+
+    let applied_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM public._sqlx_migrations WHERE success")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        applied_before >= 40,
+        "snapshot must carry the production migration history, got {applied_before}"
+    );
+
+    let migrator = sqlx::migrate!("../../migrations");
+    let head_version = migrator
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .expect("at least one embedded migration");
+    let head_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM public._sqlx_migrations WHERE version = $1")
+            .bind(head_version)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        head_before, 0,
+        "the snapshot must predate the pending head migration ({head_version})"
+    );
+
+    // Plant a row carrying one of the deterministic fixture IDs that the head
+    // migration removes, so the upgrade must actually change data (not just the
+    // bookkeeping table) for the assertions below to pass.
+    sqlx::query(
+        "INSERT INTO public.critical_threats
+             (id, title, description, threat_type, severity, impact_score,
+              confidence, region, sla_deadline, status)
+         VALUES ('22222222-2222-2222-2222-222222222201', 'upgrade probe',
+                 'inserted by production_schema_snapshot_upgrades_to_head',
+                 'supply_chain', 'critical', 0.5, 0.5, 'GLOBAL', NULL, 'active')",
+    )
+    .execute(&pool)
+    .await
+    .expect("plant the fixture-ID probe row");
+    let probe_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM public.critical_threats WHERE id = $1::uuid")
+            .bind("22222222-2222-2222-2222-222222222201")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(probe_before, 1, "probe row must exist before the upgrade");
+
+    // ── Upgrade: validates checksums and applies the pending migration(s) ──
+    migrator
+        .run(&pool)
+        .await
+        .expect("snapshot upgrades to head");
+
+    let applied_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM public._sqlx_migrations WHERE success")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        applied_after > applied_before,
+        "upgrade must apply at least one pending migration ({applied_before} -> {applied_after})"
+    );
+    let highest_applied: i64 =
+        sqlx::query_scalar("SELECT MAX(version) FROM public._sqlx_migrations WHERE success")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        highest_applied, head_version,
+        "the migrator must reach the embedded head version"
+    );
+
+    // ── The upgrade deleted the fixture-ID probe row ──────────────────────
+    let probe_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM public.critical_threats WHERE id = $1::uuid")
+            .bind("22222222-2222-2222-2222-222222222201")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        probe_after, 0,
+        "the head migration must remove deterministic fixture intelligence"
+    );
+
+    // ── Schema contract survives the upgrade ──────────────────────────────
+    for table in [
+        "companies",
+        "warnings",
+        "insights",
+        "sources",
+        "triage_queue",
+    ] {
+        assert!(table_exists(&pool, table).await, "missing table {table}");
+    }
+    for (table, column) in [
+        ("companies", "tech_stack"),
+        ("companies", "intent_signal_score"),
+        ("engagement_profiles", "metadata"),
+        ("buying_center_members", "influence_score"),
+    ] {
+        assert!(
+            column_exists(&pool, table, column).await,
+            "missing column {table}.{column}"
+        );
+    }
+
+    // The upgraded schema contains no deterministic fixture intelligence.
+    for (table, prefix) in [
+        (
+            "strategic_opportunities",
+            "11111111-1111-1111-1111-1111111111",
+        ),
+        ("critical_threats", "22222222-2222-2222-2222-2222222222"),
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM public.{table} WHERE id::text LIKE $1 || '%'"
+        ))
+        .bind(prefix)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "{table} contains fixture rows after upgrade");
+    }
+
+    pool.close().await;
+
+    // ── Cleanup scratch database ──────────────────────────────────────────
+    sqlx::query(&format!(
+        "DROP DATABASE IF EXISTS \"{scratch_db}\" WITH (FORCE)"
+    ))
+    .execute(&admin)
+    .await
+    .expect("drop scratch upgrade database");
+    admin.close().await;
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
 async fn migrations_apply_cleanly_to_a_fresh_database() {

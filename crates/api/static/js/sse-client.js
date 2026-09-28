@@ -258,12 +258,8 @@ class ApexIntelSSE {
       const notification = new Notification(title, options);
       notification.onclick = () => {
         window.focus();
-        // The alert wire carries the warning id in metadata; the old
-        // `alert.entity_id` field no longer exists (alerts now carry
-        // `entity_ids`, which are entity UUIDs, not warning ids).
-        const warningId = alert.metadata && alert.metadata.warning_id;
-        if (typeof warningId === 'string' && warningId) {
-          window.location.href = `/warnings/${warningId}`;
+        if (alert.entity_id) {
+          window.location.href = `/warnings/${alert.entity_id}`;
         } else {
           window.location.href = '/warnings';
         }
@@ -383,5 +379,13 @@ class ApexIntelSSE {
 
   sse.on('system_alert', (data) => {
     sse.showToast(data);
+  });
+
+  // The server emits `resync` when a reconnect cursor fell outside the replay
+  // window (events were missed). Incrementally updated UI state cannot be
+  // trusted at that point: listeners refetch canonical state from the REST
+  // endpoints instead (`apex:sse-resync` is handled by app.js).
+  sse.on('resync', (data) => {
+    document.dispatchEvent(new CustomEvent('apex:sse-resync', { detail: data }));
   });
 })();

@@ -1348,7 +1348,11 @@ fn base_output(
         impact,
         actions,
         limitations,
-        evidence_quality: assess_bundle_quality(&context.bundle, &context.warning.title, Utc::now()),
+        evidence_quality: assess_bundle_quality(
+            &context.bundle,
+            &context.warning.title,
+            Utc::now(),
+        ),
         warning_source_count: context
             .warning
             .source_urls

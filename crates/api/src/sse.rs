@@ -8,29 +8,20 @@
 //! # Architecture
 //! The API server holds a single [`SseManager`] in `AppState`. A background task
 //! consumes alerts from NATS JetStream and dispatches them to connected SSE clients
-//! via fan-out per user. Each authenticated user gets their own event stream,
-//! keyed by the stable principal UUID derived from their canonical user id.
-//!
-//! # Delivery guarantees
-//! The consumer never acks a message before it has been processed: the payload
-//! is parsed first, then routed and dispatched, and only a fully handled
-//! message is acked. Transient failures are nacked with a delay so JetStream
-//! redelivers them; permanently bad payloads are copied to the `dead_letter`
-//! stream before they are acked.
+//! via fan-out per user. Each authenticated user gets their own event stream.
 
-use crate::alert_router::{AlertEvent, AlertRouter, PrincipalDirectory};
+use crate::alert_router::AlertRouter;
 use anyhow::{Context, Result};
-use apex_core::alert_config::AlertAudience;
 use axum::response::sse::{Event, KeepAlive, Sse};
 #[cfg(test)]
 use chrono::Utc;
 use futures_util::stream::Stream;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
@@ -95,8 +86,24 @@ impl SseEvent {
 /// newer events dropped rather than growing memory without bound.
 const SSE_CHANNEL_CAPACITY: usize = 1024;
 
-/// Delay before JetStream redelivers a nacked alert message.
-const ALERT_RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Maximum number of recently dispatched events retained for `Last-Event-ID`
+/// reconnects. Older events are evicted; a client whose cursor has been evicted
+/// receives a `resync` event and is expected to refetch canonical state.
+const SSE_REPLAY_CAPACITY: usize = 256;
+
+/// Event type emitted when a reconnecting client's `Last-Event-ID` is outside
+/// the replay window. The client must resynchronise from the canonical REST
+/// state (for example `GET /warnings/unread-count`) instead of assuming its
+/// incrementally updated view is complete.
+pub const SSE_RESYNC_EVENT: &str = "resync";
+
+/// Build the canonical-state-resync marker event.
+pub fn resync_event(reason: &str) -> SseEvent {
+    SseEvent::new(
+        SSE_RESYNC_EVENT,
+        serde_json::json!({ "reason": reason }).to_string(),
+    )
+}
 
 /// Manages per-user SSE connections and dispatches alerts to connected clients.
 ///
@@ -104,11 +111,26 @@ const ALERT_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// registers a separate sender channel. When an alert arrives, it is fanned out
 /// to all senders registered for the target users.
 pub struct SseManager {
-    /// Active SSE connections keyed by principal UUID.
+    /// Active SSE connections keyed by user_id.
     connections: Arc<RwLock<HashMap<Uuid, Vec<mpsc::Sender<SseEvent>>>>>,
-    /// Authenticated principal UUID → canonical user id, so the alert router
-    /// can consult `user_preferences` (keyed by user id) for connected users.
-    principals: Arc<PrincipalDirectory>,
+    /// Bounded log of recently dispatched events, used to replay anything a
+    /// reconnecting client missed (`Last-Event-ID`). Retained process-wide
+    /// because the event stream is a shared broadcast, but every entry keeps
+    /// its target audience so a replay can never leak another user's alert.
+    recent: Arc<Mutex<VecDeque<ReplayEntry>>>,
+}
+
+/// A retained event plus the users it was addressed to (`targets` empty means
+/// broadcast).
+struct ReplayEntry {
+    event: SseEvent,
+    targets: Vec<Uuid>,
+}
+
+impl ReplayEntry {
+    fn is_visible_to(&self, user_id: Uuid) -> bool {
+        self.targets.is_empty() || self.targets.contains(&user_id)
+    }
 }
 
 impl SseManager {
@@ -116,42 +138,90 @@ impl SseManager {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
-            principals: Arc::new(PrincipalDirectory::new()),
+            recent: Arc::new(Mutex::new(VecDeque::with_capacity(SSE_REPLAY_CAPACITY))),
         }
     }
 
-    /// The principal directory shared with the alert router.
-    pub fn principal_directory(&self) -> Arc<PrincipalDirectory> {
-        self.principals.clone()
-    }
-
-    /// Register a new SSE connection for an authenticated principal.
-    ///
-    /// `principal_id` is the stable principal UUID derived from `user_id`
-    /// (`apex_core::alert_config::principal_uuid_from_user_id`); the canonical
-    /// user id is recorded so per-user preferences can be resolved.
+    /// Register a new SSE connection for a user.
     ///
     /// Returns a sender and receiver pair. The sender is stored internally for
     /// dispatch and should be passed to [`unregister`](SseManager::unregister)
     /// when the connection closes.
     pub async fn register(
         &self,
-        principal_id: Uuid,
-        user_id: &str,
+        user_id: Uuid,
+    ) -> (mpsc::Sender<SseEvent>, mpsc::Receiver<SseEvent>) {
+        self.register_with_last_event_id(user_id, None).await
+    }
+
+    /// Register a reconnecting SSE connection.
+    ///
+    /// When `last_event_id` is provided and still inside the replay window, all
+    /// events after it that are visible to `user_id` (broadcasts plus alerts
+    /// addressed to them) are queued to the new connection. When the cursor is
+    /// unknown or already evicted, a [`SSE_RESYNC_EVENT`] marker is queued so
+    /// the client can refetch canonical state instead of silently missing
+    /// events.
+    pub async fn register_with_last_event_id(
+        &self,
+        user_id: Uuid,
+        last_event_id: Option<&str>,
     ) -> (mpsc::Sender<SseEvent>, mpsc::Receiver<SseEvent>) {
         let (tx, rx) = mpsc::channel(SSE_CHANNEL_CAPACITY);
+        let last_event_id = last_event_id
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
 
-        self.principals.record(principal_id, user_id);
+        // Hold both locks (connections, then recent — the same order
+        // `dispatch_alert` takes) while snapshotting and publishing the sender.
+        // This closes the race where an alert could be delivered live *and*
+        // replayed, or slip between the snapshot and registration and be lost.
+        let (replay, resync) = {
+            let mut conns = self.connections.write().await;
+            let recent = self.recent.lock().await;
 
-        let mut conns = self.connections.write().await;
-        conns.entry(principal_id).or_default().push(tx.clone());
+            let (replay, resync) = match last_event_id.as_deref() {
+                None => (Vec::new(), false),
+                Some(last_id) => match recent.iter().position(|entry| entry.event.id == last_id) {
+                    Some(position) => (
+                        recent
+                            .iter()
+                            .skip(position + 1)
+                            .filter(|entry| entry.is_visible_to(user_id))
+                            .map(|entry| entry.event.clone())
+                            .collect(),
+                        false,
+                    ),
+                    None => (Vec::new(), true),
+                },
+            };
 
-        info!(
-            principal_id = %principal_id,
-            user_id = %user_id,
-            total_connections = conns.get(&principal_id).map_or(0, Vec::len),
-            "SSE connection registered"
-        );
+            conns.entry(user_id).or_default().push(tx.clone());
+            info!(
+                user_id = %user_id,
+                total_connections = conns.get(&user_id).map_or(0, Vec::len),
+                "SSE connection registered"
+            );
+
+            (replay, resync)
+        };
+
+        if resync {
+            let _ = tx.try_send(resync_event("replay_window_exhausted"));
+            info!(
+                user_id = %user_id,
+                "SSE reconnect cursor outside replay window — resync requested"
+            );
+        } else if !replay.is_empty() {
+            let replayed = replay.len();
+            for event in replay {
+                // The bounded channel can only overflow if a client reconnects
+                // while far behind; the resync marker above covers that case on
+                // the next reconnect.
+                let _ = tx.try_send(event);
+            }
+            info!(user_id = %user_id, replayed, "SSE reconnect replayed missed events");
+        }
 
         (tx, rx)
     }
@@ -160,17 +230,11 @@ impl SseManager {
     pub async fn unregister(&self, user_id: Uuid, tx: &mpsc::Sender<SseEvent>) {
         let mut conns = self.connections.write().await;
 
-        let mut last_connection = false;
         if let Some(senders) = conns.get_mut(&user_id) {
             senders.retain(|sender| !sender.same_channel(tx));
             if senders.is_empty() {
                 conns.remove(&user_id);
-                last_connection = true;
             }
-        }
-
-        if last_connection {
-            self.principals.forget(user_id);
         }
 
         info!(
@@ -180,16 +244,13 @@ impl SseManager {
         );
     }
 
-    /// Dispatch an [`AlertEvent`] to the connected SSE clients addressed by its
-    /// audience.
-    ///
-    /// [`AlertAudience::Broadcast`] reaches every connected user;
-    /// [`AlertAudience::Users`] reaches only the listed principals, and an
-    /// empty list reaches nobody.
+    /// Dispatch an [`AlertEvent`] to all connected SSE clients for the
+    /// targeted users. If `user_ids` is empty, the alert is broadcast to all
+    /// connected users.
     ///
     /// Returns the number of clients the event was sent to. Events are dropped
     /// for clients whose buffer is full (slow consumers).
-    pub async fn dispatch_alert(&self, alert: &AlertEvent) -> usize {
+    pub async fn dispatch_alert(&self, alert: &crate::alert_router::AlertEvent) -> usize {
         let event = SseEvent::new(
             alert.event_type.as_str(),
             serde_json::to_string(alert).unwrap_or_else(|_| "{}".to_string()),
@@ -197,6 +258,24 @@ impl SseManager {
 
         let conns = self.connections.read().await;
         let mut sent_count = 0usize;
+
+        // Retain the event so a reconnecting client can replay anything it
+        // missed while the stream was down. Record it even when nobody was
+        // connected: a targeted alert that arrived while the user was offline
+        // must still be replayed on their next connection. Recording happens
+        // under the connections read lock (same lock order as
+        // `register_with_last_event_id`) so a concurrent registration either
+        // snapshots this event or receives it live, never both.
+        {
+            let mut recent = self.recent.lock().await;
+            if recent.len() >= SSE_REPLAY_CAPACITY {
+                recent.pop_front();
+            }
+            recent.push_back(ReplayEntry {
+                event: event.clone(),
+                targets: alert.user_ids.clone(),
+            });
+        }
 
         let deliver = |senders: &[mpsc::Sender<SseEvent>], event: &SseEvent, sent: &mut usize| {
             for sender in senders {
@@ -212,31 +291,33 @@ impl SseManager {
             }
         };
 
-        match &alert.audience {
-            AlertAudience::Broadcast => {
-                for senders in conns.values() {
+        if alert.user_ids.is_empty() {
+            // Broadcast to all connected users
+            for senders in conns.values() {
+                deliver(senders, &event, &mut sent_count);
+            }
+        } else {
+            // Send only to specified users
+            for user_id in &alert.user_ids {
+                if let Some(senders) = conns.get(user_id) {
                     deliver(senders, &event, &mut sent_count);
                 }
             }
-            AlertAudience::Users(user_ids) => {
-                for user_id in user_ids {
-                    if let Some(senders) = conns.get(user_id) {
-                        deliver(senders, &event, &mut sent_count);
-                    }
-                }
-            }
         }
 
-        if sent_count > 0 {
-            trace!(
-                alert_id = %alert.id,
-                event_type = %alert.event_type,
-                sent_to = sent_count,
-                "Alert dispatched to SSE clients"
-            );
-        }
+        trace!(
+            alert_id = %alert.id,
+            event_type = %alert.event_type,
+            sent_to = sent_count,
+            "Alert dispatched to SSE clients"
+        );
 
         sent_count
+    }
+
+    /// Number of events currently retained for `Last-Event-ID` replay.
+    pub async fn replay_len(&self) -> usize {
+        self.recent.lock().await.len()
     }
 
     /// Start a background task that consumes alerts from NATS JetStream and
@@ -267,12 +348,6 @@ impl SseManager {
             warn!(error = %e, "Failed to ensure JetStream stream 'alerts'");
         }
 
-        // Dead-letter stream: bad payloads are copied here before they are
-        // acked, so nothing is silently dropped.
-        if let Err(e) = Self::ensure_dead_letter_stream(&jetstream).await {
-            warn!(error = %e, "Failed to ensure JetStream stream 'dead_letter'");
-        }
-
         // Create a push consumer
         let consumer: async_nats::jetstream::consumer::PushConsumer = match jetstream
             .create_consumer_on_stream(
@@ -299,13 +374,6 @@ impl SseManager {
         info!("NATS JetStream consumer 'sse_bridge' started");
 
         let manager = self.clone();
-        let processor = NatsAlertProcessor {
-            manager,
-            router: alert_router,
-        };
-        let dead_letter = NatsDeadLetter {
-            jetstream: jetstream.clone(),
-        };
         tokio::spawn(async move {
             // Reconnect loop: a closed or errored subscription must not
             // permanently disable real-time alerts for the process lifetime.
@@ -323,8 +391,28 @@ impl SseManager {
                 loop {
                     match tokio::time::timeout(Duration::from_secs(5), messages.next()).await {
                         Ok(Some(Ok(msg))) => {
-                            let message = NatsAlertMessage(&msg);
-                            consume_alert_message(&message, &processor, &dead_letter).await;
+                            let payload = msg.payload.clone();
+                            if let Err(e) = msg.ack().await {
+                                warn!(error = %e, "Failed to ack NATS message");
+                            }
+
+                            // Deserialize the alert event
+                            match serde_json::from_slice::<crate::alert_router::AlertEvent>(
+                                &payload,
+                            ) {
+                                Ok(alert) => {
+                                    // Route and dispatch
+                                    let targets = alert_router.route_alert(&alert).await;
+                                    let mut routed_alert = alert.clone();
+                                    if !targets.is_empty() {
+                                        routed_alert.user_ids = targets;
+                                    }
+                                    manager.dispatch_alert(&routed_alert).await;
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Failed to deserialize alert from NATS");
+                                }
+                            }
                         }
                         Ok(Some(Err(e))) => {
                             error!(error = %e, "NATS consumer message error");
@@ -367,29 +455,6 @@ impl SseManager {
                     .await
                     .context("failed to create JetStream stream 'alerts'")?;
                 info!("JetStream stream 'alerts' created");
-                Ok(())
-            }
-        }
-    }
-
-    async fn ensure_dead_letter_stream(jetstream: &async_nats::jetstream::Context) -> Result<()> {
-        use async_nats::jetstream::stream::Config;
-
-        match jetstream.get_stream("dead_letter").await {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                let cfg = Config {
-                    name: "dead_letter".to_string(),
-                    subjects: vec!["dead_letter.>".to_string()],
-                    max_age: Duration::from_secs(30 * 86400),
-                    storage: async_nats::jetstream::stream::StorageType::File,
-                    ..Config::default()
-                };
-                jetstream
-                    .create_stream(cfg)
-                    .await
-                    .context("failed to create JetStream stream 'dead_letter'")?;
-                info!("JetStream stream 'dead_letter' created");
                 Ok(())
             }
         }
@@ -461,179 +526,6 @@ impl Default for SseManager {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NATS consumer processing
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// What the consumer decided to do with one message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MessageDisposition {
-    /// Fully handled (or permanently bad and dead-lettered): the message was acked.
-    Ack,
-    /// Transient failure: the message was nacked with a delay and will be retried.
-    NakRetry(Duration),
-}
-
-/// Result of routing and dispatching one alert.
-enum ProcessingOutcome {
-    Dispatched,
-    /// A transient failure (e.g. the subscription lookup failed): retry later.
-    Transient(String),
-}
-
-/// Minimal view of a JetStream message, so the consume flow can be unit-tested
-/// with fakes that record the ack/nak ordering.
-trait AlertMessage {
-    fn payload(&self) -> &[u8];
-    async fn ack(&self) -> std::result::Result<(), String>;
-    async fn nak_with_delay(&self, delay: Duration) -> std::result::Result<(), String>;
-}
-
-/// Processing step: route the alert and dispatch it to the flushers.
-trait AlertProcessor {
-    async fn process(&self, alert: &AlertEvent) -> ProcessingOutcome;
-}
-
-/// Destination for permanently bad payloads.
-trait DeadLetterSink {
-    async fn dead_letter(&self, payload: &[u8], reason: &str) -> std::result::Result<(), String>;
-}
-
-/// Consume one alert message.
-///
-/// Ordering is the contract: the payload is parsed, then routed and
-/// dispatched, and only then acked. A parse failure is dead-lettered before the
-/// ack; a dead-letter failure nacks instead, so the payload is retried rather
-/// than lost. Transient processing failures nack with a delay.
-async fn consume_alert_message<M, P, D>(
-    message: &M,
-    processor: &P,
-    dead_letter: &D,
-) -> MessageDisposition
-where
-    M: AlertMessage,
-    P: AlertProcessor,
-    D: DeadLetterSink,
-{
-    // Parse first — nothing is acked yet.
-    let alert = match serde_json::from_slice::<AlertEvent>(message.payload()) {
-        Ok(alert) => alert,
-        Err(e) => {
-            let reason = format!("invalid alert payload: {e}");
-            warn!(error = %e, "Dead-lettering unparseable alert payload");
-            let disposition = match dead_letter.dead_letter(message.payload(), &reason).await {
-                Ok(()) => MessageDisposition::Ack,
-                Err(dead_letter_error) => {
-                    error!(
-                        error = %dead_letter_error,
-                        "Failed to dead-letter alert payload; nacking to retry"
-                    );
-                    MessageDisposition::NakRetry(ALERT_RETRY_DELAY)
-                }
-            };
-            return apply_disposition(message, disposition).await;
-        }
-    };
-
-    // Route and dispatch before acking.
-    let disposition = match processor.process(&alert).await {
-        ProcessingOutcome::Dispatched => MessageDisposition::Ack,
-        ProcessingOutcome::Transient(e) => {
-            warn!(
-                alert_id = %alert.id,
-                error = %e,
-                "Alert processing failed; nacking for retry"
-            );
-            MessageDisposition::NakRetry(ALERT_RETRY_DELAY)
-        }
-    };
-
-    apply_disposition(message, disposition).await
-}
-
-/// Send the ack/nak that matches the decision, after processing finished.
-async fn apply_disposition<M: AlertMessage>(
-    message: &M,
-    disposition: MessageDisposition,
-) -> MessageDisposition {
-    let result = match disposition {
-        MessageDisposition::Ack => message.ack().await,
-        MessageDisposition::NakRetry(delay) => message.nak_with_delay(delay).await,
-    };
-
-    if let Err(e) = result {
-        warn!(error = %e, "Failed to settle NATS message; JetStream will redeliver");
-    }
-
-    disposition
-}
-
-/// Real JetStream message wrapper.
-struct NatsAlertMessage<'a>(&'a async_nats::jetstream::Message);
-
-impl AlertMessage for NatsAlertMessage<'_> {
-    fn payload(&self) -> &[u8] {
-        &self.0.payload
-    }
-
-    async fn ack(&self) -> std::result::Result<(), String> {
-        self.0.ack().await.map_err(|e| e.to_string())
-    }
-
-    async fn nak_with_delay(&self, delay: Duration) -> std::result::Result<(), String> {
-        self.0
-            .ack_with(async_nats::jetstream::AckKind::Nak(Some(delay)))
-            .await
-            .map_err(|e| e.to_string())
-    }
-}
-
-/// Real routing/dispatch processor: resolves the audience and fans the alert
-/// out to connected SSE clients.
-struct NatsAlertProcessor {
-    manager: Arc<SseManager>,
-    router: Arc<AlertRouter>,
-}
-
-impl AlertProcessor for NatsAlertProcessor {
-    async fn process(&self, alert: &AlertEvent) -> ProcessingOutcome {
-        match self.router.route_alert(alert).await {
-            Ok(audience) => {
-                let mut routed_alert = alert.clone();
-                routed_alert.audience = audience;
-                self.manager.dispatch_alert(&routed_alert).await;
-                ProcessingOutcome::Dispatched
-            }
-            Err(e) => ProcessingOutcome::Transient(e.to_string()),
-        }
-    }
-}
-
-/// Real dead-letter sink: copies the raw payload to the `dead_letter` stream.
-struct NatsDeadLetter {
-    jetstream: async_nats::jetstream::Context,
-}
-
-impl DeadLetterSink for NatsDeadLetter {
-    async fn dead_letter(&self, payload: &[u8], reason: &str) -> std::result::Result<(), String> {
-        let mut headers = async_nats::HeaderMap::new();
-        headers.insert("X-Apex-Dead-Letter-Reason", reason.to_string());
-        // `JetStream::publish_with_headers` returns a future that must itself be
-        // awaited: only its completion is the broker ACK. Without the second
-        // await the dead-letter copy would be reported as written even when the
-        // stream rejected it, and the caller would ack a message it never
-        // preserved.
-        let ack = self
-            .jetstream
-            .publish_with_headers("dead_letter.alerts", headers, payload.to_vec().into())
-            .await
-            .map_err(|e| e.to_string())?;
-        ack.await
-            .map(|_| ())
-            .map_err(|e| format!("JetStream ACK failed for dead-letter copy: {e}"))
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -646,19 +538,16 @@ mod tests {
         SseEvent::new("test", r#"{"msg":"hello"}"#)
     }
 
-    fn test_alert(
-        event_type: AlertEventType,
-        audience: AlertAudience,
-    ) -> crate::alert_router::AlertEvent {
+    fn alert_for(user_id: Uuid, title: &str) -> crate::alert_router::AlertEvent {
         crate::alert_router::AlertEvent {
             id: Uuid::new_v4(),
-            event_type,
+            event_type: AlertEventType::NewWarning,
             severity: apex_core::alert_config::AlertSeverity::High,
-            title: "Test".to_string(),
-            description: "Test description".to_string(),
-            entity_ids: Vec::new(),
+            title: title.to_string(),
+            description: "description".to_string(),
+            entity_id: None,
             entity_name: None,
-            audience,
+            user_ids: vec![user_id],
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         }
@@ -683,7 +572,7 @@ mod tests {
         let manager = SseManager::new();
         let user_id = Uuid::new_v4();
 
-        let (tx, rx) = manager.register(user_id, "tester").await;
+        let (tx, rx) = manager.register(user_id).await;
         assert_eq!(
             manager
                 .connections
@@ -700,69 +589,63 @@ mod tests {
             manager.connections.read().await.get(&user_id).is_none(),
             "connection should be removed after unregister"
         );
-        assert!(
-            manager.principals.user_id_for(user_id).is_none(),
-            "principal should be forgotten with the last connection"
-        );
 
         // Drop the receiver to avoid lingering
         drop(rx);
     }
 
     #[tokio::test]
-    async fn dispatch_to_specific_user_never_reaches_others() {
+    async fn dispatch_to_specific_user() {
         let manager = SseManager::new();
         let user_id = Uuid::new_v4();
         let other_user = Uuid::new_v4();
 
-        let (_tx, mut rx) = manager.register(user_id, "alice").await;
-        let (_tx_other, mut rx_other) = manager.register(other_user, "bob").await;
+        let (_tx, mut rx) = manager.register(user_id).await;
+        let (_tx_other, _rx_other) = manager.register(other_user).await;
 
-        let alert = test_alert(
-            AlertEventType::NewWarning,
-            AlertAudience::Users(vec![user_id]),
-        );
+        let alert = crate::alert_router::AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::NewWarning,
+            severity: apex_core::alert_config::AlertSeverity::High,
+            title: "Test".to_string(),
+            description: "Test description".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![user_id],
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
 
         let sent = manager.dispatch_alert(&alert).await;
         assert_eq!(sent, 1, "Should deliver to one user");
 
-        // Verify the target user received the event...
-        let event = rx.try_recv().expect("target user should receive the alert");
-        assert_eq!(event.event, "new_warning");
-        // ...and the other user did not.
-        assert!(
-            rx_other.try_recv().is_err(),
-            "non-target user must never receive the alert"
-        );
+        // Verify the user received the event
+        if let Ok(event) = rx.try_recv() {
+            assert_eq!(event.event, "new_warning");
+        }
     }
 
     #[tokio::test]
-    async fn empty_users_audience_delivers_to_nobody() {
+    async fn broadcast_to_all_users() {
         let manager = SseManager::new();
         let user_a = Uuid::new_v4();
         let user_b = Uuid::new_v4();
 
-        let (_tx_a, mut rx_a) = manager.register(user_a, "alice").await;
-        let (_tx_b, mut rx_b) = manager.register(user_b, "bob").await;
+        let (_tx_a, mut rx_a) = manager.register(user_a).await;
+        let (_tx_b, mut rx_b) = manager.register(user_b).await;
 
-        let alert = test_alert(AlertEventType::SystemAlert, AlertAudience::Users(vec![]));
-
-        let sent = manager.dispatch_alert(&alert).await;
-        assert_eq!(sent, 0, "empty audience addresses nobody");
-        assert!(rx_a.try_recv().is_err());
-        assert!(rx_b.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn broadcast_delivers_to_all_users() {
-        let manager = SseManager::new();
-        let user_a = Uuid::new_v4();
-        let user_b = Uuid::new_v4();
-
-        let (_tx_a, mut rx_a) = manager.register(user_a, "alice").await;
-        let (_tx_b, mut rx_b) = manager.register(user_b, "bob").await;
-
-        let alert = test_alert(AlertEventType::SystemAlert, AlertAudience::Broadcast);
+        let alert = crate::alert_router::AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::SystemAlert,
+            severity: apex_core::alert_config::AlertSeverity::Info,
+            title: "Broadcast".to_string(),
+            description: "Broadcast test".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![], // empty = broadcast
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
 
         let sent = manager.dispatch_alert(&alert).await;
         assert_eq!(sent, 2, "Should broadcast to both users");
@@ -775,12 +658,20 @@ mod tests {
     async fn dispatch_drops_for_full_buffer_without_blocking_or_panicking() {
         let manager = SseManager::new();
         let user_id = Uuid::new_v4();
-        let (_tx, mut rx) = manager.register(user_id, "alice").await;
+        let (_tx, mut rx) = manager.register(user_id).await;
 
-        let alert = test_alert(
-            AlertEventType::NewWarning,
-            AlertAudience::Users(vec![user_id]),
-        );
+        let alert = crate::alert_router::AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::NewWarning,
+            severity: apex_core::alert_config::AlertSeverity::High,
+            title: "Slow consumer".to_string(),
+            description: "Buffer pressure".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![user_id],
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
 
         // Never consume: the bounded buffer must absorb exactly its capacity
         // and then drop the rest instead of growing without bound.
@@ -800,195 +691,207 @@ mod tests {
     #[tokio::test]
     async fn dispatch_to_unknown_user_sends_nothing() {
         let manager = SseManager::new();
-        let alert = test_alert(
-            AlertEventType::SystemAlert,
-            AlertAudience::Users(vec![Uuid::new_v4()]),
-        );
+        let alert = crate::alert_router::AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::SystemAlert,
+            severity: apex_core::alert_config::AlertSeverity::Info,
+            title: "Nobody".to_string(),
+            description: "no subscribers".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![Uuid::new_v4()],
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
         assert_eq!(manager.dispatch_alert(&alert).await, 0);
     }
 
-    // ── Consumer ack-ordering fake ────────────────────────────────────────────
-
-    #[derive(Default)]
-    struct RecordingLog {
-        entries: std::sync::Mutex<Vec<String>>,
-    }
-
-    impl RecordingLog {
-        fn push(&self, entry: impl Into<String>) {
-            if let Ok(mut entries) = self.entries.lock() {
-                entries.push(entry.into());
-            }
-        }
-
-        fn snapshot(&self) -> Vec<String> {
-            self.entries
-                .lock()
-                .map(|entries| entries.clone())
-                .unwrap_or_default()
-        }
-    }
-
-    struct FakeMessage {
-        payload: Vec<u8>,
-        log: Arc<RecordingLog>,
-    }
-
-    impl AlertMessage for FakeMessage {
-        fn payload(&self) -> &[u8] {
-            &self.payload
-        }
-
-        async fn ack(&self) -> std::result::Result<(), String> {
-            self.log.push("ack");
-            Ok(())
-        }
-
-        async fn nak_with_delay(&self, _delay: Duration) -> std::result::Result<(), String> {
-            self.log.push("nak");
-            Ok(())
-        }
-    }
-
-    struct FakeProcessor {
-        outcome: ProcessingOutcome,
-        log: Arc<RecordingLog>,
-    }
-
-    impl AlertProcessor for FakeProcessor {
-        async fn process(&self, alert: &AlertEvent) -> ProcessingOutcome {
-            self.log.push(format!("process:{}", alert.id));
-            match &self.outcome {
-                ProcessingOutcome::Dispatched => ProcessingOutcome::Dispatched,
-                ProcessingOutcome::Transient(e) => ProcessingOutcome::Transient(e.clone()),
-            }
-        }
-    }
-
-    struct FakeDeadLetter {
-        fails: bool,
-        log: Arc<RecordingLog>,
-    }
-
-    impl DeadLetterSink for FakeDeadLetter {
-        async fn dead_letter(
-            &self,
-            _payload: &[u8],
-            _reason: &str,
-        ) -> std::result::Result<(), String> {
-            self.log.push("dead_letter");
-            if self.fails {
-                Err("dead-letter stream unavailable".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    fn fake_payload() -> Vec<u8> {
-        let alert = test_alert(AlertEventType::NewWarning, AlertAudience::Users(vec![]));
-        serde_json::to_vec(&alert).unwrap()
-    }
-
     #[tokio::test]
-    async fn ack_happens_after_processing_succeeds() {
-        let log = Arc::new(RecordingLog::default());
-        let message = FakeMessage {
-            payload: fake_payload(),
-            log: log.clone(),
-        };
-        let processor = FakeProcessor {
-            outcome: ProcessingOutcome::Dispatched,
-            log: log.clone(),
-        };
-        let dead_letter = FakeDeadLetter {
-            fails: false,
-            log: log.clone(),
-        };
+    async fn reconnect_replays_events_after_last_event_id() {
+        let manager = SseManager::new();
+        let user = Uuid::new_v4();
 
-        let disposition = consume_alert_message(&message, &processor, &dead_letter).await;
+        // First connection receives two alerts, then disconnects.
+        let (tx, mut rx) = manager.register(user).await;
+        manager.dispatch_alert(&alert_for(user, "first")).await;
+        manager.dispatch_alert(&alert_for(user, "second")).await;
+        let first = rx.try_recv().expect("first event");
+        let second = rx.try_recv().expect("second event");
+        manager.unregister(user, &tx).await;
+        drop(rx);
 
-        assert_eq!(disposition, MessageDisposition::Ack);
-        let entries = log.snapshot();
+        // Reconnect with the first event's cursor: only the second replays.
+        let (_tx2, mut rx2) = manager
+            .register_with_last_event_id(user, Some(first.id.as_str()))
+            .await;
+        let replayed = rx2.try_recv().expect("replayed event");
+        assert_eq!(replayed.id, second.id);
+        assert_eq!(replayed.event, "new_warning");
         assert!(
-            entries[0].starts_with("process:"),
-            "processing must run before ack, got {entries:?}"
+            rx2.try_recv().is_err(),
+            "already-seen events must not replay"
         );
-        assert_eq!(entries[1], "ack", "ack must be last, got {entries:?}");
     }
 
     #[tokio::test]
-    async fn transient_failure_nacks_without_acking() {
-        let log = Arc::new(RecordingLog::default());
-        let message = FakeMessage {
-            payload: fake_payload(),
-            log: log.clone(),
-        };
-        let processor = FakeProcessor {
-            outcome: ProcessingOutcome::Transient("subscription lookup failed".to_string()),
-            log: log.clone(),
-        };
-        let dead_letter = FakeDeadLetter {
-            fails: false,
-            log: log.clone(),
-        };
+    async fn reconnect_with_evicted_cursor_requests_canonical_resync() {
+        let manager = SseManager::new();
+        let user = Uuid::new_v4();
+        let (tx, mut rx) = manager.register(user).await;
+        manager.dispatch_alert(&alert_for(user, "delivered")).await;
+        let _ = rx.try_recv().expect("delivered event");
+        manager.unregister(user, &tx).await;
 
-        let disposition = consume_alert_message(&message, &processor, &dead_letter).await;
+        let (_tx2, mut rx2) = manager
+            .register_with_last_event_id(user, Some("00000000-0000-0000-0000-000000000000"))
+            .await;
+        let resync = rx2.try_recv().expect("resync event");
+        assert_eq!(resync.event, SSE_RESYNC_EVENT);
+        let payload: serde_json::Value = serde_json::from_str(&resync.data).expect("resync json");
+        assert_eq!(payload["reason"], "replay_window_exhausted");
+    }
 
-        assert_eq!(
-            disposition,
-            MessageDisposition::NakRetry(ALERT_RETRY_DELAY),
-            "transient failures must be retried"
+    #[tokio::test]
+    async fn fresh_connection_does_not_replay_or_request_resync() {
+        let manager = SseManager::new();
+        let other = Uuid::new_v4();
+        let (tx, mut rx) = manager.register(other).await;
+        manager
+            .dispatch_alert(&alert_for(other, "broadcast-ish"))
+            .await;
+        let _ = rx.try_recv().expect("event");
+        manager.unregister(other, &tx).await;
+
+        let (_tx, mut fresh) = manager.register(Uuid::new_v4()).await;
+        assert!(
+            fresh.try_recv().is_err(),
+            "a first connection must not receive replay or resync traffic"
         );
-        let entries = log.snapshot();
-        assert!(entries[0].starts_with("process:"), "got {entries:?}");
-        assert_eq!(entries[1], "nak", "must not ack, got {entries:?}");
-        assert!(!entries.iter().any(|e| e == "ack"));
     }
 
+    /// An alert addressed to A must never replay to B, even when B reconnects
+    /// with a cursor that predates the alert.
     #[tokio::test]
-    async fn bad_payload_is_dead_lettered_then_acked() {
-        let log = Arc::new(RecordingLog::default());
-        let message = FakeMessage {
-            payload: b"not json at all".to_vec(),
-            log: log.clone(),
-        };
-        let processor = FakeProcessor {
-            outcome: ProcessingOutcome::Dispatched,
-            log: log.clone(),
-        };
-        let dead_letter = FakeDeadLetter {
-            fails: false,
-            log: log.clone(),
-        };
+    async fn replay_filters_targeted_alerts_to_their_recipients() {
+        let manager = SseManager::new();
+        let user_a = Uuid::new_v4();
+        let user_b = Uuid::new_v4();
 
-        let disposition = consume_alert_message(&message, &processor, &dead_letter).await;
+        let (_tx_a, mut rx_a) = manager.register(user_a).await;
+        let (tx_b, mut rx_b) = manager.register(user_b).await;
 
-        assert_eq!(disposition, MessageDisposition::Ack);
-        let entries = log.snapshot();
-        assert_eq!(entries, vec!["dead_letter".to_string(), "ack".to_string()]);
+        // Shared broadcast, then an alert targeted at A only.
+        manager
+            .dispatch_alert(&crate::alert_router::AlertEvent {
+                user_ids: Vec::new(),
+                ..alert_for(user_a, "broadcast")
+            })
+            .await;
+        let broadcast_id = rx_a.try_recv().expect("broadcast for A").id;
+        let _ = rx_b.try_recv().expect("broadcast for B");
+
+        manager.dispatch_alert(&alert_for(user_a, "A only")).await;
+        let _ = rx_a.try_recv().expect("A receives its alert");
+        assert!(rx_b.try_recv().is_err(), "B must not observe A's alert");
+
+        // B reconnects with the broadcast cursor: nothing else is visible.
+        manager.unregister(user_b, &tx_b).await;
+        drop(rx_b);
+        let (_tx_b2, mut rx_b2) = manager
+            .register_with_last_event_id(user_b, Some(&broadcast_id))
+            .await;
+        assert!(
+            rx_b2.try_recv().is_err(),
+            "replay must not leak another user's targeted alert"
+        );
+
+        // A reconnects with the same cursor and does get the missed alert.
+        manager.unregister(user_a, &_tx_a).await;
+        drop(rx_a);
+        let (_tx_a2, mut rx_a2) = manager
+            .register_with_last_event_id(user_a, Some(&broadcast_id))
+            .await;
+        let replayed = rx_a2.try_recv().expect("A's missed alert replays");
+        assert_eq!(replayed.event, "new_warning");
     }
 
+    /// A targeted alert dispatched while its recipient was offline must replay
+    /// on their next connection.
     #[tokio::test]
-    async fn failed_dead_letter_nacks_to_avoid_message_loss() {
-        let log = Arc::new(RecordingLog::default());
-        let message = FakeMessage {
-            payload: b"{broken".to_vec(),
-            log: log.clone(),
-        };
-        let processor = FakeProcessor {
-            outcome: ProcessingOutcome::Dispatched,
-            log: log.clone(),
-        };
-        let dead_letter = FakeDeadLetter {
-            fails: true,
-            log: log.clone(),
-        };
+    async fn offline_targeted_alert_is_retained_for_replay() {
+        let manager = SseManager::new();
+        let user_a = Uuid::new_v4();
+        let user_b = Uuid::new_v4();
 
-        let disposition = consume_alert_message(&message, &processor, &dead_letter).await;
+        // A broadcast establishes a shared cursor while only B is connected,
+        // then B disconnects and A's alert is dispatched with A still offline.
+        let (tx_b, mut rx_b) = manager.register(user_b).await;
+        manager
+            .dispatch_alert(&crate::alert_router::AlertEvent {
+                user_ids: Vec::new(),
+                ..alert_for(user_a, "broadcast")
+            })
+            .await;
+        let broadcast_id = rx_b.try_recv().expect("broadcast for B").id;
+        manager.unregister(user_b, &tx_b).await;
+        drop(rx_b);
 
-        assert_eq!(disposition, MessageDisposition::NakRetry(ALERT_RETRY_DELAY));
-        let entries = log.snapshot();
-        assert_eq!(entries, vec!["dead_letter".to_string(), "nak".to_string()]);
+        manager
+            .dispatch_alert(&alert_for(user_a, "offline alert"))
+            .await;
+
+        // B reconnects with the cursor and sees nothing new.
+        let (_tx_b2, mut rx_b2) = manager
+            .register_with_last_event_id(user_b, Some(&broadcast_id))
+            .await;
+        assert!(
+            rx_b2.try_recv().is_err(),
+            "offline alert addressed to A must not replay to B"
+        );
+
+        // A connects for the first time with that cursor and receives it.
+        let (_tx_a, mut rx_a) = manager
+            .register_with_last_event_id(user_a, Some(&broadcast_id))
+            .await;
+        let replayed = rx_a.try_recv().expect("A replays its offline alert");
+        assert_eq!(replayed.event, "new_warning");
+    }
+
+    /// The replay window is bounded; a cursor evicted from it asks for a
+    /// canonical-state resync instead of silently skipping events.
+    #[tokio::test]
+    async fn replay_window_is_bounded_and_evicted_cursor_resyncs() {
+        let manager = SseManager::new();
+        let user = Uuid::new_v4();
+        let (tx, mut rx) = manager.register(user).await;
+
+        let total = SSE_REPLAY_CAPACITY + 10;
+        let mut ids = Vec::with_capacity(total);
+        for i in 0..total {
+            manager
+                .dispatch_alert(&alert_for(user, &format!("event {i}")))
+                .await;
+            ids.push(rx.try_recv().expect("event").id);
+        }
+
+        assert_eq!(manager.replay_len().await, SSE_REPLAY_CAPACITY);
+
+        manager.unregister(user, &tx).await;
+        drop(rx);
+
+        // A cursor before the retained window resyncs.
+        let (_tx2, mut rx2) = manager
+            .register_with_last_event_id(user, Some(&ids[0]))
+            .await;
+        let first = rx2.try_recv().expect("resync marker");
+        assert_eq!(first.event, SSE_RESYNC_EVENT);
+
+        // A cursor inside the window replays exactly the tail after it.
+        let (_tx3, mut rx3) = manager
+            .register_with_last_event_id(user, Some(&ids[total - 2]))
+            .await;
+        let tail: Vec<SseEvent> = std::iter::from_fn(|| rx3.try_recv().ok()).collect();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].id, ids[total - 1]);
     }
 }

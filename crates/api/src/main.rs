@@ -397,10 +397,7 @@ async fn build_state() -> Result<AppState> {
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let sse_manager = if !nats_url.is_empty() {
         let manager = Arc::new(apex_api::sse::SseManager::new());
-        let alert_router = Arc::new(apex_api::alert_router::AlertRouter::new(
-            store.clone(),
-            manager.principal_directory(),
-        ));
+        let alert_router = Arc::new(apex_api::alert_router::AlertRouter::new(store.clone()));
 
         // Start NATS consumer in background
         let nats_enabled = std::env::var("NATS_SSE_ENABLED")
@@ -1201,7 +1198,7 @@ async fn alert_sse_handler(
     // clients no longer leak subscriber slots.
     let user_id = auth.user_id;
     let principal_id = principal_uuid_from_user_id(&user_id);
-    let (tx, rx) = sse_manager.register(principal_id, user_id.as_str()).await;
+    let (tx, rx) = sse_manager.register(principal_id).await;
 
     let stream = apex_api::sse::SseManager::build_sse_stream_with_cleanup(
         rx,

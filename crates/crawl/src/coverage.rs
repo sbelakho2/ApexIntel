@@ -1458,7 +1458,8 @@ mod tests {
         let _guard = env_lock();
 
         std::env::set_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT", "150");
-        let error = CoveragePolicy::from_env().expect_err("an out-of-range percentage must fail loudly")
+        let error = CoveragePolicy::from_env()
+            .expect_err("an out-of-range percentage must fail loudly")
             .to_string();
         std::env::remove_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT");
 

@@ -8,6 +8,15 @@ use axum::{
 };
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
+/// Directory that serves `/static/*`. Defaults to the source tree (local dev);
+/// container images set `APEX_STATIC_DIR` to the copied runtime assets.
+fn static_dir() -> String {
+    std::env::var("APEX_STATIC_DIR")
+        .ok()
+        .filter(|dir| !dir.trim().is_empty())
+        .unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/static").to_string())
+}
+
 /// Fallback for unmatched routes. API paths get a JSON 404 (clients expect a
 /// machine-readable envelope); everything else gets the styled HTML 404 page,
 /// which was previously unreachable.
@@ -634,10 +643,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         // Styled 404 for pages; JSON 404 for unmatched API routes.
         .fallback(fallback_not_found)
         // ─── PWA static files (dev mode; nginx serves in production) ───
-        .nest_service(
-            "/static",
-            ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")),
-        )
+        // `APEX_STATIC_DIR` lets the container image serve the assets copied
+        // to /opt/apexintel/static; the compiled-in source path only exists in
+        // local/dev builds.
+        .nest_service("/static", ServeDir::new(static_dir()))
         .layer(middleware::from_fn(add_rate_limit_headers))
         .layer(Extension(state.rate_limiter.clone()))
         .layer(cors)

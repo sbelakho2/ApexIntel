@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
+use axum::extract::Request;
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use chrono::{DateTime, Utc};
 
-use crate::auth::{self, ApiKey, AuthResult, PermissionLevel};
+use crate::auth::{self, ApiKey, ApiRole, AuthResult, PermissionLevel};
 use crate::destructive_actions::ApiAuthContext;
 use crate::responses::{error_response, ApiError};
 
@@ -12,6 +14,19 @@ use crate::responses::{error_response, ApiError};
 pub struct AuthenticatedRequest {
     pub auth_context: ApiAuthContext,
     pub rate_limit_per_min: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebSocketAuthOptions {
+    pub allow_subprotocol_fallback: bool,
+}
+
+impl Default for WebSocketAuthOptions {
+    fn default() -> Self {
+        Self {
+            allow_subprotocol_fallback: websocket_subprotocol_compat_enabled(),
+        }
+    }
 }
 
 pub fn authenticate_api_request(
@@ -79,6 +94,152 @@ pub fn authenticate_api_request(
     })
 }
 
+pub fn extract_websocket_token(
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+    options: WebSocketAuthOptions,
+) -> Result<String, ApiError> {
+    if let Some(token) = query_token.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(token.to_string());
+    }
+
+    if let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(auth::extract_bearer_token)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(token.to_string());
+    }
+
+    if options.allow_subprotocol_fallback {
+        if let Some(token) = headers
+            .get("sec-websocket-protocol")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(token.to_string());
+        }
+    }
+
+    Err(ApiError::unauthorized())
+}
+
+pub fn validate_websocket_token(
+    token: &str,
+    api_keys: &HashMap<String, ApiKey>,
+    now: DateTime<Utc>,
+) -> Result<ApiAuthContext, ApiError> {
+    match auth::validate_token(token, api_keys, now) {
+        AuthResult::Valid {
+            key_id,
+            owner_user_id,
+            role,
+        } => Ok(ApiAuthContext {
+            key_id,
+            user_id: owner_user_id,
+            role,
+        }),
+        _ => Err(ApiError::unauthorized()),
+    }
+}
+
+/// Build a browser-session API principal for `/api/*` requests that arrive
+/// with the ambient `apex_session` cookie instead of a Bearer key.
+///
+/// Role mapping (P0 auth contract): the configured platform administrator
+/// (`APEX_ADMIN_USERNAME`) receives [`ApiRole::Admin`] so session-authenticated
+/// admin API calls are permitted; every other session is [`ApiRole::Analyst`].
+///
+/// Returns `None` when a Bearer `Authorization` header was presented (an
+/// invalid key must fail rather than silently downgrade to the session), the
+/// session is missing/expired, or an unsafe method fails the CSRF check.
+pub fn session_api_auth_context(
+    headers: &HeaderMap,
+    method: &Method,
+    session_secret: &str,
+    admin_username: &str,
+) -> Option<ApiAuthContext> {
+    if headers.contains_key(header::AUTHORIZATION) {
+        return None;
+    }
+    if session_secret.is_empty() {
+        return None;
+    }
+    let session = crate::middleware::session::validate_session(headers, session_secret)?;
+    if !crate::middleware::session::api_session_csrf_ok(headers, method) {
+        tracing::warn!(
+            username = %session.username,
+            "session-authenticated API request rejected: CSRF verification failed"
+        );
+        return None;
+    }
+
+    let admin = admin_username.trim();
+    let role = if !admin.is_empty() && session.username == admin {
+        ApiRole::Admin
+    } else {
+        ApiRole::Analyst
+    };
+
+    Some(ApiAuthContext {
+        key_id: "web-session".to_string(),
+        user_id: session.user_id.clone(),
+        role,
+    })
+}
+
+/// Authenticate an API request, accepting either a Bearer key or (as a
+/// fallback) a browser session cookie. Bearer failures are never downgraded to
+/// the session principal — a presented-but-invalid key fails.
+pub fn authenticate_request_or_session(
+    headers: &HeaderMap,
+    method: &Method,
+    api_keys: &HashMap<String, ApiKey>,
+    session_secret: &str,
+    admin_username: &str,
+    now: DateTime<Utc>,
+) -> Result<ApiAuthContext, ApiError> {
+    match authenticate_api_request(headers, method, api_keys, now) {
+        Ok(authenticated) => Ok(authenticated.auth_context),
+        Err(bearer_error) => {
+            match session_api_auth_context(headers, method, session_secret, admin_username) {
+                Some(context) => Ok(context),
+                None => Err(bearer_error),
+            }
+        }
+    }
+}
+
+/// Admin-only route guard: `/api/admin/*` and destructive bulk operations are
+/// restricted to Admin/Service roles (B292/P0 auth contract). `require_auth`
+/// has already inserted the `ApiAuthContext` extension by this point.
+pub async fn require_admin(
+    Extension(auth): Extension<ApiAuthContext>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !auth.role.can_admin() {
+        return auth_error_response(ApiError::forbidden("Admin role required"));
+    }
+    next.run(request).await
+}
+
+pub fn websocket_subprotocol_compat_enabled() -> bool {
+    std::env::var("APEX_WS_SUBPROTOCOL_AUTH_COMPAT")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub fn auth_error_response(err: ApiError) -> Response {
     let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::UNAUTHORIZED);
     (status, axum::Json(error_response::<serde_json::Value>(err))).into_response()
@@ -97,7 +258,7 @@ mod tests {
                 "admin".to_string(),
                 ApiKey {
                     key_id: "admin-key".to_string(),
-                    owner_user_id: "user-admin".into(),
+                    owner_user_id: "user-admin".to_string().into(),
                     key_hash: hash_api_key("admin-secret"),
                     name: "Admin".to_string(),
                     role: ApiRole::Admin,
@@ -112,7 +273,7 @@ mod tests {
                 "viewer".to_string(),
                 ApiKey {
                     key_id: "viewer-key".to_string(),
-                    owner_user_id: "user-viewer".into(),
+                    owner_user_id: "user-viewer".to_string().into(),
                     key_hash: hash_api_key("viewer-secret"),
                     name: "Viewer".to_string(),
                     role: ApiRole::Viewer,
@@ -161,5 +322,66 @@ mod tests {
         assert_eq!(authenticated.auth_context.key_id, "admin-key");
         assert_eq!(authenticated.auth_context.user_id, "user-admin");
         assert_eq!(authenticated.rate_limit_per_min, 120);
+    }
+
+    #[test]
+    fn warnings_ws_rejects_missing_auth_token() {
+        let err = extract_websocket_token(
+            &HeaderMap::new(),
+            None,
+            WebSocketAuthOptions {
+                allow_subprotocol_fallback: false,
+            },
+        )
+        .expect_err("missing websocket auth should fail");
+        assert_eq!(err.http_status(), 401);
+    }
+
+    #[test]
+    fn warnings_ws_accepts_supported_auth_transport() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer admin-secret"),
+        );
+        let token = extract_websocket_token(&headers, None, WebSocketAuthOptions::default())
+            .expect("authorization header should succeed");
+        assert_eq!(token, "admin-secret");
+
+        let query_token = extract_websocket_token(
+            &HeaderMap::new(),
+            Some("query-token"),
+            WebSocketAuthOptions {
+                allow_subprotocol_fallback: false,
+            },
+        )
+        .expect("query token should succeed");
+        assert_eq!(query_token, "query-token");
+    }
+
+    #[test]
+    fn warnings_ws_rejects_invalid_subprotocol_token_when_compat_disabled() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "sec-websocket-protocol",
+            HeaderValue::from_static("legacy-token"),
+        );
+        let err = extract_websocket_token(
+            &headers,
+            None,
+            WebSocketAuthOptions {
+                allow_subprotocol_fallback: false,
+            },
+        )
+        .expect_err("subprotocol fallback should be disabled");
+        assert_eq!(err.http_status(), 401);
+    }
+
+    #[test]
+    fn warnings_ws_validates_supported_auth_transport() {
+        let keys = api_keys();
+        let auth_context = validate_websocket_token("admin-secret", &keys, Utc::now())
+            .expect("known token should validate");
+        assert_eq!(auth_context.key_id, "admin-key");
     }
 }
