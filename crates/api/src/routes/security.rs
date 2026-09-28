@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use apex_store::postgres::{SourceRuntimeStateRow, WorkerJobStateRecord};
+use apex_store::postgres::{PgStore, SourceRuntimeStateRow, WorkerJobStateRecord};
 
 /// Negative-state taxonomy for a security-source scan.
 ///
@@ -191,7 +191,12 @@ pub const SECURITY_SOURCE_SPECS: &[SecuritySourceSpec] = &[
         id: "github_code_exposure",
         label: "GitHub code exposure",
         job_kind: None,
-        source_slug: Some("github_security_advisories"),
+        // Code-exposure monitoring is not a registered crawl source yet; the
+        // public `github_security_advisories` feed is *advisories*, not code
+        // exposure, so it must not be reported under this row. Without the
+        // token the honest state is authentication unavailable; with it the
+        // row is not scanned until a real code-exposure source exists.
+        source_slug: None,
         credentials: &["GITHUB_TOKEN"],
     },
     SecuritySourceSpec {
@@ -279,6 +284,52 @@ where
             }
         })
         .collect()
+}
+
+/// Load the full security-source report from worker job states, source
+/// runtime rows and the dark-web warning count.
+///
+/// `/api/security` and `/security` both call this so the two surfaces cannot
+/// drift on the same source's state or credentials. `cve_findings` is the
+/// caller-measured KEV count; `None` means the measurement failed or was not
+/// taken and must never render as a clean zero.
+pub async fn load_security_source_statuses(
+    store: &PgStore,
+    cve_findings: Option<u64>,
+) -> Vec<SecuritySourceStatus> {
+    let job_states = store
+        .list_worker_job_states()
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "security source states: worker job state query failed");
+            vec![]
+        });
+    let source_states = store
+        .load_source_runtime_states()
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "security source states: source runtime query failed");
+            vec![]
+        });
+    let dark_web_findings = store
+        .count_warnings_by_type("dark_web")
+        .await
+        .ok()
+        .map(|count| count.max(0) as u64);
+    build_security_source_statuses(
+        &job_states,
+        &source_states,
+        |key| {
+            std::env::var(key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        },
+        &|id| match id {
+            "cve" => cve_findings,
+            "dark_web" | "i2p" | "marketplaces" => dark_web_findings,
+            _ => None,
+        },
+    )
 }
 
 fn job_detail(
@@ -599,6 +650,19 @@ mod tests {
             classify_scan_state(Some("succeeded"), None, None),
             SecuritySourceState::ScanSucceeded
         );
+    }
+
+    #[test]
+    fn github_code_exposure_does_not_claim_the_public_advisories_feed() {
+        let spec = SECURITY_SOURCE_SPECS
+            .iter()
+            .find(|spec| spec.id == "github_code_exposure")
+            .expect("github code exposure spec");
+        assert!(
+            spec.source_slug.is_none(),
+            "the public github_security_advisories feed is not code-exposure coverage"
+        );
+        assert_eq!(spec.credentials, &["GITHUB_TOKEN"]);
     }
 
     #[test]

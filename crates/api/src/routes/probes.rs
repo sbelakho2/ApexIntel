@@ -299,6 +299,9 @@ impl ReadinessPolicy {
 
 fn env_u64(name: &str, default: u64, errors: &mut Vec<String>) -> u64 {
     match std::env::var(name) {
+        // A present-but-blank value is treated as unset: placeholder lines
+        // like `APEX_OUTBOX_MAX_PENDING=` must not abort startup.
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<u64>() {
             Ok(value) => value,
             Err(_) => {
@@ -315,6 +318,7 @@ fn env_u64(name: &str, default: u64, errors: &mut Vec<String>) -> u64 {
 
 fn env_i64(name: &str, default: i64, errors: &mut Vec<String>) -> i64 {
     match std::env::var(name) {
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<i64>() {
             Ok(value) => value,
             Err(_) => {
@@ -334,11 +338,15 @@ fn env_csv(name: &str, default: &[String], errors: &mut Vec<String>) -> Vec<Stri
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .collect();
-            if parsed.is_empty() {
-                errors.push(format!("{name}='{raw}' names no jobs"));
-                default.to_vec()
-            } else {
+            if !parsed.is_empty() {
                 parsed
+            } else {
+                // Blank means unset; a non-blank value with no names (e.g.
+                // ",") is a real configuration error.
+                if !raw.trim().is_empty() {
+                    errors.push(format!("{name}='{raw}' names no jobs"));
+                }
+                default.to_vec()
             }
         }
         Err(_) => default.to_vec(),
@@ -1330,6 +1338,19 @@ mod tests {
         assert!(
             error.contains("not-a-number"),
             "the error must name the bad value: {error}"
+        );
+    }
+
+    #[test]
+    fn blank_readiness_threshold_falls_back_to_default() {
+        let _guard = env_test_lock();
+        std::env::set_var("APEX_OUTBOX_MAX_PENDING", "   ");
+        let policy = ReadinessPolicy::from_env().expect("a blank threshold is treated as unset");
+        std::env::remove_var("APEX_OUTBOX_MAX_PENDING");
+
+        assert_eq!(
+            policy.outbox_max_pending,
+            ReadinessPolicy::default().outbox_max_pending
         );
     }
 

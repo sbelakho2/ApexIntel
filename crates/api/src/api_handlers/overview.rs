@@ -906,49 +906,11 @@ pub(crate) async fn list_security(
     let kev_matches = kev_rows.len() as u64;
 
     // Security-source negative-state taxonomy: the report never collapses a
-    // non-scan into "0 findings". Secondary queries degrade to empty state
-    // rather than failing the endpoint (the states themselves encode "not
-    // measured").
-    let job_states = state
-        .store
-        .list_worker_job_states()
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "security source states: worker job state query failed");
-            vec![]
-        });
-    let source_states = state
-        .store
-        .load_source_runtime_states()
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "security source states: source runtime query failed");
-            vec![]
-        });
-    let dark_web_findings = state
-        .store
-        .count_warnings(&apex_store::postgres::WarningListFilters {
-            warning_types: vec!["dark_web".to_string()],
-            ..Default::default()
-        })
-        .await
-        .ok();
-    let source_states_report = apex_api::routes::security::build_security_source_statuses(
-        &job_states,
-        &source_states,
-        |key| {
-            std::env::var(key)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-        },
-        &|id| match id {
-            "cve" => Some(kev_matches),
-            "dark_web" | "i2p" | "marketplaces" => {
-                dark_web_findings.map(|count| count.max(0) as u64)
-            }
-            _ => None,
-        },
-    );
+    // non-scan into "0 findings". The shared loader keeps this surface and
+    // the /security page in lockstep.
+    let source_states_report =
+        apex_api::routes::security::load_security_source_statuses(&state.store, Some(kev_matches))
+            .await;
 
     let last_scan_at = dns_rows
         .iter()

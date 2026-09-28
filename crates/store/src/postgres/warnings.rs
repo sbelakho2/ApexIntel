@@ -265,6 +265,21 @@ impl PgStore {
         Ok(row.0)
     }
 
+    /// Cheap non-deduplicated warning count for badge counters and capability
+    /// state reports, where the full `count_warnings` dedup aggregate
+    /// (`ROW_NUMBER` + `regexp_replace` over every row) is too expensive to
+    /// run on a hot path.
+    pub async fn count_warnings_by_type(&self, warning_type: &str) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::bigint FROM warnings \
+             WHERE deleted_at IS NULL AND warning_type = $1",
+        )
+        .bind(warning_type)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
     pub async fn acknowledge_warning(
         &self,
         id: Uuid,

@@ -209,9 +209,13 @@ async function seedDatabase() {
       await client.query('DELETE FROM insights WHERE id = $1::uuid', [SEED.insight.id]);
       // PostgreSQL integration suites run against the same database before the
       // browser gates and can leave insights behind (e.g. RLS scoping rows
-      // with a NULL summary) that the insights page refuses to decode. The
-      // browser state must be deterministic, so drop every non-seed insight.
-      await client.query('DELETE FROM insights WHERE id <> $1::uuid', [SEED.insight.id]);
+      // with a NULL summary) that the insights page refuses to decode. Delete
+      // only those malformed non-seed rows: a broad "id <>" delete would wipe
+      // unrelated insights when the suite runs against a shared database.
+      await client.query(
+        'DELETE FROM insights WHERE id <> $1::uuid AND summary IS NULL',
+        [SEED.insight.id]
+      );
       // Must come after the insight delete (claims cascade, then the evidence
       // link no longer RESTRICTs the observation delete).
       await client.query('DELETE FROM observations WHERE id = $1::uuid', [

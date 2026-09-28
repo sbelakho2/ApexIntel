@@ -250,8 +250,11 @@ pub async fn security_page(
         })
         .collect();
 
-    // KEV observations
-    let kev_obs = store.get_kev_relevance(200).await.unwrap_or_else(|e| {
+    // KEV observations. A failed read is kept as `None` for the source-state
+    // report so it can never render as a clean "no findings" scan.
+    let kev_result = store.get_kev_relevance(200).await;
+    let cve_findings = kev_result.as_ref().ok().map(|rows| rows.len() as u64);
+    let kev_obs = kev_result.unwrap_or_else(|e| {
         tracing::error!("Failed to load KEV data: {e}");
         vec![]
     });
@@ -520,47 +523,11 @@ pub async fn security_page(
         .count() as i64;
     let posture_warnings = dns_posture.len() as i64 - dns_posture_pass;
 
-    // Security-source negative-state taxonomy. The counts feed the
-    // CVE/dark-web rows so a successful scan with a real zero is the only way
-    // "no findings" is shown.
-    let job_states = store
-        .list_worker_job_states()
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "security source states: worker job state query failed");
-            vec![]
-        });
-    let source_runtime_states = store
-        .load_source_runtime_states()
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "security source states: source runtime query failed");
-            vec![]
-        });
-    let dark_web_findings = store
-        .count_warnings(&WarningListFilters {
-            warning_types: vec!["dark_web".to_string()],
-            ..Default::default()
-        })
-        .await
-        .ok();
-    let source_states =
-        security_source_badges(&crate::routes::security::build_security_source_statuses(
-            &job_states,
-            &source_runtime_states,
-            |key| {
-                std::env::var(key)
-                    .map(|value| !value.trim().is_empty())
-                    .unwrap_or(false)
-            },
-            &|id| match id {
-                "cve" => Some(kev_items.len() as u64),
-                "dark_web" | "i2p" | "marketplaces" => {
-                    dark_web_findings.map(|count| count.max(0) as u64)
-                }
-                _ => None,
-            },
-        ));
+    // Security-source negative-state taxonomy. The shared loader keeps this
+    // page and /api/security in lockstep.
+    let source_states = security_source_badges(
+        &crate::routes::security::load_security_source_statuses(&store, cve_findings).await,
+    );
 
     let tpl = SecurityPage {
         current_path: ctx.current_path,

@@ -136,13 +136,16 @@ const FAMILY_KEYWORDS: &[(CoverageFamily, &[&str])] = &[
     (
         CoverageFamily::Certifications,
         &[
+            // Certification-information registers only. NIST/NVD are
+            // vulnerability feeds, not certification registers, so "nist" is
+            // deliberately absent: with certifications now required, a
+            // keyword match on NVD must not satisfy the family.
             "certification",
             "accredit",
             " iso",
             "iso-",
             "iso_",
             "ansi",
-            "nist",
         ],
     ),
     (
@@ -375,6 +378,9 @@ impl CoveragePolicy {
 
 fn env_bool(name: &str, default: bool, errors: &mut Vec<String>) -> bool {
     match std::env::var(name) {
+        // A present-but-blank value is treated as unset: placeholder lines in
+        // .env/compose files must not abort startup.
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => true,
             "0" | "false" | "no" | "off" => false,
@@ -391,6 +397,7 @@ fn env_bool(name: &str, default: bool, errors: &mut Vec<String>) -> bool {
 
 fn env_i64(name: &str, default: i64, errors: &mut Vec<String>) -> i64 {
     match std::env::var(name) {
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<i64>() {
             Ok(value) => value,
             Err(_) => {
@@ -404,6 +411,7 @@ fn env_i64(name: &str, default: i64, errors: &mut Vec<String>) -> i64 {
 
 fn env_u8(name: &str, default: u8, errors: &mut Vec<String>) -> u8 {
     match std::env::var(name) {
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<u8>() {
             Ok(value) if value <= 100 => value,
             Ok(value) => {
@@ -424,6 +432,7 @@ fn env_u8(name: &str, default: u8, errors: &mut Vec<String>) -> u8 {
 
 fn env_usize(name: &str, default: usize, errors: &mut Vec<String>) -> usize {
     match std::env::var(name) {
+        Ok(raw) if raw.trim().is_empty() => default,
         Ok(raw) => match raw.trim().parse::<usize>() {
             Ok(value) => value,
             Err(_) => {
@@ -1215,6 +1224,20 @@ mod tests {
     }
 
     #[test]
+    fn vulnerability_feeds_do_not_satisfy_the_certification_family() {
+        let registry_sources = crate::sources_registry::all_sources();
+        let nvd = registry_sources
+            .iter()
+            .find(|source| source.slug == "nvd_nist_vuln")
+            .expect("NVD source is registered");
+        assert!(
+            !nvd.coverage_families()
+                .contains(&CoverageFamily::Certifications),
+            "NVD/NIST is a vulnerability feed and must not count as certification coverage"
+        );
+    }
+
+    #[test]
     fn family_classification_uses_category_and_keywords() {
         let hiring = source(
             "greenhouse_job_board",
@@ -1266,6 +1289,20 @@ mod tests {
         assert!(
             error.contains("150"),
             "the error must name the bad value: {error}"
+        );
+    }
+
+    #[test]
+    fn blank_coverage_threshold_falls_back_to_default() {
+        let _guard = env_lock();
+
+        std::env::set_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT", "");
+        let policy = CoveragePolicy::from_env().expect("a blank threshold is treated as unset");
+        std::env::remove_var("APEX_COVERAGE_PRIORITY_COMPANY_PCT");
+
+        assert_eq!(
+            policy.min_priority_company_coverage_pct,
+            CoveragePolicy::default().min_priority_company_coverage_pct
         );
     }
 

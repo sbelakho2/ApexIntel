@@ -159,9 +159,11 @@ pub fn load_api_keys_from_env(slots: usize) -> Result<HashMap<String, ApiKey>> {
         }
         let parts: Vec<&str> = val.splitn(4, ',').collect();
         if parts.len() < 3 {
+            // Never echo `val`: it contains the raw key material and this
+            // error is written to startup logs.
             anyhow::bail!(
-                "{env_key}: invalid API key format '{}'; expected raw_key,name,role[,user_id]",
-                val.trim()
+                "{env_key}: invalid API key format (expected raw_key,name,role[,user_id]); found {} field(s)",
+                parts.len()
             );
         }
         let raw_key = parts[0].trim();
@@ -358,13 +360,18 @@ mod tests {
     }
 
     #[test]
-    fn invalid_env_format_fails_loudly() {
+    fn invalid_env_format_fails_loudly_without_echoing_key_material() {
         let _guard = env_lock();
         std::env::set_var("API_KEY_49", "only-a-key");
         let error = load_api_keys_from_env(50).expect_err("a malformed slot must fail loudly");
         std::env::remove_var("API_KEY_49");
 
-        assert!(error.to_string().contains("API_KEY_49"));
+        let message = error.to_string();
+        assert!(message.contains("API_KEY_49"));
+        assert!(
+            !message.contains("only-a-key"),
+            "the error must not echo the raw key material: {message}"
+        );
     }
 
     #[test]
