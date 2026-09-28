@@ -23,9 +23,11 @@
 //! exist here. Evidence counts are reported as counts, while quality is
 //! measured by the reusable [`EvidenceQuality`] model in `apex-core`.
 //!
-//! Warning evidence is first-class (migration 082): a warning's source URLs are
-//! resolved at creation into `source document -> observation -> warning_evidence`
-//! links, and the analysis consumes those linked observation ids as its direct
+//! Warning evidence is first-class (migrations 083 + 085, audit P0-5/P0-6): a
+//! warning's source URLs are resolved at creation only against real, fetched
+//! objects (`source document -> observation -> warning_evidence`); a URL with
+//! no fetched source stays an explicit `unresolved` link and contributes no
+//! evidence. The analysis consumes the linked observation ids as its direct
 //! evidence set. Entity-derived observations are only a fallback for warnings
 //! that carry no explicit links. Evidence identity uses real row identity or a
 //! canonical content hash plus origin cluster (never a 120-character prefix),
@@ -620,9 +622,9 @@ pub fn dedup_observations(observations: Vec<ObservationRow>) -> Vec<ObservationR
 /// [`MAX_EVIDENCE_INSIGHTS`] related insights, newest first.
 ///
 /// Direct evidence comes from the warning's explicit `warning_evidence` links
-/// (migration 082). Entity observations are only a fallback for warnings with
-/// no explicit links, so a warning with a source URL and no entity ids still
-/// has citable evidence.
+/// (migrations 083 + 085). Entity observations are only a fallback for warnings
+/// with no explicit links, so a warning with a real fetched source and no
+/// entity ids still has citable evidence.
 pub async fn gather_evidence(store: &PgStore, warning: &WarningRow) -> Result<EvidenceBundle> {
     let entity_ids: Vec<Uuid> = warning.entity_ids.clone().unwrap_or_default();
 
