@@ -625,6 +625,7 @@ async fn generate_insights_for_company(
             .as_ref()
             .and_then(|r| r.try_get::<Option<String>, _>("domain").ok())
             .flatten(),
+        context_unavailable: Vec::new(),
     };
 
     // ── 3. Build EvidenceSignals from the raw observations ─────────────────

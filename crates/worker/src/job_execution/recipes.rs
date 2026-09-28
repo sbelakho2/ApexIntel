@@ -2697,6 +2697,9 @@ pub(super) async fn run_recipe_fire(
             .collect()
     };
 
+    // Sections whose load failed and therefore changed ranking/LLM inputs.
+    let mut context_degraded: Vec<String> = Vec::new();
+
     // ----- Go-to-market geographic weighting -----
     // Starz sells battery packs mostly into Morocco, Tunisia and Egypt, with a
     // smaller EU focus, and nowhere else. Demand-side opportunities in those
@@ -2723,6 +2726,9 @@ pub(super) async fn run_recipe_fire(
                 %error,
                 "recipe_fire: failed to load company geo for market targeting"
             );
+            // A failed geo read silently removes the market weighting from
+            // ranking, so the run must not report a clean success.
+            context_degraded.push(format!("market geo unavailable ({error})"));
             HashMap::new()
         }
     };
@@ -2816,6 +2822,17 @@ pub(super) async fn run_recipe_fire(
     ) = {
         let mut evidence_map: HashMap<String, Vec<EvidenceSignal>> = HashMap::new();
         let mut context_map: HashMap<String, EntityContext> = HashMap::new();
+        // Context sections that failed to load, per entity (P1-13): surfaced to
+        // the LLM and to the run status instead of silently shrinking context.
+        let mut ctx_unavailable: HashMap<String, Vec<String>> = HashMap::new();
+        macro_rules! note_ctx_unavailable {
+            ($entity:expr, $section:expr) => {
+                ctx_unavailable
+                    .entry($entity.clone())
+                    .or_default()
+                    .push($section.to_string());
+            };
+        }
 
         for (entity_id, (name, region, company_type)) in &company_names {
             let industry_tags: Vec<String> = Vec::new();
@@ -2840,6 +2857,7 @@ pub(super) async fn run_recipe_fire(
                     sites_summary: Vec::new(),
                     competitor_events: Vec::new(),
                     domain: None,
+                    context_unavailable: Vec::new(),
                 },
             );
         }
@@ -2869,7 +2887,11 @@ pub(super) async fn run_recipe_fire(
 
         for entity_uuid in all_entity_uuids.iter() {
             let entity_id_str = entity_uuid.to_string();
-            if let Ok(edges) = store.get_edges_from(*entity_uuid, "company").await {
+            let inbound_edges = store.get_edges_from(*entity_uuid, "company").await;
+            if inbound_edges.is_err() {
+                note_ctx_unavailable!(entity_id_str, "inbound company relationships");
+            }
+            if let Ok(edges) = inbound_edges {
                 if let Some(ctx) = context_map.get_mut(&entity_id_str) {
                     for edge in edges.iter().take(8) {
                         if let Some((name, region, _ctype)) =
@@ -2882,7 +2904,11 @@ pub(super) async fn run_recipe_fire(
                     }
                 }
             }
-            if let Ok(edges) = store.get_edges_to(*entity_uuid, "company").await {
+            let outbound_edges = store.get_edges_to(*entity_uuid, "company").await;
+            if outbound_edges.is_err() {
+                note_ctx_unavailable!(entity_id_str, "outbound company relationships");
+            }
+            if let Ok(edges) = outbound_edges {
                 if let Some(ctx) = context_map.get_mut(&entity_id_str) {
                     for edge in edges.iter().take(8) {
                         if let Some((name, region, _ctype)) =
@@ -2928,7 +2954,11 @@ pub(super) async fn run_recipe_fire(
 
         for entity_uuid in all_entity_uuids.iter() {
             let entity_id_str = entity_uuid.to_string();
-            if let Ok(obs) = store.get_observations_by_entity(*entity_uuid, 5).await {
+            let observations_result = store.get_observations_by_entity(*entity_uuid, 5).await;
+            if observations_result.is_err() {
+                note_ctx_unavailable!(entity_id_str, "recent observations");
+            }
+            if let Ok(obs) = observations_result {
                 if let Some(ctx) = context_map.get_mut(&entity_id_str) {
                     for o in obs {
                         if o.observation_type == "CompetitorEvent"
@@ -2983,7 +3013,11 @@ pub(super) async fn run_recipe_fire(
         }
 
         for entity_uuid in all_entity_uuids.iter() {
-            if let Ok(certs) = store.get_certifications_for_company(*entity_uuid).await {
+            let certifications_result = store.get_certifications_for_company(*entity_uuid).await;
+            if certifications_result.is_err() {
+                note_ctx_unavailable!(entity_uuid.to_string(), "certifications");
+            }
+            if let Ok(certs) = certifications_result {
                 let entity_id_str = entity_uuid.to_string();
                 if let Some(ctx) = context_map.get_mut(&entity_id_str) {
                     for cert in certs.iter().take(10) {
@@ -3028,7 +3062,11 @@ pub(super) async fn run_recipe_fire(
         }
 
         for entity_uuid in all_entity_uuids.iter() {
-            if let Ok(caps) = store.list_capabilities(Some(*entity_uuid), 15, 0).await {
+            let capabilities_result = store.list_capabilities(Some(*entity_uuid), 15, 0).await;
+            if capabilities_result.is_err() {
+                note_ctx_unavailable!(entity_uuid.to_string(), "capabilities");
+            }
+            if let Ok(caps) = capabilities_result {
                 let entity_id_str = entity_uuid.to_string();
                 if let Some(ctx) = context_map.get_mut(&entity_id_str) {
                     for cap in caps.iter().take(10) {
@@ -3083,7 +3121,11 @@ pub(super) async fn run_recipe_fire(
         // and personnel categories have concrete data to reason about.
         for entity_uuid in all_entity_uuids.iter() {
             let entity_id_str = entity_uuid.to_string();
-            if let Ok(persons) = store.list_persons_by_org(*entity_uuid).await {
+            let persons_result = store.list_persons_by_org(*entity_uuid).await;
+            if persons_result.is_err() {
+                note_ctx_unavailable!(entity_id_str, "key persons");
+            }
+            if let Ok(persons) = persons_result {
                 for person in persons.iter().take(6) {
                     let role = person.current_role.as_deref().unwrap_or("Unknown role");
                     let influence = person.influence_score.unwrap_or(0.0);
@@ -3574,6 +3616,12 @@ pub(super) async fn run_recipe_fire(
             "recipe_fire: loaded enriched evidence for LLM"
         );
 
+        for (entity_id, sections) in ctx_unavailable {
+            if let Some(ctx) = context_map.get_mut(&entity_id) {
+                ctx.context_unavailable = sections;
+            }
+        }
+
         (evidence_map, context_map)
     };
 
@@ -3951,6 +3999,11 @@ pub(super) async fn run_recipe_fire(
                     sites_summary: Vec::new(),
                     competitor_events: Vec::new(),
                     domain: None,
+                    // The entity had no context row at all: say so instead of
+                    // presenting empty sections as "nothing exists".
+                    context_unavailable: vec![
+                        "entity context was not built for this candidate".to_string()
+                    ],
                 });
 
             tracing::info!(
@@ -4865,6 +4918,21 @@ pub(super) async fn run_recipe_fire(
         feature_report.inputs_loaded(),
         feature_report.inputs_loaded() + feature_report.inputs_failed(),
     );
+    // Per-entity context sections that could not be loaded (P1-13) also make
+    // this run degraded: the LLM saw less context than the recipe expects.
+    #[cfg(feature = "llm")]
+    {
+        let unavailable: usize = entity_contexts
+            .values()
+            .map(|ctx| ctx.context_unavailable.len())
+            .sum();
+        if unavailable > 0 {
+            context_degraded.push(format!(
+                "{unavailable} entity context section(s) unavailable"
+            ));
+        }
+    }
+
     if warning_ingest_failures > 0
         || insight_insert_failures > 0
         || feature_persistence_failures > 0
@@ -4881,6 +4949,11 @@ pub(super) async fn run_recipe_fire(
                 "{summary} — degraded: missing feature inputs [{}]",
                 feature_report.failed.join(",")
             ),
+        );
+    } else if !context_degraded.is_empty() {
+        run.degrade(
+            insights_inserted,
+            &format!("{summary} — degraded: {}", context_degraded.join("; ")),
         );
     } else {
         run.succeed(insights_inserted, &summary);

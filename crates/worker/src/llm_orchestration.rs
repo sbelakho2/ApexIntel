@@ -807,6 +807,7 @@ mod tests {
             sites_summary: vec![],
             competitor_events: vec![],
             domain: None,
+            context_unavailable: Vec::new(),
         };
         assert!(build_llm_retry_guidance(&ctx, "test", &[]).is_none());
     }
@@ -832,6 +833,7 @@ mod tests {
             sites_summary: vec![],
             competitor_events: vec![],
             domain: None,
+            context_unavailable: Vec::new(),
         };
         let guidance = build_llm_retry_guidance(&ctx, "test", &["timing"]).unwrap();
         assert!(guidance.contains("timing"));
@@ -859,6 +861,7 @@ mod tests {
             sites_summary: vec![],
             competitor_events: vec![],
             domain: None,
+            context_unavailable: Vec::new(),
         };
 
         let guidance =
@@ -887,6 +890,7 @@ mod tests {
             sites_summary: vec![],
             competitor_events: vec![],
             domain: None,
+            context_unavailable: Vec::new(),
         };
 
         let guidance = build_llm_retry_guidance(
@@ -923,6 +927,7 @@ mod tests {
             sites_summary: vec![],
             competitor_events: vec![],
             domain: None,
+            context_unavailable: Vec::new(),
         };
 
         let guidance =

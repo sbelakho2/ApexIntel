@@ -381,6 +381,9 @@ pub(crate) struct EntityContext {
     pub(crate) sites_summary: Vec<String>,    // e.g., "Manufacturing plant in Tunis, Tunisia"
     pub(crate) competitor_events: Vec<String>, // Recent competitor moves
     pub(crate) domain: Option<String>,
+    /// Context sections that could not be loaded for this entity. The LLM must
+    /// see "unavailable", not an empty section that reads as "none exists".
+    pub(crate) context_unavailable: Vec<String>,
 }
 
 /// Returns the supply chain role for non-EMS, non-government entities.

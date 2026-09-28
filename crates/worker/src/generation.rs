@@ -404,6 +404,14 @@ service proposals, and partnership opportunities to this entity."
                 .to_string(),
         );
     }
+    if !entity_ctx.context_unavailable.is_empty() {
+        // Tell the model what is unknown instead of letting an empty section
+        // read as "none exists".
+        profile_parts.push(format!(
+            "Context NOT loaded for this entity: {}.",
+            entity_ctx.context_unavailable.join(", ")
+        ));
+    }
     let entity_profile = profile_parts.join("\n");
 
     // ── Build sorted evidence text ──

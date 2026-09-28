@@ -67,6 +67,7 @@ fn matrix_entity_context(public_sector: bool) -> EntityContext {
         } else {
             "keytronic.com".to_string()
         }),
+        context_unavailable: Vec::new(),
     }
 }
 
@@ -95,6 +96,7 @@ fn inferred_supply_chain_role_detects_semiconductor_from_context() {
         sites_summary: vec![],
         competitor_events: vec![],
         domain: None,
+        context_unavailable: Vec::new(),
     };
 
     assert_eq!(
@@ -169,6 +171,7 @@ fn inferred_supply_chain_role_detects_defense_prime_from_context() {
         sites_summary: vec!["Glascoed munitions facility".to_string()],
         competitor_events: vec![],
         domain: None,
+        context_unavailable: Vec::new(),
     };
 
     assert_eq!(
@@ -213,6 +216,7 @@ fn topic_alignment_rejects_unsupported_oil_narrative() {
         sites_summary: vec![],
         competitor_events: vec![],
         domain: None,
+        context_unavailable: Vec::new(),
     };
     let evidence_signals = vec![EvidenceSignal {
             title: "NVIDIA expands AI server program".to_string(),
@@ -260,6 +264,7 @@ fn topic_alignment_allows_supported_semiconductor_narrative() {
         sites_summary: vec![],
         competitor_events: vec![],
         domain: None,
+        context_unavailable: Vec::new(),
     };
     let evidence_signals = vec![EvidenceSignal {
             title: "NVIDIA expands AI server program".to_string(),
@@ -1749,6 +1754,7 @@ fn named_target_provenance_rejects_hallucinated_downstream_company() {
         sites_summary: vec!["St. Petersburg medical manufacturing campus".to_string()],
         competitor_events: vec![],
         domain: Some("jabil.com".to_string()),
+        context_unavailable: Vec::new(),
     };
     let evidence_signals = vec![EvidenceSignal {
             title: "Jabil ISO 13485 page updated".to_string(),
@@ -1794,6 +1800,7 @@ fn named_target_provenance_allows_named_company_present_in_evidence() {
         sites_summary: vec![],
         competitor_events: vec![],
         domain: Some("digikey.com".to_string()),
+        context_unavailable: Vec::new(),
     };
     let evidence_signals = vec![EvidenceSignal {
             title: "Digi-Key names Acme Medical Systems in rollout update".to_string(),
@@ -2139,6 +2146,7 @@ fn public_sector_macro_signal_without_procurement_rejects_hardware_sales_pitch()
         sites_summary: vec![],
         competitor_events: vec![],
         domain: Some("government.ae".to_string()),
+        context_unavailable: Vec::new(),
     };
 
     let evidence_signals = vec![
@@ -2196,6 +2204,7 @@ fn public_sector_explicit_tender_for_hardware_does_not_trigger_sales_pitch_guard
         sites_summary: vec![],
         competitor_events: vec![],
         domain: Some("government.ae".to_string()),
+        context_unavailable: Vec::new(),
     };
 
     let evidence_signals = vec![EvidenceSignal {
@@ -2242,6 +2251,7 @@ fn public_sector_generic_opportunity_language_is_rejected_as_low_usefulness() {
         sites_summary: vec![],
         competitor_events: vec![],
         domain: Some("canada.ca".to_string()),
+        context_unavailable: Vec::new(),
     };
 
     let evidence_signals = vec![
@@ -2293,6 +2303,7 @@ fn public_sector_concrete_policy_artifact_and_account_action_remain_allowed() {
         sites_summary: vec![],
         competitor_events: vec![],
         domain: Some("ec.europa.eu".to_string()),
+        context_unavailable: Vec::new(),
     };
 
     let evidence_signals = vec![EvidenceSignal {
@@ -2342,6 +2353,7 @@ fn public_sector_output_without_process_or_concrete_action_is_rejected() {
         sites_summary: vec![],
         competitor_events: vec![],
         domain: Some("ec.europa.eu".to_string()),
+        context_unavailable: Vec::new(),
     };
 
     let evidence_signals = vec![EvidenceSignal {
