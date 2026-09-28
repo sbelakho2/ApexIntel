@@ -65,7 +65,9 @@ pub struct CompanyListItem {
     pub community_badges: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_entropy: Option<f64>,
-    pub updated_at: DateTime<Utc>,
+    /// Row timestamp; `None` serializes as null rather than a fabricated
+    /// "now".
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// Detailed company profile.
@@ -93,8 +95,10 @@ pub struct CompanyDetail {
     pub source_entropy: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_quality_label: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    /// Row timestamps; `None` serializes as null rather than a fabricated
+    /// "now".
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +245,7 @@ mod tests {
             capabilities: vec!["pcb_assembly".to_string(), "smt".to_string()],
             community_badges: vec!["electronics cluster".to_string()],
             source_entropy: Some(0.42),
-            updated_at: Utc::now(),
+            updated_at: Some(Utc::now()),
         }
     }
 
@@ -373,8 +377,8 @@ mod tests {
             community_badges: vec!["people network".to_string()],
             source_entropy: Some(0.35),
             source_quality_label: Some("moderate".to_string()),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Some(Utc::now()),
+            updated_at: Some(Utc::now()),
         };
         let json = serde_json::to_string(&detail).unwrap();
         assert!(json.contains("Starz Electronics"));

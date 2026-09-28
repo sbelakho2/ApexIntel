@@ -126,7 +126,7 @@ pub(crate) async fn export_companies_csv(
                     .map(|score| format!("{score:.4}"))
                     .unwrap_or_default(),
                 csv_escape(&item.capabilities.join("|")),
-                csv_escape(&item.updated_at.to_rfc3339()),
+                csv_escape(&item.updated_at.map(|t| t.to_rfc3339()).unwrap_or_default()),
             ));
         }
 
@@ -306,7 +306,7 @@ pub(crate) async fn export_insights_csv(
                 row.confidence
                     .map(|confidence| format!("{confidence:.4}"))
                     .unwrap_or_default(),
-                csv_escape(&row.created_at.unwrap_or_else(Utc::now).to_rfc3339()),
+                csv_escape(&row.created_at.map(|t| t.to_rfc3339()).unwrap_or_default()),
             ));
         }
 

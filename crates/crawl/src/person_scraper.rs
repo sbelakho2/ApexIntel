@@ -953,7 +953,15 @@ LIMIT 25
                         )
                         .with_url(post.post_url.clone())
                         .with_confidence(post.platform_credibility() as f32)
-                        .with_ts(post.published_at.timestamp())
+                        .with_ts(post.published_at.unwrap_or(post.ingested_at).timestamp())
+                        .with_meta(
+                            "timestamp_basis",
+                            if post.published_at.is_some() {
+                                "published_at"
+                            } else {
+                                "ingested_at"
+                            },
+                        )
                         .with_meta("platform", "twitter")
                         .with_meta("author", post.author_handle.clone())
                         .with_meta("engagement", format!("{:.1}", engagement));
@@ -996,7 +1004,15 @@ LIMIT 25
                         )
                         .with_url(post.post_url.clone())
                         .with_confidence(post.platform_credibility() as f32)
-                        .with_ts(post.published_at.timestamp())
+                        .with_ts(post.published_at.unwrap_or(post.ingested_at).timestamp())
+                        .with_meta(
+                            "timestamp_basis",
+                            if post.published_at.is_some() {
+                                "published_at"
+                            } else {
+                                "ingested_at"
+                            },
+                        )
                         .with_meta("platform", "reddit")
                         .with_meta("author", post.author_handle.clone())
                         .with_meta("engagement", format!("{:.1}", engagement));

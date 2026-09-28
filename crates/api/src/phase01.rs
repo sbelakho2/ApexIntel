@@ -707,7 +707,6 @@ fn warning_row_to_response(row: WarningRow) -> WarningResponse {
 }
 
 fn insight_row_to_response(row: InsightRow) -> InsightResponse {
-    let now = Utc::now();
     InsightResponse {
         id: row.id.to_string(),
         title: row.title,
@@ -728,8 +727,9 @@ fn insight_row_to_response(row: InsightRow) -> InsightResponse {
         diversity_score: None,
         diversity_label: None,
         causal_flag: None,
-        created_at: row.created_at.unwrap_or(now),
-        updated_at: row.updated_at.unwrap_or(now),
+        // Unknown row time stays null rather than a fabricated "now".
+        created_at: row.created_at,
+        updated_at: row.updated_at,
         bookmarked: None,
         quality_score: None,
     }
@@ -841,7 +841,8 @@ fn company_row_to_detail(
             .as_ref()
             .and_then(|meta| meta.get("source_quality_label"))
             .and_then(|v| v.as_str().map(String::from)),
-        created_at: row.created_at.unwrap_or(now),
-        updated_at: row.updated_at.unwrap_or(now),
+        // Unknown row time stays null rather than a fabricated "now".
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }
 }

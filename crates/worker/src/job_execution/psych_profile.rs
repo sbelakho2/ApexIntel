@@ -145,7 +145,7 @@ async fn run_psych_profile_compute_inner(kind: &JobKind, store: &Arc<PgStore>) -
                 text: format!("{} {}", a.title, a.content_summary.as_deref().unwrap_or("")),
                 source_url: a.url.clone(),
                 source_domain: a.url.as_deref().and_then(extract_domain),
-                observed_at: a.ts_utc.unwrap_or_else(Utc::now),
+                observed_at: a.ts_utc,
                 sentiment_score: None,
             })
             .collect();

@@ -25,12 +25,13 @@ pub struct CtCertificate {
     pub domains: Vec<String>,
     /// Certificate issuer
     pub issuer: String,
-    /// Not before date
-    pub not_before: DateTime<Utc>,
-    /// Not after date
-    pub not_after: DateTime<Utc>,
-    /// When this was logged to CT
-    pub logged_at: DateTime<Utc>,
+    /// Not-before date as stated by the certificate, when parseable.
+    pub not_before: Option<DateTime<Utc>>,
+    /// Not-after date as stated by the certificate, when parseable.
+    pub not_after: Option<DateTime<Utc>>,
+    /// When this crawl observed the entry. The crt.sh row does not carry a
+    /// log-entry timestamp here, so the honest fact is the observation time.
+    pub observed_at: DateTime<Utc>,
     /// CT log source
     pub log_source: String,
 }
@@ -414,37 +415,44 @@ impl CtMonitor {
             }
         }
 
-        // Check for short validity (less than 30 days - potentially suspicious)
-        let validity_days = (cert.not_after - cert.not_before).num_days();
-        if validity_days < 30 && validity_days > 0 {
-            alerts.push(CtAlert {
-                alert_type: CtAlertType::ShortValidity,
-                certificate: cert.clone(),
-                monitored_domain: monitored_domain.to_string(),
-                detected_at: now,
-                severity: AlertSeverity::Medium,
-                description: format!(
-                    "Certificate has unusually short validity period: {} days",
-                    validity_days
-                ),
-            });
+        // Check for short validity (less than 30 days - potentially
+        // suspicious). Both dates must be real: an unparseable validity window
+        // is not evidence of a short one.
+        if let (Some(not_before), Some(not_after)) = (cert.not_before, cert.not_after) {
+            let validity_days = (not_after - not_before).num_days();
+            if validity_days < 30 && validity_days > 0 {
+                alerts.push(CtAlert {
+                    alert_type: CtAlertType::ShortValidity,
+                    certificate: cert.clone(),
+                    monitored_domain: monitored_domain.to_string(),
+                    detected_at: now,
+                    severity: AlertSeverity::Medium,
+                    description: format!(
+                        "Certificate has unusually short validity period: {} days",
+                        validity_days
+                    ),
+                });
+            }
         }
 
-        // Check for expiring certificates
-        let days_until_expiry = (cert.not_after - now).num_days();
-        if days_until_expiry > 0 && days_until_expiry <= self.config.expiry_warning_days {
-            alerts.push(CtAlert {
-                alert_type: CtAlertType::ExpiringCertificate,
-                certificate: cert.clone(),
-                monitored_domain: monitored_domain.to_string(),
-                detected_at: now,
-                severity: if days_until_expiry <= 7 {
-                    AlertSeverity::High
-                } else {
-                    AlertSeverity::Medium
-                },
-                description: format!("Certificate expires in {} days", days_until_expiry),
-            });
+        // Check for expiring certificates — only when the certificate states
+        // its expiry.
+        let days_until_expiry = cert.not_after.map(|not_after| (not_after - now).num_days());
+        if let Some(days_until_expiry) = days_until_expiry {
+            if days_until_expiry > 0 && days_until_expiry <= self.config.expiry_warning_days {
+                alerts.push(CtAlert {
+                    alert_type: CtAlertType::ExpiringCertificate,
+                    certificate: cert.clone(),
+                    monitored_domain: monitored_domain.to_string(),
+                    detected_at: now,
+                    severity: if days_until_expiry <= 7 {
+                        AlertSeverity::High
+                    } else {
+                        AlertSeverity::Medium
+                    },
+                    description: format!("Certificate expires in {} days", days_until_expiry),
+                });
+            }
         }
 
         // Check for lookalike domains in SANs
@@ -512,17 +520,8 @@ impl CrtShEntry {
             .unwrap_or_else(|| self.common_name.iter().cloned().collect());
 
         // Parse dates
-        let not_before = self
-            .not_before
-            .as_deref()
-            .and_then(parse_crtsh_datetime)
-            .unwrap_or_else(Utc::now);
-
-        let not_after = self
-            .not_after
-            .as_deref()
-            .and_then(parse_crtsh_datetime)
-            .unwrap_or_else(Utc::now);
+        let not_before = self.not_before.as_deref().and_then(parse_crtsh_datetime);
+        let not_after = self.not_after.as_deref().and_then(parse_crtsh_datetime);
 
         CtCertificate {
             cert_hash: self.serial_number.unwrap_or_default(),
@@ -530,7 +529,7 @@ impl CrtShEntry {
             issuer: self.issuer_name.unwrap_or_else(|| "Unknown".to_string()),
             not_before,
             not_after,
-            logged_at: Utc::now(),
+            observed_at: Utc::now(),
             log_source: "crt.sh".to_string(),
         }
     }

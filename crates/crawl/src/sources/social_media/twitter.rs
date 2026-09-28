@@ -26,7 +26,8 @@ pub struct Tweet {
     pub author_username: String,
     pub author_id: String,
     pub text: String,
-    pub created_at: DateTime<Utc>,
+    /// Publication time as stated by the API; `None` when absent/unparseable.
+    pub created_at: Option<DateTime<Utc>>,
     pub like_count: Option<i64>,
     pub retweet_count: Option<i64>,
     pub reply_count: Option<i64>,
@@ -229,8 +230,7 @@ impl TwitterMonitor {
                 let created_at = t["created_at"]
                     .as_str()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(Utc::now);
+                    .map(|dt| dt.with_timezone(&Utc));
 
                 let hashtags: Vec<String> = t["entities"]["hashtags"]
                     .as_array()
@@ -363,8 +363,7 @@ impl TwitterMonitor {
                 created_at: t["created_at"]
                     .as_str()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(Utc::now),
+                    .map(|dt| dt.with_timezone(&Utc)),
                 like_count: t["public_metrics"]["like_count"].as_i64(),
                 retweet_count: t["public_metrics"]["retweet_count"].as_i64(),
                 reply_count: t["public_metrics"]["reply_count"].as_i64(),
@@ -470,7 +469,7 @@ mod tests {
             author_username: "test".to_string(),
             author_id: "456".to_string(),
             text: "Test tweet".to_string(),
-            created_at: Utc::now(),
+            created_at: Some(Utc::now()),
             like_count: Some(100),
             retweet_count: Some(50),
             reply_count: Some(10),
@@ -514,7 +513,7 @@ mod tests {
                 author_username: "a".to_string(),
                 author_id: "1".to_string(),
                 text: "Low engagement".to_string(),
-                created_at: Utc::now(),
+                created_at: Some(Utc::now()),
                 like_count: Some(10),
                 retweet_count: Some(5),
                 reply_count: Some(1),
@@ -534,7 +533,7 @@ mod tests {
                 author_username: "b".to_string(),
                 author_id: "2".to_string(),
                 text: "High engagement".to_string(),
-                created_at: Utc::now(),
+                created_at: Some(Utc::now()),
                 like_count: Some(1000),
                 retweet_count: Some(500),
                 reply_count: Some(100),
@@ -563,7 +562,7 @@ mod tests {
             author_username: "a".to_string(),
             author_id: "1".to_string(),
             text: "Low engagement".to_string(),
-            created_at: Utc::now(),
+            created_at: Some(Utc::now()),
             like_count: Some(10),
             retweet_count: Some(5),
             reply_count: Some(1),
@@ -587,7 +586,7 @@ mod tests {
             author_username: "b".to_string(),
             author_id: "2".to_string(),
             text: "High engagement".to_string(),
-            created_at: Utc::now(),
+            created_at: Some(Utc::now()),
             like_count: Some(200),
             retweet_count: Some(100),
             reply_count: Some(50),

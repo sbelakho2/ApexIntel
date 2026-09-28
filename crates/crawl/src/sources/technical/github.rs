@@ -93,7 +93,9 @@ pub struct GithubCommit {
     pub author_login: Option<String>,
     pub committer_name: String,
     pub committer_email: String,
-    pub committed_at: DateTime<Utc>,
+    /// Commit time as stated by the API. `None` when the field is missing or
+    /// unparseable — never replaced with the scrape time.
+    pub committed_at: Option<DateTime<Utc>>,
     pub additions: Option<u32>,
     pub deletions: Option<u32>,
     pub files_changed: Option<u32>,
@@ -447,8 +449,7 @@ impl GithubMonitor {
                     .get("date")
                     .and_then(|d| d.as_str())
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(Utc::now);
+                    .map(|dt| dt.with_timezone(&Utc));
 
                 Some(GithubCommit {
                     sha,
@@ -621,7 +622,7 @@ mod tests {
             author_login: Some("devuser".to_string()),
             committer_name: "dev".to_string(),
             committer_email: "dev@example.com".to_string(),
-            committed_at: Utc::now(),
+            committed_at: Some(Utc::now()),
             additions: None,
             deletions: None,
             files_changed: None,

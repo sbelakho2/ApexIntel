@@ -119,7 +119,7 @@ impl FacebookScraper {
 
             // Relative timestamp
             let ts_text = extract_between(block, "<abbr>", "</abbr>").unwrap_or_default();
-            let published = parse_relative_time(&ts_text).unwrap_or_else(Utc::now);
+            let published = parse_relative_time(&ts_text);
 
             let post_id = if permalink.is_empty() {
                 format!("fb:{}:{}", page_id, sha256_12(&text))
@@ -158,7 +158,7 @@ impl FacebookScraper {
                 &format!("fb:g:{}:{}", group_id, sha256_12(&text)),
                 &author,
                 &text,
-                Utc::now(),
+                None,
             );
             posts.push(post);
         }
@@ -181,7 +181,7 @@ impl FacebookScraper {
                 &format!("fb:ev:{}:{}", event_id, sha256_12(&text)),
                 &format!("event:{}", event_id),
                 &text,
-                Utc::now(),
+                None,
             ));
         }
 

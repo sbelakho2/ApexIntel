@@ -58,8 +58,8 @@ pub(crate) fn insight_row_to_response(row: InsightRow) -> InsightResponse {
         diversity_score: None,
         diversity_label: None,
         causal_flag: None,
-        created_at: row.created_at.unwrap_or_else(Utc::now),
-        updated_at: row.updated_at.unwrap_or_else(Utc::now),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
         bookmarked: None,
         quality_score: None,
     }
@@ -85,7 +85,7 @@ pub(crate) fn company_row_to_item(row: CompanyRow) -> CompanyListItem {
         capabilities: row.industry_tags.unwrap_or_default(),
         community_badges: vec![],
         source_entropy: None,
-        updated_at: row.updated_at.unwrap_or_else(Utc::now),
+        updated_at: row.updated_at,
     }
 }
 

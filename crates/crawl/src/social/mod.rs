@@ -47,8 +47,12 @@ pub struct SocialPost {
     pub text: String,
     /// Original text including URLs.
     pub raw_text: String,
-    /// Publication timestamp.
-    pub published_at: DateTime<Utc>,
+    /// Publication timestamp as stated by the source. `None` when the source
+    /// does not state one — it is never replaced with the scrape time, which
+    /// would fabricate freshness.
+    pub published_at: Option<DateTime<Utc>>,
+    /// When this crawl observed the post (a real acquisition fact).
+    pub ingested_at: DateTime<Utc>,
     /// Like count (0 if unavailable).
     pub like_count: u64,
     /// Repost / retweet / share count.
@@ -76,7 +80,7 @@ impl SocialPost {
         post_id: &str,
         author_handle: &str,
         text: &str,
-        published_at: DateTime<Utc>,
+        published_at: Option<DateTime<Utc>>,
     ) -> Self {
         Self {
             platform: platform.to_string(),
@@ -88,6 +92,7 @@ impl SocialPost {
             text: strip_urls(text),
             raw_text: text.to_string(),
             published_at,
+            ingested_at: Utc::now(),
             like_count: 0,
             share_count: 0,
             reply_count: 0,
@@ -202,7 +207,7 @@ mod tests {
             "123",
             "elonmusk",
             "Hello world #AI @openai https://x.com",
-            Utc::now(),
+            Some(Utc::now()),
         );
         assert_eq!(p.platform, "twitter");
         assert!(!p.raw_text.is_empty());
@@ -212,7 +217,7 @@ mod tests {
 
     #[test]
     fn engagement_score_computed() {
-        let mut p = SocialPost::minimal("linkedin", "id1", "handle", "test", Utc::now());
+        let mut p = SocialPost::minimal("linkedin", "id1", "handle", "test", Some(Utc::now()));
         p.like_count = 10;
         p.share_count = 5;
         p.reply_count = 3;

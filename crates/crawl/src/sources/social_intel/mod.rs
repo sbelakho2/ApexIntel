@@ -73,7 +73,7 @@ impl SocialMention {
             high_influence: tweet.is_high_influence(),
             matched_entities: tweet.mentions.clone(),
             matched_keywords: tweet.matched_keywords.clone(),
-            published_at: Some(tweet.created_at),
+            published_at: tweet.created_at,
             fetched_at: tweet.fetched_at,
         }
     }
@@ -394,7 +394,7 @@ mod tests {
             author_username: "analyst".to_string(),
             author_id: "456".to_string(),
             text: "Breaking news about supply chain".to_string(),
-            created_at: Utc::now(),
+            created_at: Some(Utc::now()),
             like_count: Some(500),
             retweet_count: Some(200),
             reply_count: Some(50),

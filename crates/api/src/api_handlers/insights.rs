@@ -961,7 +961,10 @@ pub(crate) async fn investigate_insight(
         description: insight.summary.clone(),
         source: "insight_engine".to_string(),
         confidence: insight.confidence.unwrap_or(0.7),
-        timestamp: insight.created_at.unwrap_or_else(chrono::Utc::now),
+        // Unknown row time stays the explicit epoch sentinel, never "now".
+        timestamp: insight
+            .created_at
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH),
         raw_data: serde_json::json!({
             "insight_type": insight.insight_type,
             "category": insight.insight_type,

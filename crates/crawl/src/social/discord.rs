@@ -166,7 +166,7 @@ impl DiscordScraper {
                 ),
                 &current.name,
                 &text,
-                Utc::now(),
+                None,
             );
             post.post_url = current
                 .invite_url
@@ -193,7 +193,7 @@ impl DiscordScraper {
                 ),
                 &current.name,
                 &text,
-                Utc::now(),
+                None,
             ));
         }
 

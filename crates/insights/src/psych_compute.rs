@@ -41,7 +41,9 @@ pub struct PsychObservation {
     pub text: String,
     pub source_url: Option<String>,
     pub source_domain: Option<String>,
-    pub observed_at: DateTime<Utc>,
+    /// Source observation time when known. `None` when the artifact has no
+    /// stated time — never replaced with the processing time.
+    pub observed_at: Option<DateTime<Utc>>,
     pub sentiment_score: Option<f64>,
 }
 
@@ -1005,28 +1007,28 @@ mod tests {
                     text: "This is an urgent crisis that demands immediate action.".to_string(),
                     source_url: Some("https://example.com/1".to_string()),
                     source_domain: Some("example.com".to_string()),
-                    observed_at: Utc::now(),
+                    observed_at: Some(Utc::now()),
                     sentiment_score: None,
                 },
                 PsychObservation {
                     text: "The supplier has failed and we face a major threat.".to_string(),
                     source_url: Some("https://example.com/2".to_string()),
                     source_domain: Some("example.com".to_string()),
-                    observed_at: Utc::now(),
+                    observed_at: Some(Utc::now()),
                     sentiment_score: None,
                 },
                 PsychObservation {
                     text: "Another crisis in the logistics pipeline.".to_string(),
                     source_url: Some("https://news.com/3".to_string()),
                     source_domain: Some("news.com".to_string()),
-                    observed_at: Utc::now(),
+                    observed_at: Some(Utc::now()),
                     sentiment_score: None,
                 },
                 PsychObservation {
                     text: "The delay is causing significant disruption.".to_string(),
                     source_url: Some("https://news.com/4".to_string()),
                     source_domain: Some("news.com".to_string()),
-                    observed_at: Utc::now(),
+                    observed_at: Some(Utc::now()),
                     sentiment_score: None,
                 },
             ],

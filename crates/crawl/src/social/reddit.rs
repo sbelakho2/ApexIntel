@@ -229,10 +229,7 @@ impl RedditScraper {
     }
 
     fn map_post(&self, p: RedditPost) -> SocialPost {
-        let published_at = Utc
-            .timestamp_opt(p.created_utc as i64, 0)
-            .single()
-            .unwrap_or_else(Utc::now);
+        let published_at = Utc.timestamp_opt(p.created_utc as i64, 0).single();
 
         // Combine title + body for text field
         let full_text = match &p.selftext {

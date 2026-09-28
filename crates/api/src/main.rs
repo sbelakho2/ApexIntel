@@ -1464,8 +1464,9 @@ fn company_row_to_detail(
         community_badges,
         source_entropy,
         source_quality_label,
-        created_at: row.created_at.unwrap_or(now),
-        updated_at: row.updated_at.unwrap_or(now),
+        // Unknown row time stays null rather than a fabricated "now".
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }
 }
 

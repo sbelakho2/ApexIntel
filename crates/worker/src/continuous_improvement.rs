@@ -404,12 +404,17 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
     for row in insights {
         let system_prompt =
             "Generate a strategic OSINT insight with explicit evidence and quantified confidence.";
+        // A missing confidence is textual "unknown" — embedding 0.000 would
+        // feed the self-improvement loop a confidence the row never had.
+        let confidence_text = row
+            .confidence
+            .map_or_else(|| "unknown".to_string(), |value| format!("{value:.3}"));
         let user_prompt = format!(
-            "title={} | type={} | region={} | confidence={:.3}",
+            "title={} | type={} | region={} | confidence={}",
             row.title,
             row.insight_type.as_deref().unwrap_or("unknown"),
             row.region.as_deref().unwrap_or("global"),
-            row.confidence.unwrap_or(0.0),
+            confidence_text,
         );
         let mut capture = OutputCapture::new(
             TaskCategory::InsightGeneration,
@@ -420,7 +425,12 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         );
         capture.quality_score = row.confidence;
         capture.was_used = true;
-        capture.captured_at = row.updated_at.or(row.created_at).unwrap_or_else(Utc::now);
+        // Unknown capture time stays unknown: the record keeps the epoch only
+        // as an explicit "no timestamp" marker rather than looking current.
+        capture.captured_at = row
+            .updated_at
+            .or(row.created_at)
+            .unwrap_or(chrono::DateTime::<Utc>::UNIX_EPOCH);
         loop_runner.record(capture);
         captures_seeded += 1;
     }

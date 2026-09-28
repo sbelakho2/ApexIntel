@@ -314,7 +314,7 @@ impl LinkedInScraper {
                         &format!("{}-{}", slug, idx),
                         slug,
                         &raw,
-                        Utc::now(),
+                        None,
                     );
                     post.post_url = format!("https://www.linkedin.com/company/{}/posts/", slug);
                     posts.push(post);

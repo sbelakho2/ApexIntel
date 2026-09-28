@@ -104,7 +104,7 @@ impl TelegramScraper {
                 continue;
             }
 
-            let published_at = self.extract_datetime(block).unwrap_or_else(Utc::now);
+            let published_at = self.extract_datetime(block);
             let view_count = self.extract_view_count(block);
 
             let mut post = SocialPost::minimal("telegram", &post_id, channel, &text, published_at);

@@ -101,10 +101,7 @@ impl YouTubeScraper {
             .filter_map(|item| {
                 let video_id = item.id.video_id?;
                 let s = item.snippet;
-                let published = s
-                    .published_at
-                    .parse::<DateTime<Utc>>()
-                    .unwrap_or_else(|_| Utc::now());
+                let published = s.published_at.parse::<DateTime<Utc>>().ok();
 
                 let mut post = SocialPost::minimal(
                     "youtube",
@@ -187,9 +184,7 @@ fn parse_youtube_rss(xml: &str, max: usize) -> Vec<SocialPost> {
             continue;
         }
 
-        let published = published_str
-            .parse::<DateTime<Utc>>()
-            .unwrap_or_else(|_| Utc::now());
+        let published = published_str.parse::<DateTime<Utc>>().ok();
 
         let mut post = SocialPost::minimal(
             "youtube",

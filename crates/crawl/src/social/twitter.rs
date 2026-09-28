@@ -221,8 +221,6 @@ impl TwitterScraper {
 
         // Parse Nitter HTML: look for tweet cards
         let mut posts = Vec::new();
-        let now = Utc::now();
-
         for (idx, block) in html.split("timeline-item").enumerate() {
             if idx == 0 {
                 continue;
@@ -252,7 +250,7 @@ impl TwitterScraper {
                         let author = extract_attr(block, "class=\"username\"")
                             .unwrap_or_else(|| "unknown".to_string());
 
-                        let post = SocialPost::minimal("twitter", &post_id, &author, &text, now);
+                        let post = SocialPost::minimal("twitter", &post_id, &author, &text, None);
                         posts.push(post);
                     }
                 }
@@ -270,8 +268,7 @@ impl TwitterScraper {
                     .created_at
                     .as_deref()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(Utc::now);
+                    .map(|dt| dt.with_timezone(&Utc));
 
                 let mut post = SocialPost::minimal(
                     "twitter",

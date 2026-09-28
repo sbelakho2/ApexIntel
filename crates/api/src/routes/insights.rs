@@ -56,8 +56,10 @@ pub struct InsightResponse {
     pub diversity_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub causal_flag: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    /// Row timestamps; `None` serializes as null rather than a fabricated
+    /// "now".
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bookmarked: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,8 +113,12 @@ pub fn rank_insights(insights: &mut [InsightResponse]) {
 }
 
 fn insight_score(insight: &InsightResponse, now: &DateTime<Utc>) -> f64 {
-    let age_hours = (*now - insight.created_at).num_hours().max(1) as f64;
-    let recency = 1.0 / (1.0 + age_hours / 24.0);
+    // Unknown age carries no recency adjustment (the freshness of the row is
+    // simply not measured) instead of pretending it was created now.
+    let recency = insight.created_at.map_or(1.0, |created_at| {
+        let age_hours = (*now - created_at).num_hours().max(1) as f64;
+        1.0 / (1.0 + age_hours / 24.0)
+    });
     let quality = insight.quality_score.unwrap_or(0.5);
     clamp_ratio((0.60 * insight.confidence + 0.40 * quality) * (0.75 + 0.25 * recency))
 }
@@ -219,8 +225,8 @@ mod tests {
             diversity_score: Some(0.66),
             diversity_label: Some("diverse".to_string()),
             causal_flag: None,
-            created_at: ts,
-            updated_at: ts,
+            created_at: Some(ts),
+            updated_at: Some(ts),
             bookmarked: None,
             quality_score: Some(0.5),
         }
@@ -257,8 +263,8 @@ mod tests {
                 diversity_score: None,
                 diversity_label: None,
                 causal_flag: None,
-                created_at: ts,
-                updated_at: ts,
+                created_at: Some(ts),
+                updated_at: Some(ts),
                 bookmarked: None,
                 quality_score: Some(0.5),
             },
@@ -277,8 +283,8 @@ mod tests {
                 diversity_score: None,
                 diversity_label: None,
                 causal_flag: None,
-                created_at: ts,
-                updated_at: ts,
+                created_at: Some(ts),
+                updated_at: Some(ts),
                 bookmarked: None,
                 quality_score: Some(0.5),
             },
@@ -297,8 +303,8 @@ mod tests {
                 diversity_score: None,
                 diversity_label: None,
                 causal_flag: None,
-                created_at: ts,
-                updated_at: ts,
+                created_at: Some(ts),
+                updated_at: Some(ts),
                 bookmarked: None,
                 quality_score: Some(0.5),
             },
@@ -317,8 +323,8 @@ mod tests {
                 diversity_score: None,
                 diversity_label: None,
                 causal_flag: None,
-                created_at: ts,
-                updated_at: ts,
+                created_at: Some(ts),
+                updated_at: Some(ts),
                 bookmarked: None,
                 quality_score: Some(0.5),
             },

@@ -35,8 +35,8 @@ pub struct Tweet {
     pub text: String,
     /// Original text including URLs and mentions.
     pub raw_text: String,
-    /// Publication timestamp.
-    pub published_at: DateTime<Utc>,
+    /// Publication timestamp as stated by the API; `None` when absent.
+    pub published_at: Option<DateTime<Utc>>,
     /// Like count.
     pub like_count: u64,
     /// Retweet count.
@@ -265,8 +265,7 @@ impl TwitterMonitor {
         let published_at = value["created_at"]
             .as_str()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
+            .map(|dt| dt.with_timezone(&Utc));
 
         let engagement_score = like_count as f64
             + retweet_count as f64 * 3.0
@@ -450,7 +449,7 @@ mod tests {
             author_verified: false,
             text: "Test tweet".to_string(),
             raw_text: "Test tweet".to_string(),
-            published_at: Utc::now(),
+            published_at: Some(Utc::now()),
             like_count: 100,
             retweet_count: 50,
             reply_count: 20,
