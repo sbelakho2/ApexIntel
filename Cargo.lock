@@ -424,6 +424,7 @@ dependencies = [
  "apex-store",
  "async-trait",
  "chrono",
+ "pgvector",
  "serde",
  "serde_json",
  "serde_yaml",
