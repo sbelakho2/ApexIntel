@@ -59,12 +59,23 @@ impl Default for LoginThrottleStatus {
     }
 }
 
-/// The throttle state for one attempt key.
+/// Whole seconds a caller must wait until `until`, rounded **up**.
 ///
-/// Windows are represented by a counter plus the time the current window
-/// started: that keeps the durable representation to a single row of plain
-/// columns while never counting a failure twice or forgetting one inside the
-/// window.
+/// Timestamps round-trip through PostgreSQL at microsecond precision while
+/// `Utc::now()` carries nanoseconds on Linux, so a lock with 0.999999s
+/// remaining must report 1 second — truncation would report 0 and tell the
+/// caller to retry immediately against a live lock.
+fn seconds_until(until: DateTime<Utc>, now: DateTime<Utc>) -> u64 {
+    let millis = (until - now).num_milliseconds();
+    if millis <= 0 {
+        0
+    } else {
+        u64::try_from((millis + 999) / 1000).unwrap_or(u64::MAX)
+    }
+}
+
+/// The throttle state for one attempt key: progressive backoff, a temporary
+/// lock, and an admin lock, all derived from measured windows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoginThrottleState {
     pub failures_10m: i64,
@@ -113,20 +124,21 @@ impl LoginThrottleState {
     pub fn status(&self, now: DateTime<Utc>) -> LoginThrottleStatus {
         let retry_after_secs = if self.admin_locked {
             self.admin_lock_expires_at
-                .map(|until| (until - now).num_seconds().max(0) as u64)
+                .map(|until| seconds_until(until, now))
                 .unwrap_or(0)
         } else if let Some(until) = self.temp_lock_until {
-            (until - now).num_seconds().max(0) as u64
+            seconds_until(until, now)
         } else if let Some(until) = self.backoff_until {
-            (until - now).num_seconds().max(0) as u64
+            seconds_until(until, now)
         } else {
             0
         };
 
+        let allowed = !self.admin_locked
+            && self.temp_lock_until.is_none_or(|until| now >= until)
+            && self.backoff_until.is_none_or(|until| now >= until);
         LoginThrottleStatus {
-            allowed: !self.admin_locked
-                && self.temp_lock_until.is_none_or(|until| now >= until)
-                && self.backoff_until.is_none_or(|until| now >= until),
+            allowed,
             retry_after_secs,
             failure_count_10m: self.failures_10m,
             failure_count_1h: self.failures_1h,
@@ -186,6 +198,27 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// A live lock must never report 0 seconds. PostgreSQL stores timestamps
+    /// at microsecond precision while `Utc::now()` carries nanoseconds on
+    /// Linux, so a 0.999999s remainder truncates to 0 without ceiling
+    /// arithmetic — telling the caller to retry immediately.
+    #[test]
+    fn retry_seconds_round_up_for_sub_second_remainders() {
+        let now = Utc::now();
+        let mut state = LoginThrottleState::default();
+        state.backoff_until = Some(now + Duration::nanoseconds(999_999_000));
+        assert_eq!(state.status(now).retry_after_secs, 1);
+
+        state.backoff_until = Some(now + Duration::milliseconds(1));
+        assert_eq!(state.status(now).retry_after_secs, 1);
+
+        state.backoff_until = Some(now + Duration::seconds(2));
+        assert_eq!(state.status(now).retry_after_secs, 2);
+
+        state.backoff_until = Some(now - Duration::milliseconds(1));
+        assert_eq!(state.status(now).retry_after_secs, 0);
+    }
 
     #[test]
     fn progressive_backoff_doubles_up_to_the_cap() {
