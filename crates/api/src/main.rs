@@ -601,11 +601,13 @@ async fn require_auth(
             // `/api/*` endpoints (charts, CSV/PDF exports, graph expansion,
             // alert settings, battlecard regeneration) with the ambient
             // `apex_session` cookie rather than a Bearer key. Accept a valid web
-            // session as an Analyst-level principal — but only when no
+            // session as its canonical `app_users` role — but only when no
             // Authorization header was presented (an invalid key must fail, not
             // silently downgrade) and, for unsafe methods, only when the
             // double-submit CSRF check passes.
-            if let Some(ctx) = session_fallback_context(&request) {
+            if let Some(ctx) =
+                session_fallback_context(request.headers(), request.method(), &state).await
+            {
                 request.extensions_mut().insert(ctx);
                 return next.run(request).await;
             }
@@ -618,11 +620,16 @@ async fn require_auth(
 /// Returns `None` when a Bearer key was presented (handled above), the session
 /// is missing/expired, or an unsafe method fails the CSRF check.
 ///
-/// The context carries the role from the signed session payload (via
-/// `session_api_context`), so an admin web session keeps admin capabilities on
-/// `/api/admin/*` instead of being downgraded to `ApiRole::Analyst`.
-fn session_fallback_context(request: &axum::extract::Request) -> Option<ApiAuthContext> {
-    apex_api::middleware::session::session_api_context(request.headers(), request.method())
+/// The context carries the role resolved against the canonical `app_users`
+/// row (via `session_api_context`), so a role change or disabled account
+/// takes effect on API calls immediately and an admin web session keeps admin
+/// capabilities on `/api/admin/*` instead of being downgraded.
+async fn session_fallback_context(
+    headers: &axum::http::HeaderMap,
+    method: &axum::http::Method,
+    state: &AppState,
+) -> Option<ApiAuthContext> {
+    apex_api::middleware::session::session_api_context(headers, method, state.store.as_ref()).await
 }
 
 async fn add_rate_limit_headers(

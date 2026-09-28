@@ -2,16 +2,33 @@
 //!
 //! Reads the session cookie (`__Host-apex_session` when `COOKIE_SECURE=1`,
 //! `apex_session` otherwise), verifies the HMAC SHA-256 signature, checks the
-//! expiry, and injects [`WebSession`] into request extensions. Unauthenticated
-//! requests are redirected to `/login`.
+//! signed `exp` expiry, and injects [`WebSession`] into request extensions.
+//! Unauthenticated requests are redirected to `/login`.
 //!
-//! Sessions signed before the P0 principal change (payload without `uid`,
-//! `role`, `exp` or `sv`) still validate: the role defaults to
-//! [`ApiRole::Analyst`] and the legacy 24-hour `iat` expiry rule applies.
+//! ## Session authority (audit P0-2)
+//!
+//! A signed cookie only proves that this server minted the token. It does not
+//! prove the principal still exists, is still enabled, still carries the
+//! signed role, or that the session was not revoked. Every browser session is
+//! therefore re-resolved against the canonical `app_users` row through the
+//! [`SessionAuthority`] port on each request:
+//!
+//! ```text
+//! signed cookie -> HMAC/exp -> uid AND role AND sv > 0 (no legacy upgrade)
+//!               -> PgStore::get_app_user(uid)
+//!               -> enabled == true -> db.session_version == cookie.sv
+//!               -> role = DB role
+//! ```
+//!
+//! A cookie without the principal claims (`uid`, `role`, `sv`) predates the
+//! P0 principal change and is rejected — it forces reauthentication instead of
+//! being upgraded to [`ApiRole::Analyst`]. Role changes and disabling take
+//! effect on the next request, not when the cookie expires.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
@@ -25,6 +42,7 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use apex_core::identity::{UserId, Username};
+use apex_store::postgres::{AppUserRecord, PgStore};
 
 use crate::auth::{ApiKey, ApiRole, Principal};
 use crate::destructive_actions::ApiAuthContext;
@@ -85,8 +103,9 @@ pub struct WebSession {
     /// Stable principal UUID used to key real-time connections and to address alerts.
     pub principal_id: Uuid,
     pub issued_at: i64,
-    /// Signed expiry (`exp`) claim; `None` for legacy sessions that predate it.
-    pub expires_at: Option<i64>,
+    /// Signed expiry (`exp`) claim. Required — a session without one is
+    /// rejected as a pre-principal legacy cookie.
+    pub expires_at: i64,
 }
 
 impl WebSession {
@@ -103,6 +122,11 @@ impl WebSession {
     /// Can this session access admin-only surfaces?
     pub fn can_admin(&self) -> bool {
         self.role.can_admin()
+    }
+
+    /// Can this session reach mutating browser routes?
+    pub fn can_write(&self) -> bool {
+        self.role.can_write()
     }
 }
 
@@ -152,8 +176,11 @@ pub fn create_session_token(claims: &SessionClaims, session_secret: &str) -> Opt
     Some(format!("{}.{}", payload_b64, sig))
 }
 
-/// Payload shape accepted by [`validate_session`]. Every field except `sub`
-/// and `iat` is optional so pre-principal cookies keep validating.
+/// Payload shape accepted by [`validate_session`].
+///
+/// `uid`, `role`, `exp` and a positive `sv` are all mandatory. Cookies signed
+/// before the P0 principal change carry `sub` + `iat` only; those are legacy
+/// and rejected (no role upgrade, no identity fallback to the login name).
 #[derive(serde::Deserialize)]
 struct StoredSessionPayload {
     #[serde(default)]
@@ -168,6 +195,10 @@ struct StoredSessionPayload {
     sv: u32,
 }
 
+/// Cryptographically verify a signed session cookie and parse its principal
+/// claims. This is the stateless half of the session check; the caller must
+/// still resolve the principal against the canonical `app_users` row via a
+/// [`SessionAuthority`] before trusting the role.
 pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<WebSession> {
     if session_secret.is_empty() {
         return None;
@@ -197,40 +228,53 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
 
     let payload: StoredSessionPayload = serde_json::from_slice(&payload_bytes).ok()?;
 
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    if let Some(expires_at) = payload.exp {
-        if now_ms > expires_at {
+    // The signed expiry is mandatory: current login always signs `exp`, so a
+    // cookie without one predates the principal contract and is rejected.
+    let expires_at = match payload.exp {
+        Some(expires_at) => expires_at,
+        None => {
+            tracing::debug!("session rejected: missing `exp` (legacy cookie)");
             return None;
         }
-    } else if now_ms - payload.iat > SESSION_TTL_MS {
-        // Legacy cookies (no `exp`) keep the historical 24-hour TTL.
+    };
+    if chrono::Utc::now().timestamp_millis() > expires_at {
         return None;
     }
 
-    let role = match payload.role.as_deref() {
-        // Pre-principal cookies carried no role; Analyst was the fallback then
-        // and remains the safe default now.
-        None => ApiRole::Analyst,
-        // A signed cookie that explicitly carries a role we do not know is not
-        // a pre-principal cookie: reject the session instead of granting the
-        // analyst fallback (audit item 3 — unknown roles never fail open).
-        Some(raw) => match raw.parse::<ApiRole>() {
-            Ok(role) => role,
-            Err(_) => {
-                tracing::error!(role = %raw, "unknown role in session payload; session rejected");
-                return None;
-            }
-        },
+    // `uid`, `role` and `sv > 0` are mandatory principal claims. A legacy
+    // cookie must reauthenticate; it is never upgraded to a default role and
+    // the login name is never used as an ownership id.
+    let uid = match payload.uid.as_deref().map(str::trim) {
+        Some(uid) if !uid.is_empty() => uid.to_string(),
+        _ => {
+            tracing::debug!("session rejected: missing `uid` (legacy cookie)");
+            return None;
+        }
     };
+    let raw_role = match payload.role.as_deref() {
+        Some(role) => role,
+        None => {
+            tracing::debug!("session rejected: missing `role` (legacy cookie)");
+            return None;
+        }
+    };
+    let role = match raw_role.parse::<ApiRole>() {
+        Ok(role) => role,
+        // A signed cookie carrying an unknown role is not a legacy cookie:
+        // reject it instead of granting a fallback (unknown roles never fail
+        // open).
+        Err(_) => {
+            tracing::error!(role = %raw_role, "unknown role in session payload; session rejected");
+            return None;
+        }
+    };
+    if payload.sv == 0 {
+        tracing::debug!("session rejected: `sv` must be positive (legacy cookie)");
+        return None;
+    }
 
+    let user_id = UserId::from(uid);
     let username = Username::from(payload.sub);
-    // Legacy pre-principal cookies carried no `uid`; the login name was the
-    // identity then, so fall back to it. Sessions issued by the current login
-    // always carry the canonical `app_users.id`.
-    let user_id = payload
-        .uid
-        .map(UserId::from)
-        .unwrap_or_else(|| UserId::from(username.as_str()));
     let principal_id = apex_core::alert_config::principal_uuid_from_user_id(&user_id);
 
     Some(WebSession {
@@ -240,8 +284,100 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
         session_version: payload.sv,
         principal_id,
         issued_at: payload.iat,
-        expires_at: payload.exp,
+        expires_at,
     })
+}
+
+/// Why a signed session no longer matches the canonical identity record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAuthorityError {
+    /// No `app_users` row exists for the session's `uid`.
+    UnknownUser,
+    /// The canonical row is not enabled.
+    Disabled,
+    /// The row's `session_version` does not match the signed `sv` (or is not
+    /// positive), so the session was revoked.
+    StaleSession,
+    /// The canonical row's role is missing or unknown.
+    UnknownRole,
+    /// The authoritative lookup itself failed.
+    Unavailable,
+}
+
+/// Authoritative re-resolution of a signed browser session against the
+/// canonical identity store.
+///
+/// Implemented by [`PgStore`] in production. Tests provide in-memory
+/// implementations; production code must never substitute a weaker authority,
+/// because `require_session` fails closed when none is wired.
+#[async_trait]
+pub trait SessionAuthority: Send + Sync + 'static {
+    /// Return the refreshed session — with the database's current role and
+    /// session version — or the reason the session is no longer valid.
+    async fn authorize(&self, session: &WebSession) -> Result<WebSession, SessionAuthorityError>;
+}
+
+/// Pure session decision: compare the signed session against the canonical
+/// `app_users` row.
+///
+/// The database record is authoritative for `enabled`, `role` and
+/// `session_version`; the signed claims only select the row and prove the
+/// token was minted by this server. A downgrade (Analyst cookie, Viewer row)
+/// therefore yields the Viewer role immediately, and a version bump revokes
+/// every outstanding cookie.
+pub fn authorize_against_record(
+    session: &WebSession,
+    record: &AppUserRecord,
+) -> Result<WebSession, SessionAuthorityError> {
+    if !record.enabled {
+        return Err(SessionAuthorityError::Disabled);
+    }
+    let db_version = u32::try_from(record.session_version).unwrap_or(0);
+    if db_version == 0 || db_version != session.session_version {
+        return Err(SessionAuthorityError::StaleSession);
+    }
+    let role = match record.role.trim().parse::<ApiRole>() {
+        Ok(role) => role,
+        Err(_) => {
+            tracing::error!(
+                user_id = %record.id,
+                role = %record.role,
+                "session authority: unknown role in app_users; session rejected"
+            );
+            return Err(SessionAuthorityError::UnknownRole);
+        }
+    };
+
+    let user_id = UserId::from(record.id.clone());
+    Ok(WebSession {
+        principal_id: apex_core::alert_config::principal_uuid_from_user_id(&user_id),
+        user_id,
+        // The stored login name is canonical; a rename takes effect now too.
+        username: Username::from(record.username.clone()),
+        role,
+        session_version: db_version,
+        issued_at: session.issued_at,
+        expires_at: session.expires_at,
+    })
+}
+
+#[async_trait]
+impl SessionAuthority for PgStore {
+    async fn authorize(&self, session: &WebSession) -> Result<WebSession, SessionAuthorityError> {
+        let record = self
+            .get_app_user(session.user_id.as_str())
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    %error,
+                    user_id = %session.user_id,
+                    "session authority lookup failed"
+                );
+                SessionAuthorityError::Unavailable
+            })?
+            .ok_or(SessionAuthorityError::UnknownUser)?;
+        authorize_against_record(session, &record)
+    }
 }
 
 fn extract_cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -423,8 +559,13 @@ pub fn api_session_csrf_ok(headers: &HeaderMap, method: &Method) -> bool {
 /// cookie-authenticated fallback for `/api/*` endpoints. Returns `None` when a
 /// Bearer key was presented (that path is handled by the caller), the session
 /// is missing/expired, or an unsafe method fails the CSRF check. The principal
-/// role comes from the signed session payload.
-pub fn session_api_context(headers: &HeaderMap, method: &Method) -> Option<ApiAuthContext> {
+/// role comes from the canonical `app_users` row through `authority`, not from
+/// the signed cookie — role changes take effect immediately here too.
+pub async fn session_api_context(
+    headers: &HeaderMap,
+    method: &Method,
+    authority: &dyn SessionAuthority,
+) -> Option<ApiAuthContext> {
     if headers.contains_key(header::AUTHORIZATION) {
         return None;
     }
@@ -440,6 +581,17 @@ pub fn session_api_context(headers: &HeaderMap, method: &Method) -> Option<ApiAu
         );
         return None;
     }
+    let session = match authority.authorize(&session).await {
+        Ok(session) => session,
+        Err(reason) => {
+            tracing::warn!(
+                user_id = %session.user_id,
+                ?reason,
+                "session-authenticated API request rejected by session authority"
+            );
+            return None;
+        }
+    };
     Some(ApiAuthContext {
         key_id: "web-session".to_string(),
         user_id: session.user_id,
@@ -447,18 +599,22 @@ pub fn session_api_context(headers: &HeaderMap, method: &Method) -> Option<ApiAu
     })
 }
 
-/// State for [`require_api_auth`] — the API key registry.
+/// State for [`require_api_auth`] — the API key registry and the optional
+/// browser-session authority. When no authority is wired, session cookies are
+/// not accepted as an API principal (fail closed).
 #[derive(Clone)]
 pub struct ApiAuthState {
     pub api_keys: Arc<HashMap<String, ApiKey>>,
+    pub session_authority: Option<Arc<dyn SessionAuthority>>,
 }
 
 /// API authentication middleware with browser-session fallback.
 ///
 /// Bearer API keys are validated first. When no usable Authorization header is
-/// present, a valid browser session is accepted as its signed role — but only
-/// when the double-submit CSRF check passes for unsafe methods. An invalid
-/// Bearer key fails instead of silently downgrading to the session.
+/// present, a valid browser session is accepted as its canonical role — but
+/// only when the double-submit CSRF check passes for unsafe methods and the
+/// session authority confirms the principal. An invalid Bearer key fails
+/// instead of silently downgrading to the session.
 pub async fn require_api_auth(
     State(state): State<ApiAuthState>,
     mut request: Request,
@@ -477,9 +633,13 @@ pub async fn require_api_auth(
             next.run(request).await
         }
         Err(api_err) => {
-            if let Some(ctx) = session_api_context(request.headers(), request.method()) {
-                request.extensions_mut().insert(ctx);
-                return next.run(request).await;
+            if let Some(authority) = state.session_authority.as_deref() {
+                if let Some(ctx) =
+                    session_api_context(request.headers(), request.method(), authority).await
+                {
+                    request.extensions_mut().insert(ctx);
+                    return next.run(request).await;
+                }
             }
             auth_error_response(api_err)
         }
@@ -496,6 +656,28 @@ pub async fn require_admin(
 ) -> Response {
     if !auth.role.can_admin() {
         return auth_error_response(ApiError::forbidden("Admin role required"));
+    }
+    next.run(request).await
+}
+
+/// Web-page write guard: restricted to browser sessions whose (database)
+/// role passes [`ApiRole::can_write`]. Runs after [`require_session`], which
+/// resolved the canonical role, so Viewers and Services can never reach a
+/// mutating browser route.
+pub async fn require_web_write(request: Request, next: Next) -> Response {
+    let Some(session) = request.extensions().get::<WebSession>() else {
+        // Ordering safety: a write route registered outside the session guard
+        // must not run unauthenticated.
+        return Redirect::to("/login").into_response();
+    };
+    if !session.role.can_write() {
+        tracing::warn!(
+            username = %session.username,
+            role = %session.role.as_str(),
+            path = %request.uri().path(),
+            "web page mutation denied: write role required"
+        );
+        return (StatusCode::FORBIDDEN, "Insufficient permissions").into_response();
     }
     next.run(request).await
 }
@@ -563,17 +745,49 @@ fn validate_csrf_request(method: &Method, headers: &HeaderMap, body: &[u8]) -> b
     false
 }
 
-/// Axum middleware: require a valid session cookie, redirect to `/login` otherwise.
-pub async fn require_session(request: Request, next: Next) -> Response {
+/// Axum middleware: require a signed, unexpired session cookie whose
+/// principal resolves against the canonical `app_users` row. Redirects to
+/// `/login` when any check fails.
+pub async fn require_session(mut request: Request, next: Next) -> Response {
     let session_secret = &*SESSION_SECRET;
     if session_secret.is_empty() {
         tracing::error!("SESSION_SECRET not set — rejecting all web sessions");
         return Redirect::to("/login").into_response();
     }
 
-    let session = match validate_session(request.headers(), session_secret) {
+    let signed_session = match validate_session(request.headers(), session_secret) {
         Some(session) => session,
         None => return Redirect::to("/login").into_response(),
+    };
+
+    // The cookie proves this server minted the token; the canonical row is the
+    // authority on whether the principal may still act. Missing wiring is a
+    // server misconfiguration: fail closed loudly instead of trusting claims.
+    let Some(authority) = request
+        .extensions()
+        .get::<Arc<dyn SessionAuthority>>()
+        .cloned()
+    else {
+        tracing::error!(
+            "session authority not wired — rejecting all web sessions \
+             (wire Arc<dyn SessionAuthority> into the browser router)"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Session authority unavailable",
+        )
+            .into_response();
+    };
+    let session = match authority.authorize(&signed_session).await {
+        Ok(session) => session,
+        Err(reason) => {
+            tracing::warn!(
+                user_id = %signed_session.user_id,
+                ?reason,
+                "web session rejected by session authority"
+            );
+            return Redirect::to("/login").into_response();
+        }
     };
 
     let method = request.method().clone();
@@ -608,7 +822,6 @@ pub async fn require_session(request: Request, next: Next) -> Response {
         None
     };
 
-    let mut request = request;
     request.extensions_mut().insert(session);
 
     if !requires_csrf(&method) {
@@ -668,12 +881,10 @@ mod tests {
         headers
     }
 
-    fn signed_session_cookie(username: &str, issued_at: i64, secret: &str) -> String {
-        let payload = serde_json::json!({
-            "sub": username,
-            "iat": issued_at,
-        });
-        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+    /// Sign an arbitrary JSON payload as the session cookie. Used to forge
+    /// shapes (legacy, missing claims) that the login handler never mints.
+    fn signed_payload_cookie(payload: &serde_json::Value, secret: &str) -> String {
+        let payload_bytes = serde_json::to_vec(payload).unwrap();
         let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_bytes);
 
         let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
@@ -702,34 +913,131 @@ mod tests {
         format!("{}={token}", session_cookie_name())
     }
 
+    fn app_user_record(
+        id: &str,
+        username: &str,
+        role: &str,
+        enabled: bool,
+        session_version: i32,
+    ) -> AppUserRecord {
+        let now = chrono::Utc::now();
+        AppUserRecord {
+            id: id.to_string(),
+            username: username.to_string(),
+            display_name: username.to_string(),
+            email: None,
+            role: role.to_string(),
+            enabled,
+            password_hash: None,
+            session_version,
+            created_at: now,
+            updated_at: now,
+            last_login_at: None,
+        }
+    }
+
     #[test]
     fn test_validate_session_accepts_valid_signed_cookie() {
         let secret = "test-secret";
-        let cookie = signed_session_cookie("alice", chrono::Utc::now().timestamp_millis(), secret);
+        let cookie = signed_principal_cookie("usr-alice", "alice", ApiRole::Viewer, secret);
         let headers = headers_with_cookie(&cookie);
 
         let session = validate_session(&headers, secret).expect("session should validate");
 
         assert_eq!(session.username, "alice");
+        assert_eq!(session.user_id, "usr-alice");
+        assert_eq!(session.role, ApiRole::Viewer);
         assert_eq!(
             session.principal_id,
-            apex_core::alert_config::principal_uuid_from_user_id(&UserId::from("alice")),
+            apex_core::alert_config::principal_uuid_from_user_id(&UserId::from("usr-alice")),
             "session must carry the stable principal ID"
         );
     }
 
     #[test]
-    fn legacy_session_without_role_defaults_to_analyst() {
+    fn legacy_session_without_principal_claims_is_rejected() {
+        // Pre-principal cookies carried `sub` + `iat` only. They must force
+        // reauthentication: no Analyst upgrade, no login-name identity.
         let secret = "test-secret";
-        let cookie = signed_session_cookie("legacy", chrono::Utc::now().timestamp_millis(), secret);
+        let now = chrono::Utc::now().timestamp_millis();
+        let cookie =
+            signed_payload_cookie(&serde_json::json!({ "sub": "legacy", "iat": now }), secret);
         let headers = headers_with_cookie(&cookie);
 
-        let session = validate_session(&headers, secret).expect("legacy session should validate");
+        assert!(
+            validate_session(&headers, secret).is_none(),
+            "a role-less legacy cookie must be rejected, never defaulted to Analyst"
+        );
+    }
 
-        assert_eq!(session.role, ApiRole::Analyst);
-        assert_eq!(session.user_id, "legacy");
-        assert_eq!(session.session_version, 0);
-        assert!(!session.can_admin());
+    #[test]
+    fn session_missing_uid_role_or_positive_sv_is_rejected() {
+        let secret = "test-secret";
+        let now = chrono::Utc::now().timestamp_millis();
+        let exp = now + SESSION_TTL_MS;
+        let base = |extra: serde_json::Value| {
+            let mut value = serde_json::json!({
+                "sub": "alice",
+                "iat": now,
+                "exp": exp,
+            });
+            for (key, field) in extra.as_object().unwrap() {
+                value[key] = field.clone();
+            }
+            value
+        };
+
+        // uid present, role present, sv present: the control shape validates.
+        let complete = base(serde_json::json!({
+            "uid": "usr-alice", "role": "admin", "sv": SESSION_VERSION,
+        }));
+        assert!(validate_session(
+            &headers_with_cookie(&signed_payload_cookie(&complete, secret)),
+            secret
+        )
+        .is_some());
+
+        for (name, payload) in [
+            (
+                "missing uid",
+                base(serde_json::json!({ "role": "admin", "sv": SESSION_VERSION })),
+            ),
+            (
+                "blank uid",
+                base(serde_json::json!({ "uid": "  ", "role": "admin", "sv": SESSION_VERSION })),
+            ),
+            (
+                "missing role",
+                base(serde_json::json!({ "uid": "usr-alice", "sv": SESSION_VERSION })),
+            ),
+            (
+                "zero sv",
+                base(serde_json::json!({ "uid": "usr-alice", "role": "admin", "sv": 0 })),
+            ),
+        ] {
+            assert!(
+                validate_session(
+                    &headers_with_cookie(&signed_payload_cookie(&payload, secret)),
+                    secret
+                )
+                .is_none(),
+                "session with {name} must be rejected"
+            );
+        }
+
+        // An `exp`-less cookie predates the principal contract too.
+        let no_exp = serde_json::json!({
+            "uid": "usr-alice", "sub": "alice", "role": "admin",
+            "iat": now, "sv": SESSION_VERSION,
+        });
+        assert!(
+            validate_session(
+                &headers_with_cookie(&signed_payload_cookie(&no_exp, secret)),
+                secret
+            )
+            .is_none(),
+            "a session without the signed expiry must be rejected"
+        );
     }
 
     #[test]
@@ -737,17 +1045,14 @@ mod tests {
         let secret = "test-secret";
         let now = chrono::Utc::now().timestamp_millis();
         let payload = serde_json::json!({
+            "uid": "usr-mallory",
             "sub": "mallory",
             "role": "superuser",
             "iat": now,
             "exp": now + SESSION_TTL_MS,
+            "sv": SESSION_VERSION,
         });
-        let payload_bytes = serde_json::to_vec(&payload).unwrap();
-        let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_bytes);
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
-        mac.update(&payload_bytes);
-        let sig = hex::encode(mac.finalize().into_bytes());
-        let headers = headers_with_cookie(&format!("apex_session={payload_b64}.{sig}"));
+        let headers = headers_with_cookie(&signed_payload_cookie(&payload, secret));
 
         assert!(
             validate_session(&headers, secret).is_none(),
@@ -768,8 +1073,124 @@ mod tests {
         assert_eq!(session.role, ApiRole::Admin);
         assert_eq!(session.session_version, SESSION_VERSION);
         assert!(session.can_admin());
-        assert!(session.expires_at.is_some());
+        assert!(session.can_write());
+        assert_eq!(
+            session.expires_at,
+            session.issued_at + SESSION_TTL_MS,
+            "the signed expiry is mandatory and preserved"
+        );
         assert_eq!(session.principal().role, ApiRole::Admin);
+    }
+
+    // ── Session authority: the DB row is authoritative ──
+
+    #[test]
+    fn authority_applies_the_database_role_over_the_signed_role() {
+        let session = validate_session(
+            &headers_with_cookie(&signed_principal_cookie(
+                "usr-analyst",
+                "analyst",
+                ApiRole::Analyst,
+                "test-secret",
+            )),
+            "test-secret",
+        )
+        .expect("signed session validates");
+        let record = app_user_record("usr-analyst", "analyst", "viewer", true, 1);
+
+        let refreshed =
+            authorize_against_record(&session, &record).expect("enabled row with same version");
+
+        assert_eq!(
+            refreshed.role,
+            ApiRole::Viewer,
+            "an Analyst cookie against a Viewer row loses write access immediately"
+        );
+        assert!(!refreshed.can_write());
+        assert!(!refreshed.can_admin());
+    }
+
+    #[test]
+    fn authority_promotes_to_the_database_role_too() {
+        let session = validate_session(
+            &headers_with_cookie(&signed_principal_cookie(
+                "usr-viewer",
+                "viewer",
+                ApiRole::Viewer,
+                "test-secret",
+            )),
+            "test-secret",
+        )
+        .expect("signed session validates");
+        let record = app_user_record("usr-viewer", "viewer", "admin", true, 1);
+
+        let refreshed =
+            authorize_against_record(&session, &record).expect("enabled row with same version");
+        assert_eq!(refreshed.role, ApiRole::Admin);
+        assert_eq!(refreshed.username, "viewer");
+    }
+
+    #[test]
+    fn authority_rejects_disabled_rows() {
+        let session = validate_session(
+            &headers_with_cookie(&signed_principal_cookie(
+                "usr-alice",
+                "alice",
+                ApiRole::Analyst,
+                "test-secret",
+            )),
+            "test-secret",
+        )
+        .expect("signed session validates");
+        let record = app_user_record("usr-alice", "alice", "analyst", false, 1);
+
+        assert_eq!(
+            authorize_against_record(&session, &record).err(),
+            Some(SessionAuthorityError::Disabled)
+        );
+    }
+
+    #[test]
+    fn authority_rejects_stale_session_versions() {
+        let session = validate_session(
+            &headers_with_cookie(&signed_principal_cookie(
+                "usr-alice",
+                "alice",
+                ApiRole::Analyst,
+                "test-secret",
+            )),
+            "test-secret",
+        )
+        .expect("signed session validates");
+
+        for db_version in [SESSION_VERSION as i32 + 1, 0, -1] {
+            let record = app_user_record("usr-alice", "alice", "analyst", true, db_version);
+            assert_eq!(
+                authorize_against_record(&session, &record).err(),
+                Some(SessionAuthorityError::StaleSession),
+                "db session_version {db_version} must revoke the cookie"
+            );
+        }
+    }
+
+    #[test]
+    fn authority_rejects_unknown_roles() {
+        let session = validate_session(
+            &headers_with_cookie(&signed_principal_cookie(
+                "usr-alice",
+                "alice",
+                ApiRole::Analyst,
+                "test-secret",
+            )),
+            "test-secret",
+        )
+        .expect("signed session validates");
+        let record = app_user_record("usr-alice", "alice", "superuser", true, 1);
+
+        assert_eq!(
+            authorize_against_record(&session, &record).err(),
+            Some(SessionAuthorityError::UnknownRole)
+        );
     }
 
     #[test]

@@ -1,10 +1,12 @@
 //! Guard test: every navigation URL promoted by the command palette must be a
-//! registered route in `app_router.rs`. The palette command list lives in
-//! plain JavaScript, so without this check a route rename would silently leave
-//! stale palette entries that 404 until someone exercises them in a browser.
+//! registered route in `app_router.rs` (JSON API) or `web/routes.rs` (HTML
+//! pages). The palette command list lives in plain JavaScript, so without this
+//! check a route rename would silently leave stale palette entries that 404
+//! until someone exercises them in a browser.
 
 const PALETTE_JS: &str = include_str!("../static/js/command-palette.js");
 const APP_ROUTER_RS: &str = include_str!("../src/app_router.rs");
+const WEB_ROUTES_RS: &str = include_str!("../src/web/routes.rs");
 
 #[test]
 fn command_palette_urls_resolve_to_registered_routes() {
@@ -18,8 +20,8 @@ fn command_palette_urls_resolve_to_registered_routes() {
     for url in urls {
         let quoted = format!("\"{url}\"");
         assert!(
-            APP_ROUTER_RS.contains(&quoted),
-            "command palette URL {url} is not registered in app_router.rs"
+            APP_ROUTER_RS.contains(&quoted) || WEB_ROUTES_RS.contains(&quoted),
+            "command palette URL {url} is not registered in app_router.rs or web/routes.rs"
         );
     }
 }

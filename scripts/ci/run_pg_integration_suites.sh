@@ -91,6 +91,11 @@ run cargo test -p apex-insights --lib --locked -- --ignored --test-threads=1
 # ── Canonical `app_users` login contract ─────────────────────────────────────
 run cargo test -p apex-api --test app_users_login_integration --locked -- --ignored --test-threads=1
 
+# ── Browser session authority contract (audit P0-2) ──────────────────────────
+# Disabled rows, stale session versions, role downgrade/promotion and legacy
+# cookies, all resolved against the real `app_users` table.
+run cargo test -p apex-api --test session_authority_integration --locked -- --ignored --test-threads=1
+
 # ── Learning evaluation promotion gate ───────────────────────────────────────
 # Frozen evaluation sets, versioned metric runs and the promotion/rejection
 # rules (audit #38). DB-backed suites in this crate must be registered above;

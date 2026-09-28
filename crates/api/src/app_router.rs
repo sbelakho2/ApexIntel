@@ -1,6 +1,6 @@
 use crate::*;
 
-use apex_api::middleware::session::{require_admin, require_session, require_web_admin};
+use apex_api::middleware::session::{require_admin, SessionAuthority};
 use axum::{
     middleware,
     routing::{delete, get, patch, post, put},
@@ -596,253 +596,20 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .layer(Extension(state.store.clone()))
         .layer(Extension(state.search_index.clone()));
 
-    // The HTML /admin page carries the same `can_admin()` authorization as
-    // `/api/admin/*`: a browser session without an admin role gets 403, while
-    // unauthenticated requests are still redirected to /login by
-    // `require_session` (registered on `web_pages` below).
-    let admin_pages = Router::new()
-        .route("/admin", get(apex_api::web::admin::admin_page))
-        .route(
-            "/admin/notifications/delivery/replay",
-            post(apex_api::web::admin::admin_replay_delivery),
-        )
-        .route(
-            "/admin/notifications/outbox/replay",
-            post(apex_api::web::admin::admin_replay_outbox),
-        )
-        .route_layer(middleware::from_fn(require_web_admin));
-
-    let web_pages = Router::new()
-        .route("/", get(apex_api::web::dashboard::dashboard))
-        .route("/warnings", get(apex_api::web::warnings::list_warnings))
-        .route(
-            "/warnings/unread-count",
-            get(apex_api::web::warnings::unread_count),
-        )
-        .route("/warnings/:id", get(apex_api::web::warnings::get_warning))
-        .route(
-            "/warnings/:id/acknowledge",
-            post(apex_api::web::warnings::acknowledge_warning_html),
-        )
-        .route(
-            "/warnings/:id/investigate",
-            post(apex_api::web::warnings::start_investigation_html),
-        )
-        .route(
-            "/warnings/:id/analyze",
-            post(apex_api::web::warnings::analyze_warning_html),
-        )
-        .route(
-            "/warnings/:id/analysis/:run_id",
-            get(apex_api::web::warnings::warning_analysis_status_html),
-        )
-        .route(
-            "/warnings/:id/review",
-            post(apex_api::web::warnings::review_warning_html),
-        )
-        .route(
-            "/warnings/:id/notes",
-            post(apex_api::web::warnings::create_warning_note),
-        )
-        .route("/insights", get(apex_api::web::insights::list_insights))
-        .route("/insights/:id", get(apex_api::web::insights::get_insight))
-        .route(
-            "/insights/:id/pdf",
-            get(apex_api::web::insights::export_insight_pdf_html),
-        )
-        .route(
-            "/insights/:id/bookmark",
-            post(apex_api::web::insights::bookmark_insight_html),
-        )
-        .route(
-            "/insights/:id/analyze",
-            post(apex_api::web::insights::analyze_insight_html),
-        )
-        .route(
-            "/insights/:id/notes",
-            post(apex_api::web::insights::create_insight_note),
-        )
-        .route("/companies", get(apex_api::web::companies::list_companies))
-        .route("/companies/:id", get(apex_api::web::companies::get_company))
-        .route(
-            "/companies/:id/changes",
-            get(apex_api::web::companies::company_changes_tab),
-        )
-        .route(
-            "/companies/:id/dossier",
-            get(apex_api::web::companies::company_dossier_tab),
-        )
-        .route("/persons", get(apex_api::web::persons::list_persons))
-        .route(
-            "/buying-centers",
-            get(apex_api::web::persons::list_buying_centers),
-        )
-        .route("/persons/:id", get(apex_api::web::persons::get_person))
-        .route(
-            "/competitors",
-            get(apex_api::web::competitors::list_competitors),
-        )
-        .route(
-            "/battlecards",
-            get(apex_api::web::battlecards::list_battlecards),
-        )
-        .route(
-            "/battlecards/:id",
-            get(apex_api::web::battlecards::get_battlecard),
-        )
-        .route("/graph", get(apex_api::web::graph::graph_page))
-        .route("/recipes", get(apex_api::web::recipes::list_recipes))
-        .route("/recipes/new", get(apex_api::web::recipes::new_recipe))
-        // B307: the creation form's action target — previously unregistered,
-        // so the only creation flow in the product 404'd on submit.
-        .route(
-            "/recipes/create-form",
-            post(apex_api::web::recipes::create_recipe_form),
-        )
-        .route("/search", get(apex_api::web::search::search_page))
-        .route(
-            "/search/suggestions",
-            get(apex_api::web::search::suggestions_html),
-        )
-        .route(
-            "/search/saved-searches",
-            post(apex_api::web::search::save_search),
-        )
-        .route(
-            "/search/saved-searches/:id/delete",
-            post(apex_api::web::search::delete_saved_search),
-        )
-        .route("/security", get(apex_api::web::security::security_page))
-        .route(
-            "/security/trigger-scan",
-            post(apex_api::web::security::post_trigger_scan_html),
-        )
-        .route("/memos", get(apex_api::web::memos::list_memos))
-        .route(
-            "/memos/_list",
-            get(apex_api::web::memos::list_memos_partial),
-        )
-        .route(
-            "/notifications",
-            get(apex_api::web::notifications::list_notifications_page),
-        )
-        .route(
-            "/notifications/:id/read",
-            post(apex_api::web::notifications::mark_notification_read),
-        )
-        .route(
-            "/settings",
-            get(apex_api::web::settings::settings_page)
-                .post(apex_api::web::settings::save_settings),
-        )
-        .route(
-            "/settings/alerts",
-            get(apex_api::web::alert_settings::alert_settings_page),
-        )
-        // ─── Collaboration Web Routes ──────────────────────────────────────
-        .route(
-            "/workspaces",
-            get(apex_api::web::collaboration::list_workspaces),
-        )
-        .route(
-            "/workspaces/new",
-            get(apex_api::web::collaboration::new_workspace_page),
-        )
-        .route(
-            "/workspaces",
-            post(apex_api::web::collaboration::create_workspace),
-        )
-        .route(
-            "/workspaces/:id",
-            get(apex_api::web::collaboration::get_workspace),
-        )
-        .route(
-            "/workspaces/:id/close",
-            post(apex_api::web::collaboration::close_workspace),
-        )
-        .route(
-            "/workspaces/:id/assign",
-            post(apex_api::web::collaboration::assign_user_to_workspace),
-        )
-        .route(
-            "/workspaces/:id/shares",
-            post(apex_api::web::collaboration::share_workspace),
-        )
-        .route("/queue", get(apex_api::web::collaboration::list_queue))
-        .route("/queue", post(apex_api::web::collaboration::add_to_queue))
-        .route(
-            "/queue/:id/complete",
-            post(apex_api::web::collaboration::complete_queue_item),
-        )
-        .route(
-            "/activity",
-            get(apex_api::web::collaboration::list_activity),
-        )
-        .route(
-            "/supplier-risk",
-            get(apex_api::web::collaboration::list_supplier_risks),
-        )
-        .route(
-            "/supplier-risk",
-            post(apex_api::web::collaboration::add_supplier_risk),
-        )
-        .route(
-            "/pipeline",
-            get(apex_api::web::collaboration::list_pipeline),
-        )
-        .route(
-            "/pipeline",
-            post(apex_api::web::collaboration::create_pipeline_opportunity),
-        )
-        .route(
-            "/pipeline/:id/stage",
-            post(apex_api::web::collaboration::update_pipeline_stage),
-        )
-        .route(
-            "/evidence",
-            get(apex_api::web::collaboration::list_evidence),
-        )
-        .route(
-            "/evidence",
-            post(apex_api::web::collaboration::add_evidence),
-        )
-        .route(
-            "/team-assignments",
-            get(apex_api::web::collaboration::list_team_assignments),
-        )
-        .route(
-            "/team-assignments",
-            post(apex_api::web::collaboration::create_team_assignment),
-        )
-        // ─── Executive Dashboard Web Route ─────────────────────────────────
-        .route(
-            "/executive",
-            get(apex_api::web::executive::executive_dashboard),
-        )
-        // ─── Historical Trends Web Route ───────────────────────────────────
-        .route("/trends", get(apex_api::web::trends::trends_page))
-        // ─── AI Triage Engine Web Routes ─────────────────────────────────
-        .route("/triage", get(apex_api::web::triage::list_triage))
-        .route("/triage/:id", get(apex_api::web::triage::get_triage_item))
-        .route(
-            "/triage/:id/acknowledge",
-            post(apex_api::web::triage::acknowledge_triage_html),
-        )
-        .route(
-            "/triage/:id/resolve",
-            post(apex_api::web::triage::resolve_triage_html),
-        )
-        .route(
-            "/triage/:id/dismiss",
-            post(apex_api::web::triage::dismiss_triage_html),
-        )
-        .route(
-            "/triage/:id/override",
-            post(apex_api::web::triage::override_triage_html),
-        )
-        .merge(admin_pages)
-        .route_layer(middleware::from_fn(require_session))
+    // The browser surface is assembled in `apex_api::web::routes`, where the
+    // read/write/admin split and the `require_session` / `require_web_write` /
+    // `require_web_admin` guards are attached by construction (audit P0-1):
+    // a mutating page cannot be registered without the write guard. Handlers
+    // only need request extensions, so the router is state-generic and the
+    // production state is supplied here.
+    //
+    // `Arc<dyn SessionAuthority>` is what `require_session` resolves the
+    // canonical `app_users` row through; without it the middleware fails
+    // closed instead of trusting the signed cookie's role.
+    let session_authority: Arc<dyn SessionAuthority> = state.store.clone();
+    let web_pages = apex_api::web::routes::build_web_pages::<AppState>()
         .layer(Extension(state.store.clone()))
+        .layer(Extension(session_authority))
         .layer(Extension(state.search_index.clone()))
         .layer(Extension(state.autocomplete_index.clone()));
 
