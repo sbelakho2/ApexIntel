@@ -160,11 +160,22 @@ async fn openapi_json() -> Json<Value> {
 
 async fn api_features() -> Json<Value> {
     #[derive(serde::Serialize)]
+    struct SemanticDedupFeature {
+        status: &'static str,
+        backend: &'static str,
+        detail: &'static str,
+    }
+
+    #[derive(serde::Serialize)]
     struct ApiFeatureMatrix {
         llm: bool,
         experimental_llm_tool_calling: bool,
         versioned_api_alias: bool,
         openapi: bool,
+        /// This legacy/test router wires no dedup store, so it reports the
+        /// explicit degraded in-memory fallback. The production router reads
+        /// the backend the worker actually recorded.
+        semantic_dedup: SemanticDedupFeature,
     }
 
     Json(
@@ -173,6 +184,11 @@ async fn api_features() -> Json<Value> {
             experimental_llm_tool_calling: crate::API_EXPERIMENTAL_LLM_TOOL_CALLING_ENABLED,
             versioned_api_alias: crate::API_VERSIONED_ALIAS_ENABLED,
             openapi: crate::API_OPENAPI_ENABLED,
+            semantic_dedup: SemanticDedupFeature {
+                status: "degraded",
+                backend: "memory",
+                detail: "legacy router does not wire a dedup backend",
+            },
         })
         .unwrap_or_else(|_| {
             let mut error = serde_json::Map::new();

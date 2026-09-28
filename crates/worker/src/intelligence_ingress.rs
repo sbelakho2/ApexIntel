@@ -52,9 +52,10 @@ use uuid::Uuid;
 
 use apex_core::alert_config::{AlertAudience, AlertSeverity};
 use apex_core::triage::TriageItemType;
-use apex_store::postgres::PgStore;
+use apex_store::postgres::{PgStore, SemanticDedupBackend, SemanticDedupStatus};
 use apex_triage::semantic_dedup::{
-    IngestOutcome, IngestQueue, SemanticDedup, TriageIngestor, TriageSubmission,
+    DedupConfig, IngestOutcome, IngestQueue, PgSemanticDedupStore, SemanticDedup, TriageIngestor,
+    TriageSubmission,
 };
 use apex_triage::TriageQueue;
 
@@ -849,9 +850,34 @@ pub async fn build(
     store: Arc<PgStore>,
     evaluator: Option<Arc<AlertEvaluator>>,
 ) -> IntelligenceIngress {
+    let dedup_store = Box::new(PgSemanticDedupStore::new(store.pool.clone()));
+    let embedding_client = apex_worker::embedding_indexer::configured_embedding_client();
+
+    let (dedup_status, dedup_detail) = if embedding_client.is_some() {
+        (SemanticDedupStatus::Ok, None)
+    } else {
+        (
+            SemanticDedupStatus::Degraded,
+            Some(
+                "no embedding client configured (LLM_BASE_URL unset); \
+                 pg_trgm text-similarity dedup only",
+            ),
+        )
+    };
+    if let Err(error) = store
+        .record_semantic_dedup_state(SemanticDedupBackend::PgVector, dedup_status, dedup_detail)
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            "intelligence_ingress: failed to record semantic dedup backend state; \
+             /api/features will report the degraded default"
+        );
+    }
+
     let triage = TriageIngestor::new(
         TriageQueue::new(store.pool.clone()),
-        SemanticDedup::with_in_memory_fallback(),
+        SemanticDedup::new(embedding_client, Some(dedup_store), DedupConfig::default()),
     );
 
     let alerts = match std::env::var("NATS_URL") {

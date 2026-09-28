@@ -288,6 +288,26 @@ fn create_embedding_client() -> Result<EmbeddingClient> {
     Ok(EmbeddingClient::from_config(&config))
 }
 
+/// Optional embedding client for the semantic dedup store: a missing or blank
+/// `LLM_BASE_URL` means semantic (vector) dedup is not available and the
+/// caller must report that state as degraded instead of assuming embeddings
+/// exist.
+pub fn configured_embedding_client() -> Option<EmbeddingClient> {
+    let base_url = std::env::var("LLM_BASE_URL").ok()?;
+    let base_url = base_url.trim();
+    if base_url.is_empty() {
+        return None;
+    }
+    let model_name =
+        std::env::var("LLM_MODEL_NAME").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".to_string());
+
+    let mut config = apex_llm::ModelConfig::llamacpp_default();
+    config.base_url = base_url.to_string();
+    config.model_name = model_name;
+
+    Some(EmbeddingClient::from_config(&config))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

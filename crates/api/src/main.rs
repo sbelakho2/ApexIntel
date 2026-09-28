@@ -1001,9 +1001,36 @@ async fn openapi_json() -> Json<serde_json::Value> {
 #[allow(dead_code)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn api_features(State(state): State<AppState>) -> Json<serde_json::Value> {
+    // Report the semantic dedup backend the worker actually constructed. A
+    // missing row means no worker has recorded a backend; a failed read is an
+    // explicit degraded state. Neither is reported as an assumed-good
+    // pgvector state.
+    let semantic_dedup = match state.store.get_semantic_dedup_state().await {
+        Ok(Some(recorded)) => serde_json::json!({
+            "status": recorded.status.as_str(),
+            "backend": recorded.backend.as_str(),
+            "detail": recorded.detail,
+            "updated_at": recorded.updated_at,
+        }),
+        Ok(None) => serde_json::json!({
+            "status": "degraded",
+            "backend": "memory",
+            "detail": "worker has not recorded a dedup backend yet",
+        }),
+        Err(error) => {
+            tracing::error!(%error, "api_features: failed to read semantic dedup state");
+            serde_json::json!({
+                "status": "degraded",
+                "backend": "memory",
+                "detail": format!("semantic dedup state unavailable: {error}"),
+            })
+        }
+    };
+
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "llm_enabled": apex_api::BUILD_LLM_ENABLED,
+        "semantic_dedup": semantic_dedup,
         // Backend actually serving the durable login throttle. `memory` means
         // no durable store was configured (tests/dev only).
         "login_throttle_backend": state.login_throttle.backend().as_str(),

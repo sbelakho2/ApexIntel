@@ -11,7 +11,7 @@
 //! dedup mechanism (not perfect, but far better than returning `unique()` for
 //! everything).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashSet;
 
@@ -73,9 +73,13 @@ impl DedupResult {
 /// Trait for storing recently-triaged items for dedup comparison.
 ///
 /// Implementations can use in-memory caches, Postgres, or vector stores.
+/// Methods are async so the persistent (PostgreSQL) implementation can use
+/// `sqlx` without bridging runtimes; the in-memory fallback simply returns
+/// ready values.
+#[async_trait]
 pub trait DedupStore: Send + Sync {
     /// Find similar items to the given text, returning scored hits.
-    fn find_similar(
+    async fn find_similar(
         &self,
         item_type: &TriageItemType,
         text: &str,
@@ -83,7 +87,7 @@ pub trait DedupStore: Send + Sync {
     ) -> Result<Vec<DedupHit>>;
 
     /// Store a newly triaged item for future dedup comparisons.
-    fn store_item(
+    async fn store_item(
         &self,
         item_type: &TriageItemType,
         id: &str,
@@ -95,7 +99,7 @@ pub trait DedupStore: Send + Sync {
     ///
     /// Returns `Ok(Vec::new())` when the implementation does not store
     /// vectors — the caller falls back to text similarity.
-    fn find_similar_by_vector(
+    async fn find_similar_by_vector(
         &self,
         _item_type: &TriageItemType,
         _vector: &[f64],
@@ -105,7 +109,7 @@ pub trait DedupStore: Send + Sync {
     }
 
     /// Store an item together with its embedding (B343).
-    fn store_item_with_vector(
+    async fn store_item_with_vector(
         &self,
         item_type: &TriageItemType,
         id: &str,
@@ -113,7 +117,7 @@ pub trait DedupStore: Send + Sync {
         text: &str,
         _vector: Option<&[f64]>,
     ) -> Result<()> {
-        self.store_item(item_type, id, title, text)
+        self.store_item(item_type, id, title, text).await
     }
 }
 
@@ -152,8 +156,9 @@ impl InMemoryDedupStore {
     }
 }
 
+#[async_trait]
 impl DedupStore for InMemoryDedupStore {
-    fn find_similar(
+    async fn find_similar(
         &self,
         item_type: &TriageItemType,
         text: &str,
@@ -185,7 +190,7 @@ impl DedupStore for InMemoryDedupStore {
         Ok(hits)
     }
 
-    fn store_item(
+    async fn store_item(
         &self,
         item_type: &TriageItemType,
         id: &str,
@@ -193,9 +198,10 @@ impl DedupStore for InMemoryDedupStore {
         text: &str,
     ) -> Result<()> {
         self.store_item_with_vector(item_type, id, title, text, None)
+            .await
     }
 
-    fn store_item_with_vector(
+    async fn store_item_with_vector(
         &self,
         item_type: &TriageItemType,
         id: &str,
@@ -227,7 +233,7 @@ impl DedupStore for InMemoryDedupStore {
         Ok(())
     }
 
-    fn find_similar_by_vector(
+    async fn find_similar_by_vector(
         &self,
         item_type: &TriageItemType,
         vector: &[f64],
@@ -259,6 +265,156 @@ impl DedupStore for InMemoryDedupStore {
     }
 }
 
+/// Persistent [`DedupStore`] backed by PostgreSQL + pgvector.
+///
+/// Rows live in `semantic_dedup_items` (migration 084), so dedup state survives
+/// worker restarts. Nearest neighbours are found with pgvector cosine distance
+/// when a stored embedding exists, and with pg_trgm trigram similarity for
+/// items stored before an embedding client was configured.
+///
+/// This is the production store. [`InMemoryDedupStore`] remains the
+/// test/dev fallback only.
+#[derive(Debug, Clone)]
+pub struct PgSemanticDedupStore {
+    pool: sqlx::PgPool,
+}
+
+impl PgSemanticDedupStore {
+    /// Create a persistent dedup store over the given pool.
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Number of persisted items (used by capability/status checks).
+    pub async fn count_items(&self) -> Result<i64> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM semantic_dedup_items")
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to count semantic dedup items")?;
+        Ok(count)
+    }
+}
+
+#[async_trait]
+impl DedupStore for PgSemanticDedupStore {
+    async fn find_similar(
+        &self,
+        item_type: &TriageItemType,
+        text: &str,
+        max_results: usize,
+    ) -> Result<Vec<DedupHit>> {
+        let max_results = max_results.clamp(1, 200) as i64;
+
+        let rows = sqlx::query_as::<_, (String, String, f64)>(
+            r#"
+            SELECT item_id, title, similarity(text_content, $1)::float8 AS similarity
+            FROM semantic_dedup_items
+            WHERE item_type = $2
+              AND text_content % $1
+            ORDER BY similarity DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(text)
+        .bind(item_type.as_str())
+        .bind(max_results)
+        .fetch_all(&self.pool)
+        .await
+        .context("semantic dedup text similarity query failed")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, similarity)| DedupHit {
+                id,
+                title,
+                similarity,
+            })
+            .collect())
+    }
+
+    async fn store_item(
+        &self,
+        item_type: &TriageItemType,
+        id: &str,
+        title: &str,
+        text: &str,
+    ) -> Result<()> {
+        self.store_item_with_vector(item_type, id, title, text, None)
+            .await
+    }
+
+    async fn store_item_with_vector(
+        &self,
+        item_type: &TriageItemType,
+        id: &str,
+        title: &str,
+        text: &str,
+        vector: Option<&[f64]>,
+    ) -> Result<()> {
+        let vector = vector.map(|values| {
+            pgvector::Vector::from(values.iter().map(|x| *x as f32).collect::<Vec<f32>>())
+        });
+
+        sqlx::query(
+            r#"
+            INSERT INTO semantic_dedup_items
+                (item_type, item_id, title, text_content, embedding)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (item_type, item_id) DO UPDATE SET
+                title        = EXCLUDED.title,
+                text_content = EXCLUDED.text_content,
+                embedding    = COALESCE(EXCLUDED.embedding, semantic_dedup_items.embedding),
+                updated_at   = NOW()
+            "#,
+        )
+        .bind(item_type.as_str())
+        .bind(id)
+        .bind(title)
+        .bind(text)
+        .bind(&vector)
+        .execute(&self.pool)
+        .await
+        .context("semantic dedup item upsert failed")?;
+        Ok(())
+    }
+
+    async fn find_similar_by_vector(
+        &self,
+        item_type: &TriageItemType,
+        vector: &[f64],
+        max_results: usize,
+    ) -> Result<Vec<DedupHit>> {
+        let max_results = max_results.clamp(1, 200) as i64;
+        let vector = pgvector::Vector::from(vector.iter().map(|x| *x as f32).collect::<Vec<f32>>());
+
+        let rows = sqlx::query_as::<_, (String, String, f64)>(
+            r#"
+            SELECT item_id, title, 1 - (embedding <=> $1) AS similarity
+            FROM semantic_dedup_items
+            WHERE item_type = $2
+              AND embedding IS NOT NULL
+            ORDER BY embedding <=> $1
+            LIMIT $3
+            "#,
+        )
+        .bind(&vector)
+        .bind(item_type.as_str())
+        .bind(max_results)
+        .fetch_all(&self.pool)
+        .await
+        .context("semantic dedup vector query failed")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, similarity)| DedupHit {
+                id,
+                title,
+                similarity,
+            })
+            .collect())
+    }
+}
+
 /// Semantic deduplication engine using embedding similarity with fallback.
 pub struct SemanticDedup {
     embedding_client: Option<EmbeddingClient>,
@@ -283,6 +439,10 @@ impl SemanticDedup {
     }
 
     /// Create a dedup engine with in-memory text similarity fallback.
+    ///
+    /// Test/dev only: this store forgets everything on restart. Production
+    /// construction (worker `intelligence_ingress::build`) uses
+    /// [`PgSemanticDedupStore`] instead.
     pub fn with_in_memory_fallback() -> Self {
         Self {
             embedding_client: None,
@@ -345,11 +505,16 @@ impl SemanticDedup {
         // 0.92 cosine threshold was being checked against trigram-Jaccard
         // scores that essentially never reach it (dedup never fired).
         if let Some(store) = &self.dedup_store {
-            let mut hits =
-                store.find_similar_by_vector(item_type, &embedding, self.config.max_candidates)?;
+            let mut hits = store
+                .find_similar_by_vector(item_type, &embedding, self.config.max_candidates)
+                .await?;
             // Items stored before embeddings were available have no vector;
             // merge text-based hits so they remain comparable.
-            hits.extend(store.find_similar(item_type, text, self.config.max_candidates)?);
+            hits.extend(
+                store
+                    .find_similar(item_type, text, self.config.max_candidates)
+                    .await?,
+            );
             if let Some(best) = hits
                 .iter()
                 .filter(|h| h.similarity >= self.config.threshold)
@@ -374,7 +539,9 @@ impl SemanticDedup {
     /// Check via text-based trigram similarity (fallback).
     async fn check_via_text(&self, item_type: &TriageItemType, text: &str) -> Result<DedupResult> {
         if let Some(store) = &self.dedup_store {
-            let hits = store.find_similar(item_type, text, self.config.max_candidates)?;
+            let hits = store
+                .find_similar(item_type, text, self.config.max_candidates)
+                .await?;
             if let Some(best) = hits
                 .iter()
                 .filter(|h| h.similarity >= self.config.threshold)
@@ -412,7 +579,9 @@ impl SemanticDedup {
                 Some(client) => client.embed(&text).await.ok(),
                 None => None,
             };
-            store.store_item_with_vector(item_type, id, title, &text, embedding.as_deref())?;
+            store
+                .store_item_with_vector(item_type, id, title, &text, embedding.as_deref())
+                .await?;
         }
         Ok(())
     }
@@ -1009,13 +1178,14 @@ mod tests {
         assert!(low < 0.15, "expected low similarity, got {low}");
     }
 
-    #[test]
-    fn test_in_memory_dedup_store() {
+    #[tokio::test]
+    async fn test_in_memory_dedup_store() {
         let store = InMemoryDedupStore::new(10);
         let item_type = TriageItemType::Insight;
 
         store
             .store_item(&item_type, "1", "Test insight", "Supply chain disruption")
+            .await
             .unwrap();
 
         let hits = store
@@ -1024,6 +1194,7 @@ mod tests {
                 "Supply chain breakdown and disruption",
                 5,
             )
+            .await
             .unwrap();
 
         assert!(!hits.is_empty());
@@ -1181,8 +1352,8 @@ mod tests {
         assert!(result.best_match_id.is_none());
     }
 
-    #[test]
-    fn in_memory_store_survives_a_poisoned_lock() {
+    #[tokio::test]
+    async fn in_memory_store_survives_a_poisoned_lock() {
         use std::panic::{catch_unwind, AssertUnwindSafe};
 
         let store = InMemoryDedupStore::new(10);
@@ -1198,37 +1369,49 @@ mod tests {
         // Every operation must recover from poisoning rather than panic.
         store
             .store_item(&TriageItemType::Warning, "id-1", "Title", "some text body")
+            .await
             .unwrap();
         let hits = store
             .find_similar(&TriageItemType::Warning, "some text body", 5)
+            .await
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert!(
             store
                 .find_similar_by_vector(&TriageItemType::Warning, &[1.0, 0.0], 5)
+                .await
                 .is_ok(),
             "vector search must not panic on a poisoned lock"
         );
     }
 
-    #[test]
-    fn in_memory_store_dedups_by_id_and_evicts_oldest() {
+    #[tokio::test]
+    async fn in_memory_store_dedups_by_id_and_evicts_oldest() {
         let store = InMemoryDedupStore::new(2);
         let t = TriageItemType::Insight;
         store
             .store_item(&t, "a", "A", "alpha content here")
+            .await
             .unwrap();
         // Same id again must not create a second row.
         store
             .store_item(&t, "a", "A", "alpha content here")
+            .await
             .unwrap();
-        store.store_item(&t, "b", "B", "beta content here").unwrap();
+        store
+            .store_item(&t, "b", "B", "beta content here")
+            .await
+            .unwrap();
         // Capacity 2: inserting a third evicts the oldest ("a").
         store
             .store_item(&t, "c", "C", "gamma content here")
+            .await
             .unwrap();
 
-        let all = store.find_similar(&t, "gamma content here", 10).unwrap();
+        let all = store
+            .find_similar(&t, "gamma content here", 10)
+            .await
+            .unwrap();
         let ids: Vec<&str> = all.iter().map(|h| h.id.as_str()).collect();
         assert!(!ids.contains(&"a"), "oldest entry should be evicted");
         assert!(ids.contains(&"c"));

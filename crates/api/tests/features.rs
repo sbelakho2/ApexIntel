@@ -30,6 +30,11 @@ async fn api_feature_matrix_matches_documented_llm_modes() {
     );
     assert_eq!(payload["openapi"], true);
     assert_eq!(payload["versioned_api_alias"], true);
+    // The legacy/test router wires no dedup store, so it must report the
+    // explicit degraded in-memory fallback — never an assumed-good pgvector
+    // backend (audit P0 #9).
+    assert_eq!(payload["semantic_dedup"]["backend"], "memory");
+    assert_eq!(payload["semantic_dedup"]["status"], "degraded");
 }
 
 /// The experimental flag is only *off* when the `llm-tool-calling` feature is

@@ -279,6 +279,8 @@ pub use readiness::{AlertEngineStateRecord, AlertEngineStateRow};
 mod recipes;
 mod sales;
 mod security;
+mod semantic_dedup;
+pub use semantic_dedup::{SemanticDedupBackend, SemanticDedupState, SemanticDedupStatus};
 mod sources;
 pub mod trends;
 mod warning_analysis;
