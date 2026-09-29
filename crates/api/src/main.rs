@@ -1520,9 +1520,7 @@ fn person_row_to_detail(
         .iter()
         .find(|artifact| artifact.url.contains("linkedin.com"))
         .map(|artifact| artifact.url.clone());
-    let phone = artifacts
-        .iter()
-        .find_map(extract_phone_from_artifact);
+    let phone = artifacts.iter().find_map(extract_phone_from_artifact);
     let timeline: Vec<PersonEvent> = artifacts
         .iter()
         .map(|artifact| PersonEvent {
