@@ -42,7 +42,8 @@ pub struct KevItem {
     pub date_added: String,
     pub due_date: String,
     pub relevant_companies: Vec<String>,
-    pub relevance_score: f64,
+    /// Relevance from the catalog metadata; `None` = not recorded.
+    pub relevance_score: Option<f64>,
     pub notes: Option<String>,
 }
 
@@ -315,10 +316,7 @@ pub async fn security_page(
                             .collect()
                     })
                     .unwrap_or_default(),
-                relevance_score: v
-                    .get("relevance_score")
-                    .and_then(|s| s.as_f64())
-                    .unwrap_or(0.0),
+                relevance_score: v.get("relevance_score").and_then(|s| s.as_f64()),
                 notes: v
                     .get("notes")
                     .and_then(|s| s.as_str())

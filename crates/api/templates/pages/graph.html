@@ -286,7 +286,7 @@
           <span class="apex-chip apex-chip-idle">{{ edge.confidence }}</span>
           <span title="First seen">{{ edge.first_seen }}</span>
           <span title="Last confirmed">{{ edge.last_confirmed }}</span>
-          <span title="Evidence count">{{ edge.evidence_count }} ev.</span>
+          <span title="Evidence count">{% if let Some(count) = edge.evidence_count %}{{ count }} ev.{% else %}evidence count not recorded{% endif %}</span>
           <span title="Source">{{ edge.source }}</span>
         </span>
       </div>

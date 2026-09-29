@@ -14,9 +14,9 @@ use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PersonListFilters, PersonOrderBy, PgStore, WarningListFilters};
 
-fn normalize_percent(value: f64) -> f64 {
+fn normalize_percent_u8(value: f64) -> u8 {
     let normalized = if value <= 1.0 { value * 100.0 } else { value };
-    normalized.clamp(0.0, 100.0).round()
+    normalized.clamp(0.0, 100.0).round() as u8
 }
 
 fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
@@ -161,9 +161,8 @@ fn derive_profile_priority_vector(
     insight_count: i64,
     recent_change_count: usize,
 ) -> PriorityVector {
-    let influence_ratio = priority_metric(&person.priority_vector, "influence")
-        .or(person.influence_score.map(normalize_ratio))
-        .unwrap_or(0.0);
+    let influence_ratio: Option<f64> = priority_metric(&person.priority_vector, "influence")
+        .or(person.influence_score.map(normalize_ratio));
 
     let live_connectivity = 0.45 * (peer_count as f64 / 8.0).min(1.0)
         + 0.20 * (affiliation_count as f64 / 4.0).min(1.0)
@@ -244,19 +243,26 @@ fn derive_profile_priority_vector(
         &["risk", "security", "compliance", "resilience"],
     )
     .unwrap_or(0.0);
-    let baseline_risk = 0.45 * influence_ratio
-        + 0.35
-            * role_exposure_risk(
-                person.role_family.as_deref(),
-                person.current_role.as_deref(),
-            )
-        + 0.10 * if artifact_count > 0 { 1.0 } else { 0.0 }
-        + 0.10
-            * if person.primary_org_id.is_some() {
-                1.0
-            } else {
-                0.0
-            };
+    let role_exposure = role_exposure_risk(
+        person.role_family.as_deref(),
+        person.current_role.as_deref(),
+    );
+    let artifact_signal = if artifact_count > 0 { 1.0 } else { 0.0 };
+    let org_signal = if person.primary_org_id.is_some() {
+        1.0
+    } else {
+        0.0
+    };
+    // Unknown influence carries no weight in the baseline risk; the remaining
+    // terms renormalize instead of inheriting a fabricated zero-influence term.
+    let baseline_risk = match influence_ratio {
+        Some(influence) => {
+            (0.45 * influence + 0.35 * role_exposure + 0.10 * artifact_signal + 0.10 * org_signal)
+                .clamp(0.0, 1.0)
+        }
+        None => ((0.35 * role_exposure + 0.10 * artifact_signal + 0.10 * org_signal) / 0.55)
+            .clamp(0.0, 1.0),
+    };
     let live_risk = 0.40 * (warning_count as f64 / 6.0).min(1.0)
         + 0.20 * (recent_change_count as f64 / 8.0).min(1.0)
         + 0.15 * metadata_change_risk
@@ -265,20 +271,26 @@ fn derive_profile_priority_vector(
     let risk_ratio = priority_metric(&person.priority_vector, "risk")
         .unwrap_or((stored_risk * 0.25 + live_risk * 0.35 + baseline_risk * 0.40).clamp(0.0, 1.0));
 
-    let overall_ratio = priority_metric(&person.priority_vector, "overall").unwrap_or(
-        (0.35 * influence_ratio
-            + 0.20 * connectivity_ratio
-            + 0.20 * activity_ratio
-            + 0.25 * risk_ratio)
-            .clamp(0.0, 1.0),
-    );
+    let overall_ratio = priority_metric(&person.priority_vector, "overall").unwrap_or_else(|| {
+        match influence_ratio {
+            Some(influence) => (0.35 * influence
+                + 0.20 * connectivity_ratio
+                + 0.20 * activity_ratio
+                + 0.25 * risk_ratio)
+                .clamp(0.0, 1.0),
+            // Renormalize over the measured components.
+            None => ((0.20 * connectivity_ratio + 0.20 * activity_ratio + 0.25 * risk_ratio)
+                / 0.65)
+                .clamp(0.0, 1.0),
+        }
+    });
 
     PriorityVector {
-        influence: normalize_percent(influence_ratio),
-        connectivity: normalize_percent(connectivity_ratio),
-        activity: normalize_percent(activity_ratio),
-        risk: normalize_percent(risk_ratio),
-        overall: normalize_percent(overall_ratio),
+        influence: influence_ratio.map(normalize_percent_u8),
+        connectivity: normalize_percent_u8(connectivity_ratio),
+        activity: normalize_percent_u8(activity_ratio),
+        risk: normalize_percent_u8(risk_ratio),
+        overall: normalize_percent_u8(overall_ratio),
     }
 }
 
@@ -330,13 +342,20 @@ pub struct PersonEvent {
     pub source: String,
 }
 
+/// Display-only priority radar (0-100 components).
+///
+/// `connectivity`, `activity` and `risk` are composed from measured counts
+/// (peers, artifacts, warnings, metadata). `influence` has no live fallback, so
+/// an unmeasured value is `None` — the radar renders "not measured" instead of
+/// a fabricated zero, and the overall composite renormalizes over the measured
+/// components.
 #[derive(Clone, Debug)]
 pub struct PriorityVector {
-    pub influence: f64,
-    pub connectivity: f64,
-    pub activity: f64,
-    pub risk: f64,
-    pub overall: f64,
+    pub influence: Option<u8>,
+    pub connectivity: u8,
+    pub activity: u8,
+    pub risk: u8,
+    pub overall: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -1067,9 +1086,9 @@ pub async fn get_person(
 
     // Determine priority tier (values are 0-100 now)
     let tier = match pv.overall {
-        x if x >= 80.0 => "critical",
-        x if x >= 60.0 => "high",
-        x if x >= 40.0 => "medium",
+        x if x >= 80 => "critical",
+        x if x >= 60 => "high",
+        x if x >= 40 => "medium",
         _ => "low",
     };
 

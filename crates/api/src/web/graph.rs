@@ -37,7 +37,9 @@ pub struct GraphEdge {
     pub confidence: f64,
     pub first_seen: Option<String>,
     pub last_confirmed: Option<String>,
-    pub evidence_count: i64,
+    /// Evidence referencing this edge; `None` = not recorded (never a
+    /// measured zero).
+    pub evidence_count: Option<i64>,
     /// Human-readable provenance of the edge (metadata source / derived label).
     pub source_label: Option<String>,
 }
@@ -67,7 +69,9 @@ pub struct GraphRenderEdge {
     pub confidence: f64,
     pub first_seen: Option<String>,
     pub last_confirmed: Option<String>,
-    pub evidence_count: i64,
+    /// Evidence referencing this edge; `None` = not recorded (never a
+    /// measured zero).
+    pub evidence_count: Option<i64>,
     /// Human-readable provenance of the edge (metadata source / derived label).
     pub source_label: Option<String>,
 }
@@ -87,7 +91,8 @@ pub struct GraphEdgeRow {
     pub confidence: String,
     pub first_seen: String,
     pub last_confirmed: String,
-    pub evidence_count: i64,
+    /// `None` = not recorded (rendered as such, never as 0 ev.).
+    pub evidence_count: Option<i64>,
     pub source: String,
 }
 
@@ -624,11 +629,7 @@ pub async fn graph_page(
                 confidence: er.confidence.unwrap_or(weight).clamp(0.0, 1.0),
                 first_seen: er.first_seen.map(|ts| ts.to_rfc3339()),
                 last_confirmed: er.last_seen.map(|ts| ts.to_rfc3339()),
-                evidence_count: er
-                    .evidence_ids
-                    .as_ref()
-                    .map(|ids| ids.len() as i64)
-                    .unwrap_or(0),
+                evidence_count: er.evidence_ids.as_ref().map(|ids| ids.len() as i64),
                 source_label: crate::routes::graph::edge_source_name(er.metadata.as_ref()),
             }
         })
@@ -918,7 +919,7 @@ fn synthetic_edge(source: String, target: String, edge_type: &str) -> GraphEdge 
         confidence: 1.0,
         first_seen: None,
         last_confirmed: None,
-        evidence_count: 1,
+        evidence_count: Some(1),
         source_label: Some("catalog".to_string()),
     }
 }

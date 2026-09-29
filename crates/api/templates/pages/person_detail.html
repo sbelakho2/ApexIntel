@@ -84,7 +84,11 @@
   <div class="apex-card p-4">
     <h2 class="mb-3 text-xs font-black uppercase tracking-[0.12em]">Priority Vector</h2>
     <div class="space-y-2">
-      {% call m::progress_bar(priority_vector.influence, 100, "var(--rams-red)", "Influence") %}
+      {% if let Some(influence) = priority_vector.influence %}
+      {% call m::progress_bar(influence, 100, "var(--rams-red)", "Influence") %}
+      {% else %}
+      <div><p class="text-[10px] font-black uppercase text-rams-muted">Influence</p><p class="text-[10px] text-rams-muted">not measured</p></div>
+      {% endif %}
       {% call m::progress_bar(priority_vector.connectivity, 100, "var(--rams-steel)", "Connectivity") %}
       {% call m::progress_bar(priority_vector.activity, 100, "var(--rams-orange)", "Activity") %}
       {% call m::progress_bar(priority_vector.risk, 100, "var(--rams-green)", "Risk") %}
