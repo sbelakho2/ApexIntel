@@ -1188,6 +1188,18 @@ pub struct PersonRow {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+/// The fields the recipe applicability gate consumes for one entity.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct RecipeEntityContextRow {
+    pub id: Uuid,
+    pub region: Option<String>,
+    /// ISO alpha-2 country code as stored.
+    pub country_code: Option<String>,
+    pub company_type: Option<String>,
+    /// Real industry tags (may be empty); `company_type` is not an industry.
+    pub industry_tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct PersonListRow {
     pub id: Uuid,
@@ -1195,7 +1207,9 @@ pub struct PersonListRow {
     pub role: String,
     pub role_family: String,
     pub country: String,
-    pub organization: String,
+    /// Resolved organization name. `None` means no linked organization is
+    /// recorded — it must not be rendered as "Independent".
+    pub organization: Option<String>,
     pub region: String,
     /// Stored priority vector (jsonb). The priority composite and band are
     /// derived from it in Rust by `PersonIntelligenceView`; there is no
@@ -1350,8 +1364,12 @@ pub struct RecipeStatRow {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CalibrationAdjustment {
     pub recipe_code: String,
-    pub current_precision: f64,
-    pub new_precision: f64,
+    /// Activation threshold before calibration.
+    pub current_threshold: f64,
+    /// Activation threshold after calibration (always >= current when the
+    /// weighted FPR exceeds the correction threshold).
+    pub new_threshold: f64,
+    /// Weighted 4-week false-positive rate (over reviewed samples).
     pub avg_fp_rate_4w: f64,
 }
 
@@ -1639,7 +1657,10 @@ pub struct PersonEngagement {
     pub person_id: Uuid,
     pub name: String,
     pub role: Option<String>,
-    pub priority_score: f64,
+    /// Canonical priority composite from the stored priority vector; `None`
+    /// when the vector is not stored (unmeasured, never a zero score). This is
+    /// not the influence measurement.
+    pub priority_score: Option<f64>,
     pub engagement_status: String,
     pub co_appearances: Vec<EdgeRow>,
     pub recent_observations: Vec<ObservationRow>,

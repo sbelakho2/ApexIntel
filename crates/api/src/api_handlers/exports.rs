@@ -641,7 +641,8 @@ fn person_csv_row(item: &apex_api::routes::persons::PersonListItem) -> String {
         csv_escape(&item.name),
         csv_escape(&item.role),
         csv_escape(&item.role_family),
-        csv_escape(&item.organization),
+        // An unrecorded organization is an empty cell, not "Independent".
+        csv_escape(item.organization.as_deref().unwrap_or("")),
         csv_escape(&item.region),
         item.priority_score
             .map(|score| format!("{score:.4}"))
@@ -675,7 +676,7 @@ mod tests {
             name: "Alex Doe".to_string(),
             role: "CTO".to_string(),
             role_family: "Executive".to_string(),
-            organization: "Acme".to_string(),
+            organization: Some("Acme".to_string()),
             region: "EU".to_string(),
             country: "FI".to_string(),
             priority_score: None,

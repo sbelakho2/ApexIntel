@@ -309,61 +309,67 @@ impl PgStore {
         Ok(result.rows_affected())
     }
 
-    /// Auto-calibrate recipe `precision_score` thresholds based on persistent
-    /// false-positive rates tracked in `recipe_weekly_metrics`.
+    /// Auto-calibrate the runtime **activation threshold** from persistent
+    /// false-positive evidence in `recipe_weekly_metrics`.
     ///
     /// ## How it works
     ///
-    /// 1. Query `recipe_weekly_metrics` for the last 4 weeks.
-    /// 2. Compute per-recipe average false-positive rate over that window.
-    /// 3. If the average exceeds **30 %** (`> 0.30`), reduce the recipe's
-    ///    `precision_score` proportionally:
+    /// 1. Aggregate the last 4 weeks **weighted by reviewed samples**:
+    ///    `SUM(false_positive_warnings) / SUM(reviewed_warnings)` — a
+    ///    1-review week cannot outweigh a 100-review week.
+    /// 2. Only recipes with at least **10 reviewed warnings** are eligible:
+    ///    calibration needs a real sample, not one unlucky review.
+    /// 3. If the weighted rate exceeds **30 %**, the activation threshold is
+    ///    **raised** (the gate tightens, never loosens):
     ///
     ///    ```text
-    ///    new_precision = current_precision × (1.0 − 0.5 × avg_fp_rate)
+    ///    new_threshold = current_threshold × (1.0 + 0.5 × weighted_fp_rate)
     ///    ```
     ///
-    ///    clamped to `[0.0, current_precision]`.
-    /// 4. Recipes already at `precision_score ≤ 0.001` are skipped (already
-    ///    effectively silenced).
-    /// 5. Every adjustment is recorded in the `audit_log` table for full
-    ///    observability.
-    ///
-    /// ## Edge cases
-    ///
-    /// * **No recipes exceed threshold** → returns empty `Vec`, no-op.
-    /// * **FP rate = 1.0 (100 %)** → precision becomes 0.0, recipe silenced.
-    /// * **NULL precision_score** → skipped (`IS NOT NULL` guard).
-    /// * **Idempotent** – running multiple times applies compounding reductions
-    ///   (each week the FP rate is re-evaluated).
+    ///    clamped to `[0.0, 1.0]`.
+    /// 4. Recipes at `activation_threshold ≤ 0.001` are skipped (nothing to
+    ///    tighten) and rows without a calibrated threshold are ignored.
+    /// 5. Every adjustment is recorded in `audit_log`.
     ///
     /// ## Returns
     ///
-    /// A `Vec<CalibrationAdjustment>` describing each adjustment made, suitable
-    /// for logging, dashboard metrics, or alerting.
+    /// A `Vec<CalibrationAdjustment>` (thresholds, not measured precision)
+    /// describing each adjustment made.
     pub async fn auto_calibrate_recipe_thresholds(&self) -> Result<Vec<CalibrationAdjustment>> {
         #[derive(Debug, Clone, sqlx::FromRow)]
         struct CalibrationRow {
             recipe_code: String,
-            current_precision: f64,
-            new_precision: f64,
+            current_threshold: f64,
+            new_threshold: f64,
             avg_fp_rate_4w: f64,
         }
 
         let adjustments: Vec<CalibrationRow> = sqlx::query_as::<_, CalibrationRow>(
-            r#"WITH high_fp_recipes AS (
+            r#"WITH weekly AS (
+                   -- Weighted evidence: total reviewed warnings and total false
+                   -- positives, so a 1-review week cannot outweigh a 100-review
+                   -- week the way an unweighted average of weekly rates would.
                    SELECT
                        m.recipe_code,
-                       COALESCE(AVG(m.false_positive_rate), 0.0) AS avg_fp_rate_4w
+                       SUM(COALESCE(m.reviewed_warnings, 0))::BIGINT AS reviewed,
+                       SUM(COALESCE(m.false_positive_warnings, 0))::BIGINT AS false_positives
                    FROM recipe_weekly_metrics m
                    WHERE m.week_start >= DATE_TRUNC('week', NOW() - INTERVAL '4 weeks')
                    GROUP BY m.recipe_code
-                   HAVING COALESCE(AVG(m.false_positive_rate), 0.0) > 0.30
+               ),
+               high_fp_recipes AS (
+                   SELECT
+                       recipe_code,
+                       false_positives::DOUBLE PRECISION / reviewed::DOUBLE PRECISION AS avg_fp_rate_4w
+                   FROM weekly
+                   -- Evidence floor: calibration needs a real reviewed sample.
+                   WHERE reviewed >= 10
+                     AND false_positives::DOUBLE PRECISION / NULLIF(reviewed, 0) > 0.30
                ),
                calibrated AS (
                    SELECT
                        h.recipe_code,
-                       r.activation_threshold AS current_precision,
+                       r.activation_threshold AS current_threshold,
                        -- High false-positive rates must TIGHTEN the gate: the
                        -- threshold moves UP with the observed FPR (capped at
                        -- 1.0). The previous minus-correction made noisy
@@ -374,7 +380,7 @@ impl PgStore {
                                0.0,
                                r.activation_threshold * (1.0 + 0.5 * h.avg_fp_rate_4w)
                            )
-                       ) AS new_precision,
+                       ) AS new_threshold,
                        h.avg_fp_rate_4w
                    FROM high_fp_recipes h
                    JOIN recipes r ON r.code = h.recipe_code
@@ -384,14 +390,14 @@ impl PgStore {
                )
                UPDATE recipes r
                SET
-                   activation_threshold = c.new_precision,
+                   activation_threshold = c.new_threshold,
                    updated_at = NOW()
                FROM calibrated c
                WHERE r.code = c.recipe_code
                RETURNING
                    r.code                       AS recipe_code,
-                   c.current_precision,
-                   c.new_precision,
+                   c.current_threshold,
+                   c.new_threshold,
                    c.avg_fp_rate_4w"#,
         )
         .fetch_all(&self.pool)
@@ -402,8 +408,8 @@ impl PgStore {
             #[allow(clippy::unwrap_used, clippy::expect_used)]
             let detail = serde_json::json!({
                 "recipe_code": adj.recipe_code,
-                "current_precision": adj.current_precision,
-                "new_precision": adj.new_precision,
+                "current_threshold": adj.current_threshold,
+                "new_threshold": adj.new_threshold,
                 "avg_fp_rate_4w": adj.avg_fp_rate_4w,
                 "calibration_reason": format!(
                     "Average FP rate {:.2} exceeded 0.30 threshold over last 4 weeks",
@@ -422,8 +428,8 @@ impl PgStore {
             .into_iter()
             .map(|r| CalibrationAdjustment {
                 recipe_code: r.recipe_code,
-                current_precision: r.current_precision,
-                new_precision: r.new_precision,
+                current_threshold: r.current_threshold,
+                new_threshold: r.new_threshold,
                 avg_fp_rate_4w: r.avg_fp_rate_4w,
             })
             .collect();
@@ -545,8 +551,23 @@ impl PgStore {
                    name,
                    status,
                    definition,
+                   category,
+                   join_type,
+                   outcome,
+                   signals,
+                   transforms,
+                   test_config,
+                   thresholds,
+                   narrative_template,
+                   to_jsonb(action_playbook) AS action_playbook,
+                   applicability,
                    activation_threshold,
-                   configured_min_precision
+                   -- Rollout compatibility (migration 092): rows written by an
+                   -- old binary during a rolling deploy only populate the
+                   -- legacy column. Drop the COALESCE when the legacy column
+                   -- is removed in a follow-up migration.
+                   COALESCE(configured_activation_threshold, configured_min_precision)
+                       AS configured_activation_threshold
             FROM recipes
             ORDER BY code
             "#,
@@ -571,9 +592,15 @@ impl PgStore {
             r#"
             SELECT
                 DATE_TRUNC('month', week_start)::DATE AS month_start,
-                (AVG(precision_score) FILTER (WHERE warnings_generated > 0) * 100.0)
+                -- Weighted by reviewed samples: SUM(TP)/SUM(reviewed), never a
+                -- mean of weekly percentages (a 1-review week must not weigh
+                -- as much as a 100-review week). NULL when nothing was
+                -- reviewed.
+                (SUM(GREATEST(COALESCE(reviewed_warnings, 0) - COALESCE(false_positive_warnings, 0), 0))::DOUBLE PRECISION
+                    / NULLIF(SUM(COALESCE(reviewed_warnings, 0)), 0)::DOUBLE PRECISION) * 100.0
                     AS precision_pct,
-                (AVG(false_positive_rate) FILTER (WHERE reviewed_warnings > 0) * 100.0)
+                (SUM(COALESCE(false_positive_warnings, 0))::DOUBLE PRECISION
+                    / NULLIF(SUM(COALESCE(reviewed_warnings, 0)), 0)::DOUBLE PRECISION) * 100.0
                     AS fpr_pct,
                 COALESCE(SUM(warnings_generated), 0)::BIGINT AS warnings_generated,
                 COALESCE(SUM(reviewed_warnings), 0)::BIGINT AS reviewed_warnings
@@ -596,15 +623,26 @@ pub struct RecipeEngineRow {
     pub code: String,
     pub name: String,
     pub status: String,
-    /// Legacy/seed JSON definition used to reconstruct signals, transforms and
-    /// templates. `NULL` for rows created through the current-schema columns
-    /// only (the caller reports those as unavailable, never as absent).
+    /// Legacy seed/source definition blob. Audit/reference only: the runtime
+    /// reconstructs recipes from the canonical columns below when this is
+    /// absent, so a DB-only recipe still executes.
     pub definition: Option<serde_json::Value>,
+    /// Canonical recipe body (current-schema columns).
+    pub category: Option<String>,
+    pub join_type: Option<String>,
+    pub outcome: Option<String>,
+    pub signals: Option<serde_json::Value>,
+    pub transforms: Option<serde_json::Value>,
+    pub test_config: Option<serde_json::Value>,
+    pub thresholds: Option<serde_json::Value>,
+    pub narrative_template: Option<String>,
+    pub action_playbook: Option<serde_json::Value>,
+    pub applicability: Option<serde_json::Value>,
     /// Calibrated runtime threshold (migration 089); `None` = ungated.
     pub activation_threshold: Option<f64>,
-    /// Configured minimum precision from the definition (configuration, not a
-    /// measurement); used as the engine gate only when no calibration ran.
-    pub configured_min_precision: Option<f64>,
+    /// Configured activation threshold from the definition (configuration, not
+    /// a measurement); the fallback gate only when no calibration ran.
+    pub configured_activation_threshold: Option<f64>,
 }
 
 /// One aggregated month of real recipe performance history.

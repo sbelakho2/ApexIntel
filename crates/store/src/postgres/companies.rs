@@ -158,20 +158,20 @@ fn build_company_dossier_analysis(
             hypothesis: "Expansion or capacity buildout".to_string(),
             support_score: (capability_signal + change_pressure * 0.35).clamp(0.0, 1.0),
             contradiction_score: certification_pressure * 0.45,
-            prior: 0.45,
+            heuristic_prior: 0.45,
         },
         HypothesisInput {
             hypothesis: "Compliance or certification stress".to_string(),
             support_score: certification_pressure,
             contradiction_score: capability_signal * 0.30,
-            prior: 0.35,
+            heuristic_prior: 0.35,
         },
         HypothesisInput {
             hypothesis: "Competitive repositioning".to_string(),
             support_score: (change_pressure * 0.65 + correlated_signals.len() as f64 * 0.1)
                 .clamp(0.0, 1.0),
             contradiction_score: certification_pressure * 0.20,
-            prior: 0.40,
+            heuristic_prior: 0.40,
         },
     ]);
 
@@ -333,6 +333,30 @@ impl PgStore {
         }
         let rows: Vec<(Uuid, String, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT id, name, region, company_type FROM companies WHERE id = ANY($1)",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Batch-load the fields the recipe applicability gate needs: region,
+    /// country code, company type and the real industry tags.
+    ///
+    /// The context must carry the *actual* metadata: `company_type` is not an
+    /// industry, and `country_code` is not the region. A missing row yields no
+    /// context (a restricted recipe then does not apply).
+    pub async fn get_recipe_entity_contexts(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<RecipeEntityContextRow>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows = sqlx::query_as::<_, RecipeEntityContextRow>(
+            "SELECT id, region, country_code, company_type, \
+                    COALESCE(industry_tags, ARRAY[]::TEXT[]) AS industry_tags \
+             FROM companies WHERE id = ANY($1)",
         )
         .bind(ids)
         .fetch_all(&self.pool)

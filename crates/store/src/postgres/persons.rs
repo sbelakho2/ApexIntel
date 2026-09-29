@@ -12,7 +12,7 @@ fn normalize_person_window(limit: i64, offset: i64) -> (i64, i64) {
 const GET_PERSON_PEERS_QUERY: &str = "SELECT p.id,
                                         p.name,
                                         COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
-                                        COALESCE(c.name, 'Independent') AS organization,
+                                        c.name AS organization,
                                         COALESCE(p.region, '') AS region,
                                         COALESCE(p.country_code, '') AS country,
                                         COALESCE(p.role_family, 'Unknown') AS role_family,
@@ -104,7 +104,7 @@ fn build_person_dossier_analysis(
     let mut evidence_records: Vec<EvidenceItem> = artifacts
         .iter()
         .map(|artifact| {
-            let mut record = EvidenceItem::new(0.65, EvidenceStance::Supports)
+            let mut record = EvidenceItem::new(0.65, EvidenceStance::Neutral)
                 .with_source_url(artifact.url.clone())
                 .with_source_type(artifact.artifact_type.clone())
                 .with_observed_at(artifact.ts_utc);
@@ -117,7 +117,7 @@ fn build_person_dossier_analysis(
     evidence_records.extend(role_history.iter().filter_map(|role| {
         role.source_url.as_ref().map(|url| {
             // Missing confidence stays missing: no synthesized 0.6 weight.
-            let mut record = EvidenceItem::new_optional(role.confidence, EvidenceStance::Supports)
+            let mut record = EvidenceItem::new_optional(role.confidence, EvidenceStance::Neutral)
                 .with_source_url(url.clone())
                 .with_source_type("role_history");
             if let Some(updated_at) = role.updated_at.or(role.start_date) {
@@ -134,7 +134,7 @@ fn build_person_dossier_analysis(
             .into_iter()
             .map(move |url| {
                 let mut record =
-                    EvidenceItem::new_optional(entry.confidence, EvidenceStance::Supports)
+                    EvidenceItem::new_optional(entry.confidence, EvidenceStance::Neutral)
                         .with_source_url(url)
                         .with_source_type(entry.category.clone());
                 if let Some(created_at) = entry.created_at {
@@ -145,10 +145,9 @@ fn build_person_dossier_analysis(
     }));
     evidence_records.extend(recent_changes.iter().filter_map(|change| {
         change.source_url.as_ref().map(|url| {
-            let mut record =
-                EvidenceItem::new_optional(change.confidence, EvidenceStance::Supports)
-                    .with_source_url(url.clone())
-                    .with_source_type(change.change_type.clone());
+            let mut record = EvidenceItem::new_optional(change.confidence, EvidenceStance::Neutral)
+                .with_source_url(url.clone())
+                .with_source_type(change.change_type.clone());
             if let Some(detected_at) = change.detected_at.or(change.created_at) {
                 record = record.with_observed_at(detected_at);
             }
@@ -205,19 +204,19 @@ fn build_person_dossier_analysis(
                 + change_signal * 0.2)
                 .clamp(0.0, 1.0),
             contradiction_score: role_transition_signal * 0.4,
-            prior: 0.45,
+            heuristic_prior: 0.45,
         },
         HypothesisInput {
             hypothesis: "Transition or churn risk".to_string(),
             support_score: (role_transition_signal + change_signal * 0.3).clamp(0.0, 1.0),
             contradiction_score: artifact_signal * 0.25,
-            prior: 0.30,
+            heuristic_prior: 0.30,
         },
         HypothesisInput {
             hypothesis: "Active market signalling and outreach".to_string(),
             support_score: (artifact_signal * 0.6 + observation_signal * 0.2).clamp(0.0, 1.0),
             contradiction_score: role_transition_signal * 0.15,
-            prior: 0.35,
+            heuristic_prior: 0.35,
         },
     ]);
 
@@ -268,16 +267,19 @@ fn append_person_filters(qb: &mut QueryBuilder<Postgres>, filters: &PersonListFi
         has_where = true;
     }
 
+    // Priority filters use the canonical composite (persons.priority_score),
+    // not influence: a `NULL` priority is unmeasured and never matches a
+    // numeric range.
     if let Some(min_priority) = filters.min_priority {
         qb.push(if has_where { " AND " } else { " WHERE " });
-        qb.push("COALESCE(p.influence_score, 0) >= ");
+        qb.push("p.priority_score >= ");
         qb.push_bind(min_priority);
         has_where = true;
     }
 
     if let Some(max_priority) = filters.max_priority {
         qb.push(if has_where { " AND " } else { " WHERE " });
-        qb.push("COALESCE(p.influence_score, 0) < ");
+        qb.push("p.priority_score < ");
         qb.push_bind(max_priority);
         has_where = true;
     }
@@ -296,6 +298,9 @@ fn append_person_filters(qb: &mut QueryBuilder<Postgres>, filters: &PersonListFi
 impl PgStore {
     pub async fn insert_person(&self, p: &Person) -> Result<()> {
         let pv_json = serde_json::to_value(&p.priority_vector)?;
+        // Canonical composite from the single Rust implementation; `None` when
+        // the vector is not the canonical five-dimension form (unmeasured).
+        let priority_score = apex_core::priority::priority_score_from_json(&pv_json);
         let normalized_name = normalize_person_identity_name(&p.name);
         let dedup_key = person_identity_dedup_key(&p.name, p.primary_org_id)
             .ok_or_else(|| anyhow::anyhow!("person name must not be empty"))?;
@@ -329,6 +334,15 @@ impl PgStore {
                  region = COALESCE(EXCLUDED.region, persons.region),
                  country_code = COALESCE(EXCLUDED.country_code, persons.country_code),
                  priority_vector = COALESCE(EXCLUDED.priority_vector, persons.priority_vector),
+                 -- Strict synchronization: the score is computed once by the
+                 -- canonical Rust implementation (apex_core::priority) and
+                 -- mirrors the STORED vector. A NULL incoming vector keeps the
+                 -- existing score; any non-canonical vector makes priority
+                 -- unmeasured (NULL).
+                 priority_score = CASE
+                     WHEN EXCLUDED.priority_vector IS NULL THEN persons.priority_score
+                     ELSE $17::DOUBLE PRECISION
+                 END,
                  influence_score = GREATEST(COALESCE(persons.influence_score, 0), COALESCE(EXCLUDED.influence_score, 0)),
                  metadata = COALESCE(persons.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
                  updated_at = now()"#,
@@ -349,6 +363,7 @@ impl PgStore {
         .bind(p.created_at)
         .bind(p.updated_at)
         .bind(&dedup_key)
+        .bind(priority_score)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -595,9 +610,21 @@ impl PgStore {
         pain_index: Option<f64>,
         influence_score: Option<f64>,
     ) -> Result<()> {
+        // Strict synchronization: the score is computed once by the canonical
+        // Rust implementation and mirrors the STORED vector. A NULL vector
+        // keeps both; a non-canonical replacement makes priority unmeasured
+        // (NULL), never a stale previous score.
+        let priority_score = priority_vector
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .as_ref()
+            .and_then(apex_core::priority::priority_score_from_json);
         sqlx::query(
             r#"UPDATE persons SET
                  priority_vector = COALESCE($2::jsonb, priority_vector),
+                 priority_score = CASE
+                     WHEN $2::jsonb IS NULL THEN priority_score
+                     ELSE $9::DOUBLE PRECISION
+                 END,
                  decision_style = COALESCE($3, decision_style),
                  risk_tolerance = COALESCE($4, risk_tolerance),
                  change_appetite = COALESCE($5, change_appetite),
@@ -616,6 +643,7 @@ impl PgStore {
         .bind(communication_style)
         .bind(pain_index.map(|v| v.clamp(0.0, 1.0)))
         .bind(influence_score.map(|v| v.clamp(0.0, 1.0)))
+        .bind(priority_score)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -756,7 +784,7 @@ impl PgStore {
             "SELECT p.id,
                     p.name,
                     COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
-                    COALESCE(c.name, 'Independent') AS organization,
+                    c.name AS organization,
                     COALESCE(p.region, '') AS region,
                     COALESCE(p.country_code, '') AS country,
                     COALESCE(p.role_family, 'Unknown') AS role_family,
@@ -774,7 +802,7 @@ impl PgStore {
 
         let order_clause = match order_by.unwrap_or(PersonOrderBy::UpdatedAt) {
             PersonOrderBy::Name => "p.name",
-            PersonOrderBy::Priority => "COALESCE(p.influence_score, 0)",
+            PersonOrderBy::Priority => "p.priority_score",
             PersonOrderBy::Region => "COALESCE(p.region, '')",
             PersonOrderBy::UpdatedAt => "COALESCE(p.updated_at, p.created_at)",
         };
@@ -782,6 +810,10 @@ impl PgStore {
         qb.push(order_clause);
         if desc {
             qb.push(" DESC");
+        }
+        if order_clause == "p.priority_score" {
+            // Unmeasured priority sorts last regardless of direction.
+            qb.push(" NULLS LAST");
         }
         qb.push(", p.id ASC");
         qb.push(" LIMIT ");
@@ -838,12 +870,18 @@ impl PgStore {
         .bind(person_id)
         .fetch_all(&self.pool)
         .await?;
-        let influence = person.influence_score.unwrap_or(0.0);
+        // Canonical priority: the composite of the stored priority vector —
+        // never the influence measurement, and never a zero-filled default.
+        // A missing/incomplete vector means priority is unmeasured.
+        let priority_score = person
+            .priority_vector
+            .as_ref()
+            .and_then(apex_core::priority::priority_score_from_json);
         Ok(Some(PersonEngagement {
             person_id,
             name: person.name.clone(),
             role: person.current_role.clone(),
-            priority_score: influence,
+            priority_score,
             engagement_status: person_engagement_status(&person),
             co_appearances,
             recent_observations,
@@ -942,6 +980,14 @@ mod tests {
         assert!(GET_PERSON_PEERS_QUERY.contains("AS pain_index"));
         assert!(GET_PERSON_PEERS_QUERY.contains("AS change_risk"));
         assert!(GET_PERSON_PEERS_QUERY.contains("AS role_drift_score"));
+    }
+
+    /// No linked organization is `NULL`, never the fabricated label
+    /// "Independent" (audit P1).
+    #[test]
+    fn peer_query_does_not_fabricate_an_affiliation() {
+        assert!(GET_PERSON_PEERS_QUERY.contains("c.name AS organization"));
+        assert!(!GET_PERSON_PEERS_QUERY.contains("'Independent'"));
     }
 
     #[test]

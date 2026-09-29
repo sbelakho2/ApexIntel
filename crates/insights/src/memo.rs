@@ -706,19 +706,19 @@ pub fn build_competing_hypotheses(cards: &[InsightCard]) -> Vec<HypothesisScorec
             hypothesis: "Expansion or program acceleration".to_string(),
             support_score: (expansion_support / total).clamp(0.0, 1.0),
             contradiction_score: (compliance_support / total * 0.5).clamp(0.0, 1.0),
-            prior: 0.45,
+            heuristic_prior: 0.45,
         },
         HypothesisInput {
             hypothesis: "Compliance or security stress response".to_string(),
             support_score: (compliance_support / total).clamp(0.0, 1.0),
             contradiction_score: (expansion_support / total * 0.35).clamp(0.0, 1.0),
-            prior: 0.35,
+            heuristic_prior: 0.35,
         },
         HypothesisInput {
             hypothesis: "Competitive pressure and defensive repositioning".to_string(),
             support_score: (pressure_support / total).clamp(0.0, 1.0),
             contradiction_score: (expansion_support / total * 0.25).clamp(0.0, 1.0),
-            prior: 0.40,
+            heuristic_prior: 0.40,
         },
     ])
 }
@@ -942,10 +942,10 @@ pub fn render_memo_text(
         lines.push(vary_heading("## Competing Hypotheses", &mut rng));
         for hypothesis in competing_hypotheses.iter().take(3) {
             lines.push(format!(
-                "- {} — {} (posterior {:.0}%, support {:.2}, contradiction {:.2})",
+                "- {} — {} (heuristic score {:.0}%, support {:.2}, contradiction {:.2})",
                 hypothesis.hypothesis,
                 hypothesis.assessment,
-                hypothesis.posterior * 100.0,
+                hypothesis.heuristic_score * 100.0,
                 hypothesis.support_score,
                 hypothesis.contradiction_score
             ));

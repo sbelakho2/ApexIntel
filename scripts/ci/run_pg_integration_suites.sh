@@ -98,8 +98,14 @@ run cargo test -p apex-api --test app_users_login_integration --locked -- --igno
 # cookies, all resolved against the real `app_users` table.
 run cargo test -p apex-api --test session_authority_integration --locked -- --ignored --test-threads=1
 
+# ── Seed bootstrap preserves authoritative recipe lifecycle ─────────────────
+run cargo test -p apex-worker --test recipe_lifecycle_preservation_integration --locked -- --ignored --test-threads=1
+
 # ── Recipe activation-threshold calibration tightens on high FPR ────────────
 run cargo test -p apex-store --test recipe_calibration_integration --locked -- --ignored --test-threads=1
+
+# ── Canonical POI priority: vector composite, filters, ordering ─────────────
+run cargo test -p apex-store --test persons_priority_integration --locked -- --ignored --test-threads=1
 
 # ── Alert routing policy: suppressed targets receive zero SSE events ────────
 run cargo test -p apex-api --test alert_routing_policy_integration --locked -- --ignored --test-threads=1

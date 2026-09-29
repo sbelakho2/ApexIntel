@@ -36,6 +36,17 @@ pub struct InsightCandidate {
     pub evidence_ids: Vec<String>,
     pub severity: String,
     pub category: String,
+    /// Matched signals whose feature value is a direct observation.
+    pub direct_signal_count: usize,
+    /// Total matched signals (exact or fallback).
+    pub matched_signal_count: usize,
+    /// Distinct underlying events/sources behind the matched signals. One
+    /// observation aliased under several feature names counts once.
+    pub distinct_source_count: usize,
+    /// True when every matched signal was satisfied only by features derived
+    /// from previously emitted warnings. Derived intelligence is not primary
+    /// evidence: the worker must not emit production output from it.
+    pub prior_warning_only: bool,
 }
 
 impl InsightCandidate {
@@ -60,6 +71,40 @@ impl InsightCandidate {
 /// Keys follow the pattern "observation_type.field" (e.g., "JobPost.count", "WebChange.drift").
 pub type FeatureMap = HashMap<String, f64>;
 
+/// Where a feature value came from (audit P1: direct vs derived vs proxy).
+///
+/// The feature pipeline synthesizes several aliases per observation (a
+/// `FinancialDisclosure` also increments `Industry.trend` and `Market.count`)
+/// and maps prior warnings back into feature names. Without provenance one
+/// event can masquerade as several independent conditions, and derived
+/// intelligence can feed itself.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FeatureOrigin {
+    /// A direct observation (or an aggregation of one observation type).
+    Observation(String),
+    /// A synthesized alias of an observation, semantically broader than the
+    /// observation itself (one news article is not an industry trend).
+    DerivedAlias(String),
+    /// Derived from previously emitted warnings — derived intelligence, never
+    /// primary evidence.
+    PriorWarning(String),
+}
+
+impl FeatureOrigin {
+    /// Identity of the underlying event/source, so one event under several
+    /// aliases counts once.
+    pub fn source_id(&self) -> String {
+        match self {
+            Self::Observation(source) | Self::DerivedAlias(source) => source.clone(),
+            Self::PriorWarning(warning) => format!("warning:{warning}"),
+        }
+    }
+}
+
+/// Feature key -> origin. Keys without an entry are treated as direct,
+/// distinct observations (backward compatible).
+pub type FeatureProvenance = HashMap<String, FeatureOrigin>;
+
 // ────────────────────────────────────────────
 // Signal checking
 // ────────────────────────────────────────────
@@ -80,11 +125,13 @@ pub fn signal_key(spec: &SignalSpec) -> String {
     format!("{}.{}", spec.observation_type, spec.field)
 }
 
-/// Check if a single signal condition is satisfied.
+/// Check if a single signal condition is satisfied, returning the matched
+/// feature key and its value. The key is formatted once so hot matching paths
+/// do not rebuild it.
 /// Validates operator values and rejects unknown operators with None (B131).
-pub fn check_signal(spec: &SignalSpec, features: &FeatureMap) -> Option<f64> {
+pub fn check_signal_with_key(spec: &SignalSpec, features: &FeatureMap) -> Option<(String, f64)> {
     let key = signal_key(spec);
-    let val = features.get(&key)?;
+    let val = *features.get(&key)?;
 
     // B132: Handle NaN values gracefully
     if val.is_nan() || val.is_infinite() {
@@ -104,77 +151,160 @@ pub fn check_signal(spec: &SignalSpec, features: &FeatureMap) -> Option<f64> {
     }
 
     let satisfied = match op {
-        "increase" => *val > threshold,
-        "decrease" => *val < -threshold,
-        "above" => *val > threshold,
-        "below" => *val < threshold,
-        "equals" => (*val - threshold).abs() < 1e-6, // B139: tolerance for equals
+        "increase" => val > threshold,
+        "decrease" => val < -threshold,
+        "above" => val > threshold,
+        "below" => val < threshold,
+        "equals" => (val - threshold).abs() < 1e-6, // B139: tolerance for equals
         "contains" => true,
-        _ => *val != 0.0,
+        _ => val != 0.0,
     };
 
     if satisfied {
-        Some(*val)
+        Some((key, val))
     } else {
         None
     }
 }
 
-/// Check all signals for a recipe. Returns signal values if all are satisfied.
-pub fn check_all_signals(recipe: &Recipe, features: &FeatureMap) -> Option<Vec<f64>> {
-    let mut values = Vec::new();
-    for signal in &recipe.signals {
-        {
-            let v = check_signal(signal, features)?;
-            values.push(v)
-        }
-    }
-    Some(values)
+/// Check if a single signal condition is satisfied.
+pub fn check_signal(spec: &SignalSpec, features: &FeatureMap) -> Option<f64> {
+    check_signal_with_key(spec, features).map(|(_, value)| value)
 }
 
-/// Check signals with partial matching and fallback support.
-///
-/// For each signal, tries exact key match first, then falls back to
-/// `"{observation_type}.count"` if available.  Returns `None` only when zero
-/// signals can be matched.  The caller receives the matched values alongside
-/// the total/matched counts so confidence can be scaled proportionally.
-pub fn check_signals_partial(
+/// A signal that fired, together with the feature key that satisfied it
+/// (exact key or generic `{observation_type}.count` fallback).
+#[derive(Debug, Clone)]
+struct SignalMatch {
+    key: String,
+    value: f64,
+}
+
+/// Exact match: every signal must be satisfied by its exact feature key.
+fn match_all_signals(recipe: &Recipe, features: &FeatureMap) -> Option<Vec<SignalMatch>> {
+    let mut matches = Vec::new();
+    for signal in &recipe.signals {
+        let (key, value) = check_signal_with_key(signal, features)?;
+        matches.push(SignalMatch { key, value });
+    }
+    Some(matches)
+}
+
+/// Partial match with generic fallbacks. Returns the matches and the recipe's
+/// total signal count.
+fn match_signals_partial(
     recipe: &Recipe,
     features: &FeatureMap,
-) -> Option<(Vec<f64>, usize, usize)> {
+) -> Option<(Vec<SignalMatch>, usize)> {
     let total = recipe.signals.len();
     if total == 0 {
         return None;
     }
 
-    let mut matched_values = Vec::new();
-    let mut matched_count: usize = 0;
+    let mut matches = Vec::new();
+    // Each feature key may back at most one matched signal: otherwise one
+    // `X.count` observation can exact-match one signal and serve as the
+    // generic fallback for another of the same observation type, making one
+    // fact masquerade as several conditions and inflating the match fraction.
+    let mut consumed_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for signal in &recipe.signals {
-        // Try exact match first.
-        if let Some(v) = check_signal(signal, features) {
-            matched_values.push(v);
-            matched_count += 1;
-            continue;
+        // Try exact match first, unless another signal already claimed the key.
+        let exact_key = signal_key(signal);
+        if !consumed_keys.contains(&exact_key) {
+            if let Some((key, value)) = check_signal_with_key(signal, features) {
+                consumed_keys.insert(key.clone());
+                matches.push(SignalMatch { key, value });
+                continue;
+            }
         }
         // Fallback: check if the observation_type has ANY presence via .count key.
         // NOTE: .any fallback removed (Q1 2026) — it was too permissive and caused
         // unrelated recipes to fire on generic entity data.
         let fallback_key = format!("{}.count", signal.observation_type);
-        if let Some(&v) = features.get(&fallback_key) {
-            if v > 0.0 {
-                matched_values.push(v);
-                matched_count += 1;
-                continue;
+        if consumed_keys.contains(&fallback_key) {
+            continue;
+        }
+        if let Some(&value) = features.get(&fallback_key) {
+            if value > 0.0 {
+                consumed_keys.insert(fallback_key.clone());
+                matches.push(SignalMatch {
+                    key: fallback_key,
+                    value,
+                });
             }
         }
     }
 
-    if matched_count == 0 {
+    if matches.is_empty() {
         return None;
     }
 
-    Some((matched_values, total, matched_count))
+    Some((matches, total))
+}
+
+/// Check all signals for a recipe. Returns signal values if all are satisfied.
+#[cfg(test)]
+pub fn check_all_signals(recipe: &Recipe, features: &FeatureMap) -> Option<Vec<f64>> {
+    match_all_signals(recipe, features)
+        .map(|matches| matches.into_iter().map(|signal| signal.value).collect())
+}
+
+/// Evidence accounting for one evaluation: how many matched signals were
+/// direct observations, and how many distinct underlying events they trace
+/// back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EvidencePosture {
+    direct_signal_count: usize,
+    matched_signal_count: usize,
+    distinct_source_count: usize,
+    prior_warning_only: bool,
+}
+
+impl EvidencePosture {
+    /// Without provenance every key is a distinct direct observation, which
+    /// preserves the pre-provenance scoring behavior.
+    fn from_matches(matches: &[SignalMatch], provenance: Option<&FeatureProvenance>) -> Self {
+        let mut sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut direct_signal_count = 0usize;
+        let mut prior_warning_only = true;
+
+        for signal_match in matches {
+            match provenance.and_then(|provenance| provenance.get(&signal_match.key)) {
+                Some(origin) => {
+                    if matches!(origin, FeatureOrigin::Observation(_)) {
+                        direct_signal_count += 1;
+                    }
+                    if !matches!(origin, FeatureOrigin::PriorWarning(_)) {
+                        prior_warning_only = false;
+                    }
+                    sources.insert(origin.source_id());
+                }
+                None => {
+                    direct_signal_count += 1;
+                    prior_warning_only = false;
+                    sources.insert(format!("key:{}", signal_match.key));
+                }
+            }
+        }
+
+        Self {
+            direct_signal_count,
+            matched_signal_count: matches.len(),
+            distinct_source_count: sources.len(),
+            prior_warning_only,
+        }
+    }
+
+    /// Penalty applied to confidence when several matched signals trace back
+    /// to one event under several aliases: one source is one piece of
+    /// evidence.
+    fn source_factor(&self) -> f64 {
+        if self.matched_signal_count == 0 {
+            return 1.0;
+        }
+        (self.distinct_source_count as f64 / self.matched_signal_count as f64).clamp(0.0, 1.0)
+    }
 }
 
 // ────────────────────────────────────────────
@@ -182,31 +312,54 @@ pub fn check_signals_partial(
 // ────────────────────────────────────────────
 
 /// Apply a z-score transform: (value - mean) / std.
-pub fn zscore_transform(value: f64, mean: f64, std: f64) -> f64 {
+pub fn zscore_transform(value: f64, mean: f64, std: f64) -> Option<f64> {
     if std < 1e-12 {
-        return 0.0;
+        // A zero-variance baseline makes the standardized score undefined; it
+        // does not mean the observation shows no deviation.
+        return None;
     }
-    (value - mean) / std
+    Some((value - mean) / std)
 }
 
-/// Apply a percentage change transform.
-pub fn pct_change_transform(current: f64, previous: f64) -> f64 {
+/// Apply a percentage change transform. `None` when the previous value is
+/// zero: zero-to-nonzero is undefined, not 0 %.
+pub fn pct_change_transform(current: f64, previous: f64) -> Option<f64> {
     if previous.abs() < 1e-12 {
-        return 0.0;
+        return None;
     }
-    (current - previous) / previous
+    Some((current - previous) / previous)
 }
 
-/// Why a transform could not be applied. Missing baselines are *not*
-/// fabricated: a z-score without a mean/std, or a difference without a
-/// previous value, means this recipe cannot be evaluated for this entity.
+/// Why a measured baseline cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidBaselineReason {
+    /// The baseline's standard deviation is zero: the standardized score is
+    /// undefined, and a genuine extreme observation must not be flattened to
+    /// "no deviation".
+    ZeroVariance,
+    /// The baseline value is zero: percentage change is undefined, not 0 %.
+    ZeroDenominator,
+}
+
+/// Why a transform could not be applied. Baselines are never fabricated: a
+/// z-score without a mean/std, a difference without a previous value, a
+/// zero-variance z-score or a zero-denominator percentage change all mean this
+/// recipe cannot be evaluated for this entity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransformDependencyError {
     /// The feature map does not carry the baseline the transform needs.
     MissingBaseline { key: String },
+    /// The baseline exists but is not a usable measurement.
+    InvalidBaseline {
+        key: String,
+        reason: InvalidBaselineReason,
+    },
     /// The transform type is not implemented. Unknown transforms are never
     /// passed through as if they had been applied.
     UnsupportedTransform { transform_type: String },
+    /// Signals and transforms do not line up one-to-one: positional
+    /// application would silently transform only a prefix.
+    SignalTransformMismatch { signals: usize, transforms: usize },
 }
 
 impl std::fmt::Display for TransformDependencyError {
@@ -215,11 +368,45 @@ impl std::fmt::Display for TransformDependencyError {
             Self::MissingBaseline { key } => {
                 write!(f, "missing required baseline feature '{key}'")
             }
+            Self::InvalidBaseline { key, reason } => match reason {
+                InvalidBaselineReason::ZeroVariance => {
+                    write!(
+                        f,
+                        "baseline feature '{key}' has zero variance (z-score undefined)"
+                    )
+                }
+                InvalidBaselineReason::ZeroDenominator => {
+                    write!(
+                        f,
+                        "baseline feature '{key}' is zero (percentage change undefined)"
+                    )
+                }
+            },
             Self::UnsupportedTransform { transform_type } => {
                 write!(f, "unsupported transform '{transform_type}'")
             }
+            Self::SignalTransformMismatch {
+                signals,
+                transforms,
+            } => write!(
+                f,
+                "recipe declares {signals} signal(s) but {transforms} transform(s); \
+                 positional application is ambiguous"
+            ),
         }
     }
+}
+
+/// Transform types the runtime engine can actually apply. This is the single
+/// source of truth: loaders that decide which declared transforms to carry on
+/// a runtime recipe must use [`is_supported_transform`] so bootstrap and the
+/// dispatcher can never drift apart.
+pub const SUPPORTED_TRANSFORM_TYPES: [&str; 4] = ["zscore", "pct_change", "count", "diff"];
+
+/// Whether [`apply_transforms`] can evaluate the given normalized transform
+/// type. Unsupported types are refused (fail closed) at evaluation time.
+pub fn is_supported_transform(transform_type: &str) -> bool {
+    SUPPORTED_TRANSFORM_TYPES.contains(&transform_type)
 }
 
 /// Apply transforms to signal values using feature context.
@@ -227,11 +414,11 @@ impl std::fmt::Display for TransformDependencyError {
 /// Fail-closed: a transform whose baseline (`*.mean`/`*.std`/`*.prev`) is not
 /// present in the feature map — or whose type is not implemented — returns an
 /// error so the recipe is not evaluated. No statistic is synthesized from
-/// absent history.
+/// absent history, and a zero-variance/zero-denominator baseline is refused.
 ///
-/// `count` and `rolling_mean` are pass-throughs by definition: the feature
-/// pipeline computes them upstream (a rolling mean value arrives already
-/// averaged).
+/// `count` is a pass-through by definition (the value already is a count).
+/// `rolling_mean` is refused: without a precomputed rolling-mean feature it
+/// would silently trust an arbitrary value.
 pub fn apply_transforms(
     signal_values: &[f64],
     transforms: &[TransformSpec],
@@ -241,13 +428,13 @@ pub fn apply_transforms(
         return Ok(signal_values.to_vec());
     }
 
-    // B138: warn if signals and transforms lengths don't match
+    // One transform per signal, decided at load time: positional application
+    // of a partial mapping would silently transform only a prefix.
     if signal_values.len() != transforms.len() {
-        tracing::warn!(
-            signals_len = signal_values.len(),
-            transforms_len = transforms.len(),
-            "Signal values and transforms lengths mismatch"
-        );
+        return Err(TransformDependencyError::SignalTransformMismatch {
+            signals: signal_values.len(),
+            transforms: transforms.len(),
+        });
     }
 
     let mut result = signal_values.to_vec();
@@ -272,7 +459,12 @@ pub fn apply_transforms(
                         key: std_key.clone(),
                     }
                 })?;
-                result[i] = zscore_transform(val, mean, std);
+                result[i] = zscore_transform(val, mean, std).ok_or_else(|| {
+                    TransformDependencyError::InvalidBaseline {
+                        key: std_key.clone(),
+                        reason: InvalidBaselineReason::ZeroVariance,
+                    }
+                })?;
             }
             "pct_change" => {
                 let prev_key = format!("{}.prev", transform.field);
@@ -281,7 +473,12 @@ pub fn apply_transforms(
                         key: prev_key.clone(),
                     }
                 })?;
-                result[i] = pct_change_transform(val, prev);
+                result[i] = pct_change_transform(val, prev).ok_or_else(|| {
+                    TransformDependencyError::InvalidBaseline {
+                        key: prev_key.clone(),
+                        reason: InvalidBaselineReason::ZeroDenominator,
+                    }
+                })?;
             }
             "count" => {
                 // count transform keeps the value as-is (already a count)
@@ -305,7 +502,13 @@ pub fn apply_transforms(
                 });
             }
             "rolling_mean" => {
-                // rolling mean transform — value is already the rolling mean
+                // Not materialized upstream: trusting an arbitrary value to
+                // already be the configured rolling mean is decorative. Refuse
+                // until a precomputed `{field}.rolling_mean.{window}` feature
+                // exists to read.
+                return Err(TransformDependencyError::UnsupportedTransform {
+                    transform_type: "rolling_mean".to_string(),
+                });
             }
             other => {
                 return Err(TransformDependencyError::UnsupportedTransform {
@@ -439,22 +642,42 @@ pub fn evaluate_recipe_with_context(
     features: &FeatureMap,
     context: Option<&EntityContext>,
 ) -> Option<InsightCandidate> {
+    evaluate_recipe_with_context_and_provenance(recipe, entity_id, features, context, None)
+}
+
+/// Evaluate a recipe with both applicability context and feature provenance.
+///
+/// Provenance lets the engine distinguish direct observations from synthesized
+/// aliases and prior-warning derivatives: matched signals are scored by their
+/// distinct underlying sources (one event under several aliases is one piece
+/// of evidence), and a candidate satisfied exclusively by prior warnings is
+/// flagged for the caller.
+pub fn evaluate_recipe_with_context_and_provenance(
+    recipe: &Recipe,
+    entity_id: &str,
+    features: &FeatureMap,
+    context: Option<&EntityContext>,
+    provenance: Option<&FeatureProvenance>,
+) -> Option<InsightCandidate> {
     if !recipe.applicability.is_unrestricted() {
         let applies = context.is_some_and(|context| recipe.applicability.allows(context));
         if !applies {
             return None;
         }
     }
-    evaluate_recipe_inner(recipe, entity_id, features)
+    evaluate_recipe_inner(recipe, entity_id, features, provenance)
 }
 
 fn evaluate_recipe_inner(
     recipe: &Recipe,
     entity_id: &str,
     features: &FeatureMap,
+    provenance: Option<&FeatureProvenance>,
 ) -> Option<InsightCandidate> {
-    // Evaluate promoted, seed, and staged recipes (staged must fire to accumulate
-    // total_fires which is required for promotion via should_promote).
+    // Evaluate promoted, seed, and staged recipes. Staged recipes are shadow
+    // evaluation only: the engine produces candidates for observability, and
+    // the caller must not emit them as production intelligence (the worker
+    // filters staged candidates out before emission).
     if recipe.status != RecipeStatus::Promoted
         && recipe.status != RecipeStatus::Seed
         && recipe.status != RecipeStatus::Staged
@@ -472,19 +695,39 @@ fn evaluate_recipe_inner(
     }
 
     // 1. Try exact (all signals) matching first.
-    let (signal_values, match_fraction) = if let Some(vals) = check_all_signals(recipe, features) {
-        (vals, 1.0_f64)
+    let (matches, match_fraction) = if let Some(matches) = match_all_signals(recipe, features) {
+        (matches, 1.0_f64)
     } else {
-        // 1b. Fall back to partial matching with observation-type-level
-        // fallbacks. The recipe's [`MatchPolicy`] decides how much partiality
-        // is acceptable; security/compliance recipes default to All.
-        let (vals, total, matched) = check_signals_partial(recipe, features)?;
-        if matched < recipe.match_policy.required_matches(total) {
+        // `MatchPolicy::All` means exact matching only: no generic type-count
+        // fallback may stand in for a detailed signal.
+        if recipe.match_policy == apex_core::schemas::MatchPolicy::All {
             return None;
         }
-        let frac = matched as f64 / total as f64;
-        (vals, frac)
+        // Transform-carrying recipes are applied positionally, one transform
+        // per signal, so a partial match has no defined transform mapping.
+        // Require every signal explicitly (the loader only carries complete
+        // field-mapped transform sets) instead of failing later in
+        // `apply_transforms` for each candidate.
+        if !recipe.transforms.is_empty() {
+            return None;
+        }
+        // 1b. Fall back to partial matching with observation-type-level
+        // fallbacks. The recipe's policy decides how much partiality is
+        // acceptable; each generic fallback key can satisfy at most one
+        // signal, so a single observation type never counts as several
+        // distinct conditions.
+        let (matches, total) = match_signals_partial(recipe, features)?;
+        if matches.len() < recipe.match_policy.required_matches(total) {
+            return None;
+        }
+        let frac = matches.len() as f64 / total as f64;
+        (matches, frac)
     };
+    let signal_values: Vec<f64> = matches.iter().map(|signal| signal.value).collect();
+
+    // 1c. Evidence posture: direct observations vs aliases vs prior warnings,
+    // and how many distinct underlying events back the match.
+    let evidence = EvidencePosture::from_matches(&matches, provenance);
 
     // 2. Apply transforms — fail closed when a baseline dependency is absent.
     let transformed = match apply_transforms(&signal_values, &recipe.transforms, features) {
@@ -499,10 +742,14 @@ fn evaluate_recipe_inner(
         }
     };
 
-    // 3. Estimate impact and confidence (use transformed values for strength)
+    // 3. Estimate impact and confidence (use transformed values for strength).
+    // Scale confidence by the fraction of signals that matched AND by evidence
+    // diversity: several aliases of one event are one piece of evidence, not
+    // several independent confirmations.
     let impact = estimate_impact(&transformed);
-    // Scale confidence by the fraction of signals that matched.
-    let confidence = (estimate_confidence(&transformed, recipe) * match_fraction).min(1.0);
+    let confidence =
+        (estimate_confidence(&transformed, recipe) * match_fraction * evidence.source_factor())
+            .min(1.0);
 
     // 3b. Database activation gate (migration 089): when calibration has set a
     // threshold, the candidate must reach it.
@@ -531,6 +778,10 @@ fn evaluate_recipe_inner(
         evidence_ids,
         severity: recipe.severity.clone(),
         category: recipe.category.clone(),
+        direct_signal_count: evidence.direct_signal_count,
+        matched_signal_count: evidence.matched_signal_count,
+        distinct_source_count: evidence.distinct_source_count,
+        prior_warning_only: evidence.prior_warning_only,
     })
 }
 
@@ -575,17 +826,22 @@ impl RecipeEngine {
             .collect()
     }
 
-    /// Evaluate all active recipes for a given entity.
-    /// Evaluate all recipes for one entity with applicability context.
-    pub fn evaluate_all_with_context(
+    /// Evaluate all recipes for one entity with applicability context and
+    /// feature provenance (direct vs derived vs prior-warning evidence).
+    pub fn evaluate_all_with_context_and_provenance(
         &self,
         entity_id: &str,
         features: &FeatureMap,
         context: Option<&EntityContext>,
+        provenance: Option<&FeatureProvenance>,
     ) -> Vec<InsightCandidate> {
         self.recipes
             .iter()
-            .filter_map(|recipe| evaluate_recipe_with_context(recipe, entity_id, features, context))
+            .filter_map(|recipe| {
+                evaluate_recipe_with_context_and_provenance(
+                    recipe, entity_id, features, context, provenance,
+                )
+            })
             .collect()
     }
 
@@ -796,27 +1052,24 @@ mod tests {
 
     #[test]
     fn test_zscore_transform() {
-        assert!((zscore_transform(10.0, 5.0, 2.0) - 2.5).abs() < 1e-10);
-        assert!((zscore_transform(5.0, 5.0, 2.0) - 0.0).abs() < 1e-10);
-        assert!((zscore_transform(10.0, 5.0, 0.0) - 0.0).abs() < 1e-10); // zero std
-    }
-
-    #[test]
-    fn test_zscore_transform_tiny_std() {
-        assert_eq!(zscore_transform(10.0, 5.0, 1e-15), 0.0);
+        assert_eq!(zscore_transform(10.0, 5.0, 2.0), Some(2.5));
+        assert_eq!(zscore_transform(5.0, 5.0, 2.0), Some(0.0));
+        // A zero or near-zero std is undefined, not "no deviation".
+        assert_eq!(zscore_transform(10.0, 5.0, 0.0), None);
+        // A genuinely extreme observation against a zero-variance history must
+        // not be flattened to a zero z-score.
+        assert_eq!(zscore_transform(20.0, 5.0, 0.0), None);
+        assert_eq!(zscore_transform(10.0, 5.0, 1e-15), None);
     }
 
     #[test]
     fn test_pct_change_transform() {
-        assert!((pct_change_transform(110.0, 100.0) - 0.1).abs() < 1e-10);
-        assert!((pct_change_transform(50.0, 100.0) - (-0.5)).abs() < 1e-10);
-        assert!((pct_change_transform(10.0, 0.0) - 0.0).abs() < 1e-10); // zero previous
-    }
-
-    #[test]
-    fn test_pct_change_transform_previous_zero() {
-        assert_eq!(pct_change_transform(1_000_000.0, 0.0), 0.0);
-        assert_eq!(pct_change_transform(-1_000_000.0, 0.0), 0.0);
+        assert_eq!(pct_change_transform(110.0, 100.0), Some(0.1));
+        assert_eq!(pct_change_transform(50.0, 100.0), Some(-0.5));
+        // Zero previous is undefined, not 0 % change.
+        assert_eq!(pct_change_transform(10.0, 0.0), None);
+        assert_eq!(pct_change_transform(1_000_000.0, 0.0), None);
+        assert_eq!(pct_change_transform(-1_000_000.0, 0.0), None);
     }
 
     #[test]
@@ -996,6 +1249,201 @@ mod tests {
                 transform_type: "lag".to_string()
             })
         );
+    }
+
+    /// MatchPolicy::All refuses the generic fallback entirely, and a shared
+    /// fallback key satisfies at most one signal.
+    #[test]
+    fn match_policy_all_is_exact_only_and_fallbacks_are_consumed_once() {
+        let signals = vec![
+            make_signal("JobPost", "role_family", "above", Some(1.0)),
+            make_signal("JobPost", "executive", "above", Some(1.0)),
+        ];
+        let mut recipe = make_recipe("X001", signals);
+
+        let mut features = FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 5.0);
+
+        recipe.match_policy = MatchPolicy::All;
+        assert!(
+            evaluate_recipe(&recipe, "company-1", &features).is_none(),
+            "All must be exact-only: a generic JobPost.count cannot satisfy detailed signals"
+        );
+
+        recipe.match_policy = MatchPolicy::Fraction(0.5);
+        assert!(
+            evaluate_recipe(&recipe, "company-1", &features).is_some(),
+            "the historical fraction may use the fallback once"
+        );
+
+        // Two distinct observation types can each contribute one fallback.
+        let mut two_types = make_recipe(
+            "X002",
+            vec![
+                make_signal("JobPost", "role_family", "above", Some(1.0)),
+                make_signal("WebChange", "drift", "above", Some(0.1)),
+            ],
+        );
+        two_types.match_policy = MatchPolicy::All;
+        let mut both = FeatureMap::new();
+        both.insert("JobPost.count".to_string(), 5.0);
+        both.insert("WebChange.count".to_string(), 3.0);
+        assert!(
+            evaluate_recipe(&two_types, "company-1", &both).is_none(),
+            "All still refuses type-count fallbacks for both signals"
+        );
+    }
+
+    /// One feature key backs at most one matched signal, even when one
+    /// signal's exact key is the generic `.{count}` key another falls back to.
+    #[test]
+    fn one_feature_key_backs_at_most_one_signal() {
+        let mut recipe = make_recipe(
+            "X003",
+            vec![
+                make_signal("Security", "count", "above", Some(0.0)),
+                make_signal("Security", "risk", "above", Some(0.0)),
+            ],
+        );
+        recipe.match_policy = MatchPolicy::Fraction(0.5);
+        let mut features = FeatureMap::new();
+        features.insert("Security.count".to_string(), 1.0);
+
+        let candidate = evaluate_recipe(&recipe, "company-1", &features)
+            .expect("one matched signal satisfies the fraction policy");
+        assert_eq!(
+            candidate.matched_signal_count, 1,
+            "the exact match consumes Security.count; the fallback must not reuse it"
+        );
+        assert_eq!(candidate.distinct_source_count, 1);
+    }
+
+    /// Transform-carrying recipes are applied positionally, one transform per
+    /// signal: a partial match has no defined mapping and must not evaluate.
+    #[test]
+    fn transform_recipes_require_every_signal() {
+        let mut recipe = make_recipe(
+            "X004",
+            vec![
+                make_signal("JobPost", "role_family", "above", Some(1.0)),
+                make_signal("JobPost", "executive", "above", Some(1.0)),
+            ],
+        );
+        recipe.match_policy = MatchPolicy::Fraction(0.5);
+        recipe.transforms = vec![
+            TransformSpec {
+                transform_type: "count".to_string(),
+                field: "JobPost.role_family".to_string(),
+                window_days: 30,
+                params: serde_json::Value::Null,
+            },
+            TransformSpec {
+                transform_type: "count".to_string(),
+                field: "JobPost.executive".to_string(),
+                window_days: 30,
+                params: serde_json::Value::Null,
+            },
+        ];
+        let mut features = FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 5.0);
+
+        assert!(
+            evaluate_recipe(&recipe, "company-1", &features).is_none(),
+            "a generic fallback must not satisfy a partially mapped transform recipe"
+        );
+    }
+
+    /// Provenance deflates one event aliased under several names, and flags
+    /// prior-warning-only evidence as derived intelligence.
+    #[test]
+    fn provenance_prevents_alias_double_counting_and_flags_prior_warnings() {
+        let recipe = make_recipe(
+            "P001",
+            vec![
+                make_signal("Industry", "trend", "above", Some(0.0)),
+                make_signal("Market", "count", "above", Some(0.0)),
+            ],
+        );
+        let mut features = FeatureMap::new();
+        features.insert("Industry.trend".to_string(), 3.0);
+        features.insert("Market.count".to_string(), 3.0);
+
+        let mut provenance = FeatureProvenance::new();
+        provenance.insert(
+            "Industry.trend".to_string(),
+            FeatureOrigin::DerivedAlias("FinancialDisclosure".to_string()),
+        );
+        provenance.insert(
+            "Market.count".to_string(),
+            FeatureOrigin::DerivedAlias("FinancialDisclosure".to_string()),
+        );
+
+        let aliased = evaluate_recipe_with_context_and_provenance(
+            &recipe,
+            "company-1",
+            &features,
+            None,
+            Some(&provenance),
+        )
+        .expect("both aliases match");
+        assert_eq!(aliased.matched_signal_count, 2);
+        assert_eq!(aliased.direct_signal_count, 0);
+        assert_eq!(
+            aliased.distinct_source_count, 1,
+            "one observation under two aliases is one piece of evidence"
+        );
+
+        // Without provenance the same keys score higher: nothing tells the
+        // engine they are the same event.
+        let unqualified = evaluate_recipe(&recipe, "company-1", &features).expect("matches");
+        assert!(
+            unqualified.confidence > aliased.confidence,
+            "aliased evidence must not score like independent observations"
+        );
+
+        // Prior-warning-only evidence is flagged so callers never treat
+        // derived intelligence as primary evidence.
+        let mut warning_provenance = FeatureProvenance::new();
+        warning_provenance.insert(
+            "Industry.trend".to_string(),
+            FeatureOrigin::PriorWarning("market_intelligence".to_string()),
+        );
+        warning_provenance.insert(
+            "Market.count".to_string(),
+            FeatureOrigin::PriorWarning("market_intelligence".to_string()),
+        );
+        let warning_only = evaluate_recipe_with_context_and_provenance(
+            &recipe,
+            "company-1",
+            &features,
+            None,
+            Some(&warning_provenance),
+        )
+        .expect("matches");
+        assert!(warning_only.prior_warning_only);
+        assert_eq!(warning_only.direct_signal_count, 0);
+
+        // Direct observations clear the flag.
+        let mut direct_provenance = FeatureProvenance::new();
+        direct_provenance.insert(
+            "Industry.trend".to_string(),
+            FeatureOrigin::Observation("FinancialDisclosure".to_string()),
+        );
+        direct_provenance.insert(
+            "Market.count".to_string(),
+            FeatureOrigin::Observation("Industry".to_string()),
+        );
+        let direct = evaluate_recipe_with_context_and_provenance(
+            &recipe,
+            "company-1",
+            &features,
+            None,
+            Some(&direct_provenance),
+        )
+        .expect("matches");
+        assert!(!direct.prior_warning_only);
+        assert_eq!(direct.direct_signal_count, 2);
+        assert_eq!(direct.distinct_source_count, 2);
     }
 
     /// Applicability is a live execution gate: a restricted recipe does not
@@ -1250,12 +1698,15 @@ mod tests {
         let mut features = FeatureMap::new();
         features.insert("X.mean".to_string(), 5.0);
         features.insert("X.std".to_string(), 2.0);
-        let result =
-            apply_transforms(&signals, &transforms, &features).expect("transform deps present");
-        assert_eq!(result.len(), 2); // should still produce 2 values
-                                     // First is transformed, second is untouched
-        assert!((result[0] - 2.5).abs() < 1e-10);
-        assert!((result[1] - 20.0).abs() < 1e-10);
+        // Positional application of a partial mapping would transform only a
+        // prefix: the mismatch fails closed.
+        assert_eq!(
+            apply_transforms(&signals, &transforms, &features),
+            Err(TransformDependencyError::SignalTransformMismatch {
+                signals: 2,
+                transforms: 1
+            })
+        );
     }
 
     // B139: Tests for equals operator with tolerance
@@ -1545,6 +1996,10 @@ mod tests {
             evidence_ids: vec![],
             severity: "warning".into(),
             category: "supply_chain".into(),
+            direct_signal_count: 1,
+            matched_signal_count: 1,
+            distinct_source_count: 1,
+            prior_warning_only: false,
         };
         assert!(
             candidate.has_template_leakage(),

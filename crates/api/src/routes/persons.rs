@@ -1,7 +1,6 @@
 //! Persons route — request/response types and logic for POI endpoints.
 
-use crate::config::PriorityWeights;
-use apex_core::validation::{clamp_ratio, validate_uuid};
+use apex_core::validation::validate_uuid;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -62,7 +61,9 @@ pub struct PersonListItem {
     pub name: String,
     pub role: String,
     pub role_family: String,
-    pub organization: String,
+    /// Resolved organization name; `None` means no linked organization is
+    /// recorded (never "Independent").
+    pub organization: Option<String>,
     pub region: String,
     pub country: String,
     /// Weighted composite of the stored priority vector; `None` when the
@@ -143,59 +144,13 @@ pub struct PersonDetail {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 /// The **stored** five-dimension priority vector persisted on the person row.
 /// Distinct from the display-only radar (`PersonRadarMetrics`) and from the
 /// canonical assessment (`PersonIntelligenceView`).
-pub struct StoredPriorityVector {
-    pub decision_power: f64,
-    pub domain_relevance: f64,
-    pub network_centrality: f64,
-    pub engagement_potential: f64,
-    pub intelligence_value: f64,
-}
-
-impl StoredPriorityVector {
-    /// Compute a weighted composite score.
-    pub fn composite(&self) -> f64 {
-        self.composite_with_weights(&PriorityWeights::default())
-    }
-
-    pub fn composite_with_weights(&self, weights: &PriorityWeights) -> f64 {
-        let values = [
-            self.decision_power,
-            self.domain_relevance,
-            self.network_centrality,
-            self.engagement_potential,
-            self.intelligence_value,
-        ];
-        let weight_values = [
-            weights.decision_power,
-            weights.domain_relevance,
-            weights.network_centrality,
-            weights.engagement_potential,
-            weights.intelligence_value,
-        ];
-        let total_weight: f64 = weight_values.iter().sum();
-        let normalized = if total_weight <= f64::EPSILON {
-            [0.25, 0.20, 0.20, 0.15, 0.20]
-        } else {
-            [
-                weight_values[0] / total_weight,
-                weight_values[1] / total_weight,
-                weight_values[2] / total_weight,
-                weight_values[3] / total_weight,
-                weight_values[4] / total_weight,
-            ]
-        };
-        let score: f64 = normalized
-            .iter()
-            .zip(values.iter())
-            .map(|(w, v)| w * v)
-            .sum();
-        clamp_ratio(score)
-    }
-}
+///
+/// The composite formula lives in `apex_core::priority` — one implementation
+/// shared with the store, never duplicated here.
+pub use apex_core::priority::StoredPriorityVector;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Affiliation {
@@ -228,7 +183,8 @@ pub struct PeerSummary {
     pub id: String,
     pub name: String,
     pub role: String,
-    pub organization: String,
+    /// Resolved organization name; `None` means none is recorded.
+    pub organization: Option<String>,
     pub region: String,
     pub priority_score: Option<f64>,
     pub influence_tier: String,
@@ -311,13 +267,17 @@ pub fn filter_by_roles<'a>(items: &'a [PersonListItem], roles: &str) -> Vec<&'a 
         .collect()
 }
 
-/// Search persons by name or organization.
+/// Search persons by name or organization. An unrecorded organization matches
+/// nothing (there is no organization text to search).
 pub fn search_persons<'a>(items: &'a [PersonListItem], query: &str) -> Vec<&'a PersonListItem> {
     let q = query.to_lowercase();
     items
         .iter()
         .filter(|p| {
-            p.name.to_lowercase().contains(&q) || p.organization.to_lowercase().contains(&q)
+            p.name.to_lowercase().contains(&q)
+                || p.organization
+                    .as_deref()
+                    .is_some_and(|organization| organization.to_lowercase().contains(&q))
         })
         .collect()
 }
@@ -349,6 +309,7 @@ pub fn count_by_region(items: &[PersonListItem]) -> Vec<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PriorityWeights;
 
     fn make_person(name: &str, role: &str, region: &str, priority: f64) -> PersonListItem {
         PersonListItem {
@@ -356,7 +317,7 @@ mod tests {
             name: name.to_string(),
             role: role.to_string(),
             role_family: "C-Suite".to_string(),
-            organization: "Test Org".to_string(),
+            organization: Some("Test Org".to_string()),
             region: region.to_string(),
             country: "US".to_string(),
             priority_score: Some(priority),
@@ -513,7 +474,17 @@ mod tests {
             intelligence_value: 0.0,
         };
 
-        assert!((pv.composite_with_weights(&weights) - 0.9).abs() < 0.001);
+        assert!(
+            (pv.composite_with_weights(&[
+                weights.decision_power,
+                weights.domain_relevance,
+                weights.network_centrality,
+                weights.engagement_potential,
+                weights.intelligence_value,
+            ]) - 0.9)
+                .abs()
+                < 0.001
+        );
     }
 
     #[test]

@@ -277,10 +277,10 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                             .iter()
                             .take(3)
                             .map(|hypothesis| format!(
-                                "{} — {} (posterior {:.0}%, support {:.2}, contradiction {:.2})",
+                                "{} — {} (heuristic score {:.0}%, support {:.2}, contradiction {:.2})",
                                 hypothesis.hypothesis,
                                 hypothesis.assessment,
-                                hypothesis.posterior * 100.0,
+                                hypothesis.heuristic_score * 100.0,
                                 hypothesis.support_score,
                                 hypothesis.contradiction_score,
                             ))

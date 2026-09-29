@@ -384,7 +384,7 @@ pub async fn insert_seed_recipes(
                     r#"
                     INSERT INTO recipes (
                         code, name, status, definition,
-                        configured_min_precision, activation_threshold,
+                        configured_activation_threshold, activation_threshold,
                         created_at, updated_at
                     )
                     VALUES ($1, $2, 'seed', $3, $4, $4, NOW(), NOW())
@@ -430,7 +430,7 @@ pub async fn insert_seed_recipes(
                         signals, transforms, test_config, thresholds,
                         narrative_template, action_playbook, applicability,
                         priority_tier, precision,
-                        configured_min_precision, activation_threshold,
+                        configured_activation_threshold, activation_threshold,
                         created_at, updated_at
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'P2', $13,
@@ -649,7 +649,7 @@ outcome: risk
             "name".to_string(),
             "status".to_string(),
             "definition".to_string(),
-            "configured_min_precision".to_string(),
+            "configured_activation_threshold".to_string(),
             "activation_threshold".to_string(),
         ];
 

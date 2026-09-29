@@ -331,7 +331,9 @@ pub struct PersonPeer {
     pub id: String,
     pub name: String,
     pub role: String,
-    pub shared_company: String,
+    /// Shared organization; `None` means none is recorded (the template omits
+    /// the "at …" fragment rather than printing a fabricated affiliation).
+    pub shared_company: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -363,7 +365,9 @@ pub struct PersonListCard {
     pub id: String,
     pub name: String,
     pub role: String,
-    pub organization: String,
+    /// Resolved organization name; `None` means none is recorded and the
+    /// template renders "not recorded" (never "Independent").
+    pub organization: Option<String>,
     pub region: String,
     /// A/B/C band from the stored priority vector; `None` = not measured.
     pub priority: Option<String>,
@@ -626,7 +630,10 @@ pub async fn list_persons(
             if !selected_q_lc.is_empty() {
                 let haystack = format!(
                     "{} {} {} {}",
-                    row.name, row.role, row.organization, row.role_family
+                    row.name,
+                    row.role,
+                    row.organization.as_deref().unwrap_or(""),
+                    row.role_family
                 )
                 .to_lowercase();
                 if !haystack.contains(&selected_q_lc) {
@@ -786,10 +793,11 @@ pub async fn list_persons(
         use std::collections::BTreeMap;
         let mut grouped: BTreeMap<String, (String, Vec<BuyingCenterPerson>)> = BTreeMap::new();
         for row in &filtered_rows {
-            let organization = if row.organization.trim().is_empty() {
-                "Unaffiliated".to_string()
-            } else {
-                row.organization.clone()
+            // No linked organization is displayed as "Not recorded": absence
+            // of a link is not evidence of being unaffiliated.
+            let organization = match row.organization.as_deref().map(str::trim) {
+                Some(organization) if !organization.is_empty() => organization.to_string(),
+                _ => "Not recorded".to_string(),
             };
             let role = classify_buying_center_role(&row.role, &row.role_family);
             let entry = grouped

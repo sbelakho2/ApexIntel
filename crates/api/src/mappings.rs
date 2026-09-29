@@ -189,7 +189,7 @@ mod tests {
             name: "Fixture".to_string(),
             role: "CTO".to_string(),
             role_family: "Executive".to_string(),
-            organization: "Fixture Ltd".to_string(),
+            organization: Some("Fixture Ltd".to_string()),
             region: "EU".to_string(),
             country: "FI".to_string(),
             priority_vector: None,
@@ -209,7 +209,7 @@ mod tests {
             name: "Jordan Smith".to_string(),
             role: "CEO".to_string(),
             role_family: "Executive".to_string(),
-            organization: "Acme EMS".to_string(),
+            organization: Some("Acme EMS".to_string()),
             region: "US".to_string(),
             country: "US".to_string(),
             priority_vector: Some(serde_json::json!({

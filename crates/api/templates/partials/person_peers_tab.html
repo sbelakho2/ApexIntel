@@ -6,7 +6,7 @@
     {% for p in peers %}
     <a href="/persons/{{ p.id }}" class="block px-4 py-3 hover:bg-rams-panel">
       <span class="text-sm font-semibold">{{ p.name }}</span>
-      <span class="ml-2 text-[11px] text-rams-muted">{{ p.role }} at {{ p.shared_company }}</span>
+      <span class="ml-2 text-[11px] text-rams-muted">{{ p.role }}{% if let Some(company) = p.shared_company %} at {{ company }}{% endif %}</span>
     </a>
     {% endfor %}
   </div>

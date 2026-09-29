@@ -317,11 +317,13 @@ pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<Aut
             // Autocomplete relevance from measured influence; unmeasured
             // entities receive the neutral base score rather than a zero.
             let score = (person.influence.unwrap_or(0.5) * 0.1).clamp(0.0, 10.0);
-            let subtext = if person.organization != "Independent" {
-                Some(person.organization.clone())
-            } else {
-                Some(person.role.clone())
-            };
+            // No organization recorded falls back to the role: absence of a
+            // link is not an affiliation.
+            let subtext = person
+                .organization
+                .clone()
+                .filter(|organization| !organization.trim().is_empty())
+                .or_else(|| Some(person.role.clone()));
 
             entries.push(AutocompleteEntry {
                 text: person.name.clone(),

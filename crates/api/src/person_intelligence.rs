@@ -18,9 +18,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::PriorityWeights;
-use crate::routes::persons::StoredPriorityVector;
-
 /// Priority band on the legacy A/B/C scale, measured from the priority score.
 pub fn priority_band(score: f64) -> &'static str {
     if score >= 0.8 {
@@ -93,9 +90,10 @@ impl PersonIntelligenceView {
         engagement_readiness: Option<f64>,
         profile_fields: &[bool],
     ) -> Self {
-        let priority_score = priority_vector
-            .and_then(|value| serde_json::from_value::<StoredPriorityVector>(value.clone()).ok())
-            .map(|vector| vector.composite_with_weights(&PriorityWeights::default()));
+        // One canonical parser/composite shared with the store and the SQL
+        // mirror: a partial or legacy vector is unmeasured, never zero.
+        let priority_score =
+            priority_vector.and_then(apex_core::priority::priority_score_from_json);
 
         let influence_score = influence.map(|value| (value.clamp(0.0, 1.0) * 100.0).round() as i64);
 

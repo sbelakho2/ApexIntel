@@ -21,6 +21,7 @@ pub mod measurement;
 pub mod origin_cluster;
 pub mod outcomes;
 pub mod person_names;
+pub mod priority;
 pub mod profile;
 pub mod provenance;
 pub mod quality_score;

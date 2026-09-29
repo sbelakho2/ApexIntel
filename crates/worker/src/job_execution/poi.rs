@@ -1451,7 +1451,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 person_id: row.id.to_string(),
                 name: row.name.clone(),
                 name_variants: vec![],
-                org: row.organization.clone(),
+                org: row.organization.clone().unwrap_or_default(),
                 org_id: None,
                 current_role: row.role.clone(),
                 role_family: RoleFamily::Other(row.role.clone()),
@@ -1534,7 +1534,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         struct MissingRoleHistoryRow {
             id: Uuid,
             org_id: Option<Uuid>,
-            org_name: String,
+            org_name: Option<String>,
             current_role: String,
             role_family: String,
         }
@@ -1549,12 +1549,13 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             let missing_role_history = match sqlx::query_as::<_, MissingRoleHistoryRow>(
                 r#"SELECT p.id,
                           p.primary_org_id AS org_id,
-                          COALESCE(c.name, 'Independent') AS org_name,
-                          COALESCE(p."current_role", p.role_family, 'Unknown') AS current_role,
-                          COALESCE(p.role_family, 'Unknown') AS role_family
+                          c.name AS org_name,
+                          COALESCE(p."current_role", p.role_family, '') AS current_role,
+                          COALESCE(p.role_family, '') AS role_family
                    FROM persons p
                    LEFT JOIN companies c ON p.primary_org_id = c.id
-                   WHERE NOT EXISTS (
+                   WHERE p.primary_org_id IS NOT NULL
+                     AND NOT EXISTS (
                        SELECT 1 FROM role_history rh WHERE rh.person_id = p.id
                    )
                    ORDER BY COALESCE(p.updated_at, p.created_at) DESC
@@ -1575,13 +1576,25 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             };
 
             for row in missing_role_history {
+                // A recorded role history entry needs a real organization and a
+                // usable title: an unaffiliated person (or one with no role) is
+                // not backfilled with a fabricated "Independent"/"Unknown"
+                // affiliation.
+                let Some(org_name) = row.org_name.as_deref() else {
+                    continue;
+                };
+                if row.current_role.trim().is_empty() {
+                    continue;
+                }
+                let role_family =
+                    (!row.role_family.trim().is_empty()).then_some(row.role_family.as_str());
                 if store
                     .insert_role_history(
                         row.id,
                         row.org_id,
-                        &row.org_name,
+                        org_name,
                         &row.current_role,
-                        Some(&row.role_family),
+                        role_family,
                         Some(Utc::now()),
                         None,
                         None,
@@ -1886,7 +1899,7 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             struct MissingRoleHistoryRow {
                 id: Uuid,
                 org_id: Option<Uuid>,
-                org_name: String,
+                org_name: Option<String>,
                 current_role: String,
                 role_family: String,
             }
@@ -1894,12 +1907,13 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             let missing = match sqlx::query_as::<_, MissingRoleHistoryRow>(
                 r#"SELECT p.id,
                           p.primary_org_id AS org_id,
-                          COALESCE(c.name, 'Independent') AS org_name,
-                          COALESCE(p."current_role", p.role_family, 'Unknown') AS current_role,
-                          COALESCE(p.role_family, 'Unknown') AS role_family
+                          c.name AS org_name,
+                          COALESCE(p."current_role", p.role_family, '') AS current_role,
+                          COALESCE(p.role_family, '') AS role_family
                    FROM persons p
                    LEFT JOIN companies c ON p.primary_org_id = c.id
-                   WHERE NOT EXISTS (
+                   WHERE p.primary_org_id IS NOT NULL
+                     AND NOT EXISTS (
                        SELECT 1 FROM role_history rh WHERE rh.person_id = p.id
                    )
                    ORDER BY COALESCE(p.updated_at, p.created_at) DESC
@@ -1920,13 +1934,25 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             };
 
             for row in missing {
+                // A recorded role history entry needs a real organization and a
+                // usable title: an unaffiliated person (or one with no role) is
+                // not backfilled with a fabricated "Independent"/"Unknown"
+                // affiliation.
+                let Some(org_name) = row.org_name.as_deref() else {
+                    continue;
+                };
+                if row.current_role.trim().is_empty() {
+                    continue;
+                }
+                let role_family =
+                    (!row.role_family.trim().is_empty()).then_some(row.role_family.as_str());
                 if store
                     .insert_role_history(
                         row.id,
                         row.org_id,
-                        &row.org_name,
+                        org_name,
                         &row.current_role,
-                        Some(&row.role_family),
+                        role_family,
                         Some(Utc::now()),
                         None,
                         None,

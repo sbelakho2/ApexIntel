@@ -320,16 +320,26 @@ pub struct HypothesisInput {
     pub hypothesis: String,
     pub support_score: f64,
     pub contradiction_score: f64,
-    pub prior: f64,
+    /// Analyst-supplied **heuristic** starting weight, not an empirically
+    /// calibrated base rate.
+    pub heuristic_prior: f64,
 }
 
+/// A heuristic competing-hypothesis scorecard.
+///
+/// The support/contradiction blends and the resulting `heuristic_score` are
+/// product heuristics, not calibrated probabilities. They must be presented
+/// as a relative heuristic ranking unless calibrated against historical
+/// outcomes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HypothesisScorecard {
     pub hypothesis: String,
     pub support_score: f64,
     pub contradiction_score: f64,
     pub net_score: f64,
-    pub posterior: f64,
+    /// Heuristic score in 0..=1 (prior + weighted support − weighted
+    /// contradiction); **not** a calibrated posterior probability.
+    pub heuristic_score: f64,
     pub assessment: String,
 }
 
@@ -340,11 +350,12 @@ pub fn score_competing_hypotheses(inputs: &[HypothesisInput]) -> Vec<HypothesisS
             let support = input.support_score.max(0.0);
             let contradiction = input.contradiction_score.max(0.0);
             let net_score = (support - contradiction).clamp(-1.0, 1.0);
-            let posterior = (input.prior.clamp(0.0, 1.0) + 0.45 * support - 0.35 * contradiction)
+            let heuristic_score = (input.heuristic_prior.clamp(0.0, 1.0) + 0.45 * support
+                - 0.35 * contradiction)
                 .clamp(0.0, 1.0);
-            let assessment = if posterior >= 0.75 && net_score > 0.15 {
+            let assessment = if heuristic_score >= 0.75 && net_score > 0.15 {
                 "favored"
-            } else if posterior <= 0.35 || net_score < -0.1 {
+            } else if heuristic_score <= 0.35 || net_score < -0.1 {
                 "disfavored"
             } else {
                 "contested"
@@ -356,15 +367,15 @@ pub fn score_competing_hypotheses(inputs: &[HypothesisInput]) -> Vec<HypothesisS
                 support_score: support,
                 contradiction_score: contradiction,
                 net_score,
-                posterior,
+                heuristic_score,
                 assessment,
             }
         })
         .collect();
 
     cards.sort_by(|a, b| {
-        b.posterior
-            .partial_cmp(&a.posterior)
+        b.heuristic_score
+            .partial_cmp(&a.heuristic_score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     cards
@@ -508,13 +519,13 @@ mod tests {
                 hypothesis: "expansion".to_string(),
                 support_score: 0.8,
                 contradiction_score: 0.1,
-                prior: 0.5,
+                heuristic_prior: 0.5,
             },
             HypothesisInput {
                 hypothesis: "routine_noise".to_string(),
                 support_score: 0.2,
                 contradiction_score: 0.5,
-                prior: 0.5,
+                heuristic_prior: 0.5,
             },
         ]);
 

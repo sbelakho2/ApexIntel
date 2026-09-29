@@ -48,12 +48,6 @@ pub struct TransformSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatisticalTest {
-    pub test_type: String, // "fisher_exact", "cross_correlation", "mutual_information", "hazard_uplift"
-    pub params: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Applicability {
     pub geos: Vec<String>,
     pub industries: Vec<String>,
@@ -68,20 +62,27 @@ impl Applicability {
 
     /// Whether this recipe applies to an entity with the given context.
     ///
-    /// Conservative: a restricted recipe with absent context does **not**
-    /// apply. Matching is case-insensitive on trimmed values; a `global` entry
-    /// matches any non-empty value.
+    /// * Geo entries match the region **or** the country (an ISO code like
+    ///   `MA` is a legitimate geographic restriction).
+    /// * Industry entries match any of the entity's real industry tags.
+    /// * Conservative: a restricted recipe with absent context does **not**
+    ///   apply. Matching is case-insensitive on trimmed values; a `global`
+    ///   entry matches any non-empty value.
     pub fn allows(&self, context: &EntityContext) -> bool {
         let geo_ok = self.geos.is_empty()
             || context
                 .region
                 .as_deref()
-                .is_some_and(|region| list_matches(&self.geos, region));
+                .is_some_and(|region| list_matches(&self.geos, region))
+            || context
+                .country
+                .as_deref()
+                .is_some_and(|country| list_matches(&self.geos, country));
         let industry_ok = self.industries.is_empty()
             || context
-                .industry
-                .as_deref()
-                .is_some_and(|industry| list_matches(&self.industries, industry));
+                .industries
+                .iter()
+                .any(|industry| list_matches(&self.industries, industry));
         geo_ok && industry_ok
     }
 }
@@ -99,8 +100,10 @@ fn list_matches(allowed: &[String], value: &str) -> bool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EntityContext {
     pub region: Option<String>,
+    /// Country code or name.
     pub country: Option<String>,
-    pub industry: Option<String>,
+    /// Real industry tags (a company may have several).
+    pub industries: Vec<String>,
     pub entity_type: Option<String>,
 }
 
@@ -152,18 +155,17 @@ pub struct Recipe {
     // Signal combination
     pub signals: Vec<SignalSpec>,
 
-    // Transforms to apply before testing
+    // Transforms to apply before testing. These are runtime: the engine
+    // applies them (or fails closed) before scoring a candidate.
     pub transforms: Vec<TransformSpec>,
 
-    // Statistical test to validate pattern
-    pub statistical_test: Option<StatisticalTest>,
-
-    // Thresholds
-    pub min_uplift: f64,
-    pub max_p_value: f64,
-    pub min_time_slices: i32,
-    pub min_entities: i32,
-
+    // NOTE (audit P1): statistical test family, uplift floor, p-value ceiling,
+    // time-slice and entity stability counts are **promotion/discovery**
+    // criteria, not runtime firing constraints — a candidate-level engine
+    // cannot evaluate them. They live in the recipe definition (the DB
+    // `test_config` / `thresholds` columns and `apex_recipes::gates`), not on
+    // this runtime object: fields that never influence runtime behavior invite
+    // future bugs.
     /// How many signals must match for the recipe to evaluate.
     pub match_policy: MatchPolicy,
 
@@ -203,11 +205,6 @@ impl Recipe {
             status: RecipeStatus::Seed,
             signals: Vec::new(),
             transforms: Vec::new(),
-            statistical_test: None,
-            min_uplift: 1.5,
-            max_p_value: 0.01,
-            min_time_slices: 3,
-            min_entities: 5,
             match_policy: MatchPolicy::default(),
             activation_threshold: None,
             insight_template: String::new(),
@@ -347,17 +344,39 @@ mod tests {
 
         let matching = EntityContext {
             region: Some("tunisia".to_string()),
-            industry: Some("ems".to_string()),
+            industries: vec!["ems".to_string()],
             ..Default::default()
         };
         assert!(restricted.allows(&matching));
 
+        // Any real industry tag matches.
+        let multi_industry = EntityContext {
+            region: Some("Tunisia".to_string()),
+            industries: vec!["automotive".to_string(), "ems".to_string()],
+            ..Default::default()
+        };
+        assert!(restricted.allows(&multi_industry));
+
         let wrong_industry = EntityContext {
             region: Some("Tunisia".to_string()),
-            industry: Some("automotive".to_string()),
+            industries: vec!["automotive".to_string()],
             ..Default::default()
         };
         assert!(!restricted.allows(&wrong_industry));
+
+        // Country codes satisfy geographic restrictions.
+        let country_match = EntityContext {
+            region: None,
+            country: Some("MA".to_string()),
+            industries: vec!["ems".to_string()],
+            entity_type: None,
+        };
+        let ma_recipe = Applicability {
+            geos: vec!["MA".to_string()],
+            industries: vec!["ems".to_string()],
+            notes: String::new(),
+        };
+        assert!(ma_recipe.allows(&country_match));
 
         let global_geo = Applicability {
             geos: vec!["Global".to_string()],
@@ -378,7 +397,6 @@ mod tests {
         let r = Recipe::new("A001", "Sourcing Cycle Detection");
         assert_eq!(r.code, "A001");
         assert_eq!(r.status, RecipeStatus::Seed);
-        assert_eq!(r.min_uplift, 1.5);
         assert_eq!(r.fire_count, 0);
     }
 

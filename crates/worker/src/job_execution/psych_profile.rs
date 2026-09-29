@@ -187,18 +187,31 @@ async fn run_psych_profile_compute_inner(kind: &JobKind, store: &Arc<PgStore>) -
     }
 
     let elapsed = total_start.elapsed();
-    run.succeed(
+    let notes = format!(
+        "psych_profile_compute: {} persons processed, {} profiles computed, \
+         {} failed, {} skipped (no artifacts) in {:.1}s",
+        persons.len(),
         profiles_computed,
-        &format!(
-            "psych_profile_compute: {} persons processed, {} profiles computed, \
-             {} failed, {} skipped (no artifacts) in {:.1}s",
-            persons.len(),
-            profiles_computed,
-            profiles_failed,
-            profiles_skipped,
-            elapsed.as_secs_f64(),
-        ),
+        profiles_failed,
+        profiles_skipped,
+        elapsed.as_secs_f64(),
     );
+    // Outcome thresholds: an all-failed run is a failure, not a success; a
+    // partially failed run is degraded; a run where every candidate was
+    // skipped (no artifacts) performed no work and is skipped.
+    if profiles_computed == 0 && profiles_failed > 0 {
+        run.fail(&format!(
+            "psych_profile_compute: every profile computation failed ({notes})"
+        ));
+    } else if profiles_failed > 0 {
+        run.degrade(profiles_computed, &format!("{notes}; partial failures"));
+    } else if profiles_computed == 0 {
+        run.skip(&format!(
+            "psych_profile_compute: no computable candidates ({notes})"
+        ));
+    } else {
+        run.succeed(profiles_computed, &notes);
+    }
     run
 }
 

@@ -43,7 +43,7 @@ async fn high_false_positive_rate_tightens_the_activation_threshold() {
              code, name, status, category, join_type, outcome,
              signals, transforms, test_config, thresholds,
              narrative_template, action_playbook, applicability,
-             configured_min_precision, activation_threshold,
+             configured_activation_threshold, activation_threshold,
              created_at, updated_at
          ) VALUES (
              $1, $1, 'production', 'demand', 'company', 'signal',

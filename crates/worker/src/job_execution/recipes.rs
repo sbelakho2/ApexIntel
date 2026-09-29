@@ -20,6 +20,22 @@ use uuid::Uuid;
 
 use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::*;
+use apex_recipes::engine::{FeatureOrigin, FeatureProvenance};
+
+/// Merge the keys one alias-synthesizing block produced for a single row into
+/// the entity feature map, recording provenance for exactly those keys. Keys
+/// already present with a stronger (direct) origin keep that origin.
+fn merge_derived_features(
+    features: &mut FeatureMap,
+    provenance: &mut FeatureProvenance,
+    additions: FeatureMap,
+    origin: FeatureOrigin,
+) {
+    for (key, value) in additions {
+        *features.entry(key.clone()).or_default() += value;
+        provenance.entry(key).or_insert_with(|| origin.clone());
+    }
+}
 
 #[cfg(feature = "llm")]
 fn evidence_quality_from_signals(
@@ -883,6 +899,50 @@ impl FeatureLoadReport {
     }
 }
 
+/// Reconstruct a seed recipe from the canonical DB columns (current schema).
+///
+/// Returns `None` when the row cannot be represented (no signals): the caller
+/// counts that as excluded rather than silently dropping it.
+fn seed_recipe_from_columns(
+    row: &apex_store::postgres::RecipeEngineRow,
+) -> Option<apex_worker::recipe_loader::SeedRecipe> {
+    let signals: Vec<serde_yaml::Value> = serde_json::from_value(row.signals.clone()?).ok()?;
+    let json_to_yaml = |value: &Option<serde_json::Value>| -> serde_yaml::Value {
+        value
+            .clone()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or(serde_yaml::Value::Null)
+    };
+    let transforms: Vec<serde_yaml::Value> = row
+        .transforms
+        .clone()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let action_playbook: Vec<String> = row
+        .action_playbook
+        .clone()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    Some(apex_worker::recipe_loader::SeedRecipe {
+        id: row.code.clone(),
+        name: row.name.clone(),
+        category: row.category.clone().unwrap_or_default(),
+        join: row
+            .join_type
+            .clone()
+            .map(|join| vec![join])
+            .unwrap_or_default(),
+        outcome: row.outcome.clone().unwrap_or_default(),
+        signals,
+        transforms,
+        test: json_to_yaml(&row.test_config),
+        thresholds: json_to_yaml(&row.thresholds),
+        narrative_template: row.narrative_template.clone().unwrap_or_default(),
+        action_playbook,
+        applicability: json_to_yaml(&row.applicability),
+    })
+}
+
 /// Build the runtime engine recipe set from the database rows.
 ///
 /// Pure so the lifecycle contract is unit-testable:
@@ -893,12 +953,13 @@ impl FeatureLoadReport {
 /// * rows without a usable JSON definition are counted as excluded (never
 ///   silently absent);
 /// * the calibrated `activation_threshold` is carried onto the recipe (with
-///   `configured_min_precision` as the pre-calibration fallback).
+///   `configured_activation_threshold` as the pre-calibration fallback).
 fn build_engine_recipes(
     rows: &[apex_store::postgres::RecipeEngineRow],
 ) -> (Vec<apex_core::schemas::Recipe>, usize) {
     let mut recipes = Vec::new();
     let mut excluded = 0usize;
+    let mut transforms_dropped = 0usize;
     for row in rows {
         let engine_status = match row.status.as_str() {
             "deprecated" | "retired" => continue,
@@ -916,27 +977,38 @@ fn build_engine_recipes(
             }
         };
 
-        let Some(definition) = row.definition.as_ref() else {
-            excluded += 1;
-            tracing::warn!(
-                recipe_code = %row.code,
-                "recipe_fire: recipe has no persisted definition; excluded from the engine"
-            );
-            continue;
-        };
-        let seed: apex_worker::recipe_loader::SeedRecipe =
-            match serde_json::from_value(definition.clone()) {
-                Ok(seed) => seed,
-                Err(error) => {
-                    excluded += 1;
-                    tracing::warn!(
+        // The runtime reconstructs from the canonical columns; the legacy
+        // definition blob is a source/reference fallback, not a requirement.
+        // A definition that is absent OR unusable (the column defaults to
+        // `[]`, and learned recipes may carry a different shape) falls back to
+        // the canonical columns instead of excluding a runnable recipe.
+        let seed: apex_worker::recipe_loader::SeedRecipe = match row.definition.as_ref().and_then(
+            |definition| {
+                serde_json::from_value::<apex_worker::recipe_loader::SeedRecipe>(definition.clone())
+                    .ok()
+            },
+        ) {
+            Some(seed) => seed,
+            None => {
+                if row.definition.is_some() {
+                    tracing::debug!(
                         recipe_code = %row.code,
-                        %error,
-                        "recipe_fire: recipe definition is not a valid seed recipe; excluded"
+                        "recipe_fire: definition blob is not a seed recipe; using canonical columns"
                     );
-                    continue;
                 }
-            };
+                match seed_recipe_from_columns(row) {
+                    Some(seed) => seed,
+                    None => {
+                        excluded += 1;
+                        tracing::warn!(
+                            recipe_code = %row.code,
+                            "recipe_fire: recipe has neither a usable definition nor canonical columns; excluded"
+                        );
+                        continue;
+                    }
+                }
+            }
+        };
 
         if seed.narrative_template.is_empty() || seed.signals.is_empty() {
             excluded += 1;
@@ -948,10 +1020,24 @@ fn build_engine_recipes(
         }
 
         let mut engine_recipe = seed_recipe_to_engine_recipe(&seed);
+        // The definition declared transforms but the runtime recipe carries
+        // none (unmappable/global directives): the recipe evaluates on raw
+        // feature values. Counted so the run reports the divergence instead
+        // of silently evaluating untransformed.
+        if !seed.transforms.is_empty() && engine_recipe.transforms.is_empty() {
+            transforms_dropped += 1;
+        }
         engine_recipe.status = engine_status;
-        engine_recipe.activation_threshold =
-            row.activation_threshold.or(row.configured_min_precision);
+        engine_recipe.activation_threshold = row
+            .activation_threshold
+            .or(row.configured_activation_threshold);
         recipes.push(engine_recipe);
+    }
+    if transforms_dropped > 0 {
+        tracing::warn!(
+            recipes = transforms_dropped,
+            "recipe_fire: recipes declared transforms the engine cannot apply; evaluated untransformed"
+        );
     }
     (recipes, excluded)
 }
@@ -1026,6 +1112,15 @@ pub(super) async fn run_recipe_fire(
             "{recipes_excluded} recipe(s) were excluded for a missing/invalid definition"
         ));
     }
+
+    // Staged recipes shadow-evaluate (audit P1): their candidates are counted
+    // for observability but never emitted as analyst-facing warnings/insights,
+    // so "staging" is a real pre-production stage. Promotion is driven by the
+    // measured evidence gates, not by accumulated live fires.
+    let recipe_status_by_code: HashMap<String, apex_core::schemas::RecipeStatus> = engine_recipes
+        .iter()
+        .map(|recipe| (recipe.code.clone(), recipe.status.clone()))
+        .collect();
 
     let engine = RecipeEngine::load(engine_recipes);
 
@@ -1277,406 +1372,1061 @@ pub(super) async fn run_recipe_fire(
     }
 
     let mut entity_maps: HashMap<Uuid, FeatureMap> = HashMap::new();
+    // Feature provenance (audit P1): direct observations vs synthesized aliases
+    // vs prior-warning derivatives.
+    let mut entity_origins: HashMap<Uuid, FeatureProvenance> = HashMap::new();
 
     for (entity_id, obs_type, count) in &obs_counts {
         let fm = entity_maps.entry(*entity_id).or_default();
+        let origins = entity_origins.entry(*entity_id).or_default();
         let count_f = *count as f64;
-        fm.insert(format!("{obs_type}.count"), count_f);
-        fm.insert(format!("{obs_type}.any"), count_f);
-
-        match obs_type.as_str() {
-            "lookalike_domain" => {
-                for k in &[
-                    "LookalikeDomain.count",
-                    "LookalikeDomain.active",
-                    "LookalikeDomain.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-                if count_f >= 2.0 {
-                    *fm.entry("Security.risk".into()).or_default() += 1.0;
-                }
-            }
-            "dns_posture" | "DnsPosture" => {
-                for k in &["DNSPosture.degraded", "DNSPosture.count"] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "kev_match" => {
-                for k in &[
-                    "KEV.match",
-                    "KEV.count",
-                    "Security.vulnerability",
-                    "Security.risk",
-                    "Security.count",
-                    "Compliance.risk",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "SocialPost" => {
-                for k in &[
-                    "SocialPost.count",
-                    "SocialPost.sentiment",
-                    "SocialPost.any",
-                    "News.count",
-                    "News.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "PersonMove" => {
-                for k in &[
-                    "PersonMention.role_change",
-                    "PersonMention.count",
-                    "RoleChange.count",
-                    "RoleChange.any",
-                    "SocialSignal.leadership_change",
-                    "JobPost.executive.new_function",
-                    "POI.role_change.imminent",
-                    "POI.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "TenderNotice" | "TenderPosted" => {
-                for k in &[
-                    "Tender.count",
-                    "Tender.any",
-                    "Tender.public.posted",
-                    "Procurement.count",
-                    "Procurement.any",
-                    "Contract.count",
-                    "Demand.count",
-                    "Demand.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "PatentPublication" | "PatentPublished" => {
-                for k in &[
-                    "Patent.count",
-                    "Patent.any",
-                    "Patent.recent",
-                    "PatentPublished.competitor.cluster",
-                    "PatentPublished.technology_overlap",
-                    "IP.count",
-                    "IP.any",
-                    "Technology.count",
-                    "Technology.any",
-                    "Innovation.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "RegulatoryFiling" => {
-                for k in &[
-                    "Regulatory.count",
-                    "Regulatory.change",
-                    "Compliance.count",
-                    "Compliance.any",
-                    "Compliance.risk",
-                    "Filing.count",
-                    "Filing.any",
-                    "Policy.count",
-                    "Policy.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "FinancialDisclosure" => {
-                for k in &[
-                    "Filing.count",
-                    "Filing.any",
-                    "Company.filing.new",
-                    "Company.earnings.call",
-                    "CompanyProfile.count",
-                    "Industry.count",
-                    "Industry.trend",
-                    "Market.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "CompetitorEvent" => {
-                for k in &[
-                    "Competitor.count",
-                    "Competitor.activity",
-                    "CompetitorEvent.count",
-                    "Industry.count",
-                    "Industry.trend",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            // ── Observation types previously unmapped ──────────────────
-            "JobPost" => {
-                for k in &[
-                    "JobPost.count",
-                    "JobPost.any",
-                    "JobPost.volume.anomaly",
-                    "Demand.hiring",
-                    "Demand.count",
-                    "Demand.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "CertificationUpdate" => {
-                for k in &[
-                    "CertificationUpdate.count",
-                    "CertificationUpdate.any",
-                    "Certification.count",
-                    "Certification.any",
-                    "Compliance.certification",
-                    "Compliance.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "SecFiling" => {
-                for k in &[
-                    "Filing.count",
-                    "Filing.any",
-                    "Filing.SEC",
-                    "Competitive.intel",
-                    "Financial.disclosure",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "WebChange" => {
-                for k in &["WebChange.count", "WebChange.any", "News.count", "News.any"] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "CommodityPrice" => {
-                for k in &[
-                    "CommodityPrice.shift",
-                    "CommodityPrice.significant_move",
-                    "Commodity.price.volatile",
-                    "Commodity.count",
-                    "Commodity.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "FxRate" => {
-                for k in &[
-                    "FxRate.significant_move",
-                    "FxRate.volatility.high",
-                    "FxRate.any",
-                    "FxRate.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "PortMetric" => {
-                for k in &[
-                    "PortMetric.delay_increase",
-                    "SupplyChain.disruption",
-                    "SupplyChain.count",
-                    "Supplier.risk",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "NewDomain" => {
-                for k in &[
-                    "DNS.typosquat.new",
-                    "LookalikeDomain.count",
-                    "LookalikeDomain.active",
-                    "Security.risk",
-                    "Security.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "VulnNotice" => {
-                for k in &[
-                    "VulnNotice.data_breach",
-                    "Security.vulnerability",
-                    "Security.risk",
-                    "Security.count",
-                    "Compliance.risk",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "PersonMention" => {
-                for k in &[
-                    "PersonMention.count",
-                    "POI.media.presence",
-                    "POI.visibility.high",
-                    "POI.count",
-                    "News.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "RoleChange" => {
-                for k in &[
-                    "RoleChange.count",
-                    "RoleChange.any",
-                    "RoleChange.competitor_destination",
-                    "POI.role_change.imminent",
-                    "PersonMention.role_change",
-                    "SocialSignal.leadership_change",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "SpeakerAppearance" => {
-                for k in &[
-                    "TradeShow.speaker.poi_match",
-                    "TradeShow.presence.increase",
-                    "ConferenceAgenda.count",
-                    "POI.conference.speaker",
-                    "POI.thought_leadership",
-                    "POI.visibility.high",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            "ProcurementSignal" => {
-                for k in &[
-                    "Procurement.count",
-                    "Procurement.any",
-                    "SocialSignal.procurement_announcement",
-                    "Demand.count",
-                    "Demand.any",
-                    "Tender.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += count_f;
-                }
-            }
-            _ => {}
+        for key in [format!("{obs_type}.count"), format!("{obs_type}.any")] {
+            fm.insert(key.clone(), count_f);
+            origins
+                .entry(key)
+                .or_insert_with(|| FeatureOrigin::Observation(obs_type.clone()));
         }
+
+        // Every key the alias block below introduces is a derived alias of
+        // this observation: semantically broader than the observation itself.
+        // The block writes into a per-row scratch map, so provenance is
+        // recorded for exactly the new keys without cloning the accumulated
+        // feature map on every row.
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            match obs_type.as_str() {
+                "lookalike_domain" => {
+                    for k in &[
+                        "LookalikeDomain.count",
+                        "LookalikeDomain.active",
+                        "LookalikeDomain.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                    if count_f >= 2.0 {
+                        *fm.entry("Security.risk".into()).or_default() += 1.0;
+                    }
+                }
+                "dns_posture" | "DnsPosture" => {
+                    for k in &["DNSPosture.degraded", "DNSPosture.count"] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "kev_match" => {
+                    for k in &[
+                        "KEV.match",
+                        "KEV.count",
+                        "Security.vulnerability",
+                        "Security.risk",
+                        "Security.count",
+                        "Compliance.risk",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "SocialPost" => {
+                    for k in &[
+                        "SocialPost.count",
+                        "SocialPost.sentiment",
+                        "SocialPost.any",
+                        "News.count",
+                        "News.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "PersonMove" => {
+                    for k in &[
+                        "PersonMention.role_change",
+                        "PersonMention.count",
+                        "RoleChange.count",
+                        "RoleChange.any",
+                        "SocialSignal.leadership_change",
+                        "JobPost.executive.new_function",
+                        "POI.role_change.imminent",
+                        "POI.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "TenderNotice" | "TenderPosted" => {
+                    for k in &[
+                        "Tender.count",
+                        "Tender.any",
+                        "Tender.public.posted",
+                        "Procurement.count",
+                        "Procurement.any",
+                        "Contract.count",
+                        "Demand.count",
+                        "Demand.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "PatentPublication" | "PatentPublished" => {
+                    for k in &[
+                        "Patent.count",
+                        "Patent.any",
+                        "Patent.recent",
+                        "PatentPublished.competitor.cluster",
+                        "PatentPublished.technology_overlap",
+                        "IP.count",
+                        "IP.any",
+                        "Technology.count",
+                        "Technology.any",
+                        "Innovation.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "RegulatoryFiling" => {
+                    for k in &[
+                        "Regulatory.count",
+                        "Regulatory.change",
+                        "Compliance.count",
+                        "Compliance.any",
+                        "Compliance.risk",
+                        "Filing.count",
+                        "Filing.any",
+                        "Policy.count",
+                        "Policy.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "FinancialDisclosure" => {
+                    for k in &[
+                        "Filing.count",
+                        "Filing.any",
+                        "Company.filing.new",
+                        "Company.earnings.call",
+                        "CompanyProfile.count",
+                        "Industry.count",
+                        "Industry.trend",
+                        "Market.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "CompetitorEvent" => {
+                    for k in &[
+                        "Competitor.count",
+                        "Competitor.activity",
+                        "CompetitorEvent.count",
+                        "Industry.count",
+                        "Industry.trend",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                // ── Observation types previously unmapped ──────────────────
+                "JobPost" => {
+                    for k in &[
+                        "JobPost.count",
+                        "JobPost.any",
+                        "JobPost.volume.anomaly",
+                        "Demand.hiring",
+                        "Demand.count",
+                        "Demand.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "CertificationUpdate" => {
+                    for k in &[
+                        "CertificationUpdate.count",
+                        "CertificationUpdate.any",
+                        "Certification.count",
+                        "Certification.any",
+                        "Compliance.certification",
+                        "Compliance.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "SecFiling" => {
+                    for k in &[
+                        "Filing.count",
+                        "Filing.any",
+                        "Filing.SEC",
+                        "Competitive.intel",
+                        "Financial.disclosure",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "WebChange" => {
+                    for k in &["WebChange.count", "WebChange.any", "News.count", "News.any"] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "CommodityPrice" => {
+                    for k in &[
+                        "CommodityPrice.shift",
+                        "CommodityPrice.significant_move",
+                        "Commodity.price.volatile",
+                        "Commodity.count",
+                        "Commodity.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "FxRate" => {
+                    for k in &[
+                        "FxRate.significant_move",
+                        "FxRate.volatility.high",
+                        "FxRate.any",
+                        "FxRate.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "PortMetric" => {
+                    for k in &[
+                        "PortMetric.delay_increase",
+                        "SupplyChain.disruption",
+                        "SupplyChain.count",
+                        "Supplier.risk",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "NewDomain" => {
+                    for k in &[
+                        "DNS.typosquat.new",
+                        "LookalikeDomain.count",
+                        "LookalikeDomain.active",
+                        "Security.risk",
+                        "Security.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "VulnNotice" => {
+                    for k in &[
+                        "VulnNotice.data_breach",
+                        "Security.vulnerability",
+                        "Security.risk",
+                        "Security.count",
+                        "Compliance.risk",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "PersonMention" => {
+                    for k in &[
+                        "PersonMention.count",
+                        "POI.media.presence",
+                        "POI.visibility.high",
+                        "POI.count",
+                        "News.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "RoleChange" => {
+                    for k in &[
+                        "RoleChange.count",
+                        "RoleChange.any",
+                        "RoleChange.competitor_destination",
+                        "POI.role_change.imminent",
+                        "PersonMention.role_change",
+                        "SocialSignal.leadership_change",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "SpeakerAppearance" => {
+                    for k in &[
+                        "TradeShow.speaker.poi_match",
+                        "TradeShow.presence.increase",
+                        "ConferenceAgenda.count",
+                        "POI.conference.speaker",
+                        "POI.thought_leadership",
+                        "POI.visibility.high",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                "ProcurementSignal" => {
+                    for k in &[
+                        "Procurement.count",
+                        "Procurement.any",
+                        "SocialSignal.procurement_announcement",
+                        "Demand.count",
+                        "Demand.any",
+                        "Tender.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += count_f;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::DerivedAlias(obs_type.clone()),
+        );
     }
 
     for (entity_id, wtype, count) in &warn_counts {
         let fm = entity_maps.entry(*entity_id).or_default();
+        let origins = entity_origins.entry(*entity_id).or_default();
         let c = *count as f64;
+        // Everything derived from a prior warning is derived intelligence, not
+        // primary evidence (audit P1: warning feedback loops).
         fm.insert(format!("Warning.{wtype}"), c);
+        origins
+            .entry(format!("Warning.{wtype}"))
+            .or_insert_with(|| FeatureOrigin::PriorWarning(wtype.clone()));
 
-        match wtype.as_str() {
-            "certification_update" => {
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            match wtype.as_str() {
+                "certification_update" => {
+                    for k in &[
+                        "CertificationUpdate.count",
+                        "CertificationUpdate.any",
+                        "Certification.count",
+                        "Certification.any",
+                        "Compliance.certification",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "hiring_signal" => {
+                    for k in &[
+                        "JobPost.count",
+                        "JobPost.any",
+                        "Demand.hiring",
+                        "Demand.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "ma_activity" => {
+                    for k in &[
+                        "Competitor.ma_activity",
+                        "Competitor.acquisition",
+                        "Company.acquisition",
+                        "Company.M_A",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "expansion" => {
+                    for k in &[
+                        "Company.expansion",
+                        "Company.investment",
+                        "Facility.new",
+                        "Facility.count",
+                        "Production.site.change",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "technology" => {
+                    for k in &[
+                        "Technology.count",
+                        "Technology.any",
+                        "Patent.count",
+                        "Patent.any",
+                        "Innovation.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "supply_chain_disruption" | "supply_chain" => {
+                    for k in &[
+                        "SupplyChain.disruption",
+                        "SupplyChain.count",
+                        "Supplier.risk",
+                        "Supplier.count",
+                        "Material.shortage",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "geopolitical_risk" | "geopolitical" => {
+                    for k in &[
+                        "Geopolitical.risk",
+                        "Geopolitical.count",
+                        "Sanctions.count",
+                        "Sanctions.risk",
+                        "Trade.restriction",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "competitive" => {
+                    for k in &["Competitor.count", "Competitor.activity", "Industry.trend"] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "compliance" => {
+                    for k in &[
+                        "Compliance.count",
+                        "Compliance.risk",
+                        "Regulatory.count",
+                        "Regulatory.change",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "market_intelligence" => {
+                    for k in &[
+                        "Market.count",
+                        "Market.intelligence",
+                        "Industry.count",
+                        "Industry.trend",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "procurement" => {
+                    for k in &[
+                        "Procurement.count",
+                        "Procurement.any",
+                        "Tender.count",
+                        "Tender.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "relationship" => {
+                    for k in &["Relationship.count", "Relationship.any", "Connection.count"] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "talent_movement" | "talent_migration" | "key_hire" => {
+                    for k in &[
+                        "PersonMention.role_change",
+                        "PersonMention.count",
+                        "RoleChange.competitor_destination",
+                        "RoleChange.count",
+                        "SocialSignal.leadership_change",
+                        "JobPost.executive.new_function",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "patent" | "patent_filing" | "ip_filing" => {
+                    for k in &[
+                        "PatentPublished.competitor.cluster",
+                        "PatentPublished.technology_overlap",
+                        "PatentPublished.litigation.filed",
+                        "PatentPublished.university_collab",
+                        "Patent.count",
+                        "Patent.any",
+                        "IP.count",
+                        "IP.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "leadership_change" | "executive_change" => {
+                    for k in &[
+                        "SocialSignal.leadership_change",
+                        "SocialSignal.ip_dispute",
+                        "PersonMention.role_change",
+                        "RoleChange.competitor_destination",
+                        "JobPost.executive.new_function",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                other => {
+                    let capitalized = capitalize_first(other);
+                    *fm.entry(format!("{capitalized}.count")).or_default() += c;
+                    *fm.entry(format!("{capitalized}.any")).or_default() += c;
+                }
+            }
+        }
+
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::PriorWarning(wtype.clone()),
+        );
+    }
+
+    for (entity_id, signal_type, keyword, count) in &ce_features {
+        let fm = entity_maps.entry(*entity_id).or_default();
+        let origins = entity_origins.entry(*entity_id).or_default();
+        let c = *count as f64;
+        // Competitor-event keys are one source per event type; the plan and
+        // sector aliases are broader than the event itself.
+        let origin = FeatureOrigin::DerivedAlias(format!("CompetitorEvent:{signal_type}"));
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            if !signal_type.is_empty() {
+                *fm.entry(format!("Competitor.{signal_type}")).or_default() += c;
+                *fm.entry("Competitor.count".into()).or_default() += c;
+            }
+            if !keyword.is_empty() {
+                *fm.entry(format!("Competitor.{keyword}")).or_default() += c;
+            }
+        }
+        merge_derived_features(fm, origins, additions, origin);
+    }
+
+    for (entity_id, source_id, signal_type, count) in &wc_features {
+        let fm = entity_maps.entry(*entity_id).or_default();
+        let origins = entity_origins.entry(*entity_id).or_default();
+        let c = *count as f64;
+        // Aliases synthesized from one external source are one event: an
+        // observed news item does not independently establish every alias it
+        // contributes to. The block writes into a per-row scratch map.
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            match source_id.as_str() {
+                "ofac_sanctions" | "eu_sanctions" | "un_sanctions" => {
+                    for k in &[
+                        "Sanctions.count",
+                        "Sanctions.any",
+                        "Sanctions.list",
+                        "Sanctions.screening.match",
+                        "Sanctions.risk",
+                        "OFAC.count",
+                        "OFAC.any",
+                        "OFAC.match",
+                        "Compliance.sanctions",
+                        "Trade.count",
+                        "Trade.any",
+                        "Embargo.count",
+                        "Embargo.any",
+                        "ExportControl.count",
+                        "ExportControl.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "uspto_patents" | "epo_patents" | "wipo_patents" => {
+                    for k in &[
+                        "Patent.count",
+                        "Patent.any",
+                        "Patent.recent",
+                        "Patent.filing",
+                        "Patent.competitor",
+                        "Technology.patent",
+                        "Technology.count",
+                        "Technology.any",
+                        "IP.count",
+                        "IP.any",
+                        "PatentPublished.competitor.cluster",
+                        "PatentPublished.technology_overlap",
+                        "PatentPublished.litigation.filed",
+                        "PatentPublished.university_collab",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "sam_gov" | "ted_eu" | "dgmarket" => {
+                    for k in &[
+                        "Tender.count",
+                        "Tender.any",
+                        "Tender.public",
+                        "Tender.posted",
+                        "Tender.public.posted",
+                        "Tender.framework_agreement",
+                        "Tender.sector",
+                        "Tender.region",
+                        "Procurement.count",
+                        "Procurement.any",
+                        "Contract.count",
+                        "Contract.any",
+                        "Government.count",
+                        "Government.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "sec_edgar" | "sec_filings" => {
+                    for k in &[
+                        "Filing.count",
+                        "Filing.any",
+                        "Filing.recent",
+                        "Company.filing",
+                        "Company.count",
+                        "Company.any",
+                        "CompanyProfile.count",
+                        "CompanyProfile.any",
+                        "CompanyProfile.revenue",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "defense_news" | "jane_defence" | "janes_defence" => {
+                    for k in &[
+                        "Defense.count",
+                        "Defense.any",
+                        "Security.defense",
+                        "Security.count",
+                        "Security.any",
+                        "News.count",
+                        "News.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "bloomberg_global"
+                | "ft_global"
+                | "nyt_us"
+                | "axios_us"
+                | "politico_us"
+                | "the_hill"
+                | "afp_global"
+                | "bbc_world"
+                | "nyt_world"
+                | "nyt_business"
+                | "dw_en"
+                | "euronews"
+                | "guardian_world"
+                | "marketwatch"
+                | "economist_finance"
+                | "energy_storage_news"
+                | "electrek"
+                | "pv_magazine"
+                | "oilprice"
+                | "gcaptain"
+                | "techcrunch"
+                | "theverge" => {
+                    for k in &[
+                        "News.count",
+                        "News.any",
+                        "News.geopolitical",
+                        "News.industry",
+                        "News.competitor",
+                        "PressRelease.count",
+                        "PressRelease.any",
+                        "Industry.count",
+                        "Industry.any",
+                        "Market.count",
+                        "Market.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "foreign_affairs" | "aljazeera_all" | "france24_en" | "northafricapost"
+                | "dailynewsegypt" | "egypt_independent" | "arabnews" | "middleeasteye"
+                | "africanews" => {
+                    for k in &[
+                        "Geopolitical.risk",
+                        "Geopolitical.count",
+                        "Geopolitical.any",
+                        "News.geopolitical",
+                        "News.count",
+                        "News.any",
+                        "Trade.count",
+                        "Trade.any",
+                        "Regional.risk.high",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                _ => {
+                    if !source_id.is_empty() {
+                        *fm.entry(format!("WebChange.{source_id}")).or_default() += c;
+                    }
+                }
+            }
+
+            match signal_type.as_str() {
+                "hiring_signal" => {
+                    for k in &[
+                        "JobPost.count",
+                        "JobPost.any",
+                        "JobPost.role_family",
+                        "Demand.hiring",
+                        "JobPost.executive.new_function",
+                        "SocialSignal.leadership_change",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "certification_update" => {
+                    for k in &[
+                        "CertificationUpdate.count",
+                        "CertificationUpdate.any",
+                        "CertificationUpdate.new",
+                        "Certification.count",
+                        "Certification.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "technology" => {
+                    for k in &[
+                        "Technology.count",
+                        "Technology.any",
+                        "Innovation.count",
+                        "Innovation.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "supply_chain_disruption" => {
+                    for k in &[
+                        "SupplyChain.count",
+                        "SupplyChain.disruption",
+                        "Supplier.risk",
+                        "Supplier.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "geopolitical_risk" => {
+                    for k in &[
+                        "Geopolitical.risk",
+                        "Geopolitical.count",
+                        "Security.risk",
+                        "Security.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::DerivedAlias(source_id.clone()),
+        );
+    }
+
+    for (entity_id, keyword, count) in &wc_kw_features {
+        let fm = entity_maps.entry(*entity_id).or_default();
+        let origins = entity_origins.entry(*entity_id).or_default();
+        let c = *count as f64;
+        // One keyword's alias set is one source: the same keyword measured
+        // twice must not look like two independent observations.
+        let origin = FeatureOrigin::DerivedAlias(format!("keyword:{keyword}"));
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            match keyword.as_str() {
+                "patent" => {
+                    for k in &[
+                        "Patent.count",
+                        "Patent.any",
+                        "Patent.recent",
+                        "IP.count",
+                        "IP.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "innovation" | "breakthrough" | "next-generation" | "new technology" => {
+                    for k in &[
+                        "Technology.count",
+                        "Technology.any",
+                        "Technology.emerging",
+                        "Innovation.count",
+                        "Innovation.any",
+                        "Industry40.count",
+                        "Industry40.any",
+                        "Digital.count",
+                        "Digital.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "r&d" | "research and development" => {
+                    for k in &[
+                        "Technology.count",
+                        "Technology.any",
+                        "Engineering.count",
+                        "Engineering.any",
+                        "Competitor.R_D",
+                        "Product.development.early",
+                        "SocialSignal.research_partnership",
+                        "PatentPublished.university_collab",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "career" | "hiring" | "job opening" | "join our team" | "open position" => {
+                    for k in &[
+                        "JobPost.count",
+                        "JobPost.any",
+                        "JobPost.volume",
+                        "Demand.hiring",
+                        "Demand.count",
+                        "Demand.any",
+                        "JobPost.executive.new_function",
+                        "SocialSignal.leadership_change",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "certification" | "accreditation" | "iso 9001" | "iso 14001" | "iso 13485"
+                | "iso 27001" | "as9100" | "iatf 16949" => {
+                    for k in &[
+                        "CertificationUpdate.count",
+                        "CertificationUpdate.any",
+                        "CertificationUpdate.new",
+                        "Certification.count",
+                        "Certification.any",
+                        "Certification.new",
+                        "Compliance.count",
+                        "Compliance.any",
+                        "Compliance.certification",
+                        "Audit.count",
+                        "Audit.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                    match keyword.as_str() {
+                        "iatf 16949" => {
+                            *fm.entry("CertificationUpdate.new.IATF_16949".into())
+                                .or_default() += c;
+                        }
+                        "as9100" => {
+                            *fm.entry("CertificationUpdate.new.AS9100".into())
+                                .or_default() += c;
+                        }
+                        "iso 13485" => {
+                            *fm.entry("CertificationUpdate.new.ISO_13485".into())
+                                .or_default() += c;
+                        }
+                        "iso 27001" => {
+                            *fm.entry("CertificationUpdate.new.ISO_27001".into())
+                                .or_default() += c;
+                        }
+                        _ => {}
+                    }
+                }
+                "compliance" | "audit" => {
+                    for k in &[
+                        "Compliance.count",
+                        "Compliance.any",
+                        "Compliance.risk",
+                        "Regulatory.count",
+                        "Regulatory.any",
+                        "Audit.count",
+                        "Audit.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "sanctions" => {
+                    for k in &[
+                        "Sanctions.count",
+                        "Sanctions.any",
+                        "Sanctions.list",
+                        "OFAC.count",
+                        "OFAC.any",
+                        "Compliance.sanctions",
+                        "Trade.count",
+                        "Trade.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "tariff" => {
+                    for k in &[
+                        "Tariff.count",
+                        "Tariff.any",
+                        "Tariff.change.announced",
+                        "Tariff.reduction",
+                        "Trade.count",
+                        "Trade.any",
+                        "Trade.restriction",
+                        "Customs.count",
+                        "Customs.any",
+                        "Import.count",
+                        "Import.any",
+                        "ImportData.count",
+                        "ImportData.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "shortage" | "allocation" | "lead time" => {
+                    for k in &[
+                        "SupplyChain.count",
+                        "SupplyChain.any",
+                        "SupplyChain.lead_time.increase",
+                        "Supplier.lead_time.increase",
+                        "Supplier.capacity.reduced",
+                        "Material.shortage",
+                        "Material.count",
+                        "Material.any",
+                        "Commodity.shortage",
+                        "Commodity.count",
+                        "Commodity.any",
+                        "Semiconductor.lead_time.surge",
+                        "Inventory.count",
+                        "Inventory.any",
+                        "Component.count",
+                        "Component.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "supply chain disruption" => {
+                    for k in &[
+                        "SupplyChain.disruption",
+                        "SupplyChain.count",
+                        "SupplyChain.any",
+                        "Supplier.risk",
+                        "Supplier.count",
+                        "Supplier.any",
+                        "Logistics.disruption",
+                        "Logistics.count",
+                        "Logistics.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "geopolitical" => {
+                    for k in &[
+                        "Geopolitical.risk",
+                        "Geopolitical.count",
+                        "Geopolitical.any",
+                        "Security.risk",
+                        "Security.count",
+                        "Security.any",
+                        "Regional.risk.high",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "acquisition" | "acquired" | "joint venture" | "strategic partnership" => {
+                    for k in &[
+                        "Company.acquisition",
+                        "Company.count",
+                        "Company.any",
+                        "Competitor.acquisition",
+                        "Competitor.ma_activity",
+                        "Post_MA.integration",
+                        "Post_MA.integration.issues",
+                        "Partnership.strategic",
+                        "PressRelease.acquisition",
+                        "PressRelease.JV_announced",
+                        "NewEntrant.count",
+                        "NewEntrant.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "investment in" | "new facility" | "new manufacturing" | "grand opening"
+                | "groundbreaking" => {
+                    for k in &[
+                        "Company.expansion",
+                        "Company.investment",
+                        "Company.count",
+                        "Company.any",
+                        "Competitor.expansion",
+                        "Competitor.factory",
+                        "Facility.new",
+                        "Facility.count",
+                        "Facility.any",
+                        "Production.site.change",
+                        "Production.count",
+                        "Production.any",
+                        "PressRelease.expansion",
+                        "Infrastructure.count",
+                        "Infrastructure.any",
+                        "Growth.count",
+                        "Growth.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                "product launch" => {
+                    for k in &[
+                        "Product.count",
+                        "Product.any",
+                        "Product.development.early",
+                        "Product.supply_chain.new",
+                        "Competitor.product",
+                        "Competitor.count",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
+                    }
+                }
+                _ => {
+                    if !keyword.is_empty() {
+                        let kw_clean = keyword.replace(' ', "_");
+                        *fm.entry(format!("WebChange.kw_{kw_clean}")).or_default() += c;
+                    }
+                }
+            }
+        }
+        merge_derived_features(fm, origins, additions, origin);
+    }
+
+    for (company_id, role_family, influence, pain, change_risk, count) in &person_feats {
+        let fm = entity_maps.entry(*company_id).or_default();
+        let origins = entity_origins.entry(*company_id).or_default();
+        let c = *count as f64;
+        // One person-profile row synthesizes many POI aliases; they are one
+        // source, not many independent observations.
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            *fm.entry("POI.count".into()).or_default() += c;
+            *fm.entry("POI.any".into()).or_default() += c;
+
+            if *influence > 0.7 {
                 for k in &[
-                    "CertificationUpdate.count",
-                    "CertificationUpdate.any",
-                    "Certification.count",
-                    "Certification.any",
-                    "Compliance.certification",
+                    "POI.influence.broad",
+                    "POI.influence.expanding",
+                    "POI.influence.external",
+                    "POI.influence.chain",
+                    "POI.strategic.influence",
+                    "POI.visibility.high",
+                    "POI.spec.influence",
+                    "POI.stakeholder.map.complete",
                 ] {
                     *fm.entry(k.to_string()).or_default() += c;
                 }
             }
-            "hiring_signal" => {
+
+            if *pain > 0.6 {
                 for k in &[
-                    "JobPost.count",
-                    "JobPost.any",
-                    "Demand.hiring",
-                    "Demand.count",
+                    "POI.pain_index.high",
+                    "POI.pain.cost.expressed",
+                    "POI.pain.delivery.expressed",
+                    "POI.pain.quality.expressed",
+                    "POI.pain.flexibility.expressed",
+                    "POI.frustration.supplier",
+                    "POI.frustration.internal",
+                    "POI.lead_time.concern",
+                    "POI.reliability.priority",
                 ] {
                     *fm.entry(k.to_string()).or_default() += c;
                 }
             }
-            "ma_activity" => {
+            if *pain > 0.8 {
+                *fm.entry("POI.pain_index.very_high".into()).or_default() += c;
+            }
+
+            if *change_risk > 0.5 {
                 for k in &[
-                    "Competitor.ma_activity",
-                    "Competitor.acquisition",
-                    "Company.acquisition",
-                    "Company.M_A",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "expansion" => {
-                for k in &[
-                    "Company.expansion",
-                    "Company.investment",
-                    "Facility.new",
-                    "Facility.count",
-                    "Production.site.change",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "technology" => {
-                for k in &[
-                    "Technology.count",
-                    "Technology.any",
-                    "Patent.count",
-                    "Patent.any",
-                    "Innovation.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "supply_chain_disruption" | "supply_chain" => {
-                for k in &[
-                    "SupplyChain.disruption",
-                    "SupplyChain.count",
-                    "Supplier.risk",
-                    "Supplier.count",
-                    "Material.shortage",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "geopolitical_risk" | "geopolitical" => {
-                for k in &[
-                    "Geopolitical.risk",
-                    "Geopolitical.count",
-                    "Sanctions.count",
-                    "Sanctions.risk",
-                    "Trade.restriction",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "competitive" => {
-                for k in &["Competitor.count", "Competitor.activity", "Industry.trend"] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "compliance" => {
-                for k in &[
-                    "Compliance.count",
-                    "Compliance.risk",
-                    "Regulatory.count",
-                    "Regulatory.change",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "market_intelligence" => {
-                for k in &[
-                    "Market.count",
-                    "Market.intelligence",
-                    "Industry.count",
-                    "Industry.trend",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "procurement" => {
-                for k in &[
-                    "Procurement.count",
-                    "Procurement.any",
-                    "Tender.count",
-                    "Tender.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "relationship" => {
-                for k in &["Relationship.count", "Relationship.any", "Connection.count"] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "talent_movement" | "talent_migration" | "key_hire" => {
-                for k in &[
+                    "POI.role_change.CPO.new",
+                    "POI.scope.expanded",
+                    "POI.promotion.detected",
+                    "POI.milestone.career",
+                    "POI.project.new",
+                    "POI.team.building",
+                    "Decision.count",
+                    "Decision.any",
+                    "Decision.imminent",
+                    "Decision.budget.allocated",
+                    "Decision.committee.formed",
                     "PersonMention.role_change",
                     "PersonMention.count",
                     "RoleChange.competitor_destination",
@@ -1687,796 +2437,273 @@ pub(super) async fn run_recipe_fire(
                     *fm.entry(k.to_string()).or_default() += c;
                 }
             }
-            "patent" | "patent_filing" | "ip_filing" => {
-                for k in &[
-                    "PatentPublished.competitor.cluster",
-                    "PatentPublished.technology_overlap",
-                    "PatentPublished.litigation.filed",
-                    "PatentPublished.university_collab",
-                    "Patent.count",
-                    "Patent.any",
-                    "IP.count",
-                    "IP.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "leadership_change" | "executive_change" => {
-                for k in &[
-                    "SocialSignal.leadership_change",
-                    "SocialSignal.ip_dispute",
-                    "PersonMention.role_change",
-                    "RoleChange.competitor_destination",
-                    "JobPost.executive.new_function",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            other => {
-                let capitalized = capitalize_first(other);
-                *fm.entry(format!("{capitalized}.count")).or_default() += c;
-                *fm.entry(format!("{capitalized}.any")).or_default() += c;
-            }
-        }
-    }
 
-    for (entity_id, signal_type, keyword, count) in &ce_features {
-        let fm = entity_maps.entry(*entity_id).or_default();
-        let c = *count as f64;
-        if !signal_type.is_empty() {
-            *fm.entry(format!("Competitor.{signal_type}")).or_default() += c;
-            *fm.entry("Competitor.count".into()).or_default() += c;
-        }
-        if !keyword.is_empty() {
-            *fm.entry(format!("Competitor.{keyword}")).or_default() += c;
-        }
-    }
-
-    for (entity_id, source_id, signal_type, count) in &wc_features {
-        let fm = entity_maps.entry(*entity_id).or_default();
-        let c = *count as f64;
-
-        match source_id.as_str() {
-            "ofac_sanctions" | "eu_sanctions" | "un_sanctions" => {
-                for k in &[
-                    "Sanctions.count",
-                    "Sanctions.any",
-                    "Sanctions.list",
-                    "Sanctions.screening.match",
-                    "Sanctions.risk",
-                    "OFAC.count",
-                    "OFAC.any",
-                    "OFAC.match",
-                    "Compliance.sanctions",
-                    "Trade.count",
-                    "Trade.any",
-                    "Embargo.count",
-                    "Embargo.any",
-                    "ExportControl.count",
-                    "ExportControl.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "uspto_patents" | "epo_patents" | "wipo_patents" => {
-                for k in &[
-                    "Patent.count",
-                    "Patent.any",
-                    "Patent.recent",
-                    "Patent.filing",
-                    "Patent.competitor",
-                    "Technology.patent",
-                    "Technology.count",
-                    "Technology.any",
-                    "IP.count",
-                    "IP.any",
-                    "PatentPublished.competitor.cluster",
-                    "PatentPublished.technology_overlap",
-                    "PatentPublished.litigation.filed",
-                    "PatentPublished.university_collab",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "sam_gov" | "ted_eu" | "dgmarket" => {
-                for k in &[
-                    "Tender.count",
-                    "Tender.any",
-                    "Tender.public",
-                    "Tender.posted",
-                    "Tender.public.posted",
-                    "Tender.framework_agreement",
-                    "Tender.sector",
-                    "Tender.region",
-                    "Procurement.count",
-                    "Procurement.any",
-                    "Contract.count",
-                    "Contract.any",
-                    "Government.count",
-                    "Government.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "sec_edgar" | "sec_filings" => {
-                for k in &[
-                    "Filing.count",
-                    "Filing.any",
-                    "Filing.recent",
-                    "Company.filing",
-                    "Company.count",
-                    "Company.any",
-                    "CompanyProfile.count",
-                    "CompanyProfile.any",
-                    "CompanyProfile.revenue",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "defense_news" | "jane_defence" | "janes_defence" => {
-                for k in &[
-                    "Defense.count",
-                    "Defense.any",
-                    "Security.defense",
-                    "Security.count",
-                    "Security.any",
-                    "News.count",
-                    "News.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "bloomberg_global"
-            | "ft_global"
-            | "nyt_us"
-            | "axios_us"
-            | "politico_us"
-            | "the_hill"
-            | "afp_global"
-            | "bbc_world"
-            | "nyt_world"
-            | "nyt_business"
-            | "dw_en"
-            | "euronews"
-            | "guardian_world"
-            | "marketwatch"
-            | "economist_finance"
-            | "energy_storage_news"
-            | "electrek"
-            | "pv_magazine"
-            | "oilprice"
-            | "gcaptain"
-            | "techcrunch"
-            | "theverge" => {
-                for k in &[
-                    "News.count",
-                    "News.any",
-                    "News.geopolitical",
-                    "News.industry",
-                    "News.competitor",
-                    "PressRelease.count",
-                    "PressRelease.any",
-                    "Industry.count",
-                    "Industry.any",
-                    "Market.count",
-                    "Market.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "foreign_affairs" | "aljazeera_all" | "france24_en" | "northafricapost"
-            | "dailynewsegypt" | "egypt_independent" | "arabnews" | "middleeasteye"
-            | "africanews" => {
-                for k in &[
-                    "Geopolitical.risk",
-                    "Geopolitical.count",
-                    "Geopolitical.any",
-                    "News.geopolitical",
-                    "News.count",
-                    "News.any",
-                    "Trade.count",
-                    "Trade.any",
-                    "Regional.risk.high",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            _ => {
-                if !source_id.is_empty() {
-                    *fm.entry(format!("WebChange.{source_id}")).or_default() += c;
-                }
-            }
-        }
-
-        match signal_type.as_str() {
-            "hiring_signal" => {
-                for k in &[
-                    "JobPost.count",
-                    "JobPost.any",
-                    "JobPost.role_family",
-                    "Demand.hiring",
-                    "JobPost.executive.new_function",
-                    "SocialSignal.leadership_change",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "certification_update" => {
-                for k in &[
-                    "CertificationUpdate.count",
-                    "CertificationUpdate.any",
-                    "CertificationUpdate.new",
-                    "Certification.count",
-                    "Certification.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "technology" => {
-                for k in &[
-                    "Technology.count",
-                    "Technology.any",
-                    "Innovation.count",
-                    "Innovation.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "supply_chain_disruption" => {
-                for k in &[
-                    "SupplyChain.count",
-                    "SupplyChain.disruption",
-                    "Supplier.risk",
-                    "Supplier.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "geopolitical_risk" => {
-                for k in &[
-                    "Geopolitical.risk",
-                    "Geopolitical.count",
-                    "Security.risk",
-                    "Security.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    for (entity_id, keyword, count) in &wc_kw_features {
-        let fm = entity_maps.entry(*entity_id).or_default();
-        let c = *count as f64;
-        match keyword.as_str() {
-            "patent" => {
-                for k in &[
-                    "Patent.count",
-                    "Patent.any",
-                    "Patent.recent",
-                    "IP.count",
-                    "IP.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "innovation" | "breakthrough" | "next-generation" | "new technology" => {
-                for k in &[
-                    "Technology.count",
-                    "Technology.any",
-                    "Technology.emerging",
-                    "Innovation.count",
-                    "Innovation.any",
-                    "Industry40.count",
-                    "Industry40.any",
-                    "Digital.count",
-                    "Digital.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "r&d" | "research and development" => {
-                for k in &[
-                    "Technology.count",
-                    "Technology.any",
-                    "Engineering.count",
-                    "Engineering.any",
-                    "Competitor.R_D",
-                    "Product.development.early",
-                    "SocialSignal.research_partnership",
-                    "PatentPublished.university_collab",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "career" | "hiring" | "job opening" | "join our team" | "open position" => {
-                for k in &[
-                    "JobPost.count",
-                    "JobPost.any",
-                    "JobPost.volume",
-                    "Demand.hiring",
-                    "Demand.count",
-                    "Demand.any",
-                    "JobPost.executive.new_function",
-                    "SocialSignal.leadership_change",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "certification" | "accreditation" | "iso 9001" | "iso 14001" | "iso 13485"
-            | "iso 27001" | "as9100" | "iatf 16949" => {
-                for k in &[
-                    "CertificationUpdate.count",
-                    "CertificationUpdate.any",
-                    "CertificationUpdate.new",
-                    "Certification.count",
-                    "Certification.any",
-                    "Certification.new",
-                    "Compliance.count",
-                    "Compliance.any",
-                    "Compliance.certification",
-                    "Audit.count",
-                    "Audit.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-                match keyword.as_str() {
-                    "iatf 16949" => {
-                        *fm.entry("CertificationUpdate.new.IATF_16949".into())
-                            .or_default() += c;
+            match role_family.as_str() {
+                "C-Suite" => {
+                    for k in &[
+                        "POI.strategic.influence",
+                        "POI.visibility.high",
+                        "POI.thought_leadership",
+                        "POI.media.presence",
+                        "POI.network.broad",
+                        "POI.social.active",
+                        "Decision.executive",
+                        "Succession.identified",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
                     }
-                    "as9100" => {
-                        *fm.entry("CertificationUpdate.new.AS9100".into())
-                            .or_default() += c;
+                }
+                "Government" | "Agency Head" => {
+                    for k in &[
+                        "POI.region.visiting",
+                        "Government.count",
+                        "Government.any",
+                        "Regulatory.count",
+                        "Regulatory.any",
+                        "POI.knowledge.gap",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
                     }
-                    "iso 13485" => {
-                        *fm.entry("CertificationUpdate.new.ISO_13485".into())
-                            .or_default() += c;
+                }
+                "Industry Association" | "Industry Analyst" => {
+                    for k in &[
+                        "POI.thought_leadership",
+                        "POI.media.presence",
+                        "POI.network.broad",
+                        "Industry.count",
+                        "Industry.any",
+                        "ConferenceAgenda.count",
+                        "ConferenceAgenda.any",
+                        "Event.count",
+                        "Event.any",
+                    ] {
+                        *fm.entry(k.to_string()).or_default() += c;
                     }
-                    "iso 27001" => {
-                        *fm.entry("CertificationUpdate.new.ISO_27001".into())
-                            .or_default() += c;
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
-            "compliance" | "audit" => {
-                for k in &[
-                    "Compliance.count",
-                    "Compliance.any",
-                    "Compliance.risk",
-                    "Regulatory.count",
-                    "Regulatory.any",
-                    "Audit.count",
-                    "Audit.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "sanctions" => {
-                for k in &[
-                    "Sanctions.count",
-                    "Sanctions.any",
-                    "Sanctions.list",
-                    "OFAC.count",
-                    "OFAC.any",
-                    "Compliance.sanctions",
-                    "Trade.count",
-                    "Trade.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "tariff" => {
-                for k in &[
-                    "Tariff.count",
-                    "Tariff.any",
-                    "Tariff.change.announced",
-                    "Tariff.reduction",
-                    "Trade.count",
-                    "Trade.any",
-                    "Trade.restriction",
-                    "Customs.count",
-                    "Customs.any",
-                    "Import.count",
-                    "Import.any",
-                    "ImportData.count",
-                    "ImportData.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "shortage" | "allocation" | "lead time" => {
-                for k in &[
-                    "SupplyChain.count",
-                    "SupplyChain.any",
-                    "SupplyChain.lead_time.increase",
-                    "Supplier.lead_time.increase",
-                    "Supplier.capacity.reduced",
-                    "Material.shortage",
-                    "Material.count",
-                    "Material.any",
-                    "Commodity.shortage",
-                    "Commodity.count",
-                    "Commodity.any",
-                    "Semiconductor.lead_time.surge",
-                    "Inventory.count",
-                    "Inventory.any",
-                    "Component.count",
-                    "Component.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "supply chain disruption" => {
-                for k in &[
-                    "SupplyChain.disruption",
-                    "SupplyChain.count",
-                    "SupplyChain.any",
-                    "Supplier.risk",
-                    "Supplier.count",
-                    "Supplier.any",
-                    "Logistics.disruption",
-                    "Logistics.count",
-                    "Logistics.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "geopolitical" => {
-                for k in &[
-                    "Geopolitical.risk",
-                    "Geopolitical.count",
-                    "Geopolitical.any",
-                    "Security.risk",
-                    "Security.count",
-                    "Security.any",
-                    "Regional.risk.high",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "acquisition" | "acquired" | "joint venture" | "strategic partnership" => {
-                for k in &[
-                    "Company.acquisition",
-                    "Company.count",
-                    "Company.any",
-                    "Competitor.acquisition",
-                    "Competitor.ma_activity",
-                    "Post_MA.integration",
-                    "Post_MA.integration.issues",
-                    "Partnership.strategic",
-                    "PressRelease.acquisition",
-                    "PressRelease.JV_announced",
-                    "NewEntrant.count",
-                    "NewEntrant.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "investment in" | "new facility" | "new manufacturing" | "grand opening"
-            | "groundbreaking" => {
-                for k in &[
-                    "Company.expansion",
-                    "Company.investment",
-                    "Company.count",
-                    "Company.any",
-                    "Competitor.expansion",
-                    "Competitor.factory",
-                    "Facility.new",
-                    "Facility.count",
-                    "Facility.any",
-                    "Production.site.change",
-                    "Production.count",
-                    "Production.any",
-                    "PressRelease.expansion",
-                    "Infrastructure.count",
-                    "Infrastructure.any",
-                    "Growth.count",
-                    "Growth.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "product launch" => {
-                for k in &[
-                    "Product.count",
-                    "Product.any",
-                    "Product.development.early",
-                    "Product.supply_chain.new",
-                    "Competitor.product",
-                    "Competitor.count",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            _ => {
-                if !keyword.is_empty() {
-                    let kw_clean = keyword.replace(' ', "_");
-                    *fm.entry(format!("WebChange.kw_{kw_clean}")).or_default() += c;
-                }
-            }
-        }
-    }
 
-    for (company_id, role_family, influence, pain, change_risk, count) in &person_feats {
-        let fm = entity_maps.entry(*company_id).or_default();
-        let c = *count as f64;
-        *fm.entry("POI.count".into()).or_default() += c;
-        *fm.entry("POI.any".into()).or_default() += c;
-
-        if *influence > 0.7 {
             for k in &[
-                "POI.influence.broad",
-                "POI.influence.expanding",
-                "POI.influence.external",
-                "POI.influence.chain",
-                "POI.strategic.influence",
-                "POI.visibility.high",
-                "POI.spec.influence",
-                "POI.stakeholder.map.complete",
+                "POI.location.nearby",
+                "POI.operations.experience",
+                "Multi_POI.count",
+                "Multi_POI.any",
+                "Trigger.count",
+                "Trigger.any",
             ] {
                 *fm.entry(k.to_string()).or_default() += c;
             }
         }
-
-        if *pain > 0.6 {
-            for k in &[
-                "POI.pain_index.high",
-                "POI.pain.cost.expressed",
-                "POI.pain.delivery.expressed",
-                "POI.pain.quality.expressed",
-                "POI.pain.flexibility.expressed",
-                "POI.frustration.supplier",
-                "POI.frustration.internal",
-                "POI.lead_time.concern",
-                "POI.reliability.priority",
-            ] {
-                *fm.entry(k.to_string()).or_default() += c;
-            }
-        }
-        if *pain > 0.8 {
-            *fm.entry("POI.pain_index.very_high".into()).or_default() += c;
-        }
-
-        if *change_risk > 0.5 {
-            for k in &[
-                "POI.role_change.CPO.new",
-                "POI.scope.expanded",
-                "POI.promotion.detected",
-                "POI.milestone.career",
-                "POI.project.new",
-                "POI.team.building",
-                "Decision.count",
-                "Decision.any",
-                "Decision.imminent",
-                "Decision.budget.allocated",
-                "Decision.committee.formed",
-                "PersonMention.role_change",
-                "PersonMention.count",
-                "RoleChange.competitor_destination",
-                "RoleChange.count",
-                "SocialSignal.leadership_change",
-                "JobPost.executive.new_function",
-            ] {
-                *fm.entry(k.to_string()).or_default() += c;
-            }
-        }
-
-        match role_family.as_str() {
-            "C-Suite" => {
-                for k in &[
-                    "POI.strategic.influence",
-                    "POI.visibility.high",
-                    "POI.thought_leadership",
-                    "POI.media.presence",
-                    "POI.network.broad",
-                    "POI.social.active",
-                    "Decision.executive",
-                    "Succession.identified",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "Government" | "Agency Head" => {
-                for k in &[
-                    "POI.region.visiting",
-                    "Government.count",
-                    "Government.any",
-                    "Regulatory.count",
-                    "Regulatory.any",
-                    "POI.knowledge.gap",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            "Industry Association" | "Industry Analyst" => {
-                for k in &[
-                    "POI.thought_leadership",
-                    "POI.media.presence",
-                    "POI.network.broad",
-                    "Industry.count",
-                    "Industry.any",
-                    "ConferenceAgenda.count",
-                    "ConferenceAgenda.any",
-                    "Event.count",
-                    "Event.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-            _ => {}
-        }
-
-        for k in &[
-            "POI.location.nearby",
-            "POI.operations.experience",
-            "Multi_POI.count",
-            "Multi_POI.any",
-            "Trigger.count",
-            "Trigger.any",
-        ] {
-            *fm.entry(k.to_string()).or_default() += c;
-        }
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::DerivedAlias("PersonProfile".to_string()),
+        );
     }
 
     for (company_id, standard, count) in &cert_feats {
         let fm = entity_maps.entry(*company_id).or_default();
+        let origins = entity_origins.entry(*company_id).or_default();
         let c = *count as f64;
-        *fm.entry("Certification.count".into()).or_default() += c;
-        *fm.entry("Certification.any".into()).or_default() += c;
-        *fm.entry("CertificationUpdate.count".into()).or_default() += c;
-        *fm.entry("CertificationUpdate.any".into()).or_default() += c;
-
-        let std_upper = standard.to_uppercase();
-        if std_upper.contains("IATF") || std_upper.contains("16949") {
-            *fm.entry("CertificationUpdate.new.IATF_16949".into())
-                .or_default() += c;
-            *fm.entry("Tender.sector=automotive".into()).or_default() += c;
-        }
-        if std_upper.contains("AS9100")
-            || std_upper.contains("AS 9100")
-            || std_upper.contains("EN 9100")
+        // One certification standard synthesizes certification, sector and
+        // compliance aliases: one source, not several observations.
+        let mut additions: FeatureMap = FeatureMap::new();
         {
-            *fm.entry("CertificationUpdate.new.AS9100".into())
-                .or_default() += c;
-            *fm.entry("Tender.sector=aerospace".into()).or_default() += c;
+            let fm = &mut additions;
+            *fm.entry("Certification.count".into()).or_default() += c;
+            *fm.entry("Certification.any".into()).or_default() += c;
+            *fm.entry("CertificationUpdate.count".into()).or_default() += c;
+            *fm.entry("CertificationUpdate.any".into()).or_default() += c;
+
+            let std_upper = standard.to_uppercase();
+            if std_upper.contains("IATF") || std_upper.contains("16949") {
+                *fm.entry("CertificationUpdate.new.IATF_16949".into())
+                    .or_default() += c;
+                *fm.entry("Tender.sector=automotive".into()).or_default() += c;
+            }
+            if std_upper.contains("AS9100")
+                || std_upper.contains("AS 9100")
+                || std_upper.contains("EN 9100")
+            {
+                *fm.entry("CertificationUpdate.new.AS9100".into())
+                    .or_default() += c;
+                *fm.entry("Tender.sector=aerospace".into()).or_default() += c;
+            }
+            if std_upper.contains("13485") {
+                *fm.entry("CertificationUpdate.new.ISO_13485".into())
+                    .or_default() += c;
+                *fm.entry("Tender.sector=medical".into()).or_default() += c;
+            }
+            if std_upper.contains("14001") {
+                *fm.entry("Environmental.count".into()).or_default() += c;
+                *fm.entry("ESG.count".into()).or_default() += c;
+            }
+            if std_upper.contains("27001") {
+                *fm.entry("CertificationUpdate.new.ISO_27001".into())
+                    .or_default() += c;
+                *fm.entry("Security.count".into()).or_default() += c;
+                *fm.entry("Compliance.cybersecurity".into()).or_default() += c;
+            }
         }
-        if std_upper.contains("13485") {
-            *fm.entry("CertificationUpdate.new.ISO_13485".into())
-                .or_default() += c;
-            *fm.entry("Tender.sector=medical".into()).or_default() += c;
-        }
-        if std_upper.contains("14001") {
-            *fm.entry("Environmental.count".into()).or_default() += c;
-            *fm.entry("ESG.count".into()).or_default() += c;
-        }
-        if std_upper.contains("27001") {
-            *fm.entry("CertificationUpdate.new.ISO_27001".into())
-                .or_default() += c;
-            *fm.entry("Security.count".into()).or_default() += c;
-            *fm.entry("Compliance.cybersecurity".into()).or_default() += c;
-        }
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::DerivedAlias("Certification".to_string()),
+        );
     }
 
     for (company_id, capability, count) in &cap_feats {
         let fm = entity_maps.entry(*company_id).or_default();
+        let origins = entity_origins.entry(*company_id).or_default();
         let c = *count as f64;
-        *fm.entry("Capability.count".into()).or_default() += c;
-        *fm.entry("Capability.any".into()).or_default() += c;
-        *fm.entry("Technology.count".into()).or_default() += c;
-
-        let cap_lower = capability.to_lowercase();
-        if cap_lower.contains("smt") || cap_lower.contains("pcb") {
-            *fm.entry("Competitor.careers.SMT".into()).or_default() += c;
-            *fm.entry("Competitor.capability_page.changed".into())
-                .or_default() += c;
-        }
-        if cap_lower.contains("medical") {
-            *fm.entry("Tender.sector=medical".into()).or_default() += c;
-        }
-        if cap_lower.contains("automotive") {
-            *fm.entry("Tender.sector=automotive".into()).or_default() += c;
-        }
-        if cap_lower.contains("aerospace")
-            || cap_lower.contains("avionics")
-            || cap_lower.contains("satellite")
+        // One capability row synthesizes capability, sector and competitor
+        // aliases: one source.
+        let mut additions: FeatureMap = FeatureMap::new();
         {
-            *fm.entry("Tender.sector=aerospace".into()).or_default() += c;
-            *fm.entry("Defense.count".into()).or_default() += c;
+            let fm = &mut additions;
+            *fm.entry("Capability.count".into()).or_default() += c;
+            *fm.entry("Capability.any".into()).or_default() += c;
+            *fm.entry("Technology.count".into()).or_default() += c;
+
+            let cap_lower = capability.to_lowercase();
+            if cap_lower.contains("smt") || cap_lower.contains("pcb") {
+                *fm.entry("Competitor.careers.SMT".into()).or_default() += c;
+                *fm.entry("Competitor.capability_page.changed".into())
+                    .or_default() += c;
+            }
+            if cap_lower.contains("medical") {
+                *fm.entry("Tender.sector=medical".into()).or_default() += c;
+            }
+            if cap_lower.contains("automotive") {
+                *fm.entry("Tender.sector=automotive".into()).or_default() += c;
+            }
+            if cap_lower.contains("aerospace")
+                || cap_lower.contains("avionics")
+                || cap_lower.contains("satellite")
+            {
+                *fm.entry("Tender.sector=aerospace".into()).or_default() += c;
+                *fm.entry("Defense.count".into()).or_default() += c;
+            }
+            if cap_lower.contains("iot") || cap_lower.contains("embedded") {
+                *fm.entry("Industry40.count".into()).or_default() += c;
+                *fm.entry("Digital.count".into()).or_default() += c;
+            }
+            if cap_lower.contains("prototype") || cap_lower.contains("testing") {
+                *fm.entry("Product.development.early".into()).or_default() += c;
+            }
         }
-        if cap_lower.contains("iot") || cap_lower.contains("embedded") {
-            *fm.entry("Industry40.count".into()).or_default() += c;
-            *fm.entry("Digital.count".into()).or_default() += c;
-        }
-        if cap_lower.contains("prototype") || cap_lower.contains("testing") {
-            *fm.entry("Product.development.early".into()).or_default() += c;
-        }
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::DerivedAlias("Capability".to_string()),
+        );
     }
 
     for (company_id, country_code, site_type, count) in &site_feats {
         let fm = entity_maps.entry(*company_id).or_default();
+        let origins = entity_origins.entry(*company_id).or_default();
         let c = *count as f64;
+        // One site row synthesizes production/facility/geographic aliases:
+        // one source.
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            *fm.entry("Production.count".into()).or_default() += c;
+            *fm.entry("Production.any".into()).or_default() += c;
+            *fm.entry("Facility.count".into()).or_default() += c;
+            *fm.entry("Facility.any".into()).or_default() += c;
 
-        *fm.entry("Production.count".into()).or_default() += c;
-        *fm.entry("Production.any".into()).or_default() += c;
-        *fm.entry("Facility.count".into()).or_default() += c;
-        *fm.entry("Facility.any".into()).or_default() += c;
-
-        if !country_code.is_empty() {
-            *fm.entry(format!("Geographic.{country_code}")).or_default() += c;
-            *fm.entry("SupplyChain.geo.concentrated".into()).or_default() += c;
+            if !country_code.is_empty() {
+                *fm.entry(format!("Geographic.{country_code}")).or_default() += c;
+                *fm.entry("SupplyChain.geo.concentrated".into()).or_default() += c;
+            }
+            if !site_type.is_empty() {
+                *fm.entry(format!("Facility.{site_type}")).or_default() += c;
+                *fm.entry("Production.site.change".into()).or_default() += c;
+            }
         }
-        if !site_type.is_empty() {
-            *fm.entry(format!("Facility.{site_type}")).or_default() += c;
-            *fm.entry("Production.site.change".into()).or_default() += c;
-        }
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::DerivedAlias("CompanySite".to_string()),
+        );
     }
 
     for (source_id, edge_type, count) in &graph_feats {
         let fm = entity_maps.entry(*source_id).or_default();
+        let origins = entity_origins.entry(*source_id).or_default();
         let c = *count as f64;
+        // One edge-type aggregate synthesizes several relationship aliases:
+        // one source per edge type.
+        let origin = FeatureOrigin::DerivedAlias(format!("GraphEdge:{edge_type}"));
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            *fm.entry("Connection.count".into()).or_default() += c;
+            *fm.entry("Relationship.count".into()).or_default() += c;
+            *fm.entry("Ecosystem.count".into()).or_default() += c;
 
-        *fm.entry("Connection.count".into()).or_default() += c;
-        *fm.entry("Relationship.count".into()).or_default() += c;
-        *fm.entry("Ecosystem.count".into()).or_default() += c;
-
-        match edge_type.as_str() {
-            "CompanyCompany" => {
-                *fm.entry("Competitor.count".into()).or_default() += c;
-                *fm.entry("Vendor.count".into()).or_default() += c;
-                *fm.entry("Vendor.any".into()).or_default() += c;
-                *fm.entry("Supplier.count".into()).or_default() += c;
-                *fm.entry("Customer.count".into()).or_default() += c;
-                *fm.entry("Customer.any".into()).or_default() += c;
-                *fm.entry("Partnership.strategic".into()).or_default() += c;
-                *fm.entry("Distributor.count".into()).or_default() += c;
-                *fm.entry("Distributor.any".into()).or_default() += c;
+            match edge_type.as_str() {
+                "CompanyCompany" => {
+                    *fm.entry("Competitor.count".into()).or_default() += c;
+                    *fm.entry("Vendor.count".into()).or_default() += c;
+                    *fm.entry("Vendor.any".into()).or_default() += c;
+                    *fm.entry("Supplier.count".into()).or_default() += c;
+                    *fm.entry("Customer.count".into()).or_default() += c;
+                    *fm.entry("Customer.any".into()).or_default() += c;
+                    *fm.entry("Partnership.strategic".into()).or_default() += c;
+                    *fm.entry("Distributor.count".into()).or_default() += c;
+                    *fm.entry("Distributor.any".into()).or_default() += c;
+                }
+                "CompanyPerson" => {
+                    *fm.entry("POI.count".into()).or_default() += c;
+                    *fm.entry("POI.any".into()).or_default() += c;
+                    *fm.entry("Alumni.count".into()).or_default() += c;
+                    *fm.entry("Alumni.any".into()).or_default() += c;
+                    *fm.entry("Alumni.connection".into()).or_default() += c;
+                    *fm.entry("Connection.mutual".into()).or_default() += c;
+                }
+                "leads" => {
+                    *fm.entry("POI.influence.chain".into()).or_default() += c;
+                    *fm.entry("Relationship.new".into()).or_default() += c;
+                    *fm.entry("Relationship.strengthened".into()).or_default() += c;
+                }
+                "CompanySite" => {
+                    *fm.entry("Facility.count".into()).or_default() += c;
+                    *fm.entry("Production.count".into()).or_default() += c;
+                }
+                "SiteLogistics" => {
+                    *fm.entry("SupplyChain.count".into()).or_default() += c;
+                    *fm.entry("PortMetric.delay_increase".into()).or_default() += c;
+                }
+                "CompanyCapability" => {
+                    *fm.entry("Capability.count".into()).or_default() += c;
+                    *fm.entry("Technology.count".into()).or_default() += c;
+                }
+                "VulnProduct" => {
+                    *fm.entry("Security.vulnerability".into()).or_default() += c;
+                    *fm.entry("Product.risk".into()).or_default() += c;
+                }
+                "CompanyRegulation" => {
+                    *fm.entry("Regulatory.count".into()).or_default() += c;
+                    *fm.entry("Compliance.count".into()).or_default() += c;
+                }
+                "PersonPatent" => {
+                    *fm.entry("Patent.count".into()).or_default() += c;
+                    *fm.entry("IP.count".into()).or_default() += c;
+                }
+                "PersonEvent" => {
+                    *fm.entry("ConferenceAgenda.count".into()).or_default() += c;
+                    *fm.entry("TradeShow.presence.increase".into()).or_default() += c;
+                }
+                _ => {}
             }
-            "CompanyPerson" => {
-                *fm.entry("POI.count".into()).or_default() += c;
-                *fm.entry("POI.any".into()).or_default() += c;
-                *fm.entry("Alumni.count".into()).or_default() += c;
-                *fm.entry("Alumni.any".into()).or_default() += c;
-                *fm.entry("Alumni.connection".into()).or_default() += c;
-                *fm.entry("Connection.mutual".into()).or_default() += c;
-            }
-            "leads" => {
-                *fm.entry("POI.influence.chain".into()).or_default() += c;
-                *fm.entry("Relationship.new".into()).or_default() += c;
-                *fm.entry("Relationship.strengthened".into()).or_default() += c;
-            }
-            "CompanySite" => {
-                *fm.entry("Facility.count".into()).or_default() += c;
-                *fm.entry("Production.count".into()).or_default() += c;
-            }
-            "SiteLogistics" => {
-                *fm.entry("SupplyChain.count".into()).or_default() += c;
-                *fm.entry("PortMetric.delay_increase".into()).or_default() += c;
-            }
-            "CompanyCapability" => {
-                *fm.entry("Capability.count".into()).or_default() += c;
-                *fm.entry("Technology.count".into()).or_default() += c;
-            }
-            "VulnProduct" => {
-                *fm.entry("Security.vulnerability".into()).or_default() += c;
-                *fm.entry("Product.risk".into()).or_default() += c;
-            }
-            "CompanyRegulation" => {
-                *fm.entry("Regulatory.count".into()).or_default() += c;
-                *fm.entry("Compliance.count".into()).or_default() += c;
-            }
-            "PersonPatent" => {
-                *fm.entry("Patent.count".into()).or_default() += c;
-                *fm.entry("IP.count".into()).or_default() += c;
-            }
-            "PersonEvent" => {
-                *fm.entry("ConferenceAgenda.count".into()).or_default() += c;
-                *fm.entry("TradeShow.presence.increase".into()).or_default() += c;
-            }
-            _ => {}
         }
+        merge_derived_features(fm, origins, additions, origin);
     }
 
     // ── Job-post payload feature enrichment ───────────────────────
@@ -2485,45 +2712,63 @@ pub(super) async fn run_recipe_fire(
     // structured data from the job post JSONB payloads.
     for (entity_id, role_family, seniority, count) in &job_post_feats {
         let fm = entity_maps.entry(*entity_id).or_default();
+        let origins = entity_origins.entry(*entity_id).or_default();
         let c = *count as f64;
-        *fm.entry("JobPost.count".into()).or_default() += c;
-        *fm.entry("JobPost.any".into()).or_default() += c;
-        *fm.entry("Demand.hiring".into()).or_default() += c;
-        *fm.entry("Demand.count".into()).or_default() += c;
-        if !role_family.is_empty() {
-            *fm.entry("JobPost.role_family".to_string()).or_default() += c;
-            *fm.entry(format!("JobPost.role_family.{role_family}"))
-                .or_default() += c;
-            let rf_lower = role_family.to_lowercase();
-            if rf_lower.contains("procurement") || rf_lower.contains("sourcing") {
-                *fm.entry("Demand.hiring".into()).or_default() += c;
-                *fm.entry("SocialSignal.procurement_announcement".into())
+        // The job-post counters are direct observations; the role/seniority
+        // aliases below are one source (the same job posts), not independent
+        // conditions.
+        for key in ["JobPost.count", "JobPost.any"] {
+            *fm.entry(key.to_string()).or_default() += c;
+            origins
+                .entry(key.to_string())
+                .or_insert_with(|| FeatureOrigin::Observation("JobPost".to_string()));
+        }
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            *fm.entry("Demand.hiring".into()).or_default() += c;
+            *fm.entry("Demand.count".into()).or_default() += c;
+            if !role_family.is_empty() {
+                *fm.entry("JobPost.role_family".to_string()).or_default() += c;
+                *fm.entry(format!("JobPost.role_family.{role_family}"))
                     .or_default() += c;
+                let rf_lower = role_family.to_lowercase();
+                if rf_lower.contains("procurement") || rf_lower.contains("sourcing") {
+                    *fm.entry("Demand.hiring".into()).or_default() += c;
+                    *fm.entry("SocialSignal.procurement_announcement".into())
+                        .or_default() += c;
+                }
+                if rf_lower.contains("executive") || rf_lower.contains("clevel") {
+                    *fm.entry("JobPost.executive.new_function".into())
+                        .or_default() += c;
+                    *fm.entry("SocialSignal.leadership_change".into())
+                        .or_default() += c;
+                }
+                if rf_lower.contains("quality") || rf_lower.contains("audit") {
+                    *fm.entry("Compliance.count".into()).or_default() += c;
+                }
+                if rf_lower.contains("engineer") || rf_lower.contains("r&d") {
+                    *fm.entry("Technology.count".into()).or_default() += c;
+                    *fm.entry("Innovation.count".into()).or_default() += c;
+                }
             }
-            if rf_lower.contains("executive") || rf_lower.contains("clevel") {
-                *fm.entry("JobPost.executive.new_function".into())
-                    .or_default() += c;
-                *fm.entry("SocialSignal.leadership_change".into())
-                    .or_default() += c;
-            }
-            if rf_lower.contains("quality") || rf_lower.contains("audit") {
-                *fm.entry("Compliance.count".into()).or_default() += c;
-            }
-            if rf_lower.contains("engineer") || rf_lower.contains("r&d") {
-                *fm.entry("Technology.count".into()).or_default() += c;
-                *fm.entry("Innovation.count".into()).or_default() += c;
+            if !seniority.is_empty() {
+                let sen_lower = seniority.to_lowercase();
+                if sen_lower.contains("director")
+                    || sen_lower.contains("vp")
+                    || sen_lower.contains("clevel")
+                {
+                    *fm.entry("JobPost.executive.new_function".into())
+                        .or_default() += c;
+                }
             }
         }
-        if !seniority.is_empty() {
-            let sen_lower = seniority.to_lowercase();
-            if sen_lower.contains("director")
-                || sen_lower.contains("vp")
-                || sen_lower.contains("clevel")
-            {
-                *fm.entry("JobPost.executive.new_function".into())
-                    .or_default() += c;
-            }
-        }
+        merge_derived_features(
+            fm,
+            origins,
+            additions,
+            FeatureOrigin::DerivedAlias("JobPost".to_string()),
+        );
     }
 
     // ── Commodity/FX feature enrichment ───────────────────────────
@@ -2531,48 +2776,57 @@ pub(super) async fn run_recipe_fire(
     // FxRate.EUR_MAD.stable, FxRate.volatility.high, Commodity.*
     for (entity_id, obs_type, item, count) in &commodity_fx_feats {
         let fm = entity_maps.entry(*entity_id).or_default();
+        let origins = entity_origins.entry(*entity_id).or_default();
         let c = *count as f64;
-        match obs_type.as_str() {
-            "CommodityPrice" => {
-                *fm.entry("CommodityPrice.shift".into()).or_default() += c;
-                *fm.entry("CommodityPrice.significant_move".into())
-                    .or_default() += c;
-                *fm.entry("Commodity.count".into()).or_default() += c;
-                *fm.entry("Commodity.price.volatile".into()).or_default() += c;
-                if !item.is_empty() {
-                    let item_upper = item.to_uppercase();
-                    // Map specific commodities to recipe keys
-                    if item_upper.contains("COPPER") || item_upper.contains("CU") {
-                        *fm.entry("Commodity.Cu.increase_5pct".into()).or_default() += c;
-                        *fm.entry("Commodity.copper.increase_5pct".into())
-                            .or_default() += c;
-                    }
-                    if item_upper.contains("TIN") || item_upper.contains("SN") {
-                        *fm.entry("Commodity.Sn.increase_5pct".into()).or_default() += c;
-                    }
-                }
-            }
-            "FxRate" => {
-                *fm.entry("FxRate.significant_move".into()).or_default() += c;
-                *fm.entry("FxRate.count".into()).or_default() += c;
-                *fm.entry("FxRate.any".into()).or_default() += c;
-                if !item.is_empty() {
-                    *fm.entry(format!("FxRate.{item}")).or_default() += c;
-                    let pair = item.to_uppercase();
-                    // Detect specific pairs referenced in recipes
-                    if pair.contains("EUR") && pair.contains("MAD") {
-                        *fm.entry("FxRate.EUR_MAD.stable".into()).or_default() += c;
-                    }
-                    if pair.contains("EUR") && pair.contains("TND") {
-                        *fm.entry("FxRate.EUR_TND.increase".into()).or_default() += c;
-                    }
-                    if pair.contains("GBP") && pair.contains("EUR") {
-                        *fm.entry("FxRate.GBP_EUR.decrease".into()).or_default() += c;
+        // One market-data row synthesizes commodity/pair aliases: one source
+        // per observation type.
+        let origin = FeatureOrigin::DerivedAlias(format!("MarketData:{obs_type}"));
+        let mut additions: FeatureMap = FeatureMap::new();
+        {
+            let fm = &mut additions;
+            match obs_type.as_str() {
+                "CommodityPrice" => {
+                    *fm.entry("CommodityPrice.shift".into()).or_default() += c;
+                    *fm.entry("CommodityPrice.significant_move".into())
+                        .or_default() += c;
+                    *fm.entry("Commodity.count".into()).or_default() += c;
+                    *fm.entry("Commodity.price.volatile".into()).or_default() += c;
+                    if !item.is_empty() {
+                        let item_upper = item.to_uppercase();
+                        // Map specific commodities to recipe keys
+                        if item_upper.contains("COPPER") || item_upper.contains("CU") {
+                            *fm.entry("Commodity.Cu.increase_5pct".into()).or_default() += c;
+                            *fm.entry("Commodity.copper.increase_5pct".into())
+                                .or_default() += c;
+                        }
+                        if item_upper.contains("TIN") || item_upper.contains("SN") {
+                            *fm.entry("Commodity.Sn.increase_5pct".into()).or_default() += c;
+                        }
                     }
                 }
+                "FxRate" => {
+                    *fm.entry("FxRate.significant_move".into()).or_default() += c;
+                    *fm.entry("FxRate.count".into()).or_default() += c;
+                    *fm.entry("FxRate.any".into()).or_default() += c;
+                    if !item.is_empty() {
+                        *fm.entry(format!("FxRate.{item}")).or_default() += c;
+                        let pair = item.to_uppercase();
+                        // Detect specific pairs referenced in recipes
+                        if pair.contains("EUR") && pair.contains("MAD") {
+                            *fm.entry("FxRate.EUR_MAD.stable".into()).or_default() += c;
+                        }
+                        if pair.contains("EUR") && pair.contains("TND") {
+                            *fm.entry("FxRate.EUR_TND.increase".into()).or_default() += c;
+                        }
+                        if pair.contains("GBP") && pair.contains("EUR") {
+                            *fm.entry("FxRate.GBP_EUR.decrease".into()).or_default() += c;
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
+        merge_derived_features(fm, origins, additions, origin);
     }
 
     // ── POI artifact feature enrichment ───────────────────────────
@@ -2581,40 +2835,50 @@ pub(super) async fn run_recipe_fire(
     // the rich POI.* feature keys that recipes expect.
     for (company_id, artifact_type, count) in &poi_artifact_feats {
         let fm = entity_maps.entry(*company_id).or_default();
+        let origins = entity_origins.entry(*company_id).or_default();
         let c = *count as f64;
-        *fm.entry("POI.count".into()).or_default() += c;
-        *fm.entry("POI.visibility.high".into()).or_default() += c;
-        let at_lower = artifact_type.to_lowercase();
-        if at_lower.contains("article") || at_lower.contains("publication") {
-            *fm.entry("POI.article.published".into()).or_default() += c;
-            *fm.entry("POI.thought_leadership".into()).or_default() += c;
-            *fm.entry("PressRelease.count".into()).or_default() += c;
-            *fm.entry("PressRelease.any".into()).or_default() += c;
-            *fm.entry("News.count".into()).or_default() += c;
-        }
-        if at_lower.contains("speaker")
-            || at_lower.contains("conference")
-            || at_lower.contains("panel")
+        // One artifact type's alias set is one source, not many observations.
+        let origin = FeatureOrigin::DerivedAlias(format!("POIArtifact:{artifact_type}"));
+        let mut additions: FeatureMap = FeatureMap::new();
         {
-            *fm.entry("POI.conference.speaker".into()).or_default() += c;
-            *fm.entry("ConferenceAgenda.count".into()).or_default() += c;
-            *fm.entry("TradeShow.speaker.poi_match".into()).or_default() += c;
-            *fm.entry("TradeShow.presence.increase".into()).or_default() += c;
+            let fm = &mut additions;
+            *fm.entry("POI.count".into()).or_default() += c;
+            *fm.entry("POI.visibility.high".into()).or_default() += c;
+            let at_lower = artifact_type.to_lowercase();
+            if at_lower.contains("article") || at_lower.contains("publication") {
+                *fm.entry("POI.article.published".into()).or_default() += c;
+                *fm.entry("POI.thought_leadership".into()).or_default() += c;
+                *fm.entry("PressRelease.count".into()).or_default() += c;
+                *fm.entry("PressRelease.any".into()).or_default() += c;
+                *fm.entry("News.count".into()).or_default() += c;
+            }
+            if at_lower.contains("speaker")
+                || at_lower.contains("conference")
+                || at_lower.contains("panel")
+            {
+                *fm.entry("POI.conference.speaker".into()).or_default() += c;
+                *fm.entry("ConferenceAgenda.count".into()).or_default() += c;
+                *fm.entry("TradeShow.speaker.poi_match".into()).or_default() += c;
+                *fm.entry("TradeShow.presence.increase".into()).or_default() += c;
+            }
+            if at_lower.contains("award") || at_lower.contains("recognition") {
+                *fm.entry("POI.achievement.professional".into()).or_default() += c;
+                *fm.entry("PressRelease.quality_award".into()).or_default() += c;
+            }
+            if at_lower.contains("social")
+                || at_lower.contains("post")
+                || at_lower.contains("linkedin")
+            {
+                *fm.entry("POI.social.active".into()).or_default() += c;
+                *fm.entry("POI.content.engagement".into()).or_default() += c;
+                *fm.entry("SocialPost.count".into()).or_default() += c;
+            }
+            if at_lower.contains("patent") {
+                *fm.entry("Patent.count".into()).or_default() += c;
+                *fm.entry("POI.technical.expert".into()).or_default() += c;
+            }
         }
-        if at_lower.contains("award") || at_lower.contains("recognition") {
-            *fm.entry("POI.achievement.professional".into()).or_default() += c;
-            *fm.entry("PressRelease.quality_award".into()).or_default() += c;
-        }
-        if at_lower.contains("social") || at_lower.contains("post") || at_lower.contains("linkedin")
-        {
-            *fm.entry("POI.social.active".into()).or_default() += c;
-            *fm.entry("POI.content.engagement".into()).or_default() += c;
-            *fm.entry("SocialPost.count".into()).or_default() += c;
-        }
-        if at_lower.contains("patent") {
-            *fm.entry("Patent.count".into()).or_default() += c;
-            *fm.entry("POI.technical.expert".into()).or_default() += c;
-        }
+        merge_derived_features(fm, origins, additions, origin);
     }
 
     for (entity_id, feature_map) in entity_maps.iter_mut() {
@@ -2726,23 +2990,28 @@ pub(super) async fn run_recipe_fire(
         .into_iter()
         .map(|(id, fm)| (id.to_string(), fm))
         .collect();
+    let entity_provenance: HashMap<String, FeatureProvenance> = entity_origins
+        .into_iter()
+        .map(|(id, provenance)| (id.to_string(), provenance))
+        .collect();
 
-    // Entity context for the applicability gate: region and industry per
-    // company. A restricted recipe with absent context does not evaluate.
+    // Entity context for the applicability gate: the ACTUAL metadata — region,
+    // country code and real industry tags. (`company_type` is a
+    // classification, not an industry, and country is not the region.)
     let context_ids: Vec<Uuid> = entity_id_strs
         .iter()
         .filter_map(|(id, _)| Uuid::parse_str(id).ok())
         .collect();
     let mut entity_contexts: HashMap<String, apex_core::schemas::EntityContext> = HashMap::new();
-    match store.get_company_names_by_ids(&context_ids).await {
+    match store.get_recipe_entity_contexts(&context_ids).await {
         Ok(rows) => {
-            for (id, _name, region, company_type) in rows {
+            for row in rows {
                 entity_contexts.insert(
-                    id.to_string(),
+                    row.id.to_string(),
                     apex_core::schemas::EntityContext {
-                        region,
-                        country: None,
-                        industry: company_type,
+                        region: row.region,
+                        country: row.country_code,
+                        industries: row.industry_tags,
                         entity_type: Some("company".to_string()),
                     },
                 );
@@ -2758,15 +3027,49 @@ pub(super) async fn run_recipe_fire(
         }
     }
 
-    #[cfg(feature = "llm")]
-    let mut candidates: Vec<_> = entity_id_strs
+    // Staged recipes are shadow-evaluated here and never emitted (audit P1):
+    // their candidates are recorded for observability only, and they must not
+    // compete in per-run dedup against real promoted candidates.
+    let (staged_shadow, evaluated): (Vec<_>, Vec<_>) = entity_id_strs
         .iter()
-        .flat_map(|(id, fm)| engine.evaluate_all_with_context(id, fm, entity_contexts.get(id)))
-        .collect();
-    #[cfg(not(feature = "llm"))]
-    let candidates: Vec<_> = entity_id_strs
-        .iter()
-        .flat_map(|(id, fm)| engine.evaluate_all_with_context(id, fm, entity_contexts.get(id)))
+        .flat_map(|(id, fm)| {
+            engine.evaluate_all_with_context_and_provenance(
+                id,
+                fm,
+                entity_contexts.get(id),
+                entity_provenance.get(id),
+            )
+        })
+        .partition(|candidate| {
+            recipe_status_by_code.get(candidate.recipe_code.as_str())
+                == Some(&apex_core::schemas::RecipeStatus::Staged)
+        });
+    let staged_shadow_candidates = staged_shadow.len() as u64;
+    if staged_shadow_candidates > 0 {
+        tracing::info!(
+            count = staged_shadow_candidates,
+            sample = ?staged_shadow
+                .iter()
+                .take(5)
+                .map(|candidate| (candidate.recipe_code.as_str(), candidate.entity_id.as_str()))
+                .collect::<Vec<_>>(),
+            "recipe_fire: staged recipes evaluated in shadow mode (not emitted)"
+        );
+    }
+
+    // Candidates satisfied only by prior-warning-derived features are derived
+    // intelligence, never primary evidence: they are not emitted.
+    let mut skipped_prior_warning_only: u64 = 0;
+    #[allow(unused_mut)]
+    let mut candidates: Vec<_> = evaluated
+        .into_iter()
+        .filter(|candidate| {
+            if candidate.prior_warning_only {
+                skipped_prior_warning_only += 1;
+                return false;
+            }
+            true
+        })
         .collect();
 
     #[cfg(feature = "llm")]
@@ -5101,6 +5404,8 @@ pub(super) async fn run_recipe_fire(
         skipped_low_conf = skipped_low_conf,
         skipped_dedup = skipped_dedup,
         skipped_cross_run = skipped_cross_run,
+        skipped_prior_warning_only = skipped_prior_warning_only,
+        staged_shadow_candidates = staged_shadow_candidates,
         inserted = insights_inserted,
         warnings = warnings_inserted,
         warning_ingest_failures,
@@ -5198,9 +5503,112 @@ mod tests {
             name: format!("Recipe {code}"),
             status: status.to_string(),
             definition,
+            category: None,
+            join_type: None,
+            outcome: None,
+            signals: None,
+            transforms: None,
+            test_config: None,
+            thresholds: None,
+            narrative_template: None,
+            action_playbook: None,
+            applicability: None,
             activation_threshold,
-            configured_min_precision: None,
+            configured_activation_threshold: None,
         }
+    }
+
+    /// A recipe represented only through canonical columns executes without a
+    /// legacy definition blob.
+    #[test]
+    fn column_only_recipe_reaches_the_engine() {
+        let mut row = engine_row("C100", "production", None, None);
+        row.category = Some("demand".to_string());
+        row.join_type = Some("company".to_string());
+        row.outcome = Some("signal".to_string());
+        row.signals = Some(serde_json::json!(["count.company"]));
+        row.transforms = Some(serde_json::json!([]));
+        row.test_config = Some(serde_json::json!({}));
+        row.thresholds = Some(serde_json::json!({}));
+        row.narrative_template = Some("note".to_string());
+        row.action_playbook = Some(serde_json::json!(["act"]));
+        row.applicability = Some(serde_json::json!({}));
+
+        let (recipes, excluded) = super::build_engine_recipes(&[row]);
+        assert_eq!(excluded, 0);
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].code, "C100");
+        assert_eq!(
+            recipes[0].status,
+            apex_core::schemas::RecipeStatus::Promoted
+        );
+        assert!(!recipes[0].signals.is_empty());
+    }
+
+    /// A row with neither definition nor signals is counted as excluded.
+    #[test]
+    fn row_without_definition_or_signals_is_counted() {
+        let row = engine_row("C101", "seed", None, None);
+        let (recipes, excluded) = super::build_engine_recipes(&[row]);
+        assert!(recipes.is_empty());
+        assert_eq!(excluded, 1);
+    }
+
+    /// The `definition` column defaults to `[]`; that placeholder must fall
+    /// back to the canonical columns, not exclude the recipe (audit P0).
+    #[test]
+    fn default_empty_definition_falls_back_to_canonical_columns() {
+        let mut row = engine_row("C102", "production", Some(serde_json::json!([])), None);
+        row.signals = Some(serde_json::json!(["count.company"]));
+        row.narrative_template = Some("note".to_string());
+        row.action_playbook = Some(serde_json::json!(["act"]));
+
+        let (recipes, excluded) = super::build_engine_recipes(&[row]);
+        assert_eq!(excluded, 0);
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].code, "C102");
+    }
+
+    /// Alias tagging marks only the keys a block newly introduced, and never
+    /// downgrades an existing direct origin (audit P1).
+    #[test]
+    fn merging_alias_additions_preserves_direct_origins() {
+        let mut features = super::FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 2.0);
+
+        let mut provenance = super::FeatureProvenance::new();
+        provenance.insert(
+            "JobPost.count".to_string(),
+            super::FeatureOrigin::Observation("JobPost".to_string()),
+        );
+
+        // The scratch map holds only this row's additions, including an
+        // increment to a key that already has a direct origin.
+        let mut additions = super::FeatureMap::new();
+        additions.insert("Demand.hiring".to_string(), 2.0);
+        additions.insert("JobPost.count".to_string(), 5.0);
+        super::merge_derived_features(
+            &mut features,
+            &mut provenance,
+            additions,
+            super::FeatureOrigin::DerivedAlias("JobPost".to_string()),
+        );
+
+        assert_eq!(features.get("JobPost.count"), Some(&7.0));
+        assert!(
+            matches!(
+                provenance.get("Demand.hiring"),
+                Some(super::FeatureOrigin::DerivedAlias(source)) if source == "JobPost"
+            ),
+            "new alias keys must be tagged with their source"
+        );
+        assert!(
+            matches!(
+                provenance.get("JobPost.count"),
+                Some(super::FeatureOrigin::Observation(source)) if source == "JobPost"
+            ),
+            "an existing direct origin must never be downgraded to an alias"
+        );
     }
 
     /// The lifecycle contract: the database status is authoritative.
