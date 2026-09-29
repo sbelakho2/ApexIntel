@@ -224,11 +224,7 @@ pub(crate) async fn get_kev_relevance(
                         .and_then(|v| v.as_str())
                         .unwrap_or("1970-01-01")
                         .to_string(),
-                    relevance_score: row
-                        .value
-                        .get("relevance_score")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.5),
+                    relevance_score: row.value.get("relevance_score").and_then(|v| v.as_f64()),
                     affected_companies: row
                         .value
                         .get("affected_companies")

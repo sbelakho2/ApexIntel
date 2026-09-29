@@ -196,7 +196,7 @@ impl PgStore {
             producer,
             producer_version,
         )
-        .with_confidence(insight_confidence.unwrap_or(0.5));
+        .with_confidence_opt(insight_confidence);
 
         let evidence_digest = lineage_digest(
             evidence_ids
@@ -213,7 +213,7 @@ impl PgStore {
             producer_version,
         )
         .with_input_digest(evidence_digest)
-        .with_confidence(claim_confidence.unwrap_or(0.5));
+        .with_confidence_opt(claim_confidence);
 
         // claim -> insight
         self.record_lineage_transition(
@@ -239,7 +239,7 @@ impl PgStore {
                 seed.and_then(|s| s.extractor_version.as_deref())
                     .unwrap_or("unknown"),
             )
-            .with_confidence(seed.map(|s| s.confidence).unwrap_or(0.5));
+            .with_confidence_opt(seed.map(|s| s.confidence));
             // observation -> claim
             self.record_lineage_transition(
                 &observation_node,

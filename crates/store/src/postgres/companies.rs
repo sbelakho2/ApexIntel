@@ -54,17 +54,16 @@ fn build_company_dossier_analysis(
         .iter()
         .filter_map(|cert| {
             cert.evidence_url.as_ref().map(|url| {
-                let mut record = EvidenceItem::new(
-                    cert.status
-                        .as_deref()
-                        .map(|status| {
-                            if status.eq_ignore_ascii_case("active") {
-                                0.8
-                            } else {
-                                0.55
-                            }
-                        })
-                        .unwrap_or(0.55),
+                // Unknown certification status is an unmeasured relevance, not
+                // a neutral 0.55 prior.
+                let mut record = EvidenceItem::new_optional(
+                    cert.status.as_deref().map(|status| {
+                        if status.eq_ignore_ascii_case("active") {
+                            0.8
+                        } else {
+                            0.55
+                        }
+                    }),
                     EvidenceStance::Supports,
                 )
                 .with_source_url(url.clone())
@@ -119,7 +118,7 @@ fn build_company_dossier_analysis(
             category: change.field_name.clone(),
             region: None,
             entity: Some(change.company_id.to_string()),
-            confidence: change.confidence.unwrap_or(0.55),
+            confidence: change.confidence,
             impact: 0.6,
             source_group: change.source_url.as_deref().and_then(source_group_from_url),
         });
@@ -131,7 +130,7 @@ fn build_company_dossier_analysis(
             category: Some(entry.category.clone()),
             region: None,
             entity: Some(entry.entity_id.to_string()),
-            confidence: entry.confidence.unwrap_or(0.55),
+            confidence: entry.confidence,
             impact: 0.5,
             source_group: entry
                 .source_urls

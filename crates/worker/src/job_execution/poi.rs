@@ -1380,6 +1380,9 @@ async fn process_discovery_batch(
 pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
+    // Authoritative input loads whose failure must not read as "no work to
+    // do" (role-history backfill candidates, thin-person enrichment set).
+    let mut degraded_inputs: Vec<String> = Vec::new();
     #[cfg(feature = "llm")]
     {
         let filters = PersonListFilters {
@@ -1543,7 +1546,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             .clamp(0, 500);
 
         if role_history_backfill_limit > 0 {
-            let missing_role_history = sqlx::query_as::<_, MissingRoleHistoryRow>(
+            let missing_role_history = match sqlx::query_as::<_, MissingRoleHistoryRow>(
                 r#"SELECT p.id,
                           p.primary_org_id AS org_id,
                           COALESCE(c.name, 'Independent') AS org_name,
@@ -1560,8 +1563,16 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             .bind(role_history_backfill_limit)
             .fetch_all(&store.pool)
             .await
-            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-            .unwrap_or_default();
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(%error, "poi_refresh: role-history backfill candidate load failed");
+                    degraded_inputs.push(format!(
+                        "role-history backfill candidates unavailable ({error})"
+                    ));
+                    Vec::new()
+                }
+            };
 
             for row in missing_role_history {
                 if store
@@ -1658,7 +1669,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(10)
             .clamp(1, 50);
-        let thin_persons: Vec<ThinPersonRow> = sqlx::query_as::<_, ThinPersonRow>(
+        let thin_persons: Vec<ThinPersonRow> = match sqlx::query_as::<_, ThinPersonRow>(
             r#"SELECT p.id,
                       p.name,
                       COALESCE(c.name, '') AS org,
@@ -1673,8 +1684,14 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .bind(enrichment_limit)
         .fetch_all(&store.pool)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(%error, "poi_refresh: thin-person enrichment load failed");
+                degraded_inputs.push(format!("LLM enrichment candidates unavailable ({error})"));
+                Vec::new()
+            }
+        };
 
         if !thin_persons.is_empty() {
             let poi_llm_client = {
@@ -1813,17 +1830,22 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             }
         }
 
-        run.succeed(
+        let notes = format!(
+            "poi_refresh: {} persons processed — {} updated, {} unchanged, {} role-history backfilled, {} LLM-enriched",
+            persons.len(),
             refreshed,
-            &format!(
-                "poi_refresh: {} persons processed — {} updated, {} unchanged, {} role-history backfilled, {} LLM-enriched",
-                persons.len(),
-                refreshed,
-                unchanged,
-                role_history_backfilled,
-                enriched_pois,
-            ),
+            unchanged,
+            role_history_backfilled,
+            enriched_pois,
         );
+        if degraded_inputs.is_empty() {
+            run.succeed(refreshed, &notes);
+        } else {
+            run.degrade(
+                refreshed,
+                &format!("{notes}; degraded inputs: {}", degraded_inputs.join("; ")),
+            );
+        }
     }
     #[cfg(not(feature = "llm"))]
     {
@@ -1869,7 +1891,7 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
                 role_family: String,
             }
 
-            let missing = sqlx::query_as::<_, MissingRoleHistoryRow>(
+            let missing = match sqlx::query_as::<_, MissingRoleHistoryRow>(
                 r#"SELECT p.id,
                           p.primary_org_id AS org_id,
                           COALESCE(c.name, 'Independent') AS org_name,
@@ -1886,8 +1908,16 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             .bind(role_history_backfill_limit)
             .fetch_all(&store.pool)
             .await
-            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-            .unwrap_or_default();
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(%error, "poi_refresh(no-llm): role-history backfill candidate load failed");
+                    degraded_inputs.push(format!(
+                        "role-history backfill candidates unavailable ({error})"
+                    ));
+                    Vec::new()
+                }
+            };
 
             for row in missing {
                 if store
@@ -1910,14 +1940,19 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             }
         }
 
-        run.succeed(
+        let notes = format!(
+            "poi_refresh(no-llm): {} persons in DB, {} role-history entries backfilled",
+            persons.len(),
             role_history_backfilled,
-            &format!(
-                "poi_refresh(no-llm): {} persons in DB, {} role-history entries backfilled",
-                persons.len(),
-                role_history_backfilled,
-            ),
         );
+        if degraded_inputs.is_empty() {
+            run.succeed(role_history_backfilled, &notes);
+        } else {
+            run.degrade(
+                role_history_backfilled,
+                &format!("{notes}; degraded inputs: {}", degraded_inputs.join("; ")),
+            );
+        }
     }
     run
 }

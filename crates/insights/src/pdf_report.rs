@@ -76,8 +76,9 @@ pub struct ReportMetadata {
     pub tags: Vec<String>,
     /// How many sources were consulted.
     pub source_count: usize,
-    /// Aggregate confidence across all evidence.
-    pub aggregate_confidence: f64,
+    /// Mean measured confidence across the report's insights; `None` when no
+    /// insight carried a measured confidence (never a fabricated 0 or 50%).
+    pub aggregate_confidence: Option<f64>,
 }
 
 impl Default for ReportMetadata {
@@ -90,7 +91,7 @@ impl Default for ReportMetadata {
             entity_name: None,
             tags: Vec::new(),
             source_count: 0,
-            aggregate_confidence: 0.0,
+            aggregate_confidence: None,
         }
     }
 }
@@ -106,8 +107,8 @@ pub struct EvidenceItem {
     pub label: String,
     /// The evidence value or content.
     pub value: String,
-    /// Confidence score (0.0 – 1.0).
-    pub confidence: f64,
+    /// Measured confidence (0.0 – 1.0); `None` = not measured.
+    pub confidence: Option<f64>,
 }
 
 impl EvidenceItem {
@@ -115,12 +116,18 @@ impl EvidenceItem {
         Self {
             label: label.to_string(),
             value: value.to_string(),
-            confidence: 0.5,
+            confidence: None,
         }
     }
 
     pub fn with_confidence(mut self, confidence: f64) -> Self {
-        self.confidence = confidence.clamp(0.0, 1.0);
+        self.confidence = Some(confidence.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Confidence from an optional measurement; `None` stays unknown.
+    pub fn with_confidence_opt(mut self, confidence: Option<f64>) -> Self {
+        self.confidence = confidence.map(|value| value.clamp(0.0, 1.0));
         self
     }
 }
@@ -262,6 +269,7 @@ impl PdfReport {
         let mut report = Self::new(title, ReportType::InsightSummary);
         let mut all_sources = Vec::new();
         let mut total_confidence = 0.0;
+        let mut measured_confidences = 0usize;
 
         // Group insights by severity for ordered presentation
         let mut by_severity: HashMap<u8, Vec<&InsightReportRow>> = HashMap::new();
@@ -292,7 +300,7 @@ impl PdfReport {
                 // Add evidence items from the insight's metadata
                 for ev in &insight.evidence {
                     section.add_evidence(
-                        EvidenceItem::new(&ev.label, &ev.value).with_confidence(ev.confidence),
+                        EvidenceItem::new(&ev.label, &ev.value).with_confidence_opt(ev.confidence),
                     );
                 }
 
@@ -309,7 +317,10 @@ impl PdfReport {
                     all_sources.push(domain_clone);
                 }
 
-                total_confidence += insight.confidence;
+                if let Some(confidence) = insight.confidence {
+                    total_confidence += confidence;
+                    measured_confidences += 1;
+                }
                 report.add_section(section);
             }
         }
@@ -318,10 +329,10 @@ impl PdfReport {
         all_sources.sort();
         all_sources.dedup();
         let source_count = all_sources.len();
-        let aggregate_confidence = if insights.is_empty() {
-            0.0
+        let aggregate_confidence = if measured_confidences == 0 {
+            None
         } else {
-            total_confidence / insights.len() as f64
+            Some(total_confidence / measured_confidences as f64)
         };
 
         report.metadata.source_count = source_count;
@@ -647,11 +658,15 @@ impl PdfReport {
                     r#"<table class="evidence-table"><thead><tr><th>Evidence</th><th>Value</th><th class="conf">Conf</th></tr></thead><tbody>"#,
                 );
                 for ev in &section.evidence_items {
+                    let confidence_cell = ev
+                        .confidence
+                        .map(|value| format!("{:.0}%", value * 100.0))
+                        .unwrap_or_else(|| "not measured".to_string());
                     html.push_str(&format!(
-                        r#"<tr><td>{}</td><td>{}</td><td class="conf">{:.0}%</td></tr>"#,
+                        r#"<tr><td>{}</td><td>{}</td><td class="conf">{}</td></tr>"#,
                         Self::html_escape(&ev.label),
                         Self::html_escape(&ev.value),
-                        ev.confidence * 100.0,
+                        confidence_cell,
                     ));
                 }
                 html.push_str("</tbody></table>");
@@ -709,7 +724,8 @@ pub struct InsightReportRow {
     pub title: String,
     pub summary: String,
     pub severity: InsightSeverity,
-    pub confidence: f64,
+    /// Measured confidence; `None` = not measured.
+    pub confidence: Option<f64>,
     pub insight_type: String,
     pub region: Option<String>,
     pub evidence: Vec<EvidenceItem>,
@@ -768,7 +784,7 @@ mod tests {
             title: title.to_string(),
             summary: format!("Summary for {}", title),
             severity: sev,
-            confidence,
+            confidence: Some(confidence),
             insight_type: "supply_chain".to_string(),
             region: Some("EU".to_string()),
             evidence: vec![
@@ -806,7 +822,7 @@ mod tests {
         assert_eq!(report.title, "Intel Summary");
         assert_eq!(report.sections.len(), 3);
         assert_eq!(report.metadata.source_count, 1);
-        assert!(report.metadata.aggregate_confidence > 0.0);
+        assert!(report.metadata.aggregate_confidence.unwrap() > 0.0);
         assert_eq!(report.report_type, ReportType::InsightSummary);
     }
 
@@ -814,7 +830,7 @@ mod tests {
     fn test_report_from_insights_empty() {
         let report = PdfReport::from_insights("Empty Report", &[]);
         assert!(report.sections.is_empty());
-        assert_eq!(report.metadata.aggregate_confidence, 0.0);
+        assert_eq!(report.metadata.aggregate_confidence, None);
         assert_eq!(report.metadata.source_count, 0);
     }
 
@@ -934,10 +950,14 @@ mod tests {
     #[test]
     fn test_evidence_item_confidence_clamping() {
         let item = EvidenceItem::new("Test", "Value").with_confidence(1.5);
-        assert!((item.confidence - 1.0).abs() < f64::EPSILON);
+        assert!((item.confidence.unwrap() - 1.0).abs() < f64::EPSILON);
 
         let item = EvidenceItem::new("Test", "Value").with_confidence(-0.5);
-        assert!((item.confidence - 0.0).abs() < f64::EPSILON);
+        assert!((item.confidence.unwrap() - 0.0).abs() < f64::EPSILON);
+
+        // Unmeasured confidence stays absent.
+        let item = EvidenceItem::new("Test", "Value");
+        assert_eq!(item.confidence, None);
     }
 
     #[test]

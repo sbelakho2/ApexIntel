@@ -383,7 +383,10 @@ fn draw_section(
             } else {
                 ev.label.clone()
             };
-            let conf = format!("{:.0}%", ev.confidence * 100.0);
+            let conf = ev
+                .confidence
+                .map(|value| format!("{:.0}%", value * 100.0))
+                .unwrap_or_else(|| "not measured".to_string());
             let line_text = format!("{}  |  {}", label, conf);
             layer.use_text(&line_text, 8.0_f32, margin_left, Mm(*y), font_mono);
             *y -= 3.5_f32;

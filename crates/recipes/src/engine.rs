@@ -4,7 +4,7 @@
 //! applies transforms, runs threshold checks, and produces ranked InsightCandidates.
 
 use apex_core::analysis::calibrate_confidence;
-use apex_core::schemas::{Recipe, RecipeStatus, SignalSpec, TransformSpec};
+use apex_core::schemas::{EntityContext, Recipe, RecipeStatus, SignalSpec, TransformSpec};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -197,15 +197,48 @@ pub fn pct_change_transform(current: f64, previous: f64) -> f64 {
     (current - previous) / previous
 }
 
+/// Why a transform could not be applied. Missing baselines are *not*
+/// fabricated: a z-score without a mean/std, or a difference without a
+/// previous value, means this recipe cannot be evaluated for this entity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransformDependencyError {
+    /// The feature map does not carry the baseline the transform needs.
+    MissingBaseline { key: String },
+    /// The transform type is not implemented. Unknown transforms are never
+    /// passed through as if they had been applied.
+    UnsupportedTransform { transform_type: String },
+}
+
+impl std::fmt::Display for TransformDependencyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBaseline { key } => {
+                write!(f, "missing required baseline feature '{key}'")
+            }
+            Self::UnsupportedTransform { transform_type } => {
+                write!(f, "unsupported transform '{transform_type}'")
+            }
+        }
+    }
+}
+
 /// Apply transforms to signal values using feature context.
-/// Returns transformed values.
+///
+/// Fail-closed: a transform whose baseline (`*.mean`/`*.std`/`*.prev`) is not
+/// present in the feature map — or whose type is not implemented — returns an
+/// error so the recipe is not evaluated. No statistic is synthesized from
+/// absent history.
+///
+/// `count` and `rolling_mean` are pass-throughs by definition: the feature
+/// pipeline computes them upstream (a rolling mean value arrives already
+/// averaged).
 pub fn apply_transforms(
     signal_values: &[f64],
     transforms: &[TransformSpec],
     features: &FeatureMap,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, TransformDependencyError> {
     if transforms.is_empty() {
-        return signal_values.to_vec();
+        return Ok(signal_values.to_vec());
     }
 
     // B138: warn if signals and transforms lengths don't match
@@ -229,13 +262,25 @@ pub fn apply_transforms(
             "zscore" => {
                 let mean_key = format!("{}.mean", transform.field);
                 let std_key = format!("{}.std", transform.field);
-                let mean = features.get(&mean_key).copied().unwrap_or(0.0);
-                let std = features.get(&std_key).copied().unwrap_or(1.0);
+                let mean = features.get(&mean_key).copied().ok_or_else(|| {
+                    TransformDependencyError::MissingBaseline {
+                        key: mean_key.clone(),
+                    }
+                })?;
+                let std = features.get(&std_key).copied().ok_or_else(|| {
+                    TransformDependencyError::MissingBaseline {
+                        key: std_key.clone(),
+                    }
+                })?;
                 result[i] = zscore_transform(val, mean, std);
             }
             "pct_change" => {
                 let prev_key = format!("{}.prev", transform.field);
-                let prev = features.get(&prev_key).copied().unwrap_or(val);
+                let prev = features.get(&prev_key).copied().ok_or_else(|| {
+                    TransformDependencyError::MissingBaseline {
+                        key: prev_key.clone(),
+                    }
+                })?;
                 result[i] = pct_change_transform(val, prev);
             }
             "count" => {
@@ -243,19 +288,34 @@ pub fn apply_transforms(
             }
             "diff" => {
                 let prev_key = format!("{}.prev", transform.field);
-                let prev = features.get(&prev_key).copied().unwrap_or(0.0);
+                let prev = features.get(&prev_key).copied().ok_or_else(|| {
+                    TransformDependencyError::MissingBaseline {
+                        key: prev_key.clone(),
+                    }
+                })?;
                 result[i] = val - prev;
+            }
+            "lag" => {
+                // A lag is x[t-k], not x[t] - x[t-k]; the engine cannot
+                // retrieve the raw lagged value from the feature map, so an
+                // explicit `lag` transform is refused rather than approximated
+                // as a difference.
+                return Err(TransformDependencyError::UnsupportedTransform {
+                    transform_type: "lag".to_string(),
+                });
             }
             "rolling_mean" => {
                 // rolling mean transform — value is already the rolling mean
             }
-            _ => {
-                // unknown transform, keep value as-is
+            other => {
+                return Err(TransformDependencyError::UnsupportedTransform {
+                    transform_type: other.to_string(),
+                });
             }
         }
     }
 
-    result
+    Ok(result)
 }
 
 // ────────────────────────────────────────────
@@ -351,17 +411,44 @@ pub fn estimate_confidence(signal_values: &[f64], recipe: &Recipe) -> f64 {
 // Recipe evaluation
 // ────────────────────────────────────────────
 
-/// Minimum fraction of signals that must match for partial evaluation.
-const PARTIAL_MATCH_MIN_FRACTION: f64 = 0.50;
-
 /// Evaluate a single recipe against entity features.
 ///
-/// Tries exact (all signals) matching first.  When that fails, uses partial
-/// matching with a fallback to `{observation_type}.count` keys.  The recipe
-/// fires if at least [`PARTIAL_MATCH_MIN_FRACTION`] (50 %) of its signals can
-/// be satisfied; confidence is then scaled by the match fraction so fully-
-/// matched recipes always rank higher.
+/// Tries exact (all signals) matching first. When that fails, uses partial
+/// matching with a fallback to `{observation_type}.count` keys; the recipe's
+/// [`apex_core::schemas::MatchPolicy`] decides how much partiality is
+/// acceptable (security/compliance recipes default to an exact match).
+/// Confidence is scaled by the match fraction so fully-matched recipes always
+/// rank higher.
 pub fn evaluate_recipe(
+    recipe: &Recipe,
+    entity_id: &str,
+    features: &FeatureMap,
+) -> Option<InsightCandidate> {
+    evaluate_recipe_with_context(recipe, entity_id, features, None)
+}
+
+/// Evaluate a recipe with entity context for the applicability gate.
+///
+/// A recipe with geographic/industry applicability only evaluates when the
+/// context matches; a restricted recipe with absent context does not apply
+/// (conservative default, audit P1: recipe applicability is a live execution
+/// gate, not metadata).
+pub fn evaluate_recipe_with_context(
+    recipe: &Recipe,
+    entity_id: &str,
+    features: &FeatureMap,
+    context: Option<&EntityContext>,
+) -> Option<InsightCandidate> {
+    if !recipe.applicability.is_unrestricted() {
+        let applies = context.is_some_and(|context| recipe.applicability.allows(context));
+        if !applies {
+            return None;
+        }
+    }
+    evaluate_recipe_inner(recipe, entity_id, features)
+}
+
+fn evaluate_recipe_inner(
     recipe: &Recipe,
     entity_id: &str,
     features: &FeatureMap,
@@ -388,22 +475,42 @@ pub fn evaluate_recipe(
     let (signal_values, match_fraction) = if let Some(vals) = check_all_signals(recipe, features) {
         (vals, 1.0_f64)
     } else {
-        // 1b. Fall back to partial matching with observation-type-level fallbacks.
+        // 1b. Fall back to partial matching with observation-type-level
+        // fallbacks. The recipe's [`MatchPolicy`] decides how much partiality
+        // is acceptable; security/compliance recipes default to All.
         let (vals, total, matched) = check_signals_partial(recipe, features)?;
-        let frac = matched as f64 / total as f64;
-        if frac < PARTIAL_MATCH_MIN_FRACTION {
+        if matched < recipe.match_policy.required_matches(total) {
             return None;
         }
+        let frac = matched as f64 / total as f64;
         (vals, frac)
     };
 
-    // 2. Apply transforms
-    let transformed = apply_transforms(&signal_values, &recipe.transforms, features);
+    // 2. Apply transforms — fail closed when a baseline dependency is absent.
+    let transformed = match apply_transforms(&signal_values, &recipe.transforms, features) {
+        Ok(values) => values,
+        Err(error) => {
+            tracing::warn!(
+                recipe_code = %recipe.code,
+                %error,
+                "recipe skipped: transform dependency unavailable"
+            );
+            return None;
+        }
+    };
 
     // 3. Estimate impact and confidence (use transformed values for strength)
     let impact = estimate_impact(&transformed);
     // Scale confidence by the fraction of signals that matched.
     let confidence = (estimate_confidence(&transformed, recipe) * match_fraction).min(1.0);
+
+    // 3b. Database activation gate (migration 089): when calibration has set a
+    // threshold, the candidate must reach it.
+    if let Some(threshold) = recipe.activation_threshold {
+        if confidence < threshold {
+            return None;
+        }
+    }
 
     // 4. Check minimum thresholds
     if impact < 0.1 {
@@ -469,6 +576,19 @@ impl RecipeEngine {
     }
 
     /// Evaluate all active recipes for a given entity.
+    /// Evaluate all recipes for one entity with applicability context.
+    pub fn evaluate_all_with_context(
+        &self,
+        entity_id: &str,
+        features: &FeatureMap,
+        context: Option<&EntityContext>,
+    ) -> Vec<InsightCandidate> {
+        self.recipes
+            .iter()
+            .filter_map(|recipe| evaluate_recipe_with_context(recipe, entity_id, features, context))
+            .collect()
+    }
+
     pub fn evaluate_all(&self, entity_id: &str, features: &FeatureMap) -> Vec<InsightCandidate> {
         let mut candidates = Vec::new();
 
@@ -559,6 +679,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use apex_core::schemas::MatchPolicy;
 
     fn make_signal(
         obs_type: &str,
@@ -706,14 +827,16 @@ mod tests {
         features.insert("JobPost.count.mean".to_string(), 5.0);
         features.insert("JobPost.count.std".to_string(), 2.0);
 
-        let result = apply_transforms(&signals, &transforms, &features);
+        let result =
+            apply_transforms(&signals, &transforms, &features).expect("transform deps present");
         assert!((result[0] - 2.5).abs() < 1e-10);
     }
 
     #[test]
     fn test_apply_transforms_empty() {
         let signals = vec![10.0, 5.0];
-        let result = apply_transforms(&signals, &[], &FeatureMap::new());
+        let result = apply_transforms(&signals, &[], &FeatureMap::new())
+            .expect("empty transforms cannot fail");
         assert_eq!(result, signals);
     }
 
@@ -828,6 +951,169 @@ mod tests {
         assert!(evaluate_recipe(&recipe, "company-123", &features).is_none());
     }
 
+    /// Missing transform baselines must block evaluation, not fabricate
+    /// statistics.
+    #[test]
+    fn test_missing_transform_baseline_blocks_evaluation() {
+        let signals = vec![make_signal("JobPost", "count", "above", Some(1.0))];
+        let mut recipe = make_recipe("A101", signals);
+        recipe.transforms = vec![TransformSpec {
+            transform_type: "zscore".to_string(),
+            field: "JobPost".to_string(),
+            window_days: 30,
+            params: Default::default(),
+        }];
+
+        let mut features = FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 5.0);
+        // No JobPost.mean / JobPost.std in the feature map.
+
+        assert_eq!(
+            apply_transforms(&[5.0], &recipe.transforms, &features),
+            Err(TransformDependencyError::MissingBaseline {
+                key: "JobPost.mean".to_string()
+            })
+        );
+        assert!(
+            evaluate_recipe(&recipe, "company-123", &features).is_none(),
+            "a recipe whose transform dependency is absent must not evaluate"
+        );
+    }
+
+    /// An explicit `lag` transform is refused (x[t-k] is not x[t]-x[t-k]).
+    #[test]
+    fn test_lag_transform_is_refused() {
+        let features = FeatureMap::new();
+        let transforms = vec![TransformSpec {
+            transform_type: "lag".to_string(),
+            field: "JobPost".to_string(),
+            window_days: 7,
+            params: Default::default(),
+        }];
+        assert_eq!(
+            apply_transforms(&[1.0], &transforms, &features),
+            Err(TransformDependencyError::UnsupportedTransform {
+                transform_type: "lag".to_string()
+            })
+        );
+    }
+
+    /// Applicability is a live execution gate: a restricted recipe does not
+    /// evaluate without matching entity context.
+    #[test]
+    fn applicability_gates_evaluation() {
+        let signals = vec![make_signal("JobPost", "count", "above", Some(1.0))];
+        let mut recipe = make_recipe("G001", signals);
+        recipe.applicability = apex_core::schemas::Applicability {
+            geos: vec!["Tunisia".to_string()],
+            industries: vec![],
+            notes: String::new(),
+        };
+
+        let mut features = FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 5.0);
+
+        // No context: a restricted recipe must not apply.
+        assert!(evaluate_recipe(&recipe, "company-1", &features).is_none());
+
+        let mismatched = EntityContext {
+            region: Some("Egypt".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            evaluate_recipe_with_context(&recipe, "company-1", &features, Some(&mismatched))
+                .is_none(),
+            "region mismatch must block evaluation"
+        );
+
+        let matched = EntityContext {
+            region: Some("tunisia".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            evaluate_recipe_with_context(&recipe, "company-1", &features, Some(&matched)).is_some()
+        );
+
+        // Unrestricted recipes do not need context.
+        let unrestricted = make_recipe(
+            "G002",
+            vec![make_signal("JobPost", "count", "above", Some(1.0))],
+        );
+        assert!(evaluate_recipe(&unrestricted, "company-1", &features).is_some());
+    }
+
+    /// MatchPolicy::All requires every signal; the historical fraction allows
+    /// half. A security recipe (All) must not fire on two of four signals.
+    #[test]
+    fn match_policy_all_blocks_partial_matches() {
+        let signals = vec![
+            make_signal("JobPost", "count", "above", Some(1.0)),
+            make_signal("WebChange", "drift", "increase", Some(0.1)),
+            make_signal("PatentFiling", "count", "above", Some(1.0)),
+            make_signal("TenderPosted", "count", "above", Some(1.0)),
+        ];
+        let mut recipe = make_recipe("S001", signals);
+        recipe.match_policy = MatchPolicy::All;
+
+        let mut features = FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 5.0);
+        features.insert("WebChange.drift".to_string(), 0.5);
+
+        assert!(
+            evaluate_recipe(&recipe, "company-123", &features).is_none(),
+            "MatchPolicy::All must not fire on 2 of 4 signals"
+        );
+
+        recipe.match_policy = MatchPolicy::Fraction(0.5);
+        assert!(
+            evaluate_recipe(&recipe, "company-123", &features).is_some(),
+            "the historical fraction policy still allows 2 of 4"
+        );
+
+        recipe.match_policy = MatchPolicy::AtLeast(3);
+        assert!(
+            evaluate_recipe(&recipe, "company-123", &features).is_none(),
+            "AtLeast(3) must not fire on 2 matches"
+        );
+    }
+
+    /// The policy computes its required-match count correctly.
+    #[test]
+    fn match_policy_required_matches() {
+        assert_eq!(MatchPolicy::All.required_matches(4), 4);
+        assert_eq!(MatchPolicy::AtLeast(3).required_matches(4), 3);
+        assert_eq!(MatchPolicy::AtLeast(9).required_matches(4), 4);
+        assert_eq!(MatchPolicy::Fraction(0.5).required_matches(4), 2);
+        assert_eq!(MatchPolicy::Fraction(0.25).required_matches(3), 1);
+        assert_eq!(MatchPolicy::Fraction(0.0).required_matches(3), 1);
+    }
+
+    /// The activation threshold is a runtime gate: a candidate below it does
+    /// not fire, and one at or above it does.
+    #[test]
+    fn test_activation_threshold_gates_firing() {
+        let signals = vec![make_signal("JobPost", "count", "above", Some(1.0))];
+        let mut recipe = make_recipe("A102", signals);
+        let mut features = FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 5.0);
+
+        // Ungated: fires.
+        assert!(recipe.activation_threshold.is_none());
+        let baseline = evaluate_recipe(&recipe, "company-123", &features);
+        assert!(baseline.is_some(), "ungated recipe should fire");
+
+        // Impossible gate: does not fire.
+        recipe.activation_threshold = Some(1.01);
+        assert!(
+            evaluate_recipe(&recipe, "company-123", &features).is_none(),
+            "a gate above 1.0 can never be met"
+        );
+
+        // Gate at zero: fires again.
+        recipe.activation_threshold = Some(0.0);
+        assert!(evaluate_recipe(&recipe, "company-123", &features).is_some());
+    }
+
     #[test]
     fn test_engine_evaluate_all() {
         let signals1 = vec![make_signal("JobPost", "count", "above", Some(3.0))];
@@ -914,13 +1200,21 @@ mod tests {
     fn test_apply_transforms_missing_prev() {
         let signals = vec![100.0];
         let transforms = vec![make_transform("pct_change", "Price.copper")];
-        // No "Price.copper.prev" in features — should fall back to val, yielding 0% change
+        // No "Price.copper.prev" in features: the transform CANNOT be applied
+        // (fabricating 0% change would be a synthesized statistic).
         let features = FeatureMap::new();
-        let result = apply_transforms(&signals, &transforms, &features);
-        assert!(
-            (result[0] - 0.0).abs() < 1e-10,
-            "Missing prev should yield 0 change"
+        assert_eq!(
+            apply_transforms(&signals, &transforms, &features),
+            Err(TransformDependencyError::MissingBaseline {
+                key: "Price.copper.prev".to_string()
+            })
         );
+
+        // With the baseline present the transform applies normally.
+        let mut features = FeatureMap::new();
+        features.insert("Price.copper.prev".to_string(), 80.0);
+        let result = apply_transforms(&signals, &transforms, &features).expect("baseline present");
+        assert!((result[0] - 0.25).abs() < 1e-10);
     }
 
     // B135: estimate_impact with NaN inputs
@@ -956,7 +1250,8 @@ mod tests {
         let mut features = FeatureMap::new();
         features.insert("X.mean".to_string(), 5.0);
         features.insert("X.std".to_string(), 2.0);
-        let result = apply_transforms(&signals, &transforms, &features);
+        let result =
+            apply_transforms(&signals, &transforms, &features).expect("transform deps present");
         assert_eq!(result.len(), 2); // should still produce 2 values
                                      // First is transformed, second is untouched
         assert!((result[0] - 2.5).abs() < 1e-10);

@@ -1516,7 +1516,7 @@ pub async fn export_insight_pdf_html(
         summary: insight.summary,
         insight_type: insight.insight_type.unwrap_or_default(),
         severity: apex_insights::InsightSeverity::Medium,
-        confidence: insight.confidence.unwrap_or(0.5),
+        confidence: insight.confidence,
         region: insight.region,
         evidence: Vec::new(),
         sources: Vec::new(),

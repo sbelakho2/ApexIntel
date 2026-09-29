@@ -408,18 +408,27 @@ pub(crate) async fn get_person_detail(
     };
 
     let mut detail = person_row_to_detail(row, artifacts, organization);
-    detail.warning_count = related_warnings.len() as i64;
-    detail.insight_count = related_insights.len() as i64;
     detail.role_history = role_history_rows
-        .into_iter()
+        .iter()
         .map(|entry| apex_api::routes::persons::RoleHistoryEntry {
-            organization: entry.org_name,
-            role: entry.title,
-            role_family: entry.role_family,
+            organization: entry.org_name.clone(),
+            role: entry.title.clone(),
+            role_family: entry.role_family.clone(),
             start_date: entry.start_date.map(|value| value.to_string()),
             end_date: entry.end_date.map(|value| value.to_string()),
             is_current: entry.end_date.is_none(),
             confidence: entry.confidence,
+        })
+        .collect();
+    // Affiliations come from the recorded role history (organization + role +
+    // whether it is current); nothing is inferred.
+    detail.affiliations = role_history_rows
+        .iter()
+        .filter(|entry| !entry.org_name.trim().is_empty())
+        .map(|entry| apex_api::routes::persons::Affiliation {
+            organization: entry.org_name.clone(),
+            role: entry.title.clone(),
+            current: entry.end_date.is_none(),
         })
         .collect();
     detail.peers = peer_rows

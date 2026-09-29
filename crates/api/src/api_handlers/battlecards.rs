@@ -456,12 +456,22 @@ pub(crate) async fn regenerate_battlecard(
     };
 
     // 2. Load REAL closed deals + competitor pricing for the battlecard context.
-    let deal_rows = state
+    let deal_rows = match state
         .store
         .list_closed_deals(bc.our_company_id, Some(bc.competitor_id), 200)
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "battlecard generation: input load failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load a battlecard input",
+                ))),
+            );
+        }
+    };
     let closed_deals: Vec<apex_insights::battlecards::ClosedDeal> = deal_rows
         .iter()
         .map(|d| apex_insights::battlecards::ClosedDeal {
@@ -474,12 +484,18 @@ pub(crate) async fn regenerate_battlecard(
         })
         .collect();
 
-    let pricing_rows = state
-        .store
-        .list_competitor_pricing(bc.competitor_id)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let pricing_rows = match state.store.list_competitor_pricing(bc.competitor_id).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "battlecard generation: input load failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load a battlecard input",
+                ))),
+            );
+        }
+    };
     let pricing: Vec<apex_insights::battlecards::PricingObservation> = pricing_rows
         .iter()
         .map(|p| apex_insights::battlecards::PricingObservation {
@@ -506,12 +522,18 @@ pub(crate) async fn regenerate_battlecard(
         search: Some(competitor.name.clone()),
         ..Default::default()
     };
-    let insight_rows = state
-        .store
-        .list_insights(&filters, 20, 0)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let insight_rows = match state.store.list_insights(&filters, 20, 0).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "battlecard generation: input load failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load a battlecard input",
+                ))),
+            );
+        }
+    };
     let insights: Vec<apex_insights::Insight> = insight_rows
         .iter()
         .map(|r| {

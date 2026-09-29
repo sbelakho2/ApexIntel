@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::PriorityWeights;
-use crate::routes::persons::PriorityVector;
+use crate::routes::persons::StoredPriorityVector;
 
 /// Priority band on the legacy A/B/C scale, measured from the priority score.
 pub fn priority_band(score: f64) -> &'static str {
@@ -94,7 +94,7 @@ impl PersonIntelligenceView {
         profile_fields: &[bool],
     ) -> Self {
         let priority_score = priority_vector
-            .and_then(|value| serde_json::from_value::<PriorityVector>(value.clone()).ok())
+            .and_then(|value| serde_json::from_value::<StoredPriorityVector>(value.clone()).ok())
             .map(|vector| vector.composite_with_weights(&PriorityWeights::default()));
 
         let influence_score = influence.map(|value| (value.clamp(0.0, 1.0) * 100.0).round() as i64);

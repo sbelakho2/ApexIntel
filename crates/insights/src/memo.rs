@@ -645,7 +645,7 @@ pub fn build_fused_signal_clusters(cards: &[InsightCard]) -> Vec<FusedSignalClus
             category: Some(card.category.clone()),
             region: card.region.clone(),
             entity: Some(card.entity_name.clone()),
-            confidence: card.confidence,
+            confidence: Some(card.confidence),
             impact: card.impact,
             source_group: card
                 .citations

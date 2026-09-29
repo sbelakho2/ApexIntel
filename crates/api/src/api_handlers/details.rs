@@ -206,7 +206,8 @@ pub(crate) async fn get_insight_detail(
             );
         }
     };
-    let quality_score = quality_scores.get(&insight_id).copied().unwrap_or(0.5);
+    // No feedback events means the quality is unmeasured, not 50%.
+    let quality_score = quality_scores.get(&insight_id).copied();
 
     let bookmarked = match state
         .store

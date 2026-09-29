@@ -142,7 +142,9 @@ pub(crate) fn normalize_transform_type(raw: &str) -> String {
         "pctchange" | "pct_change" | "percentchange" => "pct_change".to_string(),
         "rollingmean" | "rolling_mean" => "rolling_mean".to_string(),
         "count" => "count".to_string(),
-        "diff" | "difference" | "lag" => "diff".to_string(),
+        // `lag` is NOT a difference; it is passed through unchanged so the
+        // engine refuses it explicitly (x[t-k] != x[t] - x[t-k]).
+        "diff" | "difference" => "diff".to_string(),
         other => other.to_ascii_lowercase(),
     }
 }
@@ -171,6 +173,25 @@ pub(crate) fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::Seed
     r.description = sr.category.clone();
     r.status = RecipeStatus::Seed;
     r.signals = signals;
+    // A four-signal recipe must never fire on two generic observations when it
+    // guards a security/compliance decision: those default to an exact match,
+    // everything else keeps the historical 50% fraction.
+    let lower_category = sr.category.to_ascii_lowercase();
+    r.match_policy = if [
+        "security",
+        "compliance",
+        "risk",
+        "supply",
+        "sanction",
+        "fraud",
+    ]
+    .iter()
+    .any(|needle| lower_category.contains(needle))
+    {
+        apex_core::schemas::MatchPolicy::All
+    } else {
+        apex_core::schemas::MatchPolicy::default()
+    };
 
     // ── Wire the statistical core from the seed YAML ───────────────────────
     // Previously transforms/test/thresholds were silently dropped, leaving the

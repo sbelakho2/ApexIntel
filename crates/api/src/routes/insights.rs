@@ -119,8 +119,18 @@ fn insight_score(insight: &InsightResponse, now: &DateTime<Utc>) -> f64 {
         let age_hours = (*now - created_at).num_hours().max(1) as f64;
         1.0 / (1.0 + age_hours / 24.0)
     });
-    let quality = insight.quality_score.unwrap_or(0.5);
-    clamp_ratio((0.60 * insight.confidence + 0.40 * quality) * (0.75 + 0.25 * recency))
+    // Unmeasured feedback quality contributes nothing (weights renormalize
+    // over confidence) instead of a neutral 0.5.
+    let quality_term = insight
+        .quality_score
+        .map(|quality| 0.40 * quality)
+        .unwrap_or(0.0);
+    let confidence_term = if insight.quality_score.is_some() {
+        0.60 * insight.confidence
+    } else {
+        insight.confidence
+    };
+    clamp_ratio((confidence_term + quality_term) * (0.75 + 0.25 * recency))
 }
 
 fn diversify_ranked_insights(insights: &mut [InsightResponse]) {

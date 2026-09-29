@@ -357,11 +357,12 @@ impl PdfDocWriter<'_> {
 
         for item in evidence {
             let text = format!("- {}: {}", item.label, item.value);
-            let confidence = if (item.confidence - 0.5).abs() > f64::EPSILON {
-                format!(" [{:.0}%]", item.confidence * 100.0)
-            } else {
-                String::new()
-            };
+            // Confidence renders only when it was measured; an unmeasured
+            // value is omitted (never a fabricated 50%).
+            let confidence = item
+                .confidence
+                .map(|value| format!(" [{:.0}%]", value * 100.0))
+                .unwrap_or_default();
             let line = format!("{}{}", text, confidence);
 
             for wrapped in word_wrap(&line, max_chars) {

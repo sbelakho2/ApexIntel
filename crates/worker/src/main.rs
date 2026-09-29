@@ -45,7 +45,6 @@ use apex_core::entities::{Observation, ObservationType};
 use apex_core::entities::{Person, PriorityVector};
 use apex_core::env::parse_truthy_flag;
 use apex_core::profile::DeploymentProfile;
-use apex_core::schemas::Recipe;
 #[cfg(any(feature = "llm", test))]
 pub(crate) use apex_core::text::truncate_utf8 as truncate_text;
 use apex_crawl::breach::BreachMonitor;
@@ -101,7 +100,6 @@ use apex_worker::nightly::{
 #[cfg(feature = "llm")]
 use apex_worker::nightly::{process_hypothesis_generation_stage, HypothesisGenerationStageResult};
 use apex_worker::notifications::{SlaEnforcer, SlaWarningRecord};
-use apex_worker::recipe_loader::load_default_seed_recipes;
 use apex_worker::scheduler::{
     default_scheduler, validate_custom_command, JobKind, JobRun, JobStatus, Scheduler,
 };

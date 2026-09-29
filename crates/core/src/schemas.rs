@@ -60,6 +60,87 @@ pub struct Applicability {
     pub notes: String,
 }
 
+impl Applicability {
+    /// True when the recipe carries no geographic or industry restriction.
+    pub fn is_unrestricted(&self) -> bool {
+        self.geos.is_empty() && self.industries.is_empty()
+    }
+
+    /// Whether this recipe applies to an entity with the given context.
+    ///
+    /// Conservative: a restricted recipe with absent context does **not**
+    /// apply. Matching is case-insensitive on trimmed values; a `global` entry
+    /// matches any non-empty value.
+    pub fn allows(&self, context: &EntityContext) -> bool {
+        let geo_ok = self.geos.is_empty()
+            || context
+                .region
+                .as_deref()
+                .is_some_and(|region| list_matches(&self.geos, region));
+        let industry_ok = self.industries.is_empty()
+            || context
+                .industry
+                .as_deref()
+                .is_some_and(|industry| list_matches(&self.industries, industry));
+        geo_ok && industry_ok
+    }
+}
+
+fn list_matches(allowed: &[String], value: &str) -> bool {
+    let value = value.trim();
+    allowed.iter().any(|entry| {
+        let entry = entry.trim();
+        entry.eq_ignore_ascii_case(value)
+            || (entry.eq_ignore_ascii_case("global") && !value.is_empty())
+    })
+}
+
+/// Entity context for runtime applicability checks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntityContext {
+    pub region: Option<String>,
+    pub country: Option<String>,
+    pub industry: Option<String>,
+    pub entity_type: Option<String>,
+}
+
+/// How many of a recipe's signals must be satisfied for evaluation.
+///
+/// The engine previously hard-coded a 50% partial match for every recipe,
+/// which let a four-signal recipe fire on two generic observations. The policy
+/// is now part of the recipe: security/compliance recipes default to
+/// [`MatchPolicy::All`], everything else keeps the historical fraction.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchPolicy {
+    /// Every signal must be satisfied (exact match only).
+    All,
+    /// At least this many signals must be satisfied.
+    AtLeast(u32),
+    /// At least this fraction (0.0..=1.0) of signals must be satisfied.
+    Fraction(f64),
+}
+
+impl Default for MatchPolicy {
+    fn default() -> Self {
+        Self::Fraction(0.5)
+    }
+}
+
+impl MatchPolicy {
+    /// Minimum number of matched signals required for `total` signals.
+    pub fn required_matches(&self, total: usize) -> usize {
+        match self {
+            Self::All => total,
+            Self::AtLeast(count) => (*count as usize).min(total),
+            Self::Fraction(fraction) => {
+                let required = (fraction.clamp(0.0, 1.0) * total as f64).ceil() as usize;
+                required.clamp(1, total)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recipe {
     pub id: Uuid,
@@ -82,6 +163,15 @@ pub struct Recipe {
     pub max_p_value: f64,
     pub min_time_slices: i32,
     pub min_entities: i32,
+
+    /// How many signals must match for the recipe to evaluate.
+    pub match_policy: MatchPolicy,
+
+    /// Runtime firing gate: when set, a candidate's confidence must reach this
+    /// value to fire. Populated from `recipes.activation_threshold`
+    /// (migration 089) so database calibration actually changes execution.
+    /// `None` = no gate beyond the impact floor.
+    pub activation_threshold: Option<f64>,
 
     // Narrative template
     pub insight_template: String,
@@ -118,6 +208,8 @@ impl Recipe {
             max_p_value: 0.01,
             min_time_slices: 3,
             min_entities: 5,
+            match_policy: MatchPolicy::default(),
+            activation_threshold: None,
             insight_template: String::new(),
             action_template: String::new(),
             applicability: Applicability {
@@ -241,6 +333,44 @@ impl Warning {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn applicability_conservative_matching() {
+        let restricted = Applicability {
+            geos: vec!["Tunisia".to_string(), "Global".to_string()],
+            industries: vec!["EMS".to_string()],
+            notes: String::new(),
+        };
+        assert!(!restricted.is_unrestricted());
+
+        // Absent context never satisfies a restriction.
+        assert!(!restricted.allows(&EntityContext::default()));
+
+        let matching = EntityContext {
+            region: Some("tunisia".to_string()),
+            industry: Some("ems".to_string()),
+            ..Default::default()
+        };
+        assert!(restricted.allows(&matching));
+
+        let wrong_industry = EntityContext {
+            region: Some("Tunisia".to_string()),
+            industry: Some("automotive".to_string()),
+            ..Default::default()
+        };
+        assert!(!restricted.allows(&wrong_industry));
+
+        let global_geo = Applicability {
+            geos: vec!["Global".to_string()],
+            industries: vec![],
+            notes: String::new(),
+        };
+        assert!(global_geo.allows(&EntityContext {
+            region: Some("anywhere".to_string()),
+            ..Default::default()
+        }));
+        assert!(!global_geo.allows(&EntityContext::default()));
+    }
+
     use super::*;
 
     #[test]

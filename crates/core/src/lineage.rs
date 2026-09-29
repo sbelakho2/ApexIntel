@@ -156,6 +156,13 @@ impl LineageNode {
         self.confidence = Some(confidence.clamp(0.0, 1.0));
         self
     }
+
+    /// Set confidence from an optional measurement. `None` stays unknown —
+    /// lineage must never invent a confidence value.
+    pub fn with_confidence_opt(mut self, confidence: Option<f64>) -> Self {
+        self.confidence = confidence.map(|value| value.clamp(0.0, 1.0));
+        self
+    }
 }
 
 /// A directed edge: `source` was transformed into `target` by

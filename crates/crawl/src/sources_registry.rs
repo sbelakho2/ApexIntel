@@ -3317,6 +3317,13 @@ pub fn sources_needing_proxy(sources: &[Source]) -> Vec<&Source> {
 pub const COVERAGE_DEBT_WEIGHT: f64 = 0.45;
 pub const TIER_PRIORITY_WEIGHT: f64 = 0.20;
 pub const SOURCE_QUALITY_WEIGHT: f64 = 0.15;
+
+/// Exploration weight for sources whose runtime quality has never been
+/// measured. Unknown health is not 50% health: unmeasured sources receive an
+/// explicit bootstrap bonus (more than the neutral quality term would give,
+/// less than a proven-good source) so adaptive scheduling explores them
+/// instead of pretending to exploit a fabricated mid quality.
+pub const UNMEASURED_SOURCE_EXPLORATION_WEIGHT: f64 = 0.12;
 pub const REGIONAL_COVERAGE_DEBT_WEIGHT: f64 = 0.10;
 pub const CATEGORY_COVERAGE_DEBT_WEIGHT: f64 = 0.10;
 
@@ -3352,6 +3359,9 @@ pub struct SourceScheduleCandidate<'a> {
     pub source: &'a Source,
     pub coverage_debt: f64,
     pub priority: f64,
+    /// Measured rolling success rate; `None` = never measured (the score used
+    /// the exploration term instead).
+    pub measured_quality: Option<f64>,
     pub next_due_at: DateTime<Utc>,
     pub last_attempt_at: Option<DateTime<Utc>>,
     pub score: f64,
@@ -3538,15 +3548,20 @@ pub fn rank_due_sources<'a>(
             let raw_debt = coverage_ratio(runtime.and_then(|row| row.last_success_at), source, now);
             let coverage_debt = normalize_debt(raw_debt, max_ratio);
             let priority = tier_priority(source.tier);
-            let quality = runtime
+            let measured_quality = runtime
                 .and_then(|row| row.rolling_success_rate)
-                .unwrap_or(0.5)
-                .clamp(0.0, 1.0);
+                .map(|quality| quality.clamp(0.0, 1.0));
             let regional_debt = due_fraction(&region_counts, source.region.as_str());
             let category_debt = due_fraction(&category_counts, source.category.as_str());
+            // Measured quality contributes the exploitation term; an
+            // unmeasured source receives the explicit exploration term.
+            let quality_term = match measured_quality {
+                Some(quality) => quality * SOURCE_QUALITY_WEIGHT,
+                None => UNMEASURED_SOURCE_EXPLORATION_WEIGHT,
+            };
             let mut score = coverage_debt * COVERAGE_DEBT_WEIGHT
                 + priority * TIER_PRIORITY_WEIGHT
-                + quality * SOURCE_QUALITY_WEIGHT
+                + quality_term
                 + regional_debt * REGIONAL_COVERAGE_DEBT_WEIGHT
                 + category_debt * CATEGORY_COVERAGE_DEBT_WEIGHT;
             if forced_slugs.contains(&source.slug.as_str()) {
@@ -3556,6 +3571,7 @@ pub fn rank_due_sources<'a>(
                 source,
                 coverage_debt,
                 priority,
+                measured_quality,
                 next_due_at: runtime
                     .map(|row| row.next_due_at)
                     .unwrap_or(DateTime::<Utc>::MIN_UTC),

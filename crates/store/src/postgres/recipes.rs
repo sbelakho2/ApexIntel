@@ -364,9 +364,16 @@ impl PgStore {
                    SELECT
                        h.recipe_code,
                        r.activation_threshold AS current_precision,
-                       GREATEST(
-                           0.0,
-                           r.activation_threshold * (1.0 - 0.5 * h.avg_fp_rate_4w)
+                       -- High false-positive rates must TIGHTEN the gate: the
+                       -- threshold moves UP with the observed FPR (capped at
+                       -- 1.0). The previous minus-correction made noisy
+                       -- recipes easier to fire.
+                       LEAST(
+                           1.0,
+                           GREATEST(
+                               0.0,
+                               r.activation_threshold * (1.0 + 0.5 * h.avg_fp_rate_4w)
+                           )
                        ) AS new_precision,
                        h.avg_fp_rate_4w
                    FROM high_fp_recipes h
@@ -522,6 +529,33 @@ impl PgStore {
         Ok(())
     }
 
+    /// The runtime recipe set for the execution engine (audit P0: PostgreSQL is
+    /// the source of truth, not the YAML seed file).
+    ///
+    /// Returns every recipe the engine may evaluate, including recipes created
+    /// or promoted in the database that never existed in YAML, with the
+    /// lifecycle status and the calibrated `activation_threshold`. Deprecated
+    /// recipes are included so the caller can exclude them explicitly (their
+    /// status is authoritative); the caller must never resurrect a deprecated
+    /// recipe as a seed.
+    pub async fn list_recipes_for_engine(&self) -> Result<Vec<RecipeEngineRow>> {
+        let rows = sqlx::query_as::<_, RecipeEngineRow>(
+            r#"
+            SELECT code,
+                   name,
+                   status,
+                   definition,
+                   activation_threshold,
+                   configured_min_precision
+            FROM recipes
+            ORDER BY code
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// One month of historical recipe performance aggregated from the real
     /// persisted weekly snapshots (`recipe_weekly_metrics`).
     ///
@@ -554,6 +588,23 @@ impl PgStore {
         .await?;
         Ok(rows)
     }
+}
+
+/// A recipe row for the runtime execution engine.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct RecipeEngineRow {
+    pub code: String,
+    pub name: String,
+    pub status: String,
+    /// Legacy/seed JSON definition used to reconstruct signals, transforms and
+    /// templates. `NULL` for rows created through the current-schema columns
+    /// only (the caller reports those as unavailable, never as absent).
+    pub definition: Option<serde_json::Value>,
+    /// Calibrated runtime threshold (migration 089); `None` = ungated.
+    pub activation_threshold: Option<f64>,
+    /// Configured minimum precision from the definition (configuration, not a
+    /// measurement); used as the engine gate only when no calibration ran.
+    pub configured_min_precision: Option<f64>,
 }
 
 /// One aggregated month of real recipe performance history.

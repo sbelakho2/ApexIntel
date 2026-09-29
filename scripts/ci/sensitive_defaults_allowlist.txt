@@ -18,3 +18,9 @@ crates/triage/src/semantic_dedup.rs:579  # HTTP embedding client call: a failed 
 crates/worker/src/notification_delivery.rs:419  # HTTP response body read for the delivery probe; the probe's failure is reported separately
 crates/worker/src/notifications.rs:488  # HTTP response body read for a webhook send; send failure is reported by the caller
 crates/worker/src/slack.rs:597  # HTTP response body read for a Slack post; send failure is reported by the caller
+# Notification/audit publishing only: a failed read of pending promotion
+# candidates or the analyst recipient list means the notification is not sent;
+# no learning input is defaulted (calibration samples, source reliability
+# aggregation and warning counts are all tracked as degraded inputs instead).
+crates/worker/src/job_execution/recipes.rs:1129  # pending source-promotion candidates: audit/notification fan-out only
+crates/worker/src/job_execution/recipes.rs:1135  # analyst recipient list: notification fan-out only

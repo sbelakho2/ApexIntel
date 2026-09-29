@@ -195,7 +195,9 @@ pub struct SignalFrame {
     pub category: Option<String>,
     pub region: Option<String>,
     pub entity: Option<String>,
-    pub confidence: f64,
+    /// Measured confidence; `None` = not measured. Unknown confidence is never
+    /// counted as a confidence-weighted contribution to a fused cluster.
+    pub confidence: Option<f64>,
     pub impact: f64,
     pub source_group: Option<String>,
 }
@@ -209,12 +211,20 @@ pub struct WeakSignalCluster {
     pub independent_source_count: usize,
     pub combined_score: f64,
     pub label: String,
+    /// How many member signals carried no measured confidence.
+    pub unmeasured_confidence: usize,
 }
 
 pub fn fuse_weak_signals(signals: &[SignalFrame]) -> Vec<WeakSignalCluster> {
+    // Unknown confidence is a weak-signal *candidate* (nothing asserts it is
+    // strong), but it never contributes a confidence-weighted score below.
     let weak_signals: Vec<&SignalFrame> = signals
         .iter()
-        .filter(|signal| signal.confidence <= 0.65)
+        .filter(|signal| {
+            signal
+                .confidence
+                .is_none_or(|confidence| confidence <= 0.65)
+        })
         .collect();
 
     let mut grouped: BTreeMap<(String, String), Vec<&SignalFrame>> = BTreeMap::new();
@@ -244,6 +254,8 @@ pub fn fuse_weak_signals(signals: &[SignalFrame]) -> Vec<WeakSignalCluster> {
 
         let mut source_groups = HashSet::new();
         let mut combined_score = 0.0;
+        let mut measured_confidences = 0usize;
+        let mut unmeasured_confidence = 0usize;
         let mut ids = Vec::new();
         for item in items {
             if let Some(source_group) = item.source_group.as_deref() {
@@ -252,8 +264,15 @@ pub fn fuse_weak_signals(signals: &[SignalFrame]) -> Vec<WeakSignalCluster> {
                     source_groups.insert(normalized);
                 }
             }
-            combined_score = 1.0
-                - (1.0 - combined_score) * (1.0 - (item.confidence * item.impact).clamp(0.0, 1.0));
+            match item.confidence {
+                Some(confidence) => {
+                    measured_confidences += 1;
+                    combined_score = 1.0
+                        - (1.0 - combined_score)
+                            * (1.0 - (confidence * item.impact).clamp(0.0, 1.0));
+                }
+                None => unmeasured_confidence += 1,
+            }
             ids.push(item.id.clone());
         }
 
@@ -262,7 +281,11 @@ pub fn fuse_weak_signals(signals: &[SignalFrame]) -> Vec<WeakSignalCluster> {
             continue;
         }
 
-        let label = if combined_score >= 0.75 {
+        // A cluster with no measured confidence cannot claim converging or
+        // emerging support: it is explicitly unverified.
+        let label = if measured_confidences == 0 {
+            "unverified"
+        } else if combined_score >= 0.75 {
             "converging"
         } else if combined_score >= 0.55 {
             "emerging"
@@ -280,6 +303,7 @@ pub fn fuse_weak_signals(signals: &[SignalFrame]) -> Vec<WeakSignalCluster> {
             independent_source_count,
             combined_score,
             label,
+            unmeasured_confidence,
         });
     }
 
@@ -457,7 +481,7 @@ mod tests {
                 category: Some("demand".to_string()),
                 region: Some("eu".to_string()),
                 entity: Some("acme".to_string()),
-                confidence: 0.55,
+                confidence: Some(0.55),
                 impact: 0.6,
                 source_group: Some("alpha.example.com".to_string()),
             },
@@ -467,7 +491,7 @@ mod tests {
                 category: Some("demand".to_string()),
                 region: Some("eu".to_string()),
                 entity: Some("acme".to_string()),
-                confidence: 0.58,
+                confidence: Some(0.58),
                 impact: 0.65,
                 source_group: Some("beta.example.com".to_string()),
             },

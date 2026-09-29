@@ -115,9 +115,15 @@ fi
 while IFS= read -r file; do
   [ -z "$file" ] && continue
   cutoff="$(file_cutoff "$file")"
+  # `pending` survives blank lines and comments so the psych-profile
+  # regression shape is caught:
+  #     sqlx::query(...).fetch_all(&pool).await
+  #     // best-effort comment
+  #     .unwrap_or_default();
   found="$(head -n "$cutoff" "$file" | awk '
     /\.await[[:space:]]*$/ { pending = 1; next }
     pending {
+      if ($0 ~ /^[[:space:]]*($|\/\/)/) { next }
       if ($0 ~ /^[[:space:]]*\.[A-Za-z_]/) {
         if ($0 ~ /\.(unwrap_or|unwrap_or_default|unwrap_or_else|ok\(\)|expect\(|unwrap\()/) {
           printf "%d:%s\n", FNR, $0

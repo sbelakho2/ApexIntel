@@ -467,7 +467,8 @@ pub struct KevItem {
     pub vulnerability_name: String,
     pub date_added: String,
     pub due_date: String,
-    pub relevance_score: f64,
+    /// Relevance from the catalog metadata; `None` = not recorded (never 0.5).
+    pub relevance_score: Option<f64>,
     pub affected_companies: Vec<String>,
     pub notes: Option<String>,
 }

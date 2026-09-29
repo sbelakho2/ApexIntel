@@ -60,37 +60,20 @@ async fn run_psych_profile_compute_inner(kind: &JobKind, store: &Arc<PgStore>) -
     run.start();
     let total_start = Instant::now();
 
-    // Load persons that HAVE poi_artifacts (the psych engine needs artifacts to
-    // compute a profile). Prioritize persons without an existing profile so the
-    // job makes forward progress each run rather than re-computing the same ones.
-    // Previously this used list_persons(name, 1000) which, after PersonMention
-    // materialization grew the corpus to thousands, loaded mostly artifact-less
-    // persons and skipped them all — stranding 86 artifact-rich persons unprofiled.
-    let persons: Vec<apex_store::postgres::PersonListRow> = sqlx::query_as(
-        "SELECT p.id, p.name, \
-                COALESCE(p.current_role, '') AS role, \
-                COALESCE(p.role_family, '') AS role_family, \
-                COALESCE(p.country_code, '') AS country, \
-                COALESCE(c.name, '') AS organization, \
-                COALESCE(p.region, '') AS region, \
-                COALESCE(p.influence_score, 0) AS priority_score, \
-                COALESCE(p.pain_index, 0) AS pain_index, \
-                COALESCE(p.change_risk, 0) AS change_risk, \
-                COALESCE(p.role_drift_score, 0) AS role_drift_score, \
-                COALESCE('', '') AS engagement_status, \
-                COALESCE(p.updated_at, NOW()) AS updated_at \
-         FROM persons p \
-         LEFT JOIN companies c ON c.id = p.primary_org_id \
-         WHERE EXISTS (SELECT 1 FROM poi_artifacts pa WHERE pa.person_id = p.id) \
-         ORDER BY (CASE WHEN EXISTS \
-             (SELECT 1 FROM psychological_profiles pp WHERE pp.person_id = p.id::text) \
-             THEN 1 ELSE 0 END), p.influence_score DESC NULLS LAST \
-         LIMIT 500",
-    )
-    .fetch_all(&store.pool)
-    .await
-    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-    .unwrap_or_default();
+    // Load psych-profile candidates through the canonical store projection
+    // (only the fields this engine consumes). This is the authoritative input
+    // for the whole job: a storage or decode failure fails the run instead of
+    // silently reporting "no persons" and skipping.
+    let persons: Vec<apex_store::postgres::PsychProfileCandidateRow> =
+        match store.list_psych_profile_candidates(500).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                run.fail(&format!(
+                    "psych_profile_compute: failed to load candidate persons: {error}"
+                ));
+                return run;
+            }
+        };
 
     if persons.is_empty() {
         run.skip("psych_profile_compute: no persons found in database");
@@ -153,9 +136,12 @@ async fn run_psych_profile_compute_inner(kind: &JobKind, store: &Arc<PgStore>) -
         let snapshot = RawProfileSnapshot {
             person_id: person.id.to_string(),
             person_name: person.name.clone(),
-            current_title: person.role.clone(),
-            role_family: person.role_family.clone(),
-            organization: person.organization.clone(),
+            // Absent role/family/organization are unknown: the engine receives
+            // empty strings (its documented "absent" encoding), never a guessed
+            // value.
+            current_title: person.current_role.clone().unwrap_or_default(),
+            role_family: person.role_family.clone().unwrap_or_default(),
+            organization: person.organization.clone().unwrap_or_default(),
             // Career length / job-change counts are not derivable from
             // poi_artifacts alone; the engine degrades gracefully when absent.
             career_length_years: None,

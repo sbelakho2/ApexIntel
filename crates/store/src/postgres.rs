@@ -277,7 +277,7 @@ mod persons;
 mod preferences;
 mod readiness;
 pub use readiness::{AlertEngineStateRecord, AlertEngineStateRow};
-pub use recipes::RecipeMonthlyPerformance;
+pub use recipes::{RecipeEngineRow, RecipeMonthlyPerformance};
 mod recipes;
 mod sales;
 mod security;
@@ -1210,6 +1210,8 @@ pub struct PersonListRow {
     pub engagement_status: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
+
+pub use persons::PsychProfileCandidateRow;
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct WarningRow {

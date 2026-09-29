@@ -77,27 +77,9 @@ impl TriageScorer {
         let parsed: serde_json::Value = serde_json::from_str(&response)
             .context("Failed to parse triage LLM response as JSON")?;
 
-        let mut dims = TriageDimensions {
-            urgency: parsed
-                .get("urgency")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5),
-            impact: parsed.get("impact").and_then(|v| v.as_f64()).unwrap_or(0.5),
-            actionability: parsed
-                .get("actionability")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5),
-            novelty: parsed
-                .get("novelty")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5),
-            confidence: parsed
-                .get("confidence")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5),
-        };
-        dims.clamp();
-        Ok(dims)
+        let wire: TriageDimensionsWire = serde_json::from_value(parsed)
+            .context("Triage LLM response is missing one or more required dimension fields")?;
+        TriageDimensions::try_from(wire)
     }
 
     /// Score multiple items in a single LLM call.
@@ -137,32 +119,40 @@ impl TriageScorer {
                 let parsed: Vec<serde_json::Value> =
                     serde_json::from_str(&resp).context("Failed to parse batch triage response")?;
 
-                let scores: Vec<TriageDimensions> = parsed
+                // Required-field schema: a malformed batch falls back to
+                // individual scoring below instead of fabricating neutral
+                // dimensions for the missing items.
+                let scores: Result<Vec<TriageDimensions>> = parsed
                     .into_iter()
                     .map(|v| {
-                        let mut dims = TriageDimensions {
-                            urgency: v.get("urgency").and_then(|v| v.as_f64()).unwrap_or(0.5),
-                            impact: v.get("impact").and_then(|v| v.as_f64()).unwrap_or(0.5),
-                            actionability: v
-                                .get("actionability")
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.5),
-                            novelty: v.get("novelty").and_then(|v| v.as_f64()).unwrap_or(0.5),
-                            confidence: v.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5),
-                        };
-                        dims.clamp();
-                        dims
+                        let wire: TriageDimensionsWire = serde_json::from_value(v)
+                            .context("Batch triage item is missing required dimension fields")?;
+                        TriageDimensions::try_from(wire)
                     })
                     .collect();
 
-                if scores.len() != items.len() {
-                    anyhow::bail!(
-                        "Batch triage returned {} scores for {} items",
-                        scores.len(),
-                        items.len()
-                    );
+                match scores {
+                    Ok(scores) if scores.len() == items.len() => Ok(scores),
+                    Ok(scores) => {
+                        anyhow::bail!(
+                            "Batch triage returned {} scores for {} items",
+                            scores.len(),
+                            items.len()
+                        );
+                    }
+                    Err(error) => {
+                        // Fall through to the individual fallback below.
+                        tracing::warn!(
+                            %error,
+                            "batch triage response failed schema validation; retrying items individually"
+                        );
+                        let mut scores = Vec::with_capacity(items.len());
+                        for item in items {
+                            scores.push(self.score_item(item).await?);
+                        }
+                        Ok(scores)
+                    }
                 }
-                Ok(scores)
             }
             Err(_) => {
                 // Fall back to individual scoring
@@ -194,6 +184,36 @@ impl TriageScorer {
 ///
 /// Convenience function re-exported from `apex_core::triage`.
 pub use apex_core::triage::composite_score;
+
+/// Strict wire schema for the LLM's triage dimensions.
+///
+/// Every field is **required**: an omitted field is a schema failure, not a
+/// neutral 0.5. Out-of-range values are clamped to 0..=1 (the documented
+/// tolerance), but a missing field means the response is unusable.
+#[derive(Debug, serde::Deserialize)]
+struct TriageDimensionsWire {
+    urgency: f64,
+    impact: f64,
+    actionability: f64,
+    novelty: f64,
+    confidence: f64,
+}
+
+impl TryFrom<TriageDimensionsWire> for TriageDimensions {
+    type Error = anyhow::Error;
+
+    fn try_from(wire: TriageDimensionsWire) -> Result<Self> {
+        let mut dims = TriageDimensions {
+            urgency: wire.urgency,
+            impact: wire.impact,
+            actionability: wire.actionability,
+            novelty: wire.novelty,
+            confidence: wire.confidence,
+        };
+        dims.clamp();
+        Ok(dims)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -250,6 +270,22 @@ mod tests {
         assert!((dims.actionability - 0.6).abs() < 1e-9);
         assert!((dims.novelty - 0.4).abs() < 1e-9);
         assert!((dims.confidence - 0.7).abs() < 1e-9);
+    }
+
+    /// The audit contract: a response missing required fields is a schema
+    /// failure, never a fabricated neutral 0.5 score.
+    #[tokio::test]
+    async fn test_score_item_missing_required_field_fails() {
+        let mock = MockTriageLlm {
+            response: r#"{"urgency": 0.8, "impact": 0.9}"#.to_string(),
+        };
+        let scorer = TriageScorer::new(Box::new(mock), TriageConfig::default());
+        let item = make_test_item("Test", "Description");
+        let result = scorer.score_item(&item).await;
+        assert!(
+            result.is_err(),
+            "missing required dimensions must fail, got {result:?}"
+        );
     }
 
     #[tokio::test]

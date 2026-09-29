@@ -883,6 +883,79 @@ impl FeatureLoadReport {
     }
 }
 
+/// Build the runtime engine recipe set from the database rows.
+///
+/// Pure so the lifecycle contract is unit-testable:
+/// * `deprecated`/`retired` rows are excluded — the DB is authoritative, a
+///   YAML seed can never resurrect them;
+/// * `staging` maps to `Staged`, `production`/`active`/`promoted` to
+///   `Promoted`, `seed` to `Seed`;
+/// * rows without a usable JSON definition are counted as excluded (never
+///   silently absent);
+/// * the calibrated `activation_threshold` is carried onto the recipe (with
+///   `configured_min_precision` as the pre-calibration fallback).
+fn build_engine_recipes(
+    rows: &[apex_store::postgres::RecipeEngineRow],
+) -> (Vec<apex_core::schemas::Recipe>, usize) {
+    let mut recipes = Vec::new();
+    let mut excluded = 0usize;
+    for row in rows {
+        let engine_status = match row.status.as_str() {
+            "deprecated" | "retired" => continue,
+            "staging" => apex_core::schemas::RecipeStatus::Staged,
+            "production" | "active" | "promoted" => apex_core::schemas::RecipeStatus::Promoted,
+            "seed" => apex_core::schemas::RecipeStatus::Seed,
+            other => {
+                excluded += 1;
+                tracing::warn!(
+                    recipe_code = %row.code,
+                    status = other,
+                    "recipe_fire: recipe has an unrecognized lifecycle status; excluded"
+                );
+                continue;
+            }
+        };
+
+        let Some(definition) = row.definition.as_ref() else {
+            excluded += 1;
+            tracing::warn!(
+                recipe_code = %row.code,
+                "recipe_fire: recipe has no persisted definition; excluded from the engine"
+            );
+            continue;
+        };
+        let seed: apex_worker::recipe_loader::SeedRecipe =
+            match serde_json::from_value(definition.clone()) {
+                Ok(seed) => seed,
+                Err(error) => {
+                    excluded += 1;
+                    tracing::warn!(
+                        recipe_code = %row.code,
+                        %error,
+                        "recipe_fire: recipe definition is not a valid seed recipe; excluded"
+                    );
+                    continue;
+                }
+            };
+
+        if seed.narrative_template.is_empty() || seed.signals.is_empty() {
+            excluded += 1;
+            tracing::warn!(
+                recipe_code = %row.code,
+                "recipe_fire: recipe definition has no signals/templates; excluded"
+            );
+            continue;
+        }
+
+        let mut engine_recipe = seed_recipe_to_engine_recipe(&seed);
+        engine_recipe.status = engine_status;
+        engine_recipe.activation_threshold =
+            row.activation_threshold.or(row.configured_min_precision);
+        recipes.push(engine_recipe);
+    }
+    (recipes, excluded)
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(super) async fn run_recipe_fire(
     kind: &JobKind,
@@ -920,25 +993,38 @@ pub(super) async fn run_recipe_fire(
         InferenceLlmClient::new(base_url, api_key, config)
     };
 
-    // A failed seed load must not masquerade as "no recipes configured".
-    let seed_recipes = match load_default_seed_recipes() {
-        Ok(recipes) => recipes,
+    // PostgreSQL is the source of truth for runtime firing (audit P0): the
+    // YAML seed file only bootstraps the recipes table, and the engine loads
+    // the lifecycle-managed DB set. This is what makes deprecation,
+    // promotion, DB-only learned recipes and activation-threshold calibration
+    // actually affect execution — none of which a YAML reload could observe.
+    let engine_rows = match store.list_recipes_for_engine().await {
+        Ok(rows) => rows,
         Err(error) => {
             run.fail(&format!(
-                "recipe_fire: failed to load seed recipes: {error}"
+                "recipe_fire: failed to load the recipe set from the database: {error}"
             ));
             return run;
         }
     };
-    let engine_recipes: Vec<Recipe> = seed_recipes
-        .iter()
-        .filter(|sr| !sr.narrative_template.is_empty() && !sr.signals.is_empty())
-        .map(seed_recipe_to_engine_recipe)
-        .collect();
+
+    let (engine_recipes, recipes_excluded) = build_engine_recipes(&engine_rows);
 
     if engine_recipes.is_empty() {
-        run.skip("recipe_fire: no seed recipes with signals/templates available");
+        if engine_rows.is_empty() {
+            run.skip("recipe_fire: no recipes in the database (has the seed bootstrap run?)");
+        } else {
+            run.fail(&format!(
+                "recipe_fire: no executable recipes — {recipes_excluded} of {} database row(s) had no usable definition",
+                engine_rows.len()
+            ));
+        }
         return run;
+    }
+    if recipes_excluded > 0 {
+        context_degraded.push(format!(
+            "{recipes_excluded} recipe(s) were excluded for a missing/invalid definition"
+        ));
     }
 
     let engine = RecipeEngine::load(engine_recipes);
@@ -947,14 +1033,23 @@ pub(super) async fn run_recipe_fire(
     if let Err(error) = store.resolve_stats_alert_calibration_events(now).await {
         tracing::warn!(%error, "recipe_fire: failed to resolve mature stats alert calibration events");
     }
-    let resolved_calibration_rows = store
+    let resolved_calibration_rows = match store
         .list_resolved_stats_alert_calibration_samples(
             Some(now - chrono::Duration::days(365)),
             5_000,
         )
         .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            // Calibration evidence feeds the learning loop: a failed read
+            // means the run cannot calibrate, not that there is nothing to
+            // calibrate.
+            tracing::warn!(%error, "recipe_fire: calibration sample read failed");
+            context_degraded.push(format!("calibration samples unavailable ({error})"));
+            Vec::new()
+        }
+    };
     let calibration_samples = resolved_calibration_rows
         .iter()
         .map(|row| CalibrationSample {
@@ -982,11 +1077,19 @@ pub(super) async fn run_recipe_fire(
             tracing::warn!(%error, "recipe_fire: failed to publish calibration curve artifact");
         }
     }
-    let source_reliability_aggregates = store
-        .aggregate_source_reliability_outcomes(None)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
+    let source_reliability_aggregates =
+        match store.aggregate_source_reliability_outcomes(None).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                // Source reliability feeds scoring and promotion decisions; an
+                // empty set would silently read as "no track record".
+                tracing::warn!(%error, "recipe_fire: source reliability aggregation failed");
+                context_degraded.push(format!(
+                    "source reliability aggregation unavailable ({error})"
+                ));
+                Vec::new()
+            }
+        };
     for aggregate in source_reliability_aggregates {
         let observation_count = aggregate.observation_count.max(0) as u64;
         let confirmed_count = aggregate.confirmed_count.max(0) as u64;
@@ -1102,17 +1205,16 @@ pub(super) async fn run_recipe_fire(
         }
     };
 
-    let warn_counts = store
-        .get_warning_type_counts_per_entity(since)
-        .await
-        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-        .unwrap_or_default();
     // Feature inputs are authoritative for recipe evaluation. A load failure
     // must not silently become an empty feature set (missing inputs would
     // suppress recipes and look like "no signals"): the report records each
     // failed input, the run is degraded, and the missing inputs are marked
     // explicitly on every entity map below.
     let mut feature_report = FeatureLoadReport::default();
+    let warn_counts = feature_report.take(
+        "warning_type_counts",
+        store.get_warning_type_counts_per_entity(since).await,
+    );
     let ce_features = feature_report.take(
         "competitor_event",
         store.get_competitor_event_features(since).await,
@@ -2624,15 +2726,48 @@ pub(super) async fn run_recipe_fire(
         .into_iter()
         .map(|(id, fm)| (id.to_string(), fm))
         .collect();
-    let entity_refs: Vec<(&str, &FeatureMap)> = entity_id_strs
+
+    // Entity context for the applicability gate: region and industry per
+    // company. A restricted recipe with absent context does not evaluate.
+    let context_ids: Vec<Uuid> = entity_id_strs
         .iter()
-        .map(|(id, fm)| (id.as_str(), fm))
+        .filter_map(|(id, _)| Uuid::parse_str(id).ok())
         .collect();
+    let mut entity_contexts: HashMap<String, apex_core::schemas::EntityContext> = HashMap::new();
+    match store.get_company_names_by_ids(&context_ids).await {
+        Ok(rows) => {
+            for (id, _name, region, company_type) in rows {
+                entity_contexts.insert(
+                    id.to_string(),
+                    apex_core::schemas::EntityContext {
+                        region,
+                        country: None,
+                        industry: company_type,
+                        entity_type: Some("company".to_string()),
+                    },
+                );
+            }
+        }
+        Err(error) => {
+            // Applicability context feeds the execution gate: a failed read
+            // degrades the run instead of silently opening restricted recipes.
+            tracing::warn!(%error, "recipe_fire: entity context load failed");
+            context_degraded.push(format!(
+                "entity applicability context unavailable ({error})"
+            ));
+        }
+    }
 
     #[cfg(feature = "llm")]
-    let mut candidates = engine.evaluate_batch(&entity_refs);
+    let mut candidates: Vec<_> = entity_id_strs
+        .iter()
+        .flat_map(|(id, fm)| engine.evaluate_all_with_context(id, fm, entity_contexts.get(id)))
+        .collect();
     #[cfg(not(feature = "llm"))]
-    let candidates = engine.evaluate_batch(&entity_refs);
+    let candidates: Vec<_> = entity_id_strs
+        .iter()
+        .flat_map(|(id, fm)| engine.evaluate_all_with_context(id, fm, entity_contexts.get(id)))
+        .collect();
 
     #[cfg(feature = "llm")]
     let (feedback_tracker, adaptive_thresholds, recipe_quality_scores) =
@@ -5038,6 +5173,115 @@ mod tests {
         clippy::expect_used,
         clippy::field_reassign_with_default
     )]
+
+    fn seed_definition(code: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": code,
+            "name": format!("Recipe {code}"),
+            "category": "demand",
+            "join": ["company"],
+            "outcome": "signal",
+            "signals": ["count.company"],
+            "narrative_template": "note",
+            "action_playbook": ["act"],
+        })
+    }
+
+    fn engine_row(
+        code: &str,
+        status: &str,
+        definition: Option<serde_json::Value>,
+        activation_threshold: Option<f64>,
+    ) -> apex_store::postgres::RecipeEngineRow {
+        apex_store::postgres::RecipeEngineRow {
+            code: code.to_string(),
+            name: format!("Recipe {code}"),
+            status: status.to_string(),
+            definition,
+            activation_threshold,
+            configured_min_precision: None,
+        }
+    }
+
+    /// The lifecycle contract: the database status is authoritative.
+    #[test]
+    fn engine_recipes_respect_db_lifecycle_and_thresholds() {
+        let rows = vec![
+            engine_row(
+                "A001",
+                "production",
+                Some(seed_definition("A001")),
+                Some(0.7),
+            ),
+            engine_row("A002", "staging", Some(seed_definition("A002")), None),
+            engine_row("A003", "seed", Some(seed_definition("A003")), None),
+            // Deprecated in the database: never resurrected by the YAML seed.
+            engine_row("A004", "deprecated", Some(seed_definition("A004")), None),
+            // No definition: counted, not silently absent.
+            engine_row("A005", "seed", None, None),
+        ];
+
+        let (recipes, excluded) = super::build_engine_recipes(&rows);
+        assert_eq!(excluded, 1, "the definition-less row is counted");
+        assert_eq!(recipes.len(), 3);
+        assert!(
+            recipes.iter().all(|recipe| recipe.code != "A004"),
+            "a DB-deprecated recipe must not enter the engine"
+        );
+
+        let promoted = recipes
+            .iter()
+            .find(|recipe| recipe.code == "A001")
+            .expect("production recipe present");
+        assert_eq!(promoted.status, apex_core::schemas::RecipeStatus::Promoted);
+        assert_eq!(promoted.activation_threshold, Some(0.7));
+
+        let staged = recipes
+            .iter()
+            .find(|recipe| recipe.code == "A002")
+            .expect("staging recipe present");
+        assert_eq!(staged.status, apex_core::schemas::RecipeStatus::Staged);
+
+        let seed = recipes
+            .iter()
+            .find(|recipe| recipe.code == "A003")
+            .expect("seed recipe present");
+        assert_eq!(seed.status, apex_core::schemas::RecipeStatus::Seed);
+    }
+
+    /// A recipe promoted in the database but absent from the YAML seed file
+    /// still reaches the engine.
+    #[test]
+    fn db_promoted_recipe_not_in_yaml_reaches_the_engine() {
+        let rows = vec![engine_row(
+            "Z999",
+            "production",
+            Some(seed_definition("Z999")),
+            Some(0.2),
+        )];
+        let (recipes, excluded) = super::build_engine_recipes(&rows);
+        assert_eq!(excluded, 0);
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].code, "Z999");
+        assert_eq!(
+            recipes[0].status,
+            apex_core::schemas::RecipeStatus::Promoted
+        );
+    }
+
+    /// A malformed definition is excluded and counted, never silently dropped.
+    #[test]
+    fn malformed_definition_is_counted_not_silently_dropped() {
+        let rows = vec![engine_row(
+            "B001",
+            "seed",
+            Some(serde_json::json!({"id": 7})),
+            None,
+        )];
+        let (recipes, excluded) = super::build_engine_recipes(&rows);
+        assert!(recipes.is_empty());
+        assert_eq!(excluded, 1);
+    }
 
     use super::recipe_warning_severity;
 

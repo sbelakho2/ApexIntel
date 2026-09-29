@@ -203,24 +203,7 @@ pub(crate) async fn export_persons_csv(
         let mut chunk = String::new();
         for row in rows {
             let item = person_row_to_item(row);
-            chunk.push_str(&format!(
-                "{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{},{}\n",
-                csv_escape(&item.id),
-                csv_escape(&item.name),
-                csv_escape(&item.role),
-                csv_escape(&item.role_family),
-                csv_escape(&item.organization),
-                csv_escape(&item.region),
-                // Unmeasured priority exports as an empty cell, never 0.
-                item.priority_score
-                    .map(|score| format!("{score:.4}"))
-                    .unwrap_or_default(),
-                item.pain_index.unwrap_or_default(),
-                item.change_risk.unwrap_or_default(),
-                item.role_drift_score.unwrap_or_default(),
-                csv_escape(&item.engagement_status),
-                csv_escape(&item.updated_at.to_rfc3339()),
-            ));
+            chunk.push_str(&person_csv_row(&item));
         }
 
         emitted += fetched;
@@ -399,7 +382,7 @@ pub(crate) async fn export_insight_pdf(
         summary: insight.summary,
         insight_type: insight.insight_type.unwrap_or_default(),
         severity: apex_insights::InsightSeverity::Medium,
-        confidence: insight.confidence.unwrap_or(0.5),
+        confidence: insight.confidence,
         region: insight.region,
         evidence: Vec::new(),
         sources: Vec::new(),
@@ -648,10 +631,75 @@ pub(crate) async fn export_person_dossier_pdf(
         .into_response()
 }
 
+/// One CSV row for a person list item.
+///
+/// Every unmeasured number is an empty cell — `None` never renders as 0.00.
+fn person_csv_row(item: &apex_api::routes::persons::PersonListItem) -> String {
+    format!(
+        "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+        csv_escape(&item.id),
+        csv_escape(&item.name),
+        csv_escape(&item.role),
+        csv_escape(&item.role_family),
+        csv_escape(&item.organization),
+        csv_escape(&item.region),
+        item.priority_score
+            .map(|score| format!("{score:.4}"))
+            .unwrap_or_default(),
+        item.pain_index
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_default(),
+        item.change_risk
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_default(),
+        item.role_drift_score
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_default(),
+        csv_escape(&item.engagement_status),
+        csv_escape(&item.updated_at.to_rfc3339()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::{csv_escape, normalize_export_window, ExportQuery};
     use apex_api::config::ApiRuntimeConfig;
+
+    /// The audit contract: unmeasured POI numbers export as empty cells, so a
+    /// row with no measurements ends ",,," — never ",0.00,0.00,0.00,".
+    #[test]
+    fn person_csv_emits_empty_cells_for_unmeasured_numbers() {
+        let item = apex_api::routes::persons::PersonListItem {
+            id: "p1".to_string(),
+            name: "Alex Doe".to_string(),
+            role: "CTO".to_string(),
+            role_family: "Executive".to_string(),
+            organization: "Acme".to_string(),
+            region: "EU".to_string(),
+            country: "FI".to_string(),
+            priority_score: None,
+            pain_index: None,
+            change_risk: None,
+            role_drift_score: None,
+            influence_score: None,
+            priority: None,
+            influence_tier: "not measured".to_string(),
+            engagement_status: "not measured".to_string(),
+            tags: vec![],
+            last_signal: "".to_string(),
+            updated_at: chrono::Utc::now(),
+        };
+        let row = person_csv_row(&item);
+        assert!(
+            !row.contains("0.00"),
+            "unmeasured numbers must not render as 0.00: {row}"
+        );
+        assert!(
+            row.contains("\"EU\",,,,,"),
+            "priority/pain/risk/drift must be empty cells: {row}"
+        );
+    }
 
     #[test]
     fn test_csv_escape_quotes_and_wraps_fields() {

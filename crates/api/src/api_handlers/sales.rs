@@ -313,12 +313,20 @@ pub(crate) async fn list_company_buying_center(
 
     let mut views: Vec<BuyingCenterView> = Vec::with_capacity(centers.len());
     for c in centers {
-        let members = state
-            .store
-            .list_buying_center_members(c.id)
-            .await
-            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
-            .unwrap_or_default();
+        let members = match state.store.list_buying_center_members(c.id).await {
+            Ok(members) => members,
+            Err(error) => {
+                // The member list is the core of the buying-center view: a
+                // failed read is reported, never rendered as an empty team.
+                tracing::error!(%error, "buying-center members load failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Failed to load buying-center members",
+                    ))),
+                );
+            }
+        };
         let member_views: Vec<BuyingCenterMemberView> = members
             .into_iter()
             .map(|m| BuyingCenterMemberView {

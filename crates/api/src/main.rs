@@ -28,7 +28,7 @@ use apex_api::routes::llm::{
 use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
 use apex_api::routes::persons::{
     validate_person_id, ListPersonsQuery, PersonDetail, PersonEvent, PersonListItem,
-    PersonSortField, PriorityVector,
+    PersonSortField, StoredPriorityVector,
 };
 use apex_api::routes::probes::{
     BrowserProbeState, EmbeddingGenerator, LlmProbeTarget, ReadinessPolicy,
@@ -1470,16 +1470,6 @@ fn company_row_to_detail(
     }
 }
 
-fn default_priority_vector() -> PriorityVector {
-    PriorityVector {
-        decision_power: 0.0,
-        domain_relevance: 0.0,
-        network_centrality: 0.0,
-        engagement_potential: 0.0,
-        intelligence_value: 0.0,
-    }
-}
-
 fn person_row_to_detail(
     row: PersonRow,
     artifacts: Vec<ArtifactRow>,
@@ -1498,7 +1488,7 @@ fn person_row_to_detail(
     let priority_vector = row
         .priority_vector
         .as_ref()
-        .and_then(|v| serde_json::from_value::<PriorityVector>(v.clone()).ok());
+        .and_then(|v| serde_json::from_value::<StoredPriorityVector>(v.clone()).ok());
     let view = apex_api::person_intelligence::PersonIntelligenceView::from_measurements(
         row.priority_vector.as_ref(),
         row.influence_score,
@@ -1519,7 +1509,10 @@ fn person_row_to_detail(
         ],
     );
     let priority_score = view.priority_score;
-    let priority = view.priority_tier_label;
+    // The API contract for `priority` is the A/B/C band (same as the list
+    // model); the verbal tier is exposed separately.
+    let priority = view.priority_band.clone();
+    let priority_tier = view.priority_tier_label.clone();
     let influence_score = view.influence_score;
     let influence_tier = view.influence_tier_label;
 
@@ -1572,6 +1565,7 @@ fn person_row_to_detail(
         priority_score,
         influence_score,
         priority,
+        priority_tier,
         priority_vector,
         influence_tier,
         // Engagement readiness is not computed by this endpoint yet: unknown,

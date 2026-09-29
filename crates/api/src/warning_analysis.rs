@@ -777,6 +777,19 @@ fn evidence_text_from_value(value: &serde_json::Value) -> String {
     out
 }
 
+/// The stance policy for one evidence item.
+///
+/// Only an explicit relation is trusted to *raise* confidence. A heuristic
+/// `Supports` from the bounded classifier is weak metadata and maps to
+/// `Neutral`; a heuristic `Contradicts` is honoured because lowering support
+/// on visible polarity evidence is the conservative direction.
+pub fn stance_for_evidence(explicit: ClaimRelation, classified: ClaimRelation) -> EvidenceStance {
+    match classified {
+        ClaimRelation::Supports if explicit == ClaimRelation::Unclear => EvidenceStance::Neutral,
+        other => other.evidence_stance(),
+    }
+}
+
 /// Deterministic, bounded claim-relation classification.
 ///
 /// Precedence:
@@ -789,6 +802,10 @@ fn evidence_text_from_value(value: &serde_json::Value) -> String {
 /// Everything else stays `Unclear`. There is no negation parsing, no embedding
 /// similarity, no sentiment inference — a conservative seam that only reports
 /// relations a reviewer can trace to two visible tokens.
+///
+/// Consumers must treat a heuristic `Supports` as weak metadata (it does not
+/// increase claim corroboration); only an explicit relation may do that. A
+/// heuristic `Contradicts` may lower support, which is the safe direction.
 pub fn classify_claim_relation(
     claim: &str,
     evidence_text: &str,
@@ -1119,17 +1136,18 @@ pub fn assess_bundle_quality(
     for observation in &bundle.observations {
         let domain = observation_source_domain(observation);
         let tier = source_reliability_tier(bundle, domain.as_deref());
-        // Explicit machine-readable relations win; otherwise the bounded
-        // classifier may derive a relation from a shared topic plus matching
-        // polarity markers; everything else stays Unclear (never assumed
-        // support).
+        // Only explicit machine-readable relations are trusted. The bounded
+        // classifier never *raises* confidence: a heuristic `Supports` stays
+        // Neutral (weak metadata), while a heuristic `Contradicts` is
+        // honoured because weakening a claim on visible evidence is the
+        // conservative direction.
         let explicit = ClaimRelation::from_observation_value(&observation.value);
-        let stance = classify_claim_relation(
+        let classified = classify_claim_relation(
             claim,
             &evidence_text_from_value(&observation.value),
             explicit,
-        )
-        .evidence_stance();
+        );
+        let stance = stance_for_evidence(explicit, classified);
         let mut item = EvidenceItem::new_optional(observation.confidence, stance)
             .with_source_type(observation.observation_type.clone())
             .with_observed_at(observation.ts_utc)
@@ -2534,6 +2552,26 @@ mod tests {
                 ClaimRelation::Unclear,
             ),
             ClaimRelation::Unclear
+        );
+    }
+
+    #[test]
+    fn heuristic_support_never_raises_confidence() {
+        // Classifier-derived support without an explicit relation is weak
+        // metadata: the stance stays Neutral.
+        assert_eq!(
+            stance_for_evidence(ClaimRelation::Unclear, ClaimRelation::Supports),
+            EvidenceStance::Neutral
+        );
+        // Explicit support does corroborate.
+        assert_eq!(
+            stance_for_evidence(ClaimRelation::Supports, ClaimRelation::Supports),
+            EvidenceStance::Supports
+        );
+        // Heuristic contradiction is honoured (safe direction).
+        assert_eq!(
+            stance_for_evidence(ClaimRelation::Unclear, ClaimRelation::Contradicts),
+            EvidenceStance::Contradicts
         );
     }
 

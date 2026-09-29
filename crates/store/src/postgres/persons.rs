@@ -167,7 +167,7 @@ fn build_person_dossier_analysis(
             category: change.field_name.clone(),
             region: None,
             entity: Some(change.person_id.to_string()),
-            confidence: change.confidence.unwrap_or(0.55),
+            confidence: change.confidence,
             impact: 0.55,
             source_group: change.source_url.as_deref().and_then(source_group_from_url),
         });
@@ -182,7 +182,7 @@ fn build_person_dossier_analysis(
             category: Some(role.title.clone()),
             region: None,
             entity: Some(role.person_id.to_string()),
-            confidence: role.confidence.unwrap_or(0.55),
+            confidence: role.confidence,
             impact: 0.5,
             source_group: role.source_url.as_deref().and_then(source_group_from_url),
         });
@@ -867,6 +867,48 @@ impl PgStore {
             .await?;
         Ok(rows)
     }
+
+    /// Canonical candidate feed for the psych-profile job: persons that have
+    /// `poi_artifacts`, ordered so unprofiled persons come first.
+    ///
+    /// Only the fields the psych engine consumes are selected — the job does
+    /// not need priority, influence, pain, risk or drift, so it must not copy
+    /// (and cannot mis-decode) them. A query failure is returned to the
+    /// caller: this is the authoritative input for the whole job.
+    pub async fn list_psych_profile_candidates(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PsychProfileCandidateRow>> {
+        let (limit, _) = normalize_person_window(limit, 0);
+        let rows = sqlx::query_as::<_, PsychProfileCandidateRow>(
+            "SELECT p.id, \
+                    p.name, \
+                    p.current_role, \
+                    p.role_family, \
+                    c.name AS organization \
+             FROM persons p \
+             LEFT JOIN companies c ON c.id = p.primary_org_id \
+             WHERE EXISTS (SELECT 1 FROM poi_artifacts pa WHERE pa.person_id = p.id) \
+             ORDER BY (CASE WHEN EXISTS \
+                 (SELECT 1 FROM psychological_profiles pp WHERE pp.person_id = p.id::text) \
+                 THEN 1 ELSE 0 END), p.influence_score DESC NULLS LAST \
+             LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// Minimal person projection consumed by the psych-profile job.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct PsychProfileCandidateRow {
+    pub id: Uuid,
+    pub name: String,
+    pub current_role: Option<String>,
+    pub role_family: Option<String>,
+    pub organization: Option<String>,
 }
 
 #[cfg(test)]

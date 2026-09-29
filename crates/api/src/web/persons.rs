@@ -160,7 +160,7 @@ fn derive_profile_priority_vector(
     warning_count: i64,
     insight_count: i64,
     recent_change_count: usize,
-) -> PriorityVector {
+) -> PersonRadarMetrics {
     let influence_ratio: Option<f64> = priority_metric(&person.priority_vector, "influence")
         .or(person.influence_score.map(normalize_ratio));
 
@@ -285,7 +285,7 @@ fn derive_profile_priority_vector(
         }
     });
 
-    PriorityVector {
+    PersonRadarMetrics {
         influence: influence_ratio.map(normalize_percent_u8),
         connectivity: normalize_percent_u8(connectivity_ratio),
         activity: normalize_percent_u8(activity_ratio),
@@ -350,7 +350,7 @@ pub struct PersonEvent {
 /// a fabricated zero, and the overall composite renormalizes over the measured
 /// components.
 #[derive(Clone, Debug)]
-pub struct PriorityVector {
+pub struct PersonRadarMetrics {
     pub influence: Option<u8>,
     pub connectivity: u8,
     pub activity: u8,
@@ -443,7 +443,7 @@ pub struct PersonDetailPage {
     pub region: String,
     pub priority_tier: String,
     pub buying_center_role: String,
-    pub priority_vector: PriorityVector,
+    pub priority_vector: PersonRadarMetrics,
     pub affiliations: Vec<PersonAffiliation>,
     pub role_history: Vec<PersonRoleHistory>,
     pub peers: Vec<PersonPeer>,

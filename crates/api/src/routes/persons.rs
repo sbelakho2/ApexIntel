@@ -106,9 +106,13 @@ pub struct PersonDetail {
     pub priority_score: Option<f64>,
     /// Measured influence on the 0-100 scale; `None` when unmeasured.
     pub influence_score: Option<i64>,
-    /// Priority band; `None` when the priority is not measured.
+    /// Priority band (A/B/C); `None` when the priority is not measured.
     pub priority: Option<String>,
-    pub priority_vector: Option<PriorityVector>,
+    /// Verbal priority tier (critical/high/medium/low); `None` when the
+    /// priority is not measured. Distinct from the band so the two never
+    /// overload one field.
+    pub priority_tier: Option<String>,
+    pub priority_vector: Option<StoredPriorityVector>,
     pub influence_tier: String,
     pub engagement_status: String,
     /// Not computed by this endpoint; `None` = not measured (never 0.0).
@@ -140,7 +144,10 @@ pub struct PersonDetail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PriorityVector {
+/// The **stored** five-dimension priority vector persisted on the person row.
+/// Distinct from the display-only radar (`PersonRadarMetrics`) and from the
+/// canonical assessment (`PersonIntelligenceView`).
+pub struct StoredPriorityVector {
     pub decision_power: f64,
     pub domain_relevance: f64,
     pub network_centrality: f64,
@@ -148,7 +155,7 @@ pub struct PriorityVector {
     pub intelligence_value: f64,
 }
 
-impl PriorityVector {
+impl StoredPriorityVector {
     /// Compute a weighted composite score.
     pub fn composite(&self) -> f64 {
         self.composite_with_weights(&PriorityWeights::default())
@@ -464,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_priority_vector_composite() {
-        let pv = PriorityVector {
+        let pv = StoredPriorityVector {
             decision_power: 0.8,
             domain_relevance: 0.9,
             network_centrality: 0.7,
@@ -479,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_priority_vector_clamped() {
-        let pv = PriorityVector {
+        let pv = StoredPriorityVector {
             decision_power: 1.0,
             domain_relevance: 1.0,
             network_centrality: 1.0,
@@ -491,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_priority_vector_composite_with_custom_weights() {
-        let pv = PriorityVector {
+        let pv = StoredPriorityVector {
             decision_power: 0.9,
             domain_relevance: 0.2,
             network_centrality: 0.2,
