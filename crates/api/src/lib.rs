@@ -15,6 +15,7 @@ pub mod login_throttle;
 pub mod middleware;
 pub mod pagination;
 pub mod pdf_writer;
+pub mod person_intelligence;
 pub mod phase01;
 pub mod provenance;
 pub mod rate_limit;

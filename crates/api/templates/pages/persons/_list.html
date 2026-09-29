@@ -5,7 +5,7 @@
   {% call m::metric_card("Persons Tracked", total_persons.to_string(), "metric-rail-steel") %}
   {% call m::metric_card("Priority A", priority_a.to_string(), "metric-rail-red") %}
   {% call m::metric_card("Priority B", priority_b.to_string(), "metric-rail-orange") %}
-  {% call m::metric_card("Avg Influence", avg_influence.to_string(), "metric-rail-green") %}
+  {% call m::metric_card("Avg Influence", avg_influence_display, "metric-rail-green") %}
 </div>
 
 <div class="apex-card p-4 mb-6">
@@ -82,8 +82,8 @@
           <td class="px-4 py-3 text-rams-muted">{{ p.role }}</td>
           <td class="px-4 py-3 text-rams-muted">{{ p.organization }}</td>
           <td class="px-4 py-3">{{ p.region }}</td>
-          <td class="px-4 py-3"><span class="apex-chip apex-chip-muted">{{ p.priority }}</span></td>
-          <td class="px-4 py-3 text-right font-bold tabular-nums">{{ p.influence_score }}</td>
+          <td class="px-4 py-3"><span class="apex-chip apex-chip-muted">{% if let Some(band) = p.priority %}{{ band }}{% else %}not measured{% endif %}</span></td>
+          <td class="px-4 py-3 text-right font-bold tabular-nums">{% if let Some(score) = p.influence_score %}{{ score }}{% else %}not measured{% endif %}</td>
           <td class="px-4 py-3 text-rams-muted">{% if p.tags.is_empty() %}—{% else %}{% for tag in p.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
         </tr>
         {% endfor %}
@@ -104,11 +104,11 @@
           <p class="font-bold text-sm truncate">{{ p.name }}</p>
           <p class="mt-1 text-[10px] uppercase text-rams-muted truncate">{{ p.role }} · {{ p.organization }}</p>
         </div>
-        <span class="apex-chip apex-chip-muted">{{ p.priority }}</span>
+        <span class="apex-chip apex-chip-muted">{% if let Some(band) = p.priority %}{{ band }}{% else %}not measured{% endif %}</span>
       </div>
       <div class="mt-2 flex items-center justify-between text-[10px] text-rams-muted">
         <span>{{ p.region }}</span>
-        <span class="font-bold">{{ p.influence_score }}</span>
+        <span class="font-bold">{% if let Some(score) = p.influence_score %}{{ score }}{% else %}not measured{% endif %}</span>
       </div>
       {% if !p.tags.is_empty() %}
       <div class="mt-2 flex flex-wrap gap-1.5">

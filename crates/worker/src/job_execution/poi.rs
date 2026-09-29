@@ -1460,7 +1460,10 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 priority_vector: PoiPriorityVector::zero(),
                 psychological: PsychProfile::default_profile(),
                 influence: InfluenceProfile {
-                    influence_score: row.priority_score,
+                    // Seed with the measured influence; an unmeasured person
+                    // starts from the neutral base that the refresh recomputes
+                    // and (for the first time) writes back below.
+                    influence_score: row.influence.unwrap_or(0.5),
                     graph_centrality: 0.0,
                     public_recurrence: 0.0,
                     role_seniority_score: 0.0,
@@ -1484,7 +1487,12 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 completeness = profile.profile_completeness,
                 "poi_refresh: profile updated"
             );
-            if (profile.influence.influence_score - row.priority_score).abs() > 1e-6 {
+            let changed = match row.influence {
+                Some(previous) => (profile.influence.influence_score - previous).abs() > 1e-6,
+                // First measurement: always persist it.
+                None => true,
+            };
+            if changed {
                 if let Err(e) = store
                     .update_person_influence_score(row.id, profile.influence.influence_score)
                     .await

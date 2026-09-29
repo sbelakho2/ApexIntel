@@ -314,7 +314,9 @@ pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<Aut
         .await
     {
         for person in &persons {
-            let score = (person.priority_score * 0.1).clamp(0.0, 10.0);
+            // Autocomplete relevance from measured influence; unmeasured
+            // entities receive the neutral base score rather than a zero.
+            let score = (person.influence.unwrap_or(0.5) * 0.1).clamp(0.0, 10.0);
             let subtext = if person.organization != "Independent" {
                 Some(person.organization.clone())
             } else {

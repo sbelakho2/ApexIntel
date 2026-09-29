@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use apex_api::auth::ApiKey;
-use apex_api::config::{ApiRuntimeConfig, PriorityWeights};
+use apex_api::config::ApiRuntimeConfig;
 use apex_api::filters::validate_search_text;
 use apex_api::middleware::auth::{auth_error_response, authenticate_api_request};
 use apex_api::rate_limit::RateLimiter;
@@ -27,7 +27,7 @@ use apex_api::routes::llm::{
 #[cfg(feature = "llm")]
 use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
 use apex_api::routes::persons::{
-    priority_tier, validate_person_id, ListPersonsQuery, PersonDetail, PersonEvent, PersonListItem,
+    validate_person_id, ListPersonsQuery, PersonDetail, PersonEvent, PersonListItem,
     PersonSortField, PriorityVector,
 };
 use apex_api::routes::probes::{
@@ -1493,26 +1493,35 @@ fn person_row_to_detail(
         name_alt.push(fr.clone());
     }
 
-    // A missing priority vector is unknown priority: no zero-vector band.
+    // Canonical intelligence view (audit P2-18): priority from the stored
+    // vector, influence measured, completeness from the actual profile fields.
     let priority_vector = row
         .priority_vector
         .as_ref()
         .and_then(|v| serde_json::from_value::<PriorityVector>(v.clone()).ok());
-    let priority_score = priority_vector
-        .as_ref()
-        .map(|pv| pv.composite_with_weights(&PriorityWeights::default()));
-    let priority = priority_score.map(|score| priority_tier(score).to_string());
-
-    // Measured influence on the 0-100 legacy scale; unknown stays unknown.
-    let influence_score = row
-        .influence_score
-        .map(|value| (value.clamp(0.0, 1.0) * 100.0).round() as i64);
-    let influence_tier = match influence_score {
-        Some(score) if score >= 70 => "high".to_string(),
-        Some(score) if score >= 40 => "medium".to_string(),
-        Some(_) => "low".to_string(),
-        None => "not measured".to_string(),
-    };
+    let view = apex_api::person_intelligence::PersonIntelligenceView::from_measurements(
+        row.priority_vector.as_ref(),
+        row.influence_score,
+        row.metadata
+            .as_ref()
+            .and_then(|meta| meta.get("engagement_status"))
+            .and_then(serde_json::Value::as_str),
+        None,
+        &[
+            row.public_bio.is_some(),
+            row.public_email.is_some(),
+            row.primary_org_id.is_some(),
+            !row.region.as_deref().unwrap_or("").is_empty(),
+            row.current_role.is_some(),
+            row.influence_score.is_some(),
+            row.priority_vector.is_some(),
+            !row.trigger_topics.as_deref().unwrap_or(&[]).is_empty(),
+        ],
+    );
+    let priority_score = view.priority_score;
+    let priority = view.priority_tier_label;
+    let influence_score = view.influence_score;
+    let influence_tier = view.influence_tier_label;
 
     // Evidence-backed contacts and timeline from artifacts (previously loaded
     // and discarded). Nothing is inferred beyond what an artifact states.
@@ -1567,9 +1576,9 @@ fn person_row_to_detail(
         influence_tier,
         // Engagement readiness is not computed by this endpoint yet: unknown,
         // not zero.
-        engagement_status: "not measured".to_string(),
-        engagement_readiness: None,
-        data_completeness: None,
+        engagement_status: view.engagement_status,
+        engagement_readiness: view.engagement_readiness,
+        data_completeness: view.data_completeness,
         tags,
         trigger_topics: row.trigger_topics.unwrap_or_default(),
         decision_style: row.decision_style,

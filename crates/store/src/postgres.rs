@@ -1197,11 +1197,17 @@ pub struct PersonListRow {
     pub country: String,
     pub organization: String,
     pub region: String,
-    pub priority_score: f64,
-    pub pain_index: f64,
-    pub change_risk: f64,
-    pub role_drift_score: f64,
-    pub engagement_status: String,
+    /// Stored priority vector (jsonb). The priority composite and band are
+    /// derived from it in Rust by `PersonIntelligenceView`; there is no
+    /// SQL-computed priority score.
+    pub priority_vector: Option<serde_json::Value>,
+    /// Measured influence on the 0..=1 scale; `None` = not measured (never a
+    /// zero-filled default).
+    pub influence: Option<f64>,
+    pub pain_index: Option<f64>,
+    pub change_risk: Option<f64>,
+    pub role_drift_score: Option<f64>,
+    pub engagement_status: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 

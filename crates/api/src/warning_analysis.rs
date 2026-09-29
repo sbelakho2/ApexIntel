@@ -583,6 +583,237 @@ impl ClaimRelation {
     }
 }
 
+/// Markers used by the bounded classifier. Deliberately small and explicit:
+/// the classifier commits only on a shared topic **and** compatible explicit
+/// polarity markers; anything subtler stays `Unclear` rather than guessing.
+const POSITIVE_MARKERS: &[&str] = &[
+    "expand",
+    "expands",
+    "expansion",
+    "increase",
+    "increases",
+    "increased",
+    "approve",
+    "approved",
+    "approval",
+    "award",
+    "awarded",
+    "launch",
+    "launched",
+    "win",
+    "wins",
+    "won",
+    "raise",
+    "raised",
+    "growth",
+    "grow",
+    "grew",
+    "acquire",
+    "acquired",
+    "acquisition",
+    "partner",
+    "partnership",
+    "signed",
+    "record",
+    "boost",
+    "upgrade",
+    "upgraded",
+    "strong",
+    "approves",
+    "boosts",
+    "launches",
+    "raises",
+    "acquires",
+];
+
+const NEGATIVE_MARKERS: &[&str] = &[
+    "deny",
+    "denies",
+    "denied",
+    "denial",
+    "cancel",
+    "cancelled",
+    "canceled",
+    "halt",
+    "halted",
+    "reject",
+    "rejected",
+    "delay",
+    "delayed",
+    "suspend",
+    "suspended",
+    "decrease",
+    "decreases",
+    "decreased",
+    "decline",
+    "declined",
+    "lose",
+    "lost",
+    "loss",
+    "breach",
+    "breached",
+    "lawsuit",
+    "fine",
+    "fined",
+    "recall",
+    "recalled",
+    "shutdown",
+    "layoff",
+    "layoffs",
+    "terminate",
+    "terminated",
+    "drop",
+    "dropped",
+    "shortage",
+    "disruption",
+    "fraud",
+    "investigation",
+    "weak",
+    "downgrade",
+    "downgraded",
+    "halts",
+    "suspends",
+    "cancels",
+    "declines",
+    "drops",
+    "rejects",
+    "terminates",
+];
+
+const RELATION_STOPWORDS: &[&str] = &[
+    "this",
+    "that",
+    "with",
+    "from",
+    "have",
+    "has",
+    "been",
+    "will",
+    "would",
+    "after",
+    "before",
+    "their",
+    "there",
+    "which",
+    "while",
+    "when",
+    "into",
+    "over",
+    "than",
+    "then",
+    "they",
+    "them",
+    "also",
+    "more",
+    "most",
+    "some",
+    "such",
+    "only",
+    "other",
+    "about",
+    "according",
+    "report",
+    "reports",
+    "reported",
+    "says",
+    "said",
+];
+
+fn significant_terms(text: &str) -> std::collections::HashSet<String> {
+    text.to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| term.len() >= 4 && !RELATION_STOPWORDS.contains(term))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Polarity of a text: `Some(true)` positive, `Some(false)` negative, `None`
+/// when absent or mixed.
+fn polarity(text: &str) -> Option<bool> {
+    let terms = significant_terms(text);
+    let positive = POSITIVE_MARKERS
+        .iter()
+        .filter(|marker| terms.contains(**marker))
+        .count();
+    let negative = NEGATIVE_MARKERS
+        .iter()
+        .filter(|marker| terms.contains(**marker))
+        .count();
+    match (positive > 0, negative > 0) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+/// All string leaves of an observation value, joined for classification.
+fn evidence_text_from_value(value: &serde_json::Value) -> String {
+    fn collect(value: &serde_json::Value, out: &mut String, depth: u8) {
+        if depth > 4 || out.len() > 4096 {
+            return;
+        }
+        match value {
+            serde_json::Value::String(text) => {
+                out.push_str(text);
+                out.push(' ');
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect(item, out, depth + 1);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    out.push_str(key);
+                    out.push(' ');
+                    collect(child, out, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    collect(value, &mut out, 0);
+    out
+}
+
+/// Deterministic, bounded claim-relation classification.
+///
+/// Precedence:
+/// 1. an explicit machine-readable relation on the evidence (already parsed);
+/// 2. a **shared significant topic term** between the claim and the evidence,
+///    without which no relation is claimed;
+/// 3. compatible explicit polarity markers: same polarity → `Supports`,
+///    opposite polarity → `Contradicts`.
+///
+/// Everything else stays `Unclear`. There is no negation parsing, no embedding
+/// similarity, no sentiment inference — a conservative seam that only reports
+/// relations a reviewer can trace to two visible tokens.
+pub fn classify_claim_relation(
+    claim: &str,
+    evidence_text: &str,
+    explicit: ClaimRelation,
+) -> ClaimRelation {
+    if explicit != ClaimRelation::Unclear {
+        return explicit;
+    }
+    let claim_terms = significant_terms(claim);
+    if claim_terms.is_empty() {
+        return ClaimRelation::Unclear;
+    }
+    let evidence_terms = significant_terms(evidence_text);
+    if claim_terms.is_disjoint(&evidence_terms) {
+        return ClaimRelation::Unclear;
+    }
+    match (polarity(claim), polarity(evidence_text)) {
+        (Some(claim_positive), Some(evidence_positive)) if claim_positive == evidence_positive => {
+            ClaimRelation::Supports
+        }
+        (Some(_), Some(_)) => ClaimRelation::Contradicts,
+        _ => ClaimRelation::Unclear,
+    }
+}
+
 /// The bounded evidence set handed to the model. `*_available` counts the
 /// real corpus, `observations`/`insights` are what was actually sent after the
 /// documented caps — the two are never conflated.
@@ -888,7 +1119,18 @@ pub fn assess_bundle_quality(
     for observation in &bundle.observations {
         let domain = observation_source_domain(observation);
         let tier = source_reliability_tier(bundle, domain.as_deref());
-        let mut item = EvidenceItem::new_optional(observation.confidence, EvidenceStance::Neutral)
+        // Explicit machine-readable relations win; otherwise the bounded
+        // classifier may derive a relation from a shared topic plus matching
+        // polarity markers; everything else stays Unclear (never assumed
+        // support).
+        let explicit = ClaimRelation::from_observation_value(&observation.value);
+        let stance = classify_claim_relation(
+            claim,
+            &evidence_text_from_value(&observation.value),
+            explicit,
+        )
+        .evidence_stance();
+        let mut item = EvidenceItem::new_optional(observation.confidence, stance)
             .with_source_type(observation.observation_type.clone())
             .with_observed_at(observation.ts_utc)
             .with_source_reliability(tier);
@@ -2240,6 +2482,71 @@ mod tests {
         );
         assert!(!bundle.evidence_scope.has_direct_observations());
         assert!(bundle.evidence_scope.is_explicit());
+    }
+
+    #[test]
+    fn classifier_requires_a_shared_topic() {
+        // Different subjects: no relation may be claimed.
+        assert_eq!(
+            classify_claim_relation(
+                "Acme expands factory capacity",
+                "Beta denies expansion plans",
+                ClaimRelation::Unclear,
+            ),
+            ClaimRelation::Unclear
+        );
+    }
+
+    #[test]
+    fn classifier_detects_opposite_polarity_on_a_shared_topic() {
+        assert_eq!(
+            classify_claim_relation(
+                "Acme expands factory capacity",
+                "Acme denies factory capacity plans",
+                ClaimRelation::Unclear,
+            ),
+            ClaimRelation::Contradicts
+        );
+        assert_eq!(
+            classify_claim_relation(
+                "Acme expands factory capacity",
+                "Acme approves expansion of factory capacity",
+                ClaimRelation::Unclear,
+            ),
+            ClaimRelation::Supports
+        );
+    }
+
+    #[test]
+    fn classifier_leaves_mixed_or_missing_polarity_unclear() {
+        assert_eq!(
+            classify_claim_relation(
+                "Acme expands factory capacity",
+                "Acme expands capacity but denies reports about timing",
+                ClaimRelation::Unclear,
+            ),
+            ClaimRelation::Unclear
+        );
+        assert_eq!(
+            classify_claim_relation(
+                "Acme expands factory capacity",
+                "Acme capacity update",
+                ClaimRelation::Unclear,
+            ),
+            ClaimRelation::Unclear
+        );
+    }
+
+    #[test]
+    fn explicit_relation_always_wins() {
+        assert_eq!(
+            classify_claim_relation(
+                "Acme expands factory capacity",
+                "Acme announces expansion",
+                ClaimRelation::Contradicts,
+            ),
+            ClaimRelation::Contradicts
+        );
     }
 
     /// A warning with no `warning_evidence` rows at all keeps the legacy

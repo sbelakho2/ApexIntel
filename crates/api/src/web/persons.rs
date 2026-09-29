@@ -346,8 +346,10 @@ pub struct PersonListCard {
     pub role: String,
     pub organization: String,
     pub region: String,
-    pub priority: String,
-    pub influence_score: i64,
+    /// A/B/C band from the stored priority vector; `None` = not measured.
+    pub priority: Option<String>,
+    /// Measured influence 0-100; `None` = not measured.
+    pub influence_score: Option<i64>,
     pub tags: Vec<String>,
 }
 
@@ -358,7 +360,18 @@ pub struct BuyingCenterPerson {
     pub name: String,
     pub role: String,
     pub buying_center_role: String,
-    pub influence_score: i64,
+    /// Measured influence 0-100; `None` = not measured.
+    pub influence_score: Option<i64>,
+}
+
+/// Descending comparison that keeps unmeasured (`None`) values last.
+fn cmp_measured_desc(a: &Option<i64>, b: &Option<i64>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => b.cmp(a),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 /// People grouped by organisation with their buying-centre role.
@@ -443,7 +456,12 @@ pub struct PersonsPage {
     pub total_persons: i64,
     pub priority_a: i64,
     pub priority_b: i64,
-    pub avg_influence: i64,
+    /// Mean measured influence; `None` when nothing is measured.
+    pub avg_influence: Option<i64>,
+    /// Display form of `avg_influence` ("—" when unmeasured).
+    pub avg_influence_display: String,
+    /// People whose influence has not been measured.
+    pub influence_unmeasured: i64,
     pub influence_groups: Vec<InfluenceGroup>,
     pub region_filters: Vec<RegionFilterChip>,
     pub priority_filters: Vec<PriorityFilterChip>,
@@ -551,6 +569,18 @@ pub async fn list_persons(
     let selected_region_lc = selected_region.to_lowercase();
     let selected_q_lc = selected_q.to_lowercase();
 
+    // One canonical intelligence view per row (audit P2-18): priority from the
+    // stored vector, influence measured, never conflated.
+    let view_for = |row: &apex_store::postgres::PersonListRow| {
+        crate::person_intelligence::PersonIntelligenceView::from_measurements(
+            row.priority_vector.as_ref(),
+            row.influence,
+            row.engagement_status.as_deref(),
+            None,
+            &[],
+        )
+    };
+
     let filtered_rows = all_rows
         .iter()
         .filter(|row| {
@@ -562,11 +592,13 @@ pub async fn list_persons(
                 }
             }
 
-            let score = (row.priority_score * 100.0).round() as i64;
+            // Band filters match measured priority only: an unmeasured row is
+            // in no band.
+            let band = view_for(row).priority_band;
             if !match selected_priority.as_str() {
-                "A" => score >= 80,
-                "B" => (50..80).contains(&score),
-                "C" => score < 50,
+                "A" => band.as_deref() == Some("A"),
+                "B" => band.as_deref() == Some("B"),
+                "C" => band.as_deref() == Some("C"),
                 _ => true,
             } {
                 return false;
@@ -595,30 +627,38 @@ pub async fn list_persons(
     let mut influence_sum = 0_i64;
     let mut groups = [0_i64; 5];
 
+    let mut influence_measured = 0_i64;
+    let mut influence_unmeasured = 0_i64;
     for row in &filtered_rows {
-        let score = (row.priority_score * 100.0).round() as i64;
-        influence_sum += score;
-
-        if score >= 80 {
-            priority_a += 1;
-        } else if score >= 50 {
-            priority_b += 1;
+        let view = view_for(row);
+        match view.priority_band.as_deref() {
+            Some("A") => priority_a += 1,
+            Some("B") => priority_b += 1,
+            _ => {}
         }
 
-        match score {
-            x if x < 20 => groups[0] += 1,
-            x if x < 40 => groups[1] += 1,
-            x if x < 60 => groups[2] += 1,
-            x if x < 80 => groups[3] += 1,
-            _ => groups[4] += 1,
+        match view.influence_score {
+            Some(score) => {
+                influence_sum += score;
+                influence_measured += 1;
+                match score {
+                    x if x < 20 => groups[0] += 1,
+                    x if x < 40 => groups[1] += 1,
+                    x if x < 60 => groups[2] += 1,
+                    x if x < 80 => groups[3] += 1,
+                    _ => groups[4] += 1,
+                }
+            }
+            None => influence_unmeasured += 1,
         }
     }
 
-    let avg_influence = if total_persons > 0 {
-        influence_sum / total_persons
+    let avg_influence = if influence_measured > 0 {
+        Some(influence_sum / influence_measured)
     } else {
-        0
+        None
     };
+    let _ = total_persons;
 
     let max_group = groups.iter().copied().max().unwrap_or(0).max(1);
     let influence_groups = vec![
@@ -652,14 +692,7 @@ pub async fn list_persons(
     let persons = filtered_rows
         .iter()
         .map(|row| {
-            let score = (row.priority_score * 100.0).round() as i64;
-            let priority = if score >= 80 {
-                "A"
-            } else if score >= 50 {
-                "B"
-            } else {
-                "C"
-            };
+            let view = view_for(row);
             let mut tags = Vec::new();
             if !row.role_family.trim().is_empty() {
                 tags.push(row.role_family.clone());
@@ -673,8 +706,8 @@ pub async fn list_persons(
                 role: row.role.clone(),
                 organization: row.organization.clone(),
                 region: row.region.clone(),
-                priority: priority.to_string(),
-                influence_score: score,
+                priority: view.priority_band,
+                influence_score: view.influence_score,
                 tags,
             }
         })
@@ -748,7 +781,7 @@ pub async fn list_persons(
                 name: row.name.clone(),
                 role: row.role.clone(),
                 buying_center_role: role.to_string(),
-                influence_score: (row.priority_score * 100.0).round() as i64,
+                influence_score: view_for(row).influence_score,
             });
         }
         let mut groups: Vec<BuyingCenterGroup> = grouped
@@ -757,7 +790,7 @@ pub async fn list_persons(
                 members.sort_by(|a, b| {
                     buying_center_role_rank(&b.buying_center_role)
                         .cmp(&buying_center_role_rank(&a.buying_center_role))
-                        .then(b.influence_score.cmp(&a.influence_score))
+                        .then(cmp_measured_desc(&a.influence_score, &b.influence_score))
                 });
                 let deciders = members
                     .iter()
@@ -793,7 +826,9 @@ pub async fn list_persons(
         total_persons,
         priority_a,
         priority_b,
+        avg_influence_display: avg_influence.map_or_else(|| "—".to_string(), |v| v.to_string()),
         avg_influence,
+        influence_unmeasured,
         influence_groups,
         region_filters,
         priority_filters,

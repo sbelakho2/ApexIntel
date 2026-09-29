@@ -204,17 +204,20 @@ pub(crate) async fn export_persons_csv(
         for row in rows {
             let item = person_row_to_item(row);
             chunk.push_str(&format!(
-                "{},{},{},{},{},{},{:.4},{:.2},{:.2},{:.2},{},{}\n",
+                "{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{},{}\n",
                 csv_escape(&item.id),
                 csv_escape(&item.name),
                 csv_escape(&item.role),
                 csv_escape(&item.role_family),
                 csv_escape(&item.organization),
                 csv_escape(&item.region),
-                item.priority_score,
-                item.pain_index,
-                item.change_risk,
-                item.role_drift_score,
+                // Unmeasured priority exports as an empty cell, never 0.
+                item.priority_score
+                    .map(|score| format!("{score:.4}"))
+                    .unwrap_or_default(),
+                item.pain_index.unwrap_or_default(),
+                item.change_risk.unwrap_or_default(),
+                item.role_drift_score.unwrap_or_default(),
                 csv_escape(&item.engagement_status),
                 csv_escape(&item.updated_at.to_rfc3339()),
             ));

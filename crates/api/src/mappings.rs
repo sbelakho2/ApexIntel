@@ -90,16 +90,16 @@ pub(crate) fn company_row_to_item(row: CompanyRow) -> CompanyListItem {
 }
 
 pub(crate) fn person_row_to_item(row: PersonListRow) -> PersonListItem {
-    let score = clamp_ratio(row.priority_score);
-    let influence_score = (score * 100.0).round() as i64;
-    let priority = if influence_score >= 80 {
-        "A"
-    } else if influence_score >= 50 {
-        "B"
-    } else {
-        "C"
-    }
-    .to_string();
+    // One canonical view (person_intelligence): priority from the stored
+    // vector, influence measured separately. The previous mapping labelled the
+    // priority score as influence and vice versa.
+    let view = apex_api::person_intelligence::PersonIntelligenceView::from_measurements(
+        row.priority_vector.as_ref(),
+        row.influence,
+        row.engagement_status.as_deref(),
+        None,
+        &[],
+    );
 
     PersonListItem {
         id: row.id.to_string(),
@@ -109,14 +109,14 @@ pub(crate) fn person_row_to_item(row: PersonListRow) -> PersonListItem {
         organization: row.organization,
         region: row.region,
         country: row.country,
-        priority_score: score,
+        priority_score: view.priority_score,
         pain_index: row.pain_index,
         change_risk: row.change_risk,
         role_drift_score: row.role_drift_score,
-        influence_score,
-        priority,
-        influence_tier: priority_tier(score).to_string(),
-        engagement_status: row.engagement_status,
+        influence_score: view.influence_score,
+        priority: view.priority_band,
+        influence_tier: view.influence_tier_label,
+        engagement_status: view.engagement_status,
         tags: vec![row.role_family],
         last_signal: row.updated_at.format("%Y-%m-%d").to_string(),
         updated_at: row.updated_at,
@@ -183,6 +183,25 @@ mod tests {
         assert!(mapped.tags.is_empty());
     }
 
+    fn mapped_row_fixture() -> PersonListRow {
+        PersonListRow {
+            id: Uuid::new_v4(),
+            name: "Fixture".to_string(),
+            role: "CTO".to_string(),
+            role_family: "Executive".to_string(),
+            organization: "Fixture Ltd".to_string(),
+            region: "EU".to_string(),
+            country: "FI".to_string(),
+            priority_vector: None,
+            influence: None,
+            pain_index: None,
+            change_risk: None,
+            role_drift_score: None,
+            engagement_status: None,
+            updated_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn person_row_mapping_preserves_expected_priority_fields() {
         let row = PersonListRow {
@@ -193,17 +212,40 @@ mod tests {
             organization: "Acme EMS".to_string(),
             region: "US".to_string(),
             country: "US".to_string(),
-            priority_score: 0.81,
-            pain_index: 0.0,
-            change_risk: 0.0,
-            role_drift_score: 0.0,
-            engagement_status: "engaged".to_string(),
+            priority_vector: Some(serde_json::json!({
+                "decision_power": 0.81,
+                "domain_relevance": 0.81,
+                "network_centrality": 0.81,
+                "engagement_potential": 0.81,
+                "intelligence_value": 0.81,
+            })),
+            // Measured influence is a separate quantity from priority.
+            influence: Some(0.72),
+            pain_index: Some(0.0),
+            change_risk: Some(0.0),
+            role_drift_score: Some(0.0),
+            engagement_status: Some("engaged".to_string()),
             updated_at: Utc::now(),
         };
 
         let mapped = person_row_to_item(row);
-        assert_eq!(mapped.priority, "A");
-        assert_eq!(mapped.influence_tier, "critical");
-        assert_eq!(mapped.influence_score, 81);
+        assert_eq!(mapped.priority.as_deref(), Some("A"));
+        assert_eq!(mapped.influence_tier, "high");
+        assert_eq!(mapped.influence_score, Some(72));
+        assert_eq!(mapped.engagement_status, "engaged");
+
+        // Unmeasured priority and influence are absent, not zero.
+        let bare = PersonListRow {
+            priority_vector: None,
+            influence: None,
+            engagement_status: None,
+            ..mapped_row_fixture()
+        };
+        let bare = person_row_to_item(bare);
+        assert_eq!(bare.priority_score, None);
+        assert_eq!(bare.priority, None);
+        assert_eq!(bare.influence_score, None);
+        assert_eq!(bare.influence_tier, "not measured");
+        assert_eq!(bare.engagement_status, "not measured");
     }
 }

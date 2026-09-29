@@ -65,14 +65,16 @@ pub struct PersonListItem {
     pub organization: String,
     pub region: String,
     pub country: String,
-    pub priority_score: f64,
-    pub pain_index: f64,
-    pub change_risk: f64,
-    pub role_drift_score: f64,
-    /// Legacy 0-100 influence score expected by pre-migration cards/charts.
-    pub influence_score: i64,
-    /// Legacy priority band used by pre-migration filters.
-    pub priority: String,
+    /// Weighted composite of the stored priority vector; `None` when the
+    /// vector is not stored (unknown priority, not a zero band).
+    pub priority_score: Option<f64>,
+    pub pain_index: Option<f64>,
+    pub change_risk: Option<f64>,
+    pub role_drift_score: Option<f64>,
+    /// Measured influence on the 0-100 scale; `None` = not measured.
+    pub influence_score: Option<i64>,
+    /// A/B/C priority band; `None` when priority is unmeasured.
+    pub priority: Option<String>,
     pub influence_tier: String,
     pub engagement_status: String,
     pub tags: Vec<String>,
@@ -221,7 +223,7 @@ pub struct PeerSummary {
     pub role: String,
     pub organization: String,
     pub region: String,
-    pub priority_score: f64,
+    pub priority_score: Option<f64>,
     pub influence_tier: String,
 }
 
@@ -253,10 +255,9 @@ pub fn sort_persons(items: &mut [PersonListItem], field: &PersonSortField, desc:
     items.sort_by(|a, b| {
         let cmp = match field {
             PersonSortField::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            PersonSortField::Priority => a
-                .priority_score
-                .partial_cmp(&b.priority_score)
-                .unwrap_or(std::cmp::Ordering::Equal),
+            PersonSortField::Priority => {
+                cmp_measured_ascending(&a.priority_score, &b.priority_score)
+            }
             PersonSortField::Region => a.region.cmp(&b.region),
             PersonSortField::UpdatedAt => a.updated_at.cmp(&b.updated_at),
         };
@@ -270,7 +271,21 @@ pub fn sort_persons(items: &mut [PersonListItem], field: &PersonSortField, desc:
 
 /// Filter persons by minimum priority.
 pub fn filter_by_priority(items: &[PersonListItem], min: f64) -> Vec<&PersonListItem> {
-    items.iter().filter(|p| p.priority_score >= min).collect()
+    // Unmeasured priority never passes a numeric threshold.
+    items
+        .iter()
+        .filter(|p| p.priority_score.is_some_and(|score| score >= min))
+        .collect()
+}
+
+/// Ascending comparison that keeps unmeasured (`None`) values last.
+fn cmp_measured_ascending<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 /// Filter persons by role (comma-separated roles string).
@@ -337,19 +352,16 @@ mod tests {
             organization: "Test Org".to_string(),
             region: region.to_string(),
             country: "US".to_string(),
-            priority_score: priority,
-            pain_index: 0.0,
-            change_risk: 0.0,
-            role_drift_score: 0.0,
-            influence_score: (priority.clamp(0.0, 1.0) * 100.0).round() as i64,
-            priority: if priority >= 0.8 {
-                "A".to_string()
-            } else if priority >= 0.6 {
-                "B".to_string()
-            } else {
-                "C".to_string()
-            },
-            influence_tier: super::priority_tier(priority).to_string(),
+            priority_score: Some(priority),
+            pain_index: Some(0.0),
+            change_risk: Some(0.0),
+            role_drift_score: Some(0.0),
+            influence_score: Some((priority.clamp(0.0, 1.0) * 100.0).round() as i64),
+            priority: Some(crate::person_intelligence::priority_band(priority).to_string()),
+            influence_tier: crate::person_intelligence::influence_tier(Some(
+                (priority.clamp(0.0, 1.0) * 100.0).round() as i64,
+            ))
+            .to_string(),
             engagement_status: "new".to_string(),
             tags: vec![],
             last_signal: "".to_string(),
