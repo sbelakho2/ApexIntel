@@ -100,7 +100,7 @@ pub struct RecipesListPage {
     pub avg_success_rate: Option<i64>,
     pub total_runs_sum: i64,
     pub avg_precision: Option<i64>,
-    pub avg_recall: i64,
+    pub avg_coverage: i64,
     pub precision_points: String,
     pub fpr_points: String,
     pub precision_circles: Vec<RecipePerfPoint>,
@@ -128,7 +128,7 @@ pub struct RecipesListPartial {
     pub avg_success_rate: Option<i64>,
     pub total_runs_sum: i64,
     pub avg_precision: Option<i64>,
-    pub avg_recall: i64,
+    pub avg_coverage: i64,
     pub precision_points: String,
     pub fpr_points: String,
     pub precision_circles: Vec<RecipePerfPoint>,
@@ -260,7 +260,7 @@ pub async fn list_recipes(
     };
     // Use real persisted quality signals instead of unacknowledged-alert ratios.
     let avg_precision = quality_summary.avg_precision_pct;
-    let avg_recall = quality_summary.coverage_pct;
+    let avg_coverage = quality_summary.coverage_pct;
 
     // Real 12-month history: monthly aggregates over the persisted weekly
     // `recipe_weekly_metrics` snapshots. A month with no measurement is not
@@ -374,7 +374,7 @@ pub async fn list_recipes(
         avg_success_rate,
         total_runs_sum,
         avg_precision,
-        avg_recall,
+        avg_coverage,
         precision_points,
         fpr_points,
         precision_circles,
@@ -400,7 +400,7 @@ pub async fn list_recipes(
             avg_success_rate: tpl.avg_success_rate,
             total_runs_sum: tpl.total_runs_sum,
             avg_precision: tpl.avg_precision,
-            avg_recall: tpl.avg_recall,
+            avg_coverage: tpl.avg_coverage,
             precision_points: tpl.precision_points.clone(),
             fpr_points: tpl.fpr_points.clone(),
             precision_circles: tpl.precision_circles.clone(),

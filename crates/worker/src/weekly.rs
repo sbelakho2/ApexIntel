@@ -48,9 +48,12 @@ pub struct ProductionRecipe {
     pub recipe_id: String,
     pub promoted_at: DateTime<Utc>,
     pub weeks_in_production: u32,
+    /// Measured precision points (newest last). Only measured values appear.
     pub precision_history: Vec<f64>,
     pub recall_history: Vec<f64>,
-    pub false_positive_rate: f64,
+    /// Measured false-positive rate; `None` = not measured (never a favorable
+    /// implicit zero).
+    pub false_positive_rate: Option<f64>,
     pub alerts_fired_total: u64,
 }
 
@@ -328,14 +331,13 @@ pub fn evaluate_deprecation(
         };
     }
 
-    // High FPR
-    if recipe.false_positive_rate > policy.max_false_positive_rate {
-        return DeprecationDecision::Deprecate {
-            reason: format!(
-                "FPR {:.3} > {:.3}",
-                recipe.false_positive_rate, policy.max_false_positive_rate
-            ),
-        };
+    // High FPR — only a measured rate can trip a measured threshold.
+    if let Some(fpr) = recipe.false_positive_rate {
+        if fpr > policy.max_false_positive_rate {
+            return DeprecationDecision::Deprecate {
+                reason: format!("FPR {fpr:.3} > {:.3}", policy.max_false_positive_rate),
+            };
+        }
     }
 
     // Precision declining for N consecutive weeks
@@ -1026,7 +1028,7 @@ mod tests {
             weeks_in_production: 30,
             precision_history: vec![0.90, 0.88, 0.91, 0.89, 0.90],
             recall_history: vec![0.45, 0.47, 0.44, 0.46, 0.45],
-            false_positive_rate: 0.03,
+            false_positive_rate: Some(0.03),
             alerts_fired_total: 150,
         }
     }
@@ -1038,7 +1040,7 @@ mod tests {
             weeks_in_production: 20,
             precision_history: vec![0.85, 0.70, 0.55, 0.42],
             recall_history: vec![0.40, 0.35, 0.30, 0.25],
-            false_positive_rate: (0.08),
+            false_positive_rate: Some(0.08),
             alerts_fired_total: 80,
         }
     }
@@ -1050,7 +1052,7 @@ mod tests {
             weeks_in_production: 10,
             precision_history: vec![],
             recall_history: vec![],
-            false_positive_rate: (0.0),
+            false_positive_rate: Some(0.0),
             alerts_fired_total: 0,
         }
     }
@@ -1062,7 +1064,7 @@ mod tests {
             weeks_in_production: 15,
             precision_history: vec![0.60, 0.55, 0.50],
             recall_history: vec![0.50, 0.48, 0.45],
-            false_positive_rate: (0.20),
+            false_positive_rate: Some(0.20),
             alerts_fired_total: 100,
         }
     }
@@ -1293,7 +1295,7 @@ mod tests {
             weeks_in_production: 4,
             precision_history: vec![0.0, 0.0],
             recall_history: vec![],
-            false_positive_rate: (0.0),
+            false_positive_rate: Some(0.0),
             alerts_fired_total: 0,
         };
         let policy = DeprecationPolicy::default();

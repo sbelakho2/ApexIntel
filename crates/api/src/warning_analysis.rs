@@ -41,6 +41,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -537,6 +538,50 @@ fn validate_section(
 // ─────────────────────────────────────────────────────────────────────────────
 // Evidence gathering (full bounded set, with sent-vs-available counts)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// The relation between one piece of evidence and the warning's claim.
+///
+/// No NLP classifier exists yet. `Unclear` is the default and is never treated
+/// as support; `Supports`/`Contradicts` are produced only when the evidence
+/// itself carries an explicit machine-readable relation (for example an
+/// observation value with `"claim_relation": "contradicts"`). Unstructured
+/// evidence stays `Unclear` (scored as `Neutral`) instead of being assumed
+/// supportive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimRelation {
+    #[default]
+    Unclear,
+    Supports,
+    Contradicts,
+    Neutral,
+}
+
+impl ClaimRelation {
+    /// The quality-model stance this relation maps to. `Unclear` maps to
+    /// `Neutral`: no semantic corroboration is claimed without classification.
+    pub fn evidence_stance(self) -> EvidenceStance {
+        match self {
+            Self::Supports => EvidenceStance::Supports,
+            Self::Contradicts => EvidenceStance::Contradicts,
+            Self::Neutral | Self::Unclear => EvidenceStance::Neutral,
+        }
+    }
+
+    /// Relation recorded on an observation's value, when present and known.
+    pub fn from_observation_value(value: &serde_json::Value) -> Self {
+        match value
+            .get("claim_relation")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+        {
+            Some("supports") => Self::Supports,
+            Some("contradicts") => Self::Contradicts,
+            Some("neutral") => Self::Neutral,
+            _ => Self::Unclear,
+        }
+    }
+}
 
 /// The bounded evidence set handed to the model. `*_available` counts the
 /// real corpus, `observations`/`insights` are what was actually sent after the

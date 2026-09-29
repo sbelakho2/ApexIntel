@@ -40,7 +40,7 @@ SCOPE=(
 
 ALLOWLIST="scripts/ci/sensitive_defaults_allowlist.txt"
 
-SINGLE_LINE_PATTERN='\.await[[:space:]]*\.unwrap_or|\.await[[:space:]]*\.ok\(\)|\.ok\(\)\.flatten\(\)|\.await[[:space:]]*\.expect\(|\.await[[:space:]]*\.unwrap\(\)|try_get[^;]*\.unwrap_or'
+SINGLE_LINE_PATTERN='\.await[[:space:]]*\.unwrap_or|\.await[[:space:]]*\.ok\(\)|\.ok\(\)\.flatten\(\)|\.await[[:space:]]*\.expect\(|\.await[[:space:]]*\.unwrap\(\)|try_get[^;]*\.unwrap_or|try_get[^;]*\.ok\(\)\?|map_while\(|flat_map\(Result::ok\)|flat_map\(std::result::Result::ok\)'
 
 if [ ! -f "$ALLOWLIST" ]; then
   echo "ERROR: allowlist missing: $ALLOWLIST" >&2
@@ -128,6 +128,23 @@ while IFS= read -r file; do
     }')"
   [ -z "$found" ] && continue
   while IFS= read -r match; do
+    line="${match%%:*}"
+    text="${match#*:}"
+    if ! is_allowed "$file:$line" "$file"; then
+      echo "SENSITIVE-DEFAULT: $file:$line:$text"
+      violations=$((violations + 1))
+    fi
+  done <<< "$found"
+done <<< "$files"
+
+# ── Pass 3: `filter_map` whose body decodes a row with try_get. ─────────────
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  cutoff="$(file_cutoff "$file")"
+  found="$(head -n "$cutoff" "$file" | grep -n 'filter_map(' -A6 | grep -B1 -E 'try_get\([^)]*\)\.ok\(\)' | grep 'filter_map(' || true)"
+  [ -z "$found" ] && continue
+  while IFS= read -r match; do
+    [ -z "$match" ] && continue
     line="${match%%:*}"
     text="${match#*:}"
     if ! is_allowed "$file:$line" "$file"; then

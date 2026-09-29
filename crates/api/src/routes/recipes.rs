@@ -24,7 +24,10 @@ pub struct ListRecipesQuery {
 pub enum RecipeSortField {
     Name,
     Precision,
-    Recall,
+    /// Promotion-readiness evidence (measured precision + sample maturity).
+    /// Serialized as "promotion_evidence"; "recall" is accepted as a
+    /// deprecated alias because it never measured recall.
+    PromotionEvidence,
     CreatedAt,
     FiredCount,
 }
@@ -34,7 +37,8 @@ impl RecipeSortField {
         match s.to_lowercase().as_str() {
             "name" => Some(Self::Name),
             "precision" => Some(Self::Precision),
-            "recall" => Some(Self::Recall),
+            // Deprecated alias: this field never measured TP/(TP+FN).
+            "recall" | "promotion_evidence" => Some(Self::PromotionEvidence),
             "created_at" | "created" | "date" => Some(Self::CreatedAt),
             "fired" | "fired_count" | "alerts" => Some(Self::FiredCount),
             _ => None,
@@ -108,10 +112,12 @@ pub struct RecipePerformanceDetail {
     pub recipe_id: String,
     pub recipe_name: String,
     pub precision_trend: Vec<f64>,
-    pub recall_trend: Vec<f64>,
+    /// Promotion-evidence trend (not recall; recall requires an evaluation
+    /// set of TP/(TP+FN) which does not exist yet).
+    pub promotion_evidence_trend: Vec<f64>,
     pub weekly_fires: Vec<u32>,
     pub avg_precision: f64,
-    pub avg_recall: f64,
+    pub avg_promotion_evidence: f64,
 }
 
 // ────────────────────────────────────────────
@@ -135,7 +141,7 @@ pub fn sort_recipes(items: &mut [RecipeListItem], field: &RecipeSortField, desc:
             RecipeSortField::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             // Ascending by measured value; unmeasured values sort last.
             RecipeSortField::Precision => cmp_measured_ascending(&a.precision, &b.precision),
-            RecipeSortField::Recall => a
+            RecipeSortField::PromotionEvidence => a
                 .promotion_evidence_score
                 .partial_cmp(&b.promotion_evidence_score)
                 .unwrap_or(std::cmp::Ordering::Equal),
@@ -199,15 +205,57 @@ pub fn is_promotable(
 
 /// Recipe health score combining measured precision, promotion evidence and
 /// activity. Unmeasured precision/FPR contribute nothing rather than zeros.
-pub fn recipe_health(recipe: &RecipeListItem) -> f64 {
-    let precision_score = recipe.precision.unwrap_or(0.0);
-    let recall_score = recipe.promotion_evidence_score;
-    let fpr_penalty = recipe.false_positive_rate.unwrap_or(0.0);
-    let activity_bonus = if recipe.fired_count > 0 { 0.1 } else { 0.0 };
+/// Recipe health over *measured* components only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipeHealth {
+    /// Composite over measured components, weights renormalized. `None` when
+    /// nothing was measured — an unmeasured recipe has no score, not a zero.
+    pub score: Option<f64>,
+    /// Share (0.0..=1.0) of the weighted components that were measured
+    /// (precision, promotion evidence, measured FPR; activity is always
+    /// measured from the fire count).
+    pub completeness: f64,
+}
 
-    let score: f64 =
-        0.4 * precision_score + 0.3 * recall_score - 0.2 * fpr_penalty + activity_bonus;
-    score.clamp(0.0, 1.0)
+/// Compute recipe health without conflating unknown with zero.
+///
+/// An unmeasured precision or FPR contributes **nothing** — neither a zero
+/// score nor an implicit perfect-FPR bonus: its weight is removed from the
+/// denominator and reflected in [`RecipeHealth::completeness`] instead.
+pub fn recipe_health(recipe: &RecipeListItem) -> RecipeHealth {
+    let mut weighted_sum = 0.0;
+    let mut weight_total = 0.0;
+    let mut measured_weight = 0.0;
+    const TOTAL_WEIGHT: f64 = 1.0; // 0.4 precision + 0.3 evidence + 0.2 fpr + 0.1 activity
+
+    if let Some(precision) = recipe.precision {
+        weighted_sum += 0.4 * precision.clamp(0.0, 1.0);
+        weight_total += 0.4;
+        measured_weight += 0.4;
+    }
+    // Promotion evidence is always computed from real counters.
+    weighted_sum += 0.3 * recipe.promotion_evidence_score.clamp(0.0, 1.0);
+    weight_total += 0.3;
+    measured_weight += 0.3;
+    if let Some(fpr) = recipe.false_positive_rate {
+        weighted_sum -= 0.2 * fpr.clamp(0.0, 1.0);
+        weight_total += 0.2;
+        measured_weight += 0.2;
+    }
+    let activity_bonus = if recipe.fired_count > 0 { 0.1 } else { 0.0 };
+    weighted_sum += activity_bonus;
+    weight_total += 0.1;
+    measured_weight += 0.1;
+
+    let score = if weight_total <= 0.0 {
+        None
+    } else {
+        Some((weighted_sum / weight_total).clamp(0.0, 1.0))
+    };
+    RecipeHealth {
+        score,
+        completeness: (measured_weight / TOTAL_WEIGHT).clamp(0.0, 1.0),
+    }
 }
 
 /// Compute aggregate recipe stats.
@@ -385,16 +433,17 @@ mod tests {
     #[test]
     fn test_recipe_health() {
         let r = make_recipe("A", RecipeStatus::Production, 0.9, 0.7, 0.05, 10);
-        let h = recipe_health(&r);
+        let health = recipe_health(&r);
         // 0.4*0.9 + 0.3*0.7 - 0.2*0.05 + 0.1 = 0.36 + 0.21 - 0.01 + 0.1 = 0.66
-        assert!((h - 0.66).abs() < 0.01);
+        assert!((health.score.unwrap() - 0.66).abs() < 0.01);
+        assert!((health.completeness - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn test_recipe_health_clamped() {
         let r = make_recipe("A", RecipeStatus::Production, 0.0, 0.0, 1.0, 0);
-        let h = recipe_health(&r);
-        assert!(h >= 0.0);
+        let health = recipe_health(&r);
+        assert!(health.score.unwrap() >= 0.0);
     }
 
     #[test]

@@ -30,7 +30,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, i64, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, i64, i64)>(
             r#"SELECT unnest(entity_ids) AS entity_id,
                       DATE_PART('day', date_trunc('day', COALESCE(created_at, ts_utc)) - date_trunc('day', $1))::BIGINT AS day_offset,
                       COUNT(*)::BIGINT AS cnt
@@ -45,7 +45,7 @@ impl PgStore {
         .bind(since)
         .fetch_all(&self.pool)
         .await?;
-        Self::parse_entity_day_rows(rows)
+        Ok(rows)
     }
 
     /// Daily insight counts per entity (B311). The entity activity chart
@@ -55,7 +55,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, i64, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, i64, i64)>(
             r#"SELECT entity_id,
                       DATE_PART('day', date_trunc('day', created_at) - date_trunc('day', $1))::BIGINT AS day_offset,
                       COUNT(*)::BIGINT AS cnt
@@ -72,7 +72,7 @@ impl PgStore {
         .bind(since)
         .fetch_all(&self.pool)
         .await?;
-        Self::parse_entity_day_rows(rows)
+        Ok(rows)
     }
 
     /// Total warning count per entity across all time (B315) — powers list
@@ -107,19 +107,6 @@ impl PgStore {
         .await?;
 
         Ok(rows)
-    }
-
-    fn parse_entity_day_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<(Uuid, i64, i64)>> {
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let entity_id: Uuid = row.try_get("entity_id").ok()?;
-                let day_offset: i64 = row.try_get("day_offset").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((entity_id, day_offset, cnt))
-            })
-            .collect())
     }
 
     pub async fn record_stats_alert_calibration_event(
@@ -390,7 +377,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, i64)>(
             r#"SELECT entity_id, observation_type, COUNT(*)::BIGINT AS cnt
                FROM observations
                WHERE entity_id IS NOT NULL AND ts_utc >= $1
@@ -401,25 +388,14 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        let result = rows
-            .into_iter()
-            .filter_map(|row| {
-                let entity_id: Uuid = row.try_get("entity_id").ok()?;
-                let obs_type: String = row.try_get("observation_type").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((entity_id, obs_type, cnt))
-            })
-            .collect();
-
-        Ok(result)
+        Ok(rows)
     }
 
     pub async fn get_warning_type_counts_per_entity(
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, i64)>(
             r#"SELECT unnest(entity_ids) AS eid, warning_type, COUNT(*)::BIGINT AS cnt
                FROM warnings
                WHERE entity_ids IS NOT NULL
@@ -432,25 +408,14 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        let result = rows
-            .into_iter()
-            .filter_map(|row| {
-                let eid: Uuid = row.try_get("eid").ok()?;
-                let wt: String = row.try_get("warning_type").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((eid, wt, cnt))
-            })
-            .collect();
-
-        Ok(result)
+        Ok(rows)
     }
 
     pub async fn get_competitor_event_features(
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, String, i64)>(
             r#"SELECT entity_id,
                       COALESCE(value->>'signal_type', '') AS sig,
                       COALESCE(value->>'keyword', '') AS kw,
@@ -466,26 +431,14 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        let result = rows
-            .into_iter()
-            .filter_map(|row| {
-                let eid: Uuid = row.try_get("entity_id").ok()?;
-                let sig: String = row.try_get("sig").ok()?;
-                let kw: String = row.try_get("kw").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((eid, sig, kw, cnt))
-            })
-            .collect();
-
-        Ok(result)
+        Ok(rows)
     }
 
     pub async fn get_webchange_jsonb_features(
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, String, i64)>(
             r#"SELECT entity_id,
                       COALESCE(value->>'source_id', '') AS src,
                       COALESCE(value->>'signal_type', '') AS sig,
@@ -501,19 +454,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        let result = rows
-            .into_iter()
-            .filter_map(|row| {
-                let eid: Uuid = row.try_get("entity_id").ok()?;
-                let src: String = row.try_get("src").ok()?;
-                let sig: String = row.try_get("sig").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((eid, src, sig, cnt))
-            })
-            .collect();
-
-        Ok(result)
+        Ok(rows)
     }
 
     pub async fn get_webchange_keyword_features(

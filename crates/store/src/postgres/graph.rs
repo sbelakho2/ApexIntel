@@ -7,7 +7,7 @@ fn normalize_graph_limit(limit: u32) -> i64 {
 impl PgStore {
     /// Extract graph-edge features per entity.
     pub async fn get_graph_edge_features(&self) -> Result<Vec<(Uuid, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, i64)>(
             r#"SELECT source_id,
                       edge_type,
                       COUNT(*)::BIGINT AS cnt
@@ -18,16 +18,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let sid: Uuid = row.try_get("source_id").ok()?;
-                let et: String = row.try_get("edge_type").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((sid, et, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     pub async fn upsert_edge(&self, e: &GraphEdge) -> Result<()> {

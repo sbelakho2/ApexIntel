@@ -361,17 +361,23 @@ pub(crate) async fn get_person_detail(
     };
 
     let org_id = row.primary_org_id;
-    let _org_name = if let Some(oid) = org_id {
-        match state.store.get_company(oid).await {
-            Ok(Some(company)) => company.name,
-            Ok(None) => "Independent".to_string(),
+    // Organization: the resolved company name, or `None` for "no organization
+    // recorded". A failed lookup is an unavailable detail, not "Independent".
+    let organization: Option<String> = match org_id {
+        Some(oid) => match state.store.get_company(oid).await {
+            Ok(Some(company)) => Some(company.name),
+            Ok(None) => None,
             Err(err) => {
                 tracing::error!(request_id = %request_id, "get person org failed: {err:#}");
-                "Independent".to_string()
+                let api_err = ApiError::internal("Failed to load person organization");
+                return (
+                    StatusCode::from_u16(api_err.http_status())
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    Json(error_response(api_err)),
+                );
             }
-        }
-    } else {
-        "Independent".to_string()
+        },
+        None => None,
     };
 
     let role_family = row
@@ -401,7 +407,9 @@ pub(crate) async fn get_person_detail(
         }
     };
 
-    let mut detail = person_row_to_detail(row, artifacts);
+    let mut detail = person_row_to_detail(row, artifacts, organization);
+    detail.warning_count = related_warnings.len() as i64;
+    detail.insight_count = related_insights.len() as i64;
     detail.role_history = role_history_rows
         .into_iter()
         .map(|entry| apex_api::routes::persons::RoleHistoryEntry {

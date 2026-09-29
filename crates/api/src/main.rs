@@ -27,7 +27,7 @@ use apex_api::routes::llm::{
 #[cfg(feature = "llm")]
 use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
 use apex_api::routes::persons::{
-    priority_tier, validate_person_id, ListPersonsQuery, PersonDetail, PersonListItem,
+    priority_tier, validate_person_id, ListPersonsQuery, PersonDetail, PersonEvent, PersonListItem,
     PersonSortField, PriorityVector,
 };
 use apex_api::routes::probes::{
@@ -1480,7 +1480,11 @@ fn default_priority_vector() -> PriorityVector {
     }
 }
 
-fn person_row_to_detail(row: PersonRow, _artifacts: Vec<ArtifactRow>) -> PersonDetail {
+fn person_row_to_detail(
+    row: PersonRow,
+    artifacts: Vec<ArtifactRow>,
+    organization: Option<String>,
+) -> PersonDetail {
     let mut name_alt = Vec::new();
     if let Some(ref ar) = row.name_ar {
         name_alt.push(ar.clone());
@@ -1489,11 +1493,60 @@ fn person_row_to_detail(row: PersonRow, _artifacts: Vec<ArtifactRow>) -> PersonD
         name_alt.push(fr.clone());
     }
 
-    let pv = row
+    // A missing priority vector is unknown priority: no zero-vector band.
+    let priority_vector = row
         .priority_vector
         .as_ref()
-        .and_then(|v| serde_json::from_value::<PriorityVector>(v.clone()).ok())
-        .unwrap_or_else(default_priority_vector);
+        .and_then(|v| serde_json::from_value::<PriorityVector>(v.clone()).ok());
+    let priority_score = priority_vector
+        .as_ref()
+        .map(|pv| pv.composite_with_weights(&PriorityWeights::default()));
+    let priority = priority_score.map(|score| priority_tier(score).to_string());
+
+    // Measured influence on the 0-100 legacy scale; unknown stays unknown.
+    let influence_score = row
+        .influence_score
+        .map(|value| (value.clamp(0.0, 1.0) * 100.0).round() as i64);
+    let influence_tier = match influence_score {
+        Some(score) if score >= 70 => "high".to_string(),
+        Some(score) if score >= 40 => "medium".to_string(),
+        Some(_) => "low".to_string(),
+        None => "not measured".to_string(),
+    };
+
+    // Evidence-backed contacts and timeline from artifacts (previously loaded
+    // and discarded). Nothing is inferred beyond what an artifact states.
+    let linkedin = artifacts
+        .iter()
+        .find(|artifact| artifact.url.contains("linkedin.com"))
+        .map(|artifact| artifact.url.clone());
+    let phone = artifacts
+        .iter()
+        .find_map(extract_phone_from_artifact);
+    let timeline: Vec<PersonEvent> = artifacts
+        .iter()
+        .map(|artifact| PersonEvent {
+            event_type: artifact.artifact_type.clone(),
+            description: artifact
+                .title
+                .clone()
+                .or_else(|| artifact.content_summary.clone())
+                .unwrap_or_else(|| artifact.url.clone()),
+            date: artifact.ts_utc,
+            source_url: Some(artifact.url.clone()),
+        })
+        .collect();
+    let mut tags: Vec<String> = Vec::new();
+    for artifact in &artifacts {
+        if let Some(topics) = &artifact.topics {
+            tags.extend(topics.iter().cloned());
+        }
+        if let Some(phrases) = &artifact.key_phrases {
+            tags.extend(phrases.iter().cloned());
+        }
+    }
+    tags.sort();
+    tags.dedup();
 
     PersonDetail {
         id: row.id.to_string(),
@@ -1501,23 +1554,25 @@ fn person_row_to_detail(row: PersonRow, _artifacts: Vec<ArtifactRow>) -> PersonD
         name_alt,
         role: row.current_role.clone().unwrap_or_default(),
         role_family: row.role_family.clone().unwrap_or_default(),
-        organization: String::new(),
+        organization,
         org_id: row.primary_org_id.map(|id| id.to_string()),
         region: row.region.clone().unwrap_or_default(),
         country: row.country_code.clone().unwrap_or_default(),
         bio: row.public_bio,
         email: row.public_email,
-        phone: None,
-        linkedin: None,
-        priority_score: pv.composite_with_weights(&PriorityWeights::default()),
-        influence_score: row.influence_score.unwrap_or(0.0) as i64,
-        priority: priority_tier(pv.composite_with_weights(&PriorityWeights::default())).to_string(),
-        priority_vector: pv,
-        influence_tier: "unknown".to_string(),
-        engagement_status: "unknown".to_string(),
-        engagement_readiness: 0.0,
-        data_completeness: 0.0,
-        tags: vec![],
+        phone,
+        linkedin,
+        priority_score,
+        influence_score,
+        priority,
+        priority_vector,
+        influence_tier,
+        // Engagement readiness is not computed by this endpoint yet: unknown,
+        // not zero.
+        engagement_status: "not measured".to_string(),
+        engagement_readiness: None,
+        data_completeness: None,
+        tags,
         trigger_topics: row.trigger_topics.unwrap_or_default(),
         decision_style: row.decision_style,
         risk_tolerance: row.risk_tolerance,
@@ -1533,15 +1588,39 @@ fn person_row_to_detail(row: PersonRow, _artifacts: Vec<ArtifactRow>) -> PersonD
             row.role_family.as_deref().unwrap_or(""),
         )
         .to_string(),
-        affiliations: vec![],
-        timeline: vec![],
-        role_history: vec![],
-        peers: vec![],
+        affiliations: Vec::new(),
+        timeline,
+        role_history: Vec::new(),
+        peers: Vec::new(),
         warning_count: 0,
         insight_count: 0,
-        created_at: row.created_at.unwrap_or(Utc::now()),
-        updated_at: row.updated_at.unwrap_or(Utc::now()),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }
+}
+
+/// Extract a phone number only when an artifact's text states one.
+fn extract_phone_from_artifact(artifact: &ArtifactRow) -> Option<String> {
+    let haystack = artifact
+        .content_summary
+        .as_deref()
+        .unwrap_or(artifact.title.as_deref().unwrap_or(""));
+    let mut current = String::new();
+    let mut candidates: Vec<String> = Vec::new();
+    for ch in haystack.chars() {
+        if ch.is_ascii_digit() || ch == '+' || ch == '-' || ch == ' ' {
+            current.push(ch);
+        } else {
+            if current.chars().filter(char::is_ascii_digit).count() >= 7 {
+                candidates.push(current.trim().to_string());
+            }
+            current.clear();
+        }
+    }
+    if current.chars().filter(char::is_ascii_digit).count() >= 7 {
+        candidates.push(current.trim().to_string());
+    }
+    candidates.into_iter().next()
 }
 
 fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {

@@ -449,7 +449,7 @@ impl PgStore {
             return Ok(std::collections::HashMap::new());
         }
 
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, f64)>(
             r#"SELECT insight_id,
                       CASE
                           WHEN COUNT(*) = 0 THEN 0.5
@@ -469,14 +469,9 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
         Ok(rows
             .into_iter()
-            .filter_map(|row| {
-                let insight_id: Uuid = row.try_get("insight_id").ok()?;
-                let quality_score: f64 = row.try_get("quality_score").ok()?;
-                Some((insight_id, quality_score.clamp(0.0, 1.0)))
-            })
+            .map(|(insight_id, quality_score)| (insight_id, quality_score.clamp(0.0, 1.0)))
             .collect())
     }
 

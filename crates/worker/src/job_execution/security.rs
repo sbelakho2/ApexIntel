@@ -343,7 +343,9 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
     run.start();
 
     let pool = store.pool.clone();
-    let rows = sqlx::query(
+    // Typed rows: a malformed warning row fails the whole SLA load instead of
+    // silently disappearing from the acknowledged-work backlog.
+    let rows = sqlx::query_as::<_, (String, String, String, String, Vec<uuid::Uuid>, bool, DateTime<Utc>, bool)>(
         "SELECT id::text AS id, title, severity, warning_type, COALESCE(entity_ids, ARRAY[]::uuid[]) AS entity_ids, is_system_broadcast, created_at, acknowledged \
          FROM warnings WHERE acknowledged = false ORDER BY created_at ASC LIMIT 500",
     )
@@ -351,37 +353,33 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
     .await;
 
     let records: Vec<SlaWarningRecord> = match rows {
-        Ok(rows) => {
-            use sqlx::Row as _;
-            rows.into_iter()
-                .filter_map(|r| {
-                    let id: Option<String> = r.try_get("id").ok();
-                    let title: Option<String> = r.try_get("title").ok();
-                    let severity: Option<String> = r.try_get("severity").ok();
-                    let warning_type: Option<String> = r.try_get("warning_type").ok();
-                    let entity_ids: Option<Vec<uuid::Uuid>> = r.try_get("entity_ids").ok();
-                    let is_system_broadcast: Option<bool> = r.try_get("is_system_broadcast").ok();
-                    let created_at: Option<chrono::DateTime<Utc>> = r.try_get("created_at").ok();
-                    let acknowledged: Option<bool> = r.try_get("acknowledged").ok();
-                    Some(SlaWarningRecord {
-                        id: id?,
-                        title: title?,
-                        severity: severity?,
-                        warning_type: warning_type?,
-                        // false-success-classification: best-effort — optional display metadata; a decode failure renders the row with no linked entities
-                        entity_ids: entity_ids
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|entity_id| entity_id.to_string())
-                            .collect(),
-                        // false-success-classification: best-effort — optional broadcast flag; a decode failure renders the row as non-broadcast
-                        is_system_broadcast: is_system_broadcast.unwrap_or(false),
-                        created_at: created_at?,
-                        acknowledged: acknowledged?,
-                    })
-                })
-                .collect()
-        }
+        Ok(rows) => rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    title,
+                    severity,
+                    warning_type,
+                    entity_ids,
+                    is_system_broadcast,
+                    created_at,
+                    acknowledged,
+                )| SlaWarningRecord {
+                    id,
+                    title,
+                    severity,
+                    warning_type,
+                    entity_ids: entity_ids
+                        .into_iter()
+                        .map(|entity_id| entity_id.to_string())
+                        .collect(),
+                    is_system_broadcast,
+                    created_at,
+                    acknowledged,
+                },
+            )
+            .collect(),
         Err(e) => {
             run.fail(&format!("sla_enforcement: query failed: {e}"));
             return run;

@@ -3737,7 +3737,7 @@ pub(super) async fn run_recipe_fire(
     let mut skipped_cross_run: u64 = 0;
 
     let cross_run_dedup: std::collections::HashSet<(String, String)> = {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (String, String)>(
             "SELECT DISTINCT t.tag AS recipe_code, e.entity_id::text AS eid \
              FROM insights i \
              CROSS JOIN LATERAL unnest(COALESCE(i.tags, ARRAY[]::text[])) AS t(tag) \
@@ -3748,18 +3748,12 @@ pub(super) async fn run_recipe_fire(
         .fetch_all(&store.pool)
         .await;
         match rows {
-            Ok(rows) => {
-                use sqlx::Row as _;
-                rows.into_iter()
-                    .filter_map(|r| {
-                        let tag: String = r.try_get("recipe_code").ok()?;
-                        let eid: String = r.try_get("eid").ok()?;
-                        Some((tag, eid))
-                    })
-                    .collect()
-            }
+            // Typed rows: a malformed row fails the whole load instead of
+            // silently shrinking the dedup set.
+            Ok(rows) => rows.into_iter().collect(),
             Err(e) => {
                 tracing::warn!("recipe_fire: failed to load cross-run dedup set: {e}");
+                context_degraded.push(format!("cross-run dedup set unavailable ({e})"));
                 std::collections::HashSet::new()
             }
         }

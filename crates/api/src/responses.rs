@@ -378,7 +378,10 @@ pub struct RecipePerformanceSummary {
     pub staging_count: u32,
     pub deprecated_count: u32,
     pub avg_precision: f64,
-    pub avg_recall: f64,
+    /// Promotion-evidence aggregate (not recall; no evaluation-set recall
+    /// exists). The legacy `avg_recall` name is accepted on deserialize.
+    #[serde(alias = "avg_recall")]
+    pub avg_promotion_evidence: f64,
 }
 
 /// POI coverage summary (for admin endpoint).
@@ -691,7 +694,7 @@ mod tests {
             staging_count: 15,
             deprecated_count: 5,
             avg_precision: 0.88,
-            avg_recall: 0.72,
+            avg_promotion_evidence: 0.72,
         };
         let json = serde_json::to_string(&summary).unwrap();
         let back: RecipePerformanceSummary = serde_json::from_str(&json).unwrap();

@@ -166,7 +166,12 @@ fn map_production_recipe_row(r: apex_store::postgres::ProductionRecipeRow) -> Pr
         recipe_id: r.recipe_code,
         promoted_at: r.created_at,
         weeks_in_production: (r.days_inactive.max(0) / 7) as u32,
-        precision_history: vec![r.precision_baseline, r.precision_current],
+        // Only measured points enter the history; an unmeasured baseline or
+        // current value is absent, not zero.
+        precision_history: [r.precision_baseline, r.precision_current]
+            .into_iter()
+            .flatten()
+            .collect(),
         recall_history: vec![],
         false_positive_rate: r.false_positive_rate,
         alerts_fired_total: r.warnings_generated_last_week.max(0) as u64,
@@ -375,10 +380,10 @@ mod tests {
     fn production_recipe_mapping_uses_recent_warning_volume() {
         let row = ProductionRecipeRow {
             recipe_code: "R-PROD-1".to_string(),
-            precision_current: 0.78,
-            precision_baseline: 0.75,
-            false_positive_rate: 0.11,
-            fpr_baseline: 0.09,
+            precision_current: Some(0.78),
+            precision_baseline: Some(0.75),
+            false_positive_rate: Some(0.11),
+            fpr_baseline: Some(0.09),
             warnings_generated_last_week: 7,
             last_triggered_at: Some(Utc::now()),
             days_inactive: 13,

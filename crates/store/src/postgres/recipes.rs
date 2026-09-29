@@ -36,7 +36,7 @@ impl PgStore {
                FROM recipes r
                LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                WHERE r.status IN ('active', 'production', 'staging')
-               GROUP BY r.code, r.status, r.precision_score
+               GROUP BY r.code, r.status
                ORDER BY COALESCE(COUNT(w.id), 0) DESC, r.code ASC"#,
         )
         .fetch_all(&self.pool)
@@ -114,7 +114,7 @@ impl PgStore {
                    FROM recipes r
                    LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status = 'staging'
-                   GROUP BY r.code, r.precision_score, r.created_at
+                   GROUP BY r.code, r.created_at
                )
                SELECT
                    recipe_code,
@@ -156,12 +156,11 @@ impl PgStore {
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')), 0)::BIGINT AS reviewed_warnings_total,
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'), 0)::BIGINT AS false_positive_warnings_total,
                        MAX(w.created_at) AS last_triggered_at,
-                       r.precision_score,
                        r.created_at
                    FROM recipes r
                    LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status IN ('active', 'production')
-                   GROUP BY r.code, r.precision_score, r.created_at
+                   GROUP BY r.code, r.created_at
                ), ranked_snapshots AS (
                    SELECT
                        m.recipe_code,
@@ -183,22 +182,34 @@ impl PgStore {
                )
                SELECT
                    recipe_warning_stats.recipe_code,
+                   -- Measured precision only: weekly snapshots or reviewed
+                   -- outcomes; NULL when unmeasured. The configured minimum
+                   -- precision is configuration and is never reported as
+                   -- measured quality.
                    COALESCE(
                        snapshot_history.latest_precision,
-                       recipe_warning_stats.precision_score,
-                       0.0
-                   )::DOUBLE PRECISION AS precision_current,
+                       CASE
+                           WHEN reviewed_warnings_total > 0
+                               THEN (reviewed_warnings_total - false_positive_warnings_total)::DOUBLE PRECISION
+                                   / reviewed_warnings_total::DOUBLE PRECISION
+                           ELSE NULL
+                       END
+                   ) AS precision_current,
                    COALESCE(
                        snapshot_history.baseline_precision,
-                       recipe_warning_stats.precision_score,
-                       0.0
-                   )::DOUBLE PRECISION AS precision_baseline,
+                       CASE
+                           WHEN reviewed_warnings_total > 0
+                               THEN (reviewed_warnings_total - false_positive_warnings_total)::DOUBLE PRECISION
+                                   / reviewed_warnings_total::DOUBLE PRECISION
+                           ELSE NULL
+                       END
+                   ) AS precision_baseline,
                    COALESCE(
                        snapshot_history.false_positive_rate,
                        CASE
                            WHEN reviewed_warnings_total > 0
                                THEN false_positive_warnings_total::DOUBLE PRECISION / reviewed_warnings_total::DOUBLE PRECISION
-                           ELSE 0.0::DOUBLE PRECISION
+                           ELSE NULL
                        END
                    ) AS false_positive_rate,
                    COALESCE(
@@ -206,7 +217,7 @@ impl PgStore {
                        CASE
                            WHEN reviewed_warnings_total > 0
                                THEN false_positive_warnings_total::DOUBLE PRECISION / reviewed_warnings_total::DOUBLE PRECISION
-                           ELSE 0.0::DOUBLE PRECISION
+                           ELSE NULL
                        END
                    ) AS fpr_baseline,
                    recipe_warning_stats.warnings_generated_last_week,
@@ -259,7 +270,7 @@ impl PgStore {
                    FROM recipes r
                    LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status IN ('active', 'production')
-                   GROUP BY r.code, r.precision_score
+                   GROUP BY r.code
                )
                INSERT INTO recipe_weekly_metrics (
                    recipe_code,
@@ -352,21 +363,21 @@ impl PgStore {
                calibrated AS (
                    SELECT
                        h.recipe_code,
-                       r.precision_score AS current_precision,
+                       r.activation_threshold AS current_precision,
                        GREATEST(
                            0.0,
-                           r.precision_score * (1.0 - 0.5 * h.avg_fp_rate_4w)
+                           r.activation_threshold * (1.0 - 0.5 * h.avg_fp_rate_4w)
                        ) AS new_precision,
                        h.avg_fp_rate_4w
                    FROM high_fp_recipes h
                    JOIN recipes r ON r.code = h.recipe_code
-                   WHERE r.precision_score IS NOT NULL
-                     AND r.precision_score > 0.001
+                   WHERE r.activation_threshold IS NOT NULL
+                     AND r.activation_threshold > 0.001
                      AND r.status IN ('active', 'production')
                )
                UPDATE recipes r
                SET
-                   precision_score = c.new_precision,
+                   activation_threshold = c.new_precision,
                    updated_at = NOW()
                FROM calibrated c
                WHERE r.code = c.recipe_code
@@ -423,11 +434,22 @@ impl PgStore {
             r#"SELECT
                 r.code AS recipe_code,
                 r.status,
-                COALESCE(
-                    r.precision_score,
-                    AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL),
-                    0.0
-                ) AS precision_score,
+                -- Empirical precision (TP / (TP + FP)); NULL when nothing was
+                -- reviewed. Average model confidence is NOT precision and is
+                -- reported separately below.
+                CASE
+                    WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
+                        THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive'))::DOUBLE PRECISION
+                            / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
+                    ELSE NULL
+                END AS precision_score,
+                AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL) AS avg_model_confidence,
+                CASE
+                    WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
+                        THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'))::DOUBLE PRECISION
+                            / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
+                    ELSE NULL
+                END AS false_positive_rate,
                 COALESCE(COUNT(w.id), 0) AS fired_count,
                 MAX(w.created_at) AS last_fired,
                 MIN(w.created_at) AS first_fired,
@@ -435,7 +457,7 @@ impl PgStore {
                FROM recipes r
                LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                WHERE r.status = 'staging'
-               GROUP BY r.code, r.status, r.precision_score
+               GROUP BY r.code, r.status
                ORDER BY r.code ASC
                LIMIT $1 OFFSET $2"#,
         )
@@ -503,10 +525,10 @@ impl PgStore {
     /// One month of historical recipe performance aggregated from the real
     /// persisted weekly snapshots (`recipe_weekly_metrics`).
     ///
-    /// Only *measured* values are present. `precision_pct` is `None` for a
-    /// month with no generated warnings (the weekly recorder stores a fallback
-    /// for that case) and `fpr_pct` is `None` for a month with no reviewed
-    /// warnings — an unmeasured rate is never reported as zero.
+    /// Only *measured* values are present. `precision_pct` and `fpr_pct` are
+    /// `None` for a month with no **reviewed outcomes** — generated warnings
+    /// alone do not measure precision — and an unmeasured rate is never
+    /// reported as zero.
     pub async fn list_recipe_monthly_performance(
         &self,
         months: i32,

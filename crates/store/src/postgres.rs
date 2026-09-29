@@ -1010,10 +1010,13 @@ pub struct StagedRecipeRow {
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct ProductionRecipeRow {
     pub recipe_code: String,
-    pub precision_current: f64,
-    pub precision_baseline: f64,
-    pub false_positive_rate: f64,
-    pub fpr_baseline: f64,
+    /// Measured precision (snapshot or reviewed outcomes); `None` when
+    /// unmeasured.
+    pub precision_current: Option<f64>,
+    pub precision_baseline: Option<f64>,
+    /// Measured false-positive rate; `None` when unmeasured.
+    pub false_positive_rate: Option<f64>,
+    pub fpr_baseline: Option<f64>,
     pub warnings_generated_last_week: i64,
     pub last_triggered_at: Option<DateTime<Utc>>,
     pub days_inactive: i32,

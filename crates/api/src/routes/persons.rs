@@ -88,22 +88,32 @@ pub struct PersonDetail {
     pub name_alt: Vec<String>,
     pub role: String,
     pub role_family: String,
-    pub organization: String,
+    /// Organization name when resolved; `None` means unknown or the lookup was
+    /// unavailable — never silently "Independent".
+    pub organization: Option<String>,
     pub org_id: Option<String>,
     pub region: String,
     pub country: String,
     pub bio: Option<String>,
     pub email: Option<String>,
+    /// Contact details are only present when an artifact evidences them.
     pub phone: Option<String>,
     pub linkedin: Option<String>,
-    pub priority_score: f64,
-    pub influence_score: i64,
-    pub priority: String,
-    pub priority_vector: PriorityVector,
+    /// Weighted priority over the stored vector; `None` when no vector is
+    /// stored (unknown priority, never a zero vector).
+    pub priority_score: Option<f64>,
+    /// Measured influence on the 0-100 scale; `None` when unmeasured.
+    pub influence_score: Option<i64>,
+    /// Priority band; `None` when the priority is not measured.
+    pub priority: Option<String>,
+    pub priority_vector: Option<PriorityVector>,
     pub influence_tier: String,
     pub engagement_status: String,
-    pub engagement_readiness: f64,
-    pub data_completeness: f64,
+    /// Not computed by this endpoint; `None` = not measured (never 0.0).
+    pub engagement_readiness: Option<f64>,
+    /// Share of profile fields that are populated; `None` when the endpoint
+    /// does not compute it.
+    pub data_completeness: Option<f64>,
     pub tags: Vec<String>,
     pub trigger_topics: Vec<String>,
     pub decision_style: Option<String>,
@@ -122,8 +132,9 @@ pub struct PersonDetail {
     pub peers: Vec<PeerSummary>,
     pub warning_count: i64,
     pub insight_count: i64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    /// Row timestamps; `None` when unknown — never substituted with "now".
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

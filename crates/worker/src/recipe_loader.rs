@@ -382,8 +382,12 @@ pub async fn insert_seed_recipes(
                 })?;
                 sqlx::query(
                     r#"
-                    INSERT INTO recipes (code, name, status, definition, precision_score, created_at, updated_at)
-                    VALUES ($1, $2, 'seed', $3, $4, NOW(), NOW())
+                    INSERT INTO recipes (
+                        code, name, status, definition,
+                        configured_min_precision, activation_threshold,
+                        created_at, updated_at
+                    )
+                    VALUES ($1, $2, 'seed', $3, $4, $4, NOW(), NOW())
                     ON CONFLICT (code) DO NOTHING
                     "#,
                 )
@@ -425,9 +429,12 @@ pub async fn insert_seed_recipes(
                         id, name, category, join_type, outcome,
                         signals, transforms, test_config, thresholds,
                         narrative_template, action_playbook, applicability,
-                        priority_tier, precision, created_at, updated_at
+                        priority_tier, precision,
+                        configured_min_precision, activation_threshold,
+                        created_at, updated_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'P2', $13, NOW(), NOW())
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'P2', $13,
+                            $13, $13, NOW(), NOW())
                     ON CONFLICT (id) DO NOTHING
                     "#,
                 )
@@ -642,7 +649,8 @@ outcome: risk
             "name".to_string(),
             "status".to_string(),
             "definition".to_string(),
-            "precision_score".to_string(),
+            "configured_min_precision".to_string(),
+            "activation_threshold".to_string(),
         ];
 
         assert_eq!(
