@@ -12,20 +12,23 @@ impl PgStore {
             r#"SELECT
                  r.code AS recipe_code,
                  r.status,
-                 COALESCE(
-                     r.precision_score,
-                     AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL),
-                     0.0
-                 ) AS precision_score,
-                 COALESCE(
-                     CASE
-                         WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
-                             THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'))::DOUBLE PRECISION
-                                 / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
-                         ELSE 0.0::DOUBLE PRECISION
-                     END,
-                     0.0::DOUBLE PRECISION
-                 ) AS false_positive_rate,
+                 -- Empirical precision requires reviewed outcomes:
+                 -- TP / (TP + FP). Average model confidence is NOT precision
+                 -- and is reported separately. No reviews => NULL.
+                 CASE
+                     WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
+                         THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive'))::DOUBLE PRECISION
+                             / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
+                     ELSE NULL
+                 END AS precision_score,
+                 -- Mean model confidence is its own metric, never relabelled.
+                 AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL) AS avg_model_confidence,
+                 CASE
+                     WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
+                         THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'))::DOUBLE PRECISION
+                             / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
+                     ELSE NULL
+                 END AS false_positive_rate,
                  COALESCE(COUNT(w.id), 0) AS fired_count,
                  MAX(w.created_at) AS last_fired,
                  MIN(w.created_at) AS first_fired,
@@ -53,13 +56,28 @@ impl PgStore {
                    SELECT
                        rs.code,
                        COUNT(w.id) AS fired_count,
-                       AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL) AS avg_confidence
+                       AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL) AS avg_confidence,
+                       COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) AS reviewed_total,
+                       COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive') AS reviewed_true_positive
                    FROM recipe_scope rs
                    LEFT JOIN warnings w ON w.recipe_code = rs.code AND w.deleted_at IS NULL
                    GROUP BY rs.code
                )
                SELECT
-                   COALESCE(ROUND((AVG(avg_confidence) * 100.0)::numeric, 0), 0)::bigint AS avg_precision_pct,
+                   -- Empirical precision over reviewed outcomes; NULL when no
+                   -- outcomes were reviewed. Mean confidence is separate.
+                   CASE
+                       WHEN COUNT(*) FILTER (WHERE reviewed_total > 0) > 0
+                           THEN ROUND(
+                               (
+                                   100.0 * SUM(reviewed_true_positive)::numeric
+                                   / NULLIF(SUM(reviewed_total), 0)
+                               ),
+                               0
+                           )::bigint
+                       ELSE NULL
+                   END AS avg_precision_pct,
+                   COALESCE(ROUND((AVG(avg_confidence) * 100.0)::numeric, 0), 0)::bigint AS avg_model_confidence_pct,
                    COALESCE(
                        ROUND((100.0 * COUNT(*) FILTER (WHERE fired_count > 0) / NULLIF(COUNT(*), 0))::numeric, 0),
                        0
@@ -77,13 +95,18 @@ impl PgStore {
             r#"WITH recipe_warning_stats AS (
                    SELECT
                        r.code AS recipe_code,
-                       COALESCE(
-                           r.precision_score,
-                           AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL),
-                           0.0
-                       ) AS precision_observed,
+                       -- Empirical precision from reviewed outcomes; NULL when
+                       -- nothing was reviewed (mean confidence is a different
+                       -- metric and is not used as precision here).
+                       CASE
+                           WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
+                               THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive'))::DOUBLE PRECISION
+                                   / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
+                           ELSE NULL
+                       END AS precision_observed,
                        COALESCE(COUNT(w.id), 0)::INT AS sample_size,
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')), 0)::INT AS reviewed_warnings_total,
+                       COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive')), 0)::INT AS reviewed_true_positives,
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'), 0)::INT AS false_positive_warnings_total,
                        COALESCE(COUNT(*) FILTER (WHERE w.id IS NOT NULL AND NOT w.acknowledged), 0)::INT AS active_count,
                        EXTRACT(DAY FROM (NOW() - r.created_at))::INT AS days_in_staging,
@@ -96,21 +119,22 @@ impl PgStore {
                SELECT
                    recipe_code,
                    precision_observed,
+                   -- Promotion readiness heuristic over measured precision and
+                   -- sample maturity. This is NOT recall: recall needs
+                   -- TP / (TP + FN) against an evaluation set.
                    LEAST(
                        1.0,
                        GREATEST(
                            0.0,
-                           (0.7 * precision_observed)
+                           (0.7 * COALESCE(precision_observed, 0.0))
                            + (0.3 * LEAST(1.0, sample_size::DOUBLE PRECISION / 100.0))
                        )
-                   ) AS recall_observed,
-                   COALESCE(
-                       CASE
-                           WHEN reviewed_warnings_total > 0
-                               THEN false_positive_warnings_total::DOUBLE PRECISION / reviewed_warnings_total::DOUBLE PRECISION
-                           ELSE 0.0::DOUBLE PRECISION
-                       END
-                   ) AS false_positive_rate,
+                   ) AS promotion_evidence_score,
+                   CASE
+                       WHEN reviewed_warnings_total > 0
+                           THEN false_positive_warnings_total::DOUBLE PRECISION / reviewed_warnings_total::DOUBLE PRECISION
+                       ELSE NULL
+                   END AS false_positive_rate,
                    sample_size,
                    days_in_staging,
                    created_at
@@ -204,20 +228,23 @@ impl PgStore {
                    SELECT
                        r.code AS recipe_code,
                        DATE_TRUNC('week', $1)::DATE AS week_start,
-                       COALESCE(
-                           AVG(w.confidence) FILTER (
-                               WHERE w.confidence IS NOT NULL
-                                 AND w.created_at >= $1 - INTERVAL '7 days'
-                                 AND w.created_at <= $1
-                           ),
-                           r.precision_score,
-                           0.0
-                       )::DOUBLE PRECISION AS precision_score,
+                       -- Empirical precision (TP / (TP + FP)) over reviewed
+                       -- outcomes; NULL when nothing was reviewed. Model
+                       -- confidence is NOT precision and must never be
+                       -- persisted in this column.
+                       CASE
+                           WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
+                               THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive'))::DOUBLE PRECISION
+                                   / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
+                           ELSE NULL
+                       END AS precision_score,
+                       -- False-positive rate over reviewed outcomes; NULL when
+                       -- unreviewed (0% would claim a reviewed clean week).
                        CASE
                            WHEN COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')) > 0
                                THEN (COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'))::DOUBLE PRECISION
                                    / (COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')))::DOUBLE PRECISION
-                           ELSE 0.0::DOUBLE PRECISION
+                           ELSE NULL
                        END AS false_positive_rate,
                        COALESCE(
                            COUNT(w.id) FILTER (

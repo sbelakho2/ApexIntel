@@ -74,7 +74,7 @@ pub async fn build_crawl_result(ctx: &StorageContext) -> Result<CrawlStageResult
         new_observations: crawl_stats.new_observations,
         changed_pages: crawl_stats.changed_pages,
         bytes_fetched: crawl_stats.bytes_fetched,
-        errors: crawl_stats.errors,
+        errors: Vec::new(),
     })
 }
 
@@ -93,7 +93,7 @@ pub async fn build_mining_result(ctx: &StorageContext) -> Result<MiningStageResu
         candidates_passed_gates: mining_stats.candidates_passed_gates,
         hypotheses_generated: mining_stats.hypotheses_generated,
         recipes_staged: mining_stats.recipes_staged,
-        errors: mining_stats.errors,
+        errors: Vec::new(),
     })
 }
 
@@ -108,7 +108,7 @@ pub async fn build_poi_result(ctx: &StorageContext) -> Result<PoiRefreshStageRes
         profiles_updated: poi_stats.profiles_updated,
         new_pois_discovered: poi_stats.new_pois_discovered,
         role_changes_detected: poi_stats.role_changes_detected,
-        errors: poi_stats.errors,
+        errors: Vec::new(),
     })
 }
 
@@ -122,7 +122,7 @@ pub async fn build_drift_result(ctx: &StorageContext) -> Result<DriftCheckStageR
         features_drifted: drift_stats.features_drifted,
         drift_scores: drift_stats.drift_scores,
         alerts_raised: drift_stats.alerts_raised,
-        errors: drift_stats.errors,
+        errors: Vec::new(),
     })
 }
 
@@ -153,10 +153,11 @@ fn map_staged_recipe_row(r: apex_store::postgres::StagedRecipeRow) -> StagedReci
         staged_at: r.created_at,
         weeks_in_staging: (r.days_in_staging.max(0) / 7) as u32,
         precision: r.precision_observed,
-        recall: r.recall_observed,
+        promotion_evidence_score: r.promotion_evidence_score,
         false_positive_rate: r.false_positive_rate,
         alerts_fired,
-        true_positives: (r.precision_observed * alerts_fired as f64) as u64,
+        // Real reviewed true-positive count, not a precision-derived estimate.
+        true_positives: r.reviewed_true_positives.max(0) as u64,
     }
 }
 
@@ -314,7 +315,6 @@ mod tests {
             features_drifted,
             drift_scores: vec![("company:1".to_string(), 0.42)],
             alerts_raised: features_drifted,
-            errors: vec![],
         }
     }
 
@@ -353,9 +353,11 @@ mod tests {
     fn staged_recipe_mapping_uses_recipe_code_and_clamps_counts() {
         let row = StagedRecipeRow {
             recipe_code: "R-STAGE-1".to_string(),
-            precision_observed: 0.9,
-            recall_observed: 0.55,
-            false_positive_rate: 0.04,
+            precision_observed: Some(0.9),
+            promotion_evidence_score: 0.55,
+            reviewed_warnings_total: 20,
+            reviewed_true_positives: 16,
+            false_positive_rate: Some(0.04),
             sample_size: 5,
             days_in_staging: 29,
             created_at: Utc::now(),
@@ -365,7 +367,8 @@ mod tests {
         assert_eq!(recipe.recipe_id, "R-STAGE-1");
         assert_eq!(recipe.weeks_in_staging, 4);
         assert_eq!(recipe.alerts_fired, 5);
-        assert_eq!(recipe.true_positives, 4);
+        // Real reviewed true positives, not a precision-derived estimate.
+        assert_eq!(recipe.true_positives, 16);
     }
 
     #[test]

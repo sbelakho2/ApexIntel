@@ -215,8 +215,7 @@ impl PgStore {
             sqlx::query_as("SELECT COUNT(*) FROM competitor_changes WHERE competitor_id = $1")
                 .bind(competitor_id)
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .await?;
 
         let rows: Vec<(Uuid, Uuid, String, String, String, String, DateTime<Utc>, Option<String>, f64)> = sqlx::query_as(
             r#"SELECT cc.id, cc.competitor_id, c.name, cc.change_type, cc.title, cc.description, cc.detected_at, cc.source_url, cc.impact_score
@@ -260,75 +259,6 @@ impl PgStore {
             .collect();
 
         Ok((changes, total))
-    }
-
-    pub async fn get_competitors_enhanced(
-        &self,
-        page: i64,
-        per_page: i64,
-    ) -> Result<(Vec<CompetitorItem>, i64)> {
-        let (limit, offset) = normalize_competitor_page(page, per_page);
-
-        let (total,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM companies WHERE is_competitor = true")
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
-
-        let rows: Vec<(
-            Uuid,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<f64>,
-            Option<Vec<String>>,
-        )> = sqlx::query_as(
-            r#"SELECT id, name, region, company_type, risk_score, industry_tags
-               FROM companies
-               WHERE is_competitor = true
-               ORDER BY risk_score DESC NULLS LAST, name
-               LIMIT $1 OFFSET $2"#,
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut items = Vec::with_capacity(rows.len());
-        for (id, name, region, company_type, risk_score, industry_tags) in rows {
-            let change_info: Option<(DateTime<Utc>, i64)> = sqlx::query_as(
-                r#"SELECT MAX(detected_at), COUNT(*)
-                   FROM competitor_changes
-                   WHERE competitor_id = $1 AND detected_at > NOW() - INTERVAL '30 days'"#,
-            )
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten();
-
-            let (last_change_at, change_count_30d) = change_info
-                .map(|(ts, cnt)| (Some(ts.to_rfc3339()), cnt))
-                .unwrap_or((None, 0));
-
-            items.push(CompetitorItem {
-                id,
-                name,
-                region: region.unwrap_or_else(|| "Unknown".to_string()),
-                entity_type: company_type.unwrap_or_else(|| "EMS".to_string()),
-                threat_score: risk_score,
-                // Overlap fields are not yet populated from real data.
-                // Return None/0.0 to signal "unknown" rather than fabricating values.
-                capability_overlap: 0.0,
-                market_overlap: 0.0,
-                last_change_at,
-                change_count_30d,
-                capabilities: industry_tags.unwrap_or_default(),
-                primary_markets: vec![],
-            });
-        }
-
-        Ok((items, total))
     }
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context as _;
 
 fn saturating_count_to_u64(value: i64) -> u64 {
     value.max(0) as u64
@@ -9,7 +10,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, i64, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, i64, i64)>(
             r#"SELECT entity_id,
                       DATE_PART('day', date_trunc('day', ts_utc) - date_trunc('day', $1))::BIGINT AS day_offset,
                       COUNT(*)::BIGINT AS cnt
@@ -22,16 +23,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let entity_id: Uuid = row.try_get("entity_id").ok()?;
-                let day_offset: i64 = row.try_get("day_offset").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((entity_id, day_offset, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     pub async fn get_daily_warning_counts_per_entity(
@@ -86,7 +78,7 @@ impl PgStore {
     /// Total warning count per entity across all time (B315) — powers list
     /// pages without per-row count queries.
     pub async fn get_warning_counts_by_entity(&self) -> Result<Vec<(Uuid, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, i64)>(
             r#"SELECT u.entity_id AS entity_id, COUNT(*)::BIGINT AS cnt
                FROM warnings w
                CROSS JOIN LATERAL unnest(w.entity_ids) AS u(entity_id)
@@ -97,20 +89,13 @@ impl PgStore {
         )
         .fetch_all(&self.pool)
         .await?;
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let entity_id: Uuid = row.try_get("entity_id").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((entity_id, cnt))
-            })
-            .collect())
+
+        Ok(rows)
     }
 
     /// Total insight count per entity across all time (B315).
     pub async fn get_insight_counts_by_entity(&self) -> Result<Vec<(Uuid, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, i64)>(
             r#"SELECT u.entity_id AS entity_id, COUNT(*)::BIGINT AS cnt
                FROM insights i
                CROSS JOIN LATERAL unnest(i.entity_ids) AS u(entity_id)
@@ -120,15 +105,8 @@ impl PgStore {
         )
         .fetch_all(&self.pool)
         .await?;
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let entity_id: Uuid = row.try_get("entity_id").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((entity_id, cnt))
-            })
-            .collect())
+
+        Ok(rows)
     }
 
     fn parse_entity_day_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<(Uuid, i64, i64)>> {
@@ -542,7 +520,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, i64)>(
             r#"SELECT entity_id,
                       COALESCE(value->>'keyword', '') AS kw,
                       COUNT(*)::BIGINT AS cnt
@@ -558,16 +536,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let eid: Uuid = row.try_get("entity_id").ok()?;
-                let kw: String = row.try_get("kw").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((eid, kw, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     /// Extract job-post payload features per entity: role_family, seniority, count.
@@ -575,7 +544,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, String, i64)>(
             r#"SELECT entity_id,
                       COALESCE(value->>'role_family', '') AS rf,
                       COALESCE(value->>'seniority', '') AS sen,
@@ -591,17 +560,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let eid: Uuid = row.try_get("entity_id").ok()?;
-                let rf: String = row.try_get("rf").ok()?;
-                let sen: String = row.try_get("sen").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((eid, rf, sen, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     /// Extract commodity/FX observation payload features per entity.
@@ -609,7 +568,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, String, i64)>(
             r#"SELECT entity_id,
                       observation_type AS otype,
                       COALESCE(value->>'commodity', value->>'pair', '') AS item,
@@ -625,17 +584,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let eid: Uuid = row.try_get("entity_id").ok()?;
-                let otype: String = row.try_get("otype").ok()?;
-                let item: String = row.try_get("item").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((eid, otype, item, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     /// Extract POI artifact features per company (articles, appearances, etc.)
@@ -643,7 +592,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, i64)>(
             r#"SELECT p.primary_org_id AS company_id,
                       pa.artifact_type,
                       COUNT(*)::BIGINT AS cnt
@@ -658,16 +607,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let cid: Uuid = row.try_get("company_id").ok()?;
-                let at: String = row.try_get("artifact_type").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((cid, at, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     /// Extract graph edge details with target names for evidence loading.
@@ -675,7 +615,7 @@ impl PgStore {
         &self,
         entity_id: Uuid,
     ) -> Result<Vec<(String, String, String, f64, f64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (String, String, String, f64, f64)>(
             r#"SELECT ge.edge_type,
                       ge.target_type,
                       COALESCE(
@@ -695,24 +635,13 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let et: String = row.try_get("edge_type").ok()?;
-                let tt: String = row.try_get("target_type").ok()?;
-                let tn: String = row.try_get("target_name").ok()?;
-                let w: f64 = row.try_get("weight").ok()?;
-                let c: f64 = row.try_get("confidence").ok()?;
-                Some((et, tt, tn, w, c))
-            })
-            .collect())
+        Ok(rows)
     }
 
     pub async fn get_person_features_per_company(
         &self,
     ) -> Result<Vec<(Uuid, String, f64, f64, f64, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, f64, f64, f64, i64)>(
             r#"SELECT primary_org_id AS company_id,
                       COALESCE(role_family, 'Unknown') AS rf,
                       COALESCE(AVG(influence_score), 0) AS avg_inf,
@@ -727,19 +656,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let cid: Uuid = row.try_get("company_id").ok()?;
-                let rf: String = row.try_get("rf").ok()?;
-                let inf: f64 = row.try_get("avg_inf").ok()?;
-                let pain: f64 = row.try_get("avg_pain").ok()?;
-                let cr: f64 = row.try_get("avg_cr").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((cid, rf, inf, pain, cr, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     /// Return certification features only for certs that represent *dynamic* signals:
@@ -749,7 +666,7 @@ impl PgStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, i64)>(
             r#"SELECT company_id,
                       standard,
                       COUNT(*)::BIGINT AS cnt
@@ -768,20 +685,11 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let cid: Uuid = row.try_get("company_id").ok()?;
-                let standard: String = row.try_get("standard").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((cid, standard, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     pub async fn get_capability_features_per_company(&self) -> Result<Vec<(Uuid, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, i64)>(
             r#"SELECT company_id,
                       capability,
                       COUNT(*)::BIGINT AS cnt
@@ -793,20 +701,11 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let cid: Uuid = row.try_get("company_id").ok()?;
-                let capability: String = row.try_get("capability").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((cid, capability, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     pub async fn get_site_features_per_company(&self) -> Result<Vec<(Uuid, String, String, i64)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as::<_, (Uuid, String, String, i64)>(
             r#"SELECT company_id,
                       COALESCE(country_code, '') AS cc,
                       COALESCE(site_type, '') AS st,
@@ -819,17 +718,7 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
 
-        use sqlx::Row as _;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let cid: Uuid = row.try_get("company_id").ok()?;
-                let cc: String = row.try_get("cc").ok()?;
-                let st: String = row.try_get("st").ok()?;
-                let cnt: i64 = row.try_get("cnt").ok()?;
-                Some((cid, cc, st, cnt))
-            })
-            .collect())
+        Ok(rows)
     }
 
     pub async fn get_crawl_stats(&self, since: DateTime<Utc>) -> Result<CrawlStats> {
@@ -856,7 +745,6 @@ impl PgStore {
                 new_observations: saturating_count_to_u64(r.new_observations.unwrap_or(0)),
                 changed_pages: saturating_count_to_u64(r.changed_pages.unwrap_or(0)),
                 bytes_fetched: saturating_count_to_u64(r.bytes_fetched.unwrap_or(0)),
-                errors: vec![],
             }),
             None => Ok(CrawlStats::default()),
         }
@@ -868,7 +756,7 @@ impl PgStore {
                 .bind(since)
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0);
+                .context("count pattern candidates")?;
 
         let candidates_passed: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pattern_candidates WHERE created_at >= $1 AND passed_gates = true",
@@ -876,7 +764,7 @@ impl PgStore {
         .bind(since)
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count pattern candidates that passed gates")?;
 
         let recipes_staged: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM recipes WHERE created_at >= $1 AND status = 'staging'",
@@ -884,22 +772,20 @@ impl PgStore {
         .bind(since)
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count staged recipes")?;
 
         let hypotheses_generated: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM recipes WHERE created_at >= $1")
                 .bind(since)
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0)
-                .max(recipes_staged);
+                .context("count generated recipes")?;
 
         Ok(MiningStats {
             candidates_found: saturating_count_to_u64(candidates_found),
             candidates_passed_gates: saturating_count_to_u64(candidates_passed),
             hypotheses_generated: saturating_count_to_u64(hypotheses_generated),
             recipes_staged: saturating_count_to_u64(recipes_staged),
-            errors: vec![],
         })
     }
 
@@ -909,7 +795,7 @@ impl PgStore {
                 .bind(since)
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0);
+                .context("count scanned person profiles")?;
 
         let profiles_updated: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM persons WHERE updated_at >= $1 AND updated_at != created_at",
@@ -917,23 +803,24 @@ impl PgStore {
         .bind(since)
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count updated person profiles")?;
 
         let new_pois: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM persons WHERE created_at >= $1")
                 .bind(since)
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0);
+                .context("count new persons of interest")?;
 
         Ok(PoiStats {
             profiles_scanned: saturating_count_to_u64(profiles_scanned),
             profiles_updated: saturating_count_to_u64(profiles_updated),
             new_pois_discovered: saturating_count_to_u64(new_pois),
             role_changes_detected: saturating_count_to_u64(
-                self.count_role_changes_since(since).await.unwrap_or(0),
+                self.count_role_changes_since(since)
+                    .await
+                    .context("count role changes")?,
             ),
-            errors: vec![],
         })
     }
 
@@ -941,7 +828,7 @@ impl PgStore {
         let features_checked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feature_rows")
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(0);
+            .context("count feature rows")?;
 
         let features_drifted: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*)
@@ -952,7 +839,7 @@ impl PgStore {
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count drifted feature rows")?;
 
         let drift_scores = sqlx::query_as::<_, (String, f64)>(
             r#"SELECT
@@ -966,14 +853,13 @@ impl PgStore {
         )
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default();
+        .context("load drift scores")?;
 
         Ok(DriftStats {
             features_checked: saturating_count_to_u64(features_checked),
             features_drifted: saturating_count_to_u64(features_drifted),
             alerts_raised: saturating_count_to_u64(features_drifted),
             drift_scores,
-            errors: vec![],
         })
     }
 
@@ -984,12 +870,12 @@ impl PgStore {
         let companies_monitored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM companies")
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(0);
+            .context("count monitored companies")?;
 
         let persons_tracked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM persons")
             .fetch_one(&self.pool)
             .await
-            .unwrap_or(0);
+            .context("count tracked persons")?;
 
         let warnings_generated: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND created_at >= $1",
@@ -997,21 +883,21 @@ impl PgStore {
         .bind(since)
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count generated warnings")?;
 
         let insights_produced: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM insights WHERE created_at >= $1")
                 .bind(since)
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0);
+                .context("count produced insights")?;
 
         let recipes_in_production: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM recipes WHERE status IN ('active', 'production')",
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count recipes in production")?;
 
         let top_regions_rows = sqlx::query_as::<_, (String,)>(
             r#"SELECT region
@@ -1027,7 +913,7 @@ impl PgStore {
         .bind(since)
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default();
+        .context("load top warning regions")?;
         let top_regions = top_regions_rows
             .into_iter()
             .map(|(region,)| region)
@@ -1044,7 +930,7 @@ impl PgStore {
         .bind(since)
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default();
+        .context("load notable events")?;
         let notable_events = notable_events_rows
             .into_iter()
             .map(|(title,)| title)
@@ -1085,19 +971,19 @@ impl PgStore {
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count active recipes")?;
         let new_insights_24h: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM insights WHERE created_at > now() - interval '24 hours'",
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count 24h insights")?;
         let new_warnings_24h: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND created_at > now() - interval '24 hours'",
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        .context("count 24h warnings")?;
 
         let top_regions: Vec<RegionCount> = {
             let mut rows: Vec<RegionCount> = sqlx::query_as(
@@ -1105,7 +991,7 @@ impl PgStore {
             )
             .fetch_all(&self.pool)
             .await
-            .unwrap_or_default();
+            .context("load region counts")?;
 
             // Collapse regions beyond top 9 into an "Other" bucket so the
             // donut chart accounts for every company.
@@ -1127,7 +1013,7 @@ impl PgStore {
         )
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default();
+        .context("load severity distribution")?;
 
         let recent_activity = vec![
             ActivityItem {

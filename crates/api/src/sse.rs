@@ -387,32 +387,73 @@ impl SseManager {
         let consumer_config = async_nats::jetstream::consumer::push::Config {
             durable_name: Some("sse_bridge".to_string()),
             deliver_subject: format!("sse_bridge.deliver.{}", Uuid::new_v4()),
+            // Restart guarantee: this bridge is REALTIME. `DeliverPolicy::New`
+            // means a redeploy may drop alerts that were unpublished to this
+            // process; the in-memory replay ring is the only client-replay
+            // mechanism. The durable name exists so JetStream retries
+            // *routing* failures within a process lifetime (NAK/redelivery),
+            // not to replay history across redeploys. Deliberate choice.
             deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::New,
             ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
             ack_wait: Duration::from_secs(30),
-            max_deliver: 3,
+            // A transient policy-DB outage must survive far longer than a few
+            // redeliveries; 20 deliveries at a 30s ack-wait is ~10 minutes of
+            // retry budget before JetStream stops.
+            max_deliver: 20,
             filter_subject: "alerts.events.>".to_string(),
             ..Default::default()
         };
 
-        // A durable consumer's configuration is immutable; recreate it so a
-        // deploy that adds/changes the filter actually takes effect.
-        if let Err(e) = jetstream
-            .delete_consumer_from_stream("alerts", "sse_bridge")
+        // A durable consumer's configuration is immutable. Recreate it only
+        // when the desired shape actually differs so a restart does not
+        // discard messages the previous process had delivered-but-unacked.
+        let needs_recreate = match jetstream
+            .get_consumer_from_stream::<async_nats::jetstream::consumer::push::Config, _, _>(
+                "sse_bridge",
+                "alerts",
+            )
             .await
         {
-            debug!(error = %e, "No existing sse_bridge consumer to delete (expected on first start)");
+            Ok(mut existing) => match existing.info().await {
+                Ok(info) => {
+                    let current = &info.config;
+                    current.filter_subject != consumer_config.filter_subject
+                        || current.ack_policy != consumer_config.ack_policy
+                        || current.ack_wait != consumer_config.ack_wait
+                        || current.max_deliver != consumer_config.max_deliver
+                        || current.deliver_policy != consumer_config.deliver_policy
+                }
+                Err(_) => true,
+            },
+            Err(_) => true,
+        };
+        if needs_recreate {
+            if let Err(e) = jetstream
+                .delete_consumer_from_stream("alerts", "sse_bridge")
+                .await
+            {
+                debug!(error = %e, "No existing sse_bridge consumer to delete (expected on first start)");
+            }
         }
 
         let consumer: async_nats::jetstream::consumer::PushConsumer = match jetstream
-            .create_consumer_on_stream(consumer_config, "alerts")
+            .get_consumer_from_stream::<async_nats::jetstream::consumer::push::Config, _, _>(
+                "sse_bridge",
+                "alerts",
+            )
             .await
         {
-            Ok(c) => c,
-            Err(e) => {
-                error!(error = %e, "Failed to create NATS JetStream consumer");
-                return;
-            }
+            Ok(existing) => existing,
+            Err(_) => match jetstream
+                .create_consumer_on_stream(consumer_config, "alerts")
+                .await
+            {
+                Ok(created) => created,
+                Err(e) => {
+                    error!(error = %e, "Failed to create NATS JetStream consumer");
+                    return;
+                }
+            },
         };
 
         info!("NATS JetStream consumer 'sse_bridge' started");
@@ -432,6 +473,11 @@ impl SseManager {
                 };
                 info!("NATS consumer message stream opened");
 
+                // Periodic stranded-message visibility: JetStream stops
+                // redelivering after `max_deliver`; a persistent policy outage
+                // would leave alerts pending with no application trace. Poll
+                // the consumer info on idle ticks and report the backlog.
+                let mut idle_ticks: u32 = 0;
                 loop {
                     match tokio::time::timeout(Duration::from_secs(5), messages.next()).await {
                         Ok(Some(Ok(msg))) => {
@@ -450,18 +496,45 @@ impl SseManager {
                                         error = %e,
                                         "Malformed alert payload — dead-lettering"
                                     );
-                                    match jetstream
+                                    // Dead-letter only after the broker ACKs
+                                    // the DLQ publish: a client-side accept
+                                    // without the broker ACK must not consume
+                                    // the original, or the malformed payload
+                                    // is lost instead of durably recorded.
+                                    let dead_lettered = match jetstream
                                         .publish("alerts.dead_letter.malformed", payload.clone())
                                         .await
                                     {
-                                        Ok(_) => {}
-                                        Err(dlq_error) => warn!(
-                                            error = %dlq_error,
-                                            "Failed to publish malformed alert to the dead-letter subject"
-                                        ),
-                                    }
-                                    if let Err(e) = msg.ack().await {
-                                        warn!(error = %e, "Failed to ack dead-lettered NATS message");
+                                        Ok(ack_future) => match ack_future.await {
+                                            Ok(_ack) => true,
+                                            Err(dlq_error) => {
+                                                warn!(
+                                                    error = %dlq_error,
+                                                    "Dead-letter publish was not ACKed by JetStream"
+                                                );
+                                                false
+                                            }
+                                        },
+                                        Err(dlq_error) => {
+                                            warn!(
+                                                error = %dlq_error,
+                                                "Failed to start dead-letter publish"
+                                            );
+                                            false
+                                        }
+                                    };
+                                    if dead_lettered {
+                                        if let Err(e) = msg.ack().await {
+                                            warn!(error = %e, "Failed to ack dead-lettered NATS message");
+                                        }
+                                    } else if let Err(e) = msg
+                                        .ack_with(async_nats::jetstream::AckKind::Nak(None))
+                                        .await
+                                    {
+                                        warn!(
+                                            error = %e,
+                                            "Failed to NAK after failed dead-letter publish"
+                                        );
                                     }
                                     continue;
                                 }
@@ -537,7 +610,33 @@ impl SseManager {
                             break;
                         }
                         Err(_) => {
-                            // Timeout — normal, just loop and wait for more messages
+                            // Timeout — normal; use idle ticks for delivery
+                            // health reporting.
+                            idle_ticks = idle_ticks.wrapping_add(1);
+                            if idle_ticks.is_multiple_of(12) {
+                                if let Ok(mut handle) = jetstream
+                                    .get_consumer_from_stream::<
+                                        async_nats::jetstream::consumer::push::Config,
+                                        _,
+                                        _,
+                                    >("sse_bridge", "alerts")
+                                    .await
+                                {
+                                    if let Ok(info) = handle.info().await {
+                                        if info.num_pending > 0
+                                            || info.num_redelivered > 0
+                                            || info.num_ack_pending > 0
+                                        {
+                                            warn!(
+                                                num_pending = info.num_pending,
+                                                num_redelivered = info.num_redelivered,
+                                                num_ack_pending = info.num_ack_pending,
+                                                "SSE bridge delivery backlog: alerts pending or being redelivered"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

@@ -145,12 +145,23 @@ impl AnalysisStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceScope {
-    /// Explicit `warning_evidence` links (the upstream model): source document
-    /// -> observation -> warning link.
-    WarningEvidence,
-    /// Fallback: observations attached to the warning's entity ids.
-    EntityObservations,
-    /// Neither explicit links nor entity observations exist.
+    /// Explicit resolved `warning_evidence` observation links: the warning is
+    /// grounded in real extracted observations.
+    WarningObservations,
+    /// Only resolved source-document links exist (fetched content but no
+    /// extracted observation yet). Document-level evidence; not a substitute
+    /// for direct observation.
+    WarningDocuments,
+    /// The warning has explicit `warning_evidence` links, but none are
+    /// resolved — the stated source has not been acquired. Entity-wide
+    /// observations are deliberately *not* substituted here: the warning's own
+    /// source is unresolved, so the analysis must report insufficient
+    /// evidence rather than ground itself in unrelated entity activity.
+    WarningEvidenceUnresolved,
+    /// Legacy fallback: no `warning_evidence` rows exist at all, so the
+    /// warning's entity observations are the direct evidence.
+    EntityFallback,
+    /// No explicit links and no entity observations exist.
     #[default]
     None,
 }
@@ -158,10 +169,26 @@ pub enum EvidenceScope {
 impl EvidenceScope {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::WarningEvidence => "warning_evidence",
-            Self::EntityObservations => "entity_observations",
+            Self::WarningObservations => "warning_observations",
+            Self::WarningDocuments => "warning_documents",
+            Self::WarningEvidenceUnresolved => "warning_evidence_unresolved",
+            Self::EntityFallback => "entity_fallback",
             Self::None => "none",
         }
+    }
+
+    /// True when the scope grounds the warning in its own stated source rather
+    /// than unrelated entity activity.
+    pub fn is_explicit(self) -> bool {
+        matches!(
+            self,
+            Self::WarningObservations | Self::WarningDocuments | Self::WarningEvidenceUnresolved
+        )
+    }
+
+    /// True when direct observations are available for citing.
+    pub fn has_direct_observations(self) -> bool {
+        matches!(self, Self::WarningObservations | Self::EntityFallback)
     }
 }
 
@@ -173,6 +200,12 @@ impl EvidenceScope {
 /// can only be zero when nothing was sent, and a prompt budget that dropped
 /// everything leaves the model equally unable to ground a claim.
 pub fn preflight_status(bundle: &EvidenceBundle) -> AnalysisStatus {
+    // The warning names an explicit source that has not been acquired. Related
+    // derived insights cannot replace the missing primary evidence, so this is
+    // deterministically insufficient rather than a model call.
+    if bundle.evidence_scope == EvidenceScope::WarningEvidenceUnresolved {
+        return AnalysisStatus::InsufficientEvidence;
+    }
     if bundle.observations.is_empty() && bundle.insights.is_empty() {
         AnalysisStatus::InsufficientEvidence
     } else {
@@ -520,9 +553,16 @@ pub struct EvidenceBundle {
     pub source_domains: Vec<String>,
     /// `(domain, tier)` from `source_reliability_stats`.
     pub source_reliability: Vec<(String, String)>,
-    /// Number of explicit `warning_evidence` links found for the warning. When
-    /// non-zero, the linked observations are the direct evidence set.
+    /// Total explicit `warning_evidence` links found for the warning
+    /// (resolved observations, resolved documents and unresolved URLs).
     pub warning_evidence_count: usize,
+    /// Links resolved to a real extracted observation.
+    pub resolved_observation_links: usize,
+    /// Links resolved to a fetched source document without an extracted
+    /// observation.
+    pub resolved_document_links: usize,
+    /// Links whose URL has no fetched source yet.
+    pub unresolved_links: usize,
     /// Where the direct evidence came from.
     pub evidence_scope: EvidenceScope,
 }
@@ -637,14 +677,41 @@ pub async fn gather_evidence(store: &PgStore, warning: &WarningRow) -> Result<Ev
         .map(|(_, name, _, _)| name.clone())
         .collect();
 
+    // Every persisted link, resolved or not. The *presence* of explicit links
+    // (even unresolved ones) is what decides whether unrelated entity
+    // observations may be used: a warning whose stated source is unresolved
+    // must not be grounded in generic entity activity.
+    let links = store
+        .list_warning_evidence(warning.id)
+        .await
+        .context("warning analysis: failed to load warning evidence links")?;
     let linked_observations = store
         .list_warning_evidence_observations(warning.id)
         .await
-        .context("warning analysis: failed to load warning evidence links")?;
-    let warning_evidence_count = linked_observations.len();
+        .context("warning analysis: failed to load linked warning observations")?;
+
+    let warning_evidence_count = links.len();
+    let resolved_observation_links = linked_observations.len();
+    let resolved_document_links = links
+        .iter()
+        .filter(|link| link.status == "resolved" && link.evidence_kind == "source_document")
+        .count();
+    let unresolved_links = links
+        .iter()
+        .filter(|link| link.status != "resolved")
+        .count();
 
     let (mut all_observations, evidence_scope) = if !linked_observations.is_empty() {
-        (linked_observations, EvidenceScope::WarningEvidence)
+        (linked_observations, EvidenceScope::WarningObservations)
+    } else if warning_evidence_count > 0 {
+        // Explicit links exist but none resolved to an observation. Never
+        // substitute unrelated entity observations here.
+        let scope = if resolved_document_links > 0 {
+            EvidenceScope::WarningDocuments
+        } else {
+            EvidenceScope::WarningEvidenceUnresolved
+        };
+        (Vec::new(), scope)
     } else {
         let mut observations = Vec::new();
         for entity_id in &entity_ids {
@@ -659,7 +726,7 @@ pub async fn gather_evidence(store: &PgStore, warning: &WarningRow) -> Result<Ev
         let scope = if entity_ids.is_empty() {
             EvidenceScope::None
         } else {
-            EvidenceScope::EntityObservations
+            EvidenceScope::EntityFallback
         };
         (observations, scope)
     };
@@ -707,6 +774,9 @@ pub async fn gather_evidence(store: &PgStore, warning: &WarningRow) -> Result<Ev
         source_domains: domains,
         source_reliability,
         warning_evidence_count,
+        resolved_observation_links,
+        resolved_document_links,
+        unresolved_links,
         evidence_scope,
     })
 }
@@ -747,8 +817,19 @@ fn source_reliability_tier(bundle: &EvidenceBundle, domain: Option<&str>) -> Opt
 }
 
 /// Reusable evidence-quality assessment over the exact evidence set the model
-/// saw, evaluated against the warning title as the claim: observations are
-/// direct evidence, related insights are derived.
+/// saw, evaluated against the warning title as the claim.
+///
+/// No claim relation has been established for the gathered evidence: nothing
+/// classifies an observation as supporting or contradicting the warning, so
+/// every record enters as [`EvidenceStance::Neutral`]. Corpus dimensions
+/// (count, origins, freshness, provenance, parser confidence, coverage) are
+/// still measured exactly; claim corroboration reads `NotMeasured` until a
+/// stance classifier exists. Marking evidence `Supports` by default would
+/// fabricate semantic corroboration.
+///
+/// Derived insights are context, never factual support: they are marked
+/// `Neutral` and `.derived()` so they cannot inflate independent corroboration
+/// of the warning's own claim.
 ///
 /// A missing observation/insight confidence stays missing: the record still
 /// counts for corpus dimensions, but it is never assigned a synthesized 0.6
@@ -762,7 +843,7 @@ pub fn assess_bundle_quality(
     for observation in &bundle.observations {
         let domain = observation_source_domain(observation);
         let tier = source_reliability_tier(bundle, domain.as_deref());
-        let mut item = EvidenceItem::new_optional(observation.confidence, EvidenceStance::Supports)
+        let mut item = EvidenceItem::new_optional(observation.confidence, EvidenceStance::Neutral)
             .with_source_type(observation.observation_type.clone())
             .with_observed_at(observation.ts_utc)
             .with_source_reliability(tier);
@@ -774,7 +855,7 @@ pub fn assess_bundle_quality(
         items.push(item);
     }
     for insight in &bundle.insights {
-        let mut item = EvidenceItem::new_optional(insight.confidence, EvidenceStance::Supports)
+        let mut item = EvidenceItem::new_optional(insight.confidence, EvidenceStance::Neutral)
             .with_source_type(format!(
                 "insight:{}",
                 insight.insight_type.as_deref().unwrap_or("insight")
@@ -1114,9 +1195,20 @@ pub struct WarningAnalysisOutput {
     /// or the entity-observation fallback.
     #[serde(default)]
     pub evidence_scope: EvidenceScope,
-    /// Explicit `warning_evidence` rows available for the warning.
+    /// Explicit `warning_evidence` rows available for the warning (resolved
+    /// observations, resolved documents and unresolved URLs).
     #[serde(default)]
     pub warning_evidence_count: usize,
+    /// Links resolved to a real extracted observation.
+    #[serde(default)]
+    pub resolved_observation_links: usize,
+    /// Links resolved to a fetched source document with no extracted
+    /// observation yet.
+    #[serde(default)]
+    pub resolved_document_links: usize,
+    /// Links whose stated source has not been acquired.
+    #[serde(default)]
+    pub unresolved_links: usize,
     pub claims: Vec<RenderedClaim>,
     pub impact: Vec<RenderedClaim>,
     pub actions: Vec<RenderedClaim>,
@@ -1355,6 +1447,9 @@ fn base_output(
         analysis_status: status,
         evidence_scope: context.bundle.evidence_scope,
         warning_evidence_count: context.bundle.warning_evidence_count,
+        resolved_observation_links: context.bundle.resolved_observation_links,
+        resolved_document_links: context.bundle.resolved_document_links,
+        unresolved_links: context.bundle.unresolved_links,
         claims,
         impact,
         actions,
@@ -1847,11 +1942,11 @@ mod tests {
             focus_areas: vec![],
         };
         let mut bundle = test_bundle(vec![test_observation(Uuid::nil())], 1);
-        bundle.evidence_scope = EvidenceScope::WarningEvidence;
+        bundle.evidence_scope = EvidenceScope::WarningObservations;
         bundle.warning_evidence_count = 1;
         let (system, user) = build_prompts(&profile, &test_warning(), &bundle);
         assert!(
-            user.contains("source: warning_evidence"),
+            user.contains("source: warning_observations"),
             "prompt must name the evidence scope: {user}"
         );
         assert!(system.contains("at least one observation id"));
@@ -1984,7 +2079,7 @@ mod tests {
         let first = evidence_digest(&warning, &bundle);
 
         let mut linked = bundle.clone();
-        linked.evidence_scope = EvidenceScope::WarningEvidence;
+        linked.evidence_scope = EvidenceScope::WarningObservations;
         linked.warning_evidence_count = 1;
         assert_ne!(
             first,
@@ -2064,7 +2159,64 @@ mod tests {
             source_domains: vec!["example.com".to_string()],
             source_reliability: Vec::new(),
             warning_evidence_count: 0,
-            evidence_scope: EvidenceScope::EntityObservations,
+            resolved_observation_links: 0,
+            resolved_document_links: 0,
+            unresolved_links: 0,
+            evidence_scope: EvidenceScope::EntityFallback,
         }
+    }
+
+    /// The audit scenario: a warning whose stated source is unresolved must
+    /// not be grounded in unrelated entity observations. Even with plenty of
+    /// entity observations available, the bundle's direct observations stay
+    /// empty, the scope is `WarningEvidenceUnresolved`, and the preflight is
+    /// deterministically InsufficientEvidence.
+    #[test]
+    fn unresolved_warning_source_never_substitutes_entity_observations() {
+        let bundle = EvidenceBundle {
+            observations: Vec::new(),
+            insights: Vec::new(),
+            observations_available: 0,
+            insights_available: 40,
+            entity_names: vec!["Acme".to_string()],
+            source_domains: Vec::new(),
+            source_reliability: Vec::new(),
+            warning_evidence_count: 1,
+            resolved_observation_links: 0,
+            resolved_document_links: 0,
+            unresolved_links: 1,
+            evidence_scope: EvidenceScope::WarningEvidenceUnresolved,
+        };
+        assert!(bundle.observations.is_empty());
+        assert_eq!(
+            preflight_status(&bundle),
+            AnalysisStatus::InsufficientEvidence,
+            "an unresolved explicit source must never fall back to the model"
+        );
+        assert!(!bundle.evidence_scope.has_direct_observations());
+        assert!(bundle.evidence_scope.is_explicit());
+    }
+
+    /// A warning with no `warning_evidence` rows at all keeps the legacy
+    /// entity-observation fallback.
+    #[test]
+    fn no_links_keeps_entity_fallback() {
+        let bundle = EvidenceBundle {
+            observations: vec![test_observation(Uuid::new_v4())],
+            insights: Vec::new(),
+            observations_available: 1,
+            insights_available: 0,
+            entity_names: vec!["Acme".to_string()],
+            source_domains: Vec::new(),
+            source_reliability: Vec::new(),
+            warning_evidence_count: 0,
+            resolved_observation_links: 0,
+            resolved_document_links: 0,
+            unresolved_links: 0,
+            evidence_scope: EvidenceScope::EntityFallback,
+        };
+        assert!(bundle.evidence_scope.has_direct_observations());
+        assert!(!bundle.evidence_scope.is_explicit());
+        assert_eq!(preflight_status(&bundle), AnalysisStatus::Completed);
     }
 }

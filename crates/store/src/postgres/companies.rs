@@ -494,34 +494,15 @@ impl PgStore {
             Some(company) => company,
             None => return Ok(None),
         };
-        let sites = self
-            .get_sites_for_company(company_id)
-            .await
-            .unwrap_or_default();
-        let capabilities = self
-            .list_capabilities(Some(company_id), 200, 0)
-            .await
-            .unwrap_or_default();
-        let certifications = self
-            .get_certifications_for_company(company_id)
-            .await
-            .unwrap_or_default();
-        let product_families = self
-            .list_product_families(Some(company_id), 200, 0)
-            .await
-            .unwrap_or_default();
-        let edges = self
-            .get_edges_from(company_id, "company")
-            .await
-            .unwrap_or_default();
+        let sites = self.get_sites_for_company(company_id).await?;
+        let capabilities = self.list_capabilities(Some(company_id), 200, 0).await?;
+        let certifications = self.get_certifications_for_company(company_id).await?;
+        let product_families = self.list_product_families(Some(company_id), 200, 0).await?;
+        let edges = self.get_edges_from(company_id, "company").await?;
         let dossier_entries = self
             .get_dossier_entries("company", company_id, None, 200)
-            .await
-            .unwrap_or_default();
-        let recent_changes = self
-            .get_company_changes(company_id, 50)
-            .await
-            .unwrap_or_default();
+            .await?;
+        let recent_changes = self.get_company_changes(company_id, 50).await?;
         let analysis = build_company_dossier_analysis(
             &capabilities,
             &certifications,

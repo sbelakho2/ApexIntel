@@ -62,9 +62,13 @@ pub struct RecipeListItem {
     pub description: String,
     pub status: RecipeStatus,
     pub region: Option<String>,
-    pub precision: f64,
-    pub recall: f64,
-    pub false_positive_rate: f64,
+    /// Empirical precision from reviewed outcomes; `None` = not measured.
+    pub precision: Option<f64>,
+    /// Promotion-evidence heuristic, not recall (there is no evaluation-set
+    /// recall to report yet).
+    pub promotion_evidence_score: f64,
+    /// False-positive rate from reviewed outcomes; `None` = not measured.
+    pub false_positive_rate: Option<f64>,
     pub fired_count: u32,
     pub last_fired: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -114,18 +118,26 @@ pub struct RecipePerformanceDetail {
 // Logic
 // ────────────────────────────────────────────
 
+/// Ascending comparison that keeps unmeasured (`None`) values last.
+fn cmp_measured_ascending<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
 /// Sort recipes.
 pub fn sort_recipes(items: &mut [RecipeListItem], field: &RecipeSortField, desc: bool) {
     items.sort_by(|a, b| {
         let cmp = match field {
             RecipeSortField::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            RecipeSortField::Precision => a
-                .precision
-                .partial_cmp(&b.precision)
-                .unwrap_or(std::cmp::Ordering::Equal),
+            // Ascending by measured value; unmeasured values sort last.
+            RecipeSortField::Precision => cmp_measured_ascending(&a.precision, &b.precision),
             RecipeSortField::Recall => a
-                .recall
-                .partial_cmp(&b.recall)
+                .promotion_evidence_score
+                .partial_cmp(&b.promotion_evidence_score)
                 .unwrap_or(std::cmp::Ordering::Equal),
             RecipeSortField::CreatedAt => a.created_at.cmp(&b.created_at),
             RecipeSortField::FiredCount => a.fired_count.cmp(&b.fired_count),
@@ -148,7 +160,11 @@ pub fn filter_by_status<'a>(
 
 /// Filter recipes by minimum precision.
 pub fn filter_by_precision(items: &[RecipeListItem], min: f64) -> Vec<&RecipeListItem> {
-    items.iter().filter(|r| r.precision >= min).collect()
+    // Unmeasured precision never passes a numeric threshold.
+    items
+        .iter()
+        .filter(|r| r.precision.is_some_and(|precision| precision >= min))
+        .collect()
 }
 
 /// Validate a promote request.
@@ -165,17 +181,28 @@ pub fn validate_promote(req: &PromoteRequest) -> Result<(), String> {
 }
 
 /// Check if a recipe is eligible for promotion (must be staging + meet min thresholds).
-pub fn is_promotable(recipe: &RecipeListItem, min_precision: f64, min_recall: f64) -> bool {
+pub fn is_promotable(
+    recipe: &RecipeListItem,
+    min_precision: f64,
+    min_promotion_evidence: f64,
+) -> bool {
     recipe.status == RecipeStatus::Staging
-        && recipe.precision >= min_precision
-        && recipe.recall >= min_recall
+        && recipe
+            .precision
+            .is_some_and(|precision| precision >= min_precision)
+        && recipe.promotion_evidence_score >= min_promotion_evidence
+        // An unmeasured FPR cannot satisfy a verifiable threshold.
+        && recipe
+            .false_positive_rate
+            .is_some_and(|fpr| fpr <= 1.0)
 }
 
-/// Recipe health score combining precision, recall, and activity.
+/// Recipe health score combining measured precision, promotion evidence and
+/// activity. Unmeasured precision/FPR contribute nothing rather than zeros.
 pub fn recipe_health(recipe: &RecipeListItem) -> f64 {
-    let precision_score = recipe.precision;
-    let recall_score = recipe.recall;
-    let fpr_penalty = recipe.false_positive_rate;
+    let precision_score = recipe.precision.unwrap_or(0.0);
+    let recall_score = recipe.promotion_evidence_score;
+    let fpr_penalty = recipe.false_positive_rate.unwrap_or(0.0);
     let activity_bonus = if recipe.fired_count > 0 { 0.1 } else { 0.0 };
 
     let score: f64 =
@@ -203,15 +230,22 @@ pub fn recipe_stats(items: &[RecipeListItem]) -> RecipeAggregateStats {
         .iter()
         .filter(|r| r.status == RecipeStatus::Production)
         .collect();
-    let avg_precision = if active.is_empty() {
-        0.0
+    // Averages over measured values only; nothing measured is `None`, never a
+    // synthesized zero.
+    let measured_precision: Vec<f64> = active.iter().filter_map(|r| r.precision).collect();
+    let avg_precision = if measured_precision.is_empty() {
+        None
     } else {
-        active.iter().map(|r| r.precision).sum::<f64>() / active.len() as f64
+        Some(measured_precision.iter().sum::<f64>() / measured_precision.len() as f64)
     };
-    let avg_recall = if active.is_empty() {
+    let avg_promotion_evidence = if active.is_empty() {
         0.0
     } else {
-        active.iter().map(|r| r.recall).sum::<f64>() / active.len() as f64
+        active
+            .iter()
+            .map(|r| r.promotion_evidence_score)
+            .sum::<f64>()
+            / active.len() as f64
     };
 
     RecipeAggregateStats {
@@ -220,7 +254,7 @@ pub fn recipe_stats(items: &[RecipeListItem]) -> RecipeAggregateStats {
         staging,
         deprecated,
         avg_precision,
-        avg_recall,
+        avg_promotion_evidence,
     }
 }
 
@@ -230,8 +264,11 @@ pub struct RecipeAggregateStats {
     pub production: usize,
     pub staging: usize,
     pub deprecated: usize,
-    pub avg_precision: f64,
-    pub avg_recall: f64,
+    /// Mean measured precision; `None` when nothing is measured.
+    pub avg_precision: Option<f64>,
+    /// Mean promotion-evidence heuristic (not recall; no evaluation-set recall
+    /// exists yet).
+    pub avg_promotion_evidence: f64,
 }
 
 #[cfg(test)]
@@ -242,7 +279,7 @@ mod tests {
         name: &str,
         status: RecipeStatus,
         precision: f64,
-        recall: f64,
+        promotion_evidence: f64,
         fpr: f64,
         fired: u32,
     ) -> RecipeListItem {
@@ -252,9 +289,9 @@ mod tests {
             description: format!("{} desc", name),
             status,
             region: Some("TN".to_string()),
-            precision,
-            recall,
-            false_positive_rate: fpr,
+            precision: Some(precision),
+            promotion_evidence_score: promotion_evidence,
+            false_positive_rate: Some(fpr),
             fired_count: fired,
             last_fired: if fired > 0 { Some(Utc::now()) } else { None },
             created_at: Utc::now(),
@@ -373,15 +410,18 @@ mod tests {
         assert_eq!(stats.production, 2);
         assert_eq!(stats.staging, 1);
         assert_eq!(stats.deprecated, 1);
-        assert!((stats.avg_precision - 0.85).abs() < 0.01); // (0.9+0.8)/2
-        assert!((stats.avg_recall - 0.6).abs() < 0.01); // (0.7+0.5)/2
+        assert!((stats.avg_precision.unwrap() - 0.85).abs() < 0.01); // (0.9+0.8)/2
+        assert!((stats.avg_promotion_evidence - 0.6).abs() < 0.01); // (0.7+0.5)/2
     }
 
     #[test]
     fn test_recipe_stats_empty() {
         let stats = recipe_stats(&[]);
         assert_eq!(stats.total, 0);
-        assert_eq!(stats.avg_precision, 0.0);
+        assert_eq!(
+            stats.avg_precision, None,
+            "nothing measured must be None, not 0"
+        );
     }
 
     #[test]

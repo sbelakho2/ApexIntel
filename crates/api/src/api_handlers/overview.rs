@@ -779,7 +779,10 @@ pub(crate) async fn list_recipes(
 
     if let Some(min_precision) = params.min_precision {
         let min_precision = clamp_ratio(min_precision);
-        items.retain(|item| item.precision >= min_precision);
+        items.retain(|item| {
+            item.precision
+                .is_some_and(|precision| precision >= min_precision)
+        });
     }
 
     if let Some(region) = params.region.as_deref() {

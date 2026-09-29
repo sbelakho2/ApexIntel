@@ -100,8 +100,7 @@ impl PgStore {
         // whole panel.
         let crawl_stats = self
             .get_crawl_stats(Utc::now() - chrono::Duration::days(7))
-            .await
-            .unwrap_or_default();
+            .await?;
         Ok(AdminCrawlStatus {
             total_fingerprints: total_fp,
             domains_tracked: domains,
@@ -127,9 +126,10 @@ impl PgStore {
             sqlx::query_as("SELECT COUNT(*) FROM recipes WHERE status = 'deprecated'")
                 .fetch_one(&self.pool)
                 .await?;
-        // Telemetry-only performance rollup: degraded stats render empty
-        // rather than failing the authoritative counts above.
-        let recipes = self.get_recipe_stats().await.unwrap_or_default();
+        // The performance rollup is not fabricated when the recipe query
+        // fails: an error propagates instead of rendering an empty (zero)
+        // performance table.
+        let recipes = self.get_recipe_stats().await?;
         Ok(AdminRecipePerformance {
             total_recipes: total,
             production_count: prod,
@@ -156,8 +156,7 @@ impl PgStore {
         // than failing the authoritative counts above.
         let poi_stats = self
             .get_poi_stats(Utc::now() - chrono::Duration::days(30))
-            .await
-            .unwrap_or_default();
+            .await?;
         Ok(AdminPoiCoverage {
             total_persons,
             with_artifacts,

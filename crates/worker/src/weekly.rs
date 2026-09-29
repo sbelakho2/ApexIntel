@@ -19,9 +19,13 @@ pub struct StagedRecipe {
     pub recipe_id: String,
     pub staged_at: DateTime<Utc>,
     pub weeks_in_staging: u32,
-    pub precision: f64,
-    pub recall: f64,
-    pub false_positive_rate: f64,
+    /// Empirical precision from reviewed outcomes; `None` = not measured.
+    /// Promotion cannot proceed without it.
+    pub precision: Option<f64>,
+    /// Promotion readiness heuristic (NOT recall).
+    pub promotion_evidence_score: f64,
+    /// False-positive rate from reviewed outcomes; `None` = not measured.
+    pub false_positive_rate: Option<f64>,
     pub alerts_fired: u64,
     pub true_positives: u64,
 }
@@ -67,7 +71,9 @@ impl ProductionRecipe {
 pub struct PromotionPolicy {
     pub min_weeks_staged: u32,
     pub min_precision: f64,
-    pub min_recall: f64,
+    /// Minimum promotion-evidence heuristic (measured precision + sample
+    /// maturity); not a recall requirement.
+    pub min_promotion_evidence: f64,
     pub max_false_positive_rate: f64,
     pub min_alerts_fired: u64,
 }
@@ -77,7 +83,7 @@ impl Default for PromotionPolicy {
         Self {
             min_weeks_staged: 4,
             min_precision: 0.85,
-            min_recall: 0.3,
+            min_promotion_evidence: 0.3,
             max_false_positive_rate: 0.05,
             min_alerts_fired: 3,
         }
@@ -188,36 +194,48 @@ pub fn evaluate_promotion(recipe: &StagedRecipe, policy: &PromotionPolicy) -> Pr
         };
     }
 
-    if recipe.precision < policy.min_precision {
+    // Promotion requires measured, reviewed outcomes: an unmeasured
+    // precision/FPR is unverifiable evidence, not a passing gate.
+    let Some(precision) = recipe.precision else {
+        return PromotionDecision::Reject {
+            reason: "precision not measured (no reviewed outcomes)".to_string(),
+        };
+    };
+    if precision < policy.min_precision {
+        return PromotionDecision::Reject {
+            reason: format!("precision {precision:.2} < {:.2}", policy.min_precision),
+        };
+    }
+
+    if recipe.promotion_evidence_score < policy.min_promotion_evidence {
         return PromotionDecision::Reject {
             reason: format!(
-                "precision {:.2} < {:.2}",
-                recipe.precision, policy.min_precision
+                "promotion evidence score {:.2} < {:.2}",
+                recipe.promotion_evidence_score, policy.min_promotion_evidence
             ),
         };
     }
 
-    if recipe.recall < policy.min_recall {
+    let Some(false_positive_rate) = recipe.false_positive_rate else {
         return PromotionDecision::Reject {
-            reason: format!("recall {:.2} < {:.2}", recipe.recall, policy.min_recall),
+            reason: "false-positive rate not measured (no reviewed outcomes)".to_string(),
         };
-    }
-
-    if recipe.false_positive_rate > policy.max_false_positive_rate {
+    };
+    if false_positive_rate > policy.max_false_positive_rate {
         return PromotionDecision::Reject {
             reason: format!(
                 "FPR {:.3} > {:.3}",
-                recipe.false_positive_rate, policy.max_false_positive_rate
+                false_positive_rate, policy.max_false_positive_rate
             ),
         };
     }
 
     PromotionDecision::Promote {
         reason: format!(
-            "precision={:.2}, recall={:.2}, FPR={:.3}, {} alerts over {} weeks",
-            recipe.precision,
-            recipe.recall,
-            recipe.false_positive_rate,
+            "precision={:.2}, promotion_evidence={:.2}, FPR={:.3}, {} alerts over {} weeks",
+            precision,
+            recipe.promotion_evidence_score,
+            false_positive_rate,
             recipe.alerts_fired,
             recipe.weeks_in_staging,
         ),
@@ -954,9 +972,9 @@ mod tests {
             recipe_id: "R001".to_string(),
             staged_at: utc(2026, 1, 1, 0, 0, 0),
             weeks_in_staging: 6,
-            precision: 0.92,
-            recall: 0.45,
-            false_positive_rate: 0.02,
+            precision: Some(0.92),
+            promotion_evidence_score: 0.45,
+            false_positive_rate: Some(0.02),
             alerts_fired: 10,
             true_positives: 9,
         }
@@ -967,9 +985,9 @@ mod tests {
             recipe_id: "R002".to_string(),
             staged_at: utc(2026, 2, 10, 0, 0, 0),
             weeks_in_staging: 2,
-            precision: 0.95,
-            recall: 0.50,
-            false_positive_rate: 0.01,
+            precision: Some(0.95),
+            promotion_evidence_score: 0.50,
+            false_positive_rate: Some(0.01),
             alerts_fired: 5,
             true_positives: 5,
         }
@@ -980,9 +998,9 @@ mod tests {
             recipe_id: "R003".to_string(),
             staged_at: utc(2026, 1, 1, 0, 0, 0),
             weeks_in_staging: 5,
-            precision: 0.40,
-            recall: 0.60,
-            false_positive_rate: 0.08,
+            precision: Some(0.40),
+            promotion_evidence_score: 0.60,
+            false_positive_rate: Some(0.08),
             alerts_fired: 15,
             true_positives: 6,
         }
@@ -993,9 +1011,9 @@ mod tests {
             recipe_id: "R004".to_string(),
             staged_at: utc(2026, 1, 1, 0, 0, 0),
             weeks_in_staging: 5,
-            precision: 1.0,
-            recall: 1.0,
-            false_positive_rate: 0.0,
+            precision: Some(1.0),
+            promotion_evidence_score: 1.0,
+            false_positive_rate: Some(0.0),
             alerts_fired: 1,
             true_positives: 1,
         }
@@ -1020,7 +1038,7 @@ mod tests {
             weeks_in_production: 20,
             precision_history: vec![0.85, 0.70, 0.55, 0.42],
             recall_history: vec![0.40, 0.35, 0.30, 0.25],
-            false_positive_rate: 0.08,
+            false_positive_rate: (0.08),
             alerts_fired_total: 80,
         }
     }
@@ -1032,7 +1050,7 @@ mod tests {
             weeks_in_production: 10,
             precision_history: vec![],
             recall_history: vec![],
-            false_positive_rate: 0.0,
+            false_positive_rate: (0.0),
             alerts_fired_total: 0,
         }
     }
@@ -1044,7 +1062,7 @@ mod tests {
             weeks_in_production: 15,
             precision_history: vec![0.60, 0.55, 0.50],
             recall_history: vec![0.50, 0.48, 0.45],
-            false_positive_rate: 0.20,
+            false_positive_rate: (0.20),
             alerts_fired_total: 100,
         }
     }
@@ -1126,7 +1144,7 @@ mod tests {
     #[test]
     fn test_reject_high_fpr() {
         let mut recipe = sample_staged_good();
-        recipe.false_positive_rate = 0.10;
+        recipe.false_positive_rate = Some(0.10);
         let policy = PromotionPolicy::default();
         let decision = evaluate_promotion(&recipe, &policy);
         assert!(matches!(decision, PromotionDecision::Reject { .. }));
@@ -1136,14 +1154,39 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_low_recall() {
+    fn test_reject_low_promotion_evidence() {
         let mut recipe = sample_staged_good();
-        recipe.recall = 0.1;
+        recipe.promotion_evidence_score = 0.1;
         let policy = PromotionPolicy::default();
         let decision = evaluate_promotion(&recipe, &policy);
         assert!(matches!(decision, PromotionDecision::Reject { .. }));
         if let PromotionDecision::Reject { reason } = decision {
-            assert!(reason.contains("recall"));
+            assert!(reason.contains("promotion evidence"));
+        }
+    }
+
+    /// A recipe whose precision/FPR were never reviewed cannot be promoted:
+    /// unmeasured is not a passing gate.
+    #[test]
+    fn test_unmeasured_precision_or_fpr_rejects_promotion() {
+        let mut recipe = sample_staged_good();
+        recipe.precision = None;
+        let policy = PromotionPolicy::default();
+        if let PromotionDecision::Reject { reason } = evaluate_promotion(&recipe, &policy) {
+            assert!(reason.contains("precision not measured"), "{reason}");
+        } else {
+            panic!("unmeasured precision must reject");
+        }
+
+        let mut recipe = sample_staged_good();
+        recipe.false_positive_rate = None;
+        if let PromotionDecision::Reject { reason } = evaluate_promotion(&recipe, &policy) {
+            assert!(
+                reason.contains("false-positive rate not measured"),
+                "{reason}"
+            );
+        } else {
+            panic!("unmeasured FPR must reject");
         }
     }
 
@@ -1178,7 +1221,7 @@ mod tests {
         let policy = PromotionPolicy {
             min_weeks_staged: 1, // lower threshold
             min_precision: 0.80,
-            min_recall: 0.20,
+            min_promotion_evidence: 0.20,
             max_false_positive_rate: 0.10,
             min_alerts_fired: 3,
         };
@@ -1191,9 +1234,9 @@ mod tests {
         let mut recipe = sample_staged_good();
         let policy = PromotionPolicy::default();
         recipe.weeks_in_staging = policy.min_weeks_staged;
-        recipe.precision = policy.min_precision;
-        recipe.recall = policy.min_recall;
-        recipe.false_positive_rate = policy.max_false_positive_rate;
+        recipe.precision = Some(policy.min_precision);
+        recipe.promotion_evidence_score = policy.min_promotion_evidence;
+        recipe.false_positive_rate = Some(policy.max_false_positive_rate);
         recipe.alerts_fired = policy.min_alerts_fired;
         let decision = evaluate_promotion(&recipe, &policy);
         assert!(matches!(decision, PromotionDecision::Promote { .. }));
@@ -1250,7 +1293,7 @@ mod tests {
             weeks_in_production: 4,
             precision_history: vec![0.0, 0.0],
             recall_history: vec![],
-            false_positive_rate: 0.0,
+            false_positive_rate: (0.0),
             alerts_fired_total: 0,
         };
         let policy = DeprecationPolicy::default();
@@ -2070,10 +2113,13 @@ mod tests {
         assert!(json.contains("\"recipe_id\""), "missing recipe_id");
         assert!(json.contains("\"staged_at\""), "missing staged_at");
         assert!(json.contains("\"precision\""), "missing precision");
-        assert!(json.contains("\"recall\""), "missing recall");
+        assert!(
+            json.contains("\"promotion_evidence_score\""),
+            "missing promotion_evidence_score"
+        );
         // Round-trip must preserve all values
         let back: StagedRecipe = serde_json::from_str(&json).expect("must deserialize");
         assert_eq!(back.recipe_id, r.recipe_id);
-        assert!((back.precision - r.precision).abs() < 1e-9);
+        assert!((back.precision.unwrap() - r.precision.unwrap()).abs() < 1e-9);
     }
 }

@@ -102,9 +102,13 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
             let fires = measured.map_or(Measurement::NotMeasured, |r| {
                 Measurement::measured(r.observations_in_fires as u64)
             });
-            let promotions = measured.map_or(Measurement::NotMeasured, |r| {
-                Measurement::measured(r.observations_in_promotions as u64)
-            });
+            // Real promotion events per source are not recorded; the column is
+            // NULL and the scorer sees NotMeasured rather than a proxy.
+            let promotions = measured
+                .and_then(|r| r.observations_in_promotions)
+                .map_or(Measurement::NotMeasured, |value| {
+                    Measurement::measured(value.max(0) as u64)
+                });
             let obs_types = measured.map_or(Measurement::NotMeasured, |r| {
                 Measurement::measured(r.observation_types_produced.clone())
             });
@@ -152,7 +156,7 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
         bottom_score = bottom
             .and_then(|s| s.score.value_copied())
             .map_or("not measured".to_string(), |score| format!("{score:.3}")),
-        "source_scoring: complete (real telemetry)"
+        "source_scoring: complete (observation-derived source telemetry)"
     );
     let score_text = |source: Option<&apex_crawl::source_scoring::ScoredSource>| {
         source
@@ -168,7 +172,7 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
             .unwrap_or_else(|| "none".to_string())
     };
     let summary = format!(
-        "source_scoring: ranked {} sources from real telemetry; top={}, bottom={}; crawl_metric_write_failures={}",
+        "source_scoring: ranked {} sources from observation-derived telemetry; top={}, bottom={}; crawl_metric_write_failures={}",
         scored.len(),
         score_text(top),
         score_text(bottom),

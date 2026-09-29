@@ -1391,7 +1391,7 @@ async fn run_pattern_mining_stats_only(kind: &JobKind, store: &Arc<PgStore>) -> 
             candidates_passed_gates: mining_stats.candidates_passed_gates,
             hypotheses_generated: mining_stats.hypotheses_generated,
             recipes_staged: mining_stats.recipes_staged,
-            errors: mining_stats.errors,
+            errors: Vec::new(),
         },
     );
     run
@@ -1556,7 +1556,7 @@ pub(super) async fn run_hypothesis_generation(kind: &JobKind, store: &Arc<PgStor
                 .candidates_passed_gates
                 .saturating_sub(mining_stats.hypotheses_generated),
             recipes_staged: mining_stats.recipes_staged,
-            errors: mining_stats.errors,
+            errors: Vec::new(),
         });
         match stage.run.status {
             apex_worker::scheduler::JobStatus::Succeeded { .. } => {
@@ -1621,7 +1621,7 @@ pub(super) async fn run_feature_drift_check(kind: &JobKind, store: &Arc<PgStore>
         features_drifted: drift_stats.features_drifted,
         drift_scores: drift_stats.drift_scores,
         alerts_raised: drift_stats.alerts_raised,
-        errors: drift_stats.errors,
+        errors: Vec::new(),
     });
     match stage.run.status {
         apex_worker::scheduler::JobStatus::Succeeded { .. } => {

@@ -268,23 +268,52 @@ pub async fn link_warning_evidence_on(
                 }
             }
             WarningEvidenceRef::SourceDocument(source_id) => {
-                let exists: Option<(String, Option<String>)> =
-                    sqlx::query_as("SELECT url, content_hash FROM sources WHERE id = $1")
-                        .bind(source_id)
-                        .fetch_optional(&mut *conn)
+                // A document reference only qualifies as *resolved* evidence
+                // when the source was actually fetched: a metadata-only row
+                // (no body hash, no fetch time) is not evidence.
+                let exists: Option<(String, String)> = sqlx::query_as(
+                    "SELECT url, content_hash FROM sources \
+                     WHERE id = $1 \
+                       AND content_hash IS NOT NULL AND btrim(content_hash) <> '' \
+                       AND fetched_at IS NOT NULL",
+                )
+                .bind(source_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+                match exists {
+                    Some((url, content_hash)) => {
+                        upsert_resolved_link(
+                            conn,
+                            warning_id,
+                            Some(*source_id),
+                            None,
+                            Some(url.as_str()),
+                            Some(content_hash.as_str()),
+                            "source_document",
+                        )
                         .await?;
-                if let Some((url, content_hash)) = exists {
-                    upsert_resolved_link(
-                        conn,
-                        warning_id,
-                        Some(*source_id),
-                        None,
-                        Some(url.as_str()),
-                        content_hash.as_deref(),
-                        "source_document",
-                    )
-                    .await?;
-                    linked += 1;
+                        linked += 1;
+                    }
+                    None => {
+                        // The row exists but was never fetched (or does not
+                        // exist): record the attempt as unresolved rather than
+                        // marking it resolved.
+                        let url: Option<String> =
+                            sqlx::query_scalar("SELECT url FROM sources WHERE id = $1")
+                                .bind(source_id)
+                                .fetch_optional(&mut *conn)
+                                .await?;
+                        if let Some(url) = url {
+                            upsert_unresolved_link(
+                                conn,
+                                warning_id,
+                                &url,
+                                "source document record exists but was never fetched \
+                                 (no content hash / fetch time)",
+                            )
+                            .await?;
+                        }
+                    }
                 }
             }
         }

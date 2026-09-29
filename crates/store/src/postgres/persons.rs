@@ -797,30 +797,14 @@ impl PgStore {
             Some(person) => person,
             None => return Ok(None),
         };
-        let artifacts = self
-            .get_artifacts_for_person(person_id, 200)
-            .await
-            .unwrap_or_default();
-        let observations = self
-            .get_observations_by_entity(person_id, 200)
-            .await
-            .unwrap_or_default();
-        let edges = self
-            .get_edges_from(person_id, "person")
-            .await
-            .unwrap_or_default();
-        let role_history = self
-            .get_role_history(person_id, 100)
-            .await
-            .unwrap_or_default();
+        let artifacts = self.get_artifacts_for_person(person_id, 200).await?;
+        let observations = self.get_observations_by_entity(person_id, 200).await?;
+        let edges = self.get_edges_from(person_id, "person").await?;
+        let role_history = self.get_role_history(person_id, 100).await?;
         let dossier_entries = self
             .get_dossier_entries("person", person_id, None, 200)
-            .await
-            .unwrap_or_default();
-        let recent_changes = self
-            .get_person_changes(person_id, 50)
-            .await
-            .unwrap_or_default();
+            .await?;
+        let recent_changes = self.get_person_changes(person_id, 50).await?;
         let analysis = build_person_dossier_analysis(
             &artifacts,
             &observations,
@@ -845,17 +829,13 @@ impl PgStore {
             Some(person) => person,
             None => return Ok(None),
         };
-        let co_appearances = self
-            .get_edges_from(person_id, "person")
-            .await
-            .unwrap_or_default();
+        let co_appearances = self.get_edges_from(person_id, "person").await?;
         let recent_observations = sqlx::query_as::<_, ObservationRow>(
             "SELECT * FROM observations WHERE entity_id = $1 ORDER BY ts_utc DESC LIMIT 20",
         )
         .bind(person_id)
         .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        .await?;
         let influence = person.influence_score.unwrap_or(0.0);
         Ok(Some(PersonEngagement {
             person_id,

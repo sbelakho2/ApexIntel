@@ -34,7 +34,7 @@
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1 metric-rail-red"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Avg Precision %</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_precision }}%</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{% if let Some(value) = avg_precision %}{{ value }}%{% else %}—{% endif %}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1 metric-rail-orange"></div>
@@ -116,7 +116,7 @@
         </div>
         <div>
           <p class="text-[9px] font-bold uppercase text-rams-muted">Success</p>
-          <p class="text-sm font-black tabular-nums">{{ r.success_rate }}%</p>
+          <p class="text-sm font-black tabular-nums">{% if let Some(rate) = r.success_rate %}{{ rate }}%{% else %}not measured{% endif %}</p>
         </div>
         <div>
           <p class="text-[9px] font-bold uppercase text-rams-muted">Schedule</p>

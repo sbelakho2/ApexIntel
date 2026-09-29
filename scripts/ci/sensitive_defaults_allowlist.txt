@@ -10,3 +10,11 @@ crates/worker/src/job_execution/nightly.rs:115  # tokio Semaphore acquire_owned:
 crates/worker/src/job_execution/nightly.rs:2270  # inside #[cfg(test)] mod tests: test fixture assertion, not a storage call
 crates/worker/src/job_execution/nightly.rs:2296  # inside #[cfg(test)] mod tests: test fixture assertion, not a storage call
 crates/worker/src/job_execution/nightly.rs:2338  # inside #[cfg(test)] mod tests: local test server bind, not a storage call
+
+# Non-database awaits: HTTP response bodies. A failed/absent body is handed to
+# the caller as empty text; nothing is persisted and no storage state is
+# fabricated. (These are transport reads, not authoritative persistence.)
+crates/triage/src/semantic_dedup.rs:579  # HTTP embedding client call: a failed embed yields no vector; dedup degrades to text similarity (no storage write is fabricated)
+crates/worker/src/notification_delivery.rs:419  # HTTP response body read for the delivery probe; the probe's failure is reported separately
+crates/worker/src/notifications.rs:488  # HTTP response body read for a webhook send; send failure is reported by the caller
+crates/worker/src/slack.rs:597  # HTTP response body read for a Slack post; send failure is reported by the caller

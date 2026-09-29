@@ -56,7 +56,9 @@ pub struct RecipeListItem {
     pub status: String, // "active" | "paused" | "draft" | "archived"
     pub schedule: String,
     pub total_runs: i64,
-    pub success_rate: f64,
+    /// Empirical precision percentage from reviewed outcomes; `None` when
+    /// nothing was reviewed ("not measured" is not 0%).
+    pub success_rate: Option<f64>,
     pub last_run: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -95,9 +97,9 @@ pub struct RecipesListPage {
     pub active_recipes_count: i64,
     pub production_count: i64,
     pub total_fired: i64,
-    pub avg_success_rate: i64,
+    pub avg_success_rate: Option<i64>,
     pub total_runs_sum: i64,
-    pub avg_precision: i64,
+    pub avg_precision: Option<i64>,
     pub avg_recall: i64,
     pub precision_points: String,
     pub fpr_points: String,
@@ -123,9 +125,9 @@ pub struct RecipesListPartial {
     pub active_recipes_count: i64,
     pub production_count: i64,
     pub total_fired: i64,
-    pub avg_success_rate: i64,
+    pub avg_success_rate: Option<i64>,
     pub total_runs_sum: i64,
-    pub avg_precision: i64,
+    pub avg_precision: Option<i64>,
     pub avg_recall: i64,
     pub precision_points: String,
     pub fpr_points: String,
@@ -189,14 +191,15 @@ pub async fn list_recipes(
     DegradedNotice::capture(&quality_state, &mut degraded_notice);
     let quality_summary =
         quality_state.into_loaded_or(apex_store::postgres::RecipeQualitySummaryRow {
-            avg_precision_pct: 0,
+            avg_precision_pct: None,
+            avg_model_confidence_pct: 0,
             coverage_pct: 0,
         });
 
     let mut all_recipes: Vec<RecipeListItem> = recipe_stat_rows
         .iter()
         .map(|r| {
-            let success_rate = (r.precision_score * 100.0).clamp(0.0, 100.0);
+            let success_rate = r.precision_score.map(|p| (p * 100.0).clamp(0.0, 100.0));
             let status = match r.status.as_str() {
                 "active" | "production" => "production",
                 "deprecated" => "deprecated",
@@ -244,11 +247,16 @@ pub async fn list_recipes(
         .count() as i64;
     let total_fired = all_recipes.iter().map(|r| r.total_runs).sum::<i64>();
     let total_runs_sum = total_fired;
-    let avg_success_rate = if all_recipes.is_empty() {
-        0
+    // Average over measured successes only; nothing measured stays "—".
+    let measured_success_rates: Vec<f64> =
+        all_recipes.iter().filter_map(|r| r.success_rate).collect();
+    let avg_success_rate = if measured_success_rates.is_empty() {
+        None
     } else {
-        (all_recipes.iter().map(|r| r.success_rate).sum::<f64>() / all_recipes.len() as f64).round()
-            as i64
+        Some(
+            (measured_success_rates.iter().sum::<f64>() / measured_success_rates.len() as f64)
+                .round() as i64,
+        )
     };
     // Use real persisted quality signals instead of unacknowledged-alert ratios.
     let avg_precision = quality_summary.avg_precision_pct;

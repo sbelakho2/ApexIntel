@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
-# Sensitive-path default guard (audit P0 #22).
+# Sensitive-defaults guard (audit P0 #22, extended per audit P2-3).
 #
-# Fails when a storage/database failure can be silently converted into neutral
-# data in the request/job paths that must never fabricate state:
+# Authoritative persistence must never convert a storage failure into neutral
+# data. This gate fails when production code in the audited surfaces suppresses
+# a database error with a default:
 #
+#   .await.unwrap_or(...)          .await.unwrap_or_default()
+#   .await.ok()                    .ok().flatten()
+#   .await.expect(...)             .await.unwrap()
+#   row.try_get(...).unwrap_or(...)
+#   <line>.await
+#   .unwrap_or(...)                (immediate continuation of an await)
+#
+# Scanned production surfaces:
 #   crates/api/src/web/**
 #   crates/api/src/api_handlers/**
-#   crates/worker/src/job_execution/**
+#   crates/worker/src/**
+#   crates/store/src/postgres/**
+#   crates/triage/src/**
 #
-# Forbidden shapes (on awaited calls):
-#   x.await.unwrap_or(..)      x.await.unwrap_or_else(..)
-#   x.await.unwrap_or_default() x.await.ok()
-#   x.ok().flatten()            x.await.expect(..)   x.await.unwrap()
+# Test code is exempt: a file is scanned only up to its first `#[cfg(test)]`
+# attribute, which is where test modules live in this workspace.
 #
-# The awaits may be split across lines (`x\n  .await\n  .unwrap_or(..)`), so
-# the guard checks both the single-line shape and a multi-line look-ahead after
-# a trailing `.await`. It also flags `row.try_get(..)` decoding followed by a
-# default, which fabricates column values when decoding fails.
-#
-# A violation must instead propagate the error, return an explicit API error,
-# or record a DataState/degraded notice.
-#
-# Justified non-database awaits are listed, with a reason, in
-# scripts/ci/sensitive_defaults_allowlist.txt (one `path` or `path:line` per
-# line, `# reason` required).
-#
-# Exit codes: 0 = clean, 1 = violations found, 2 = misconfiguration.
+# Non-database awaits (HTTP, environment, clocks, locks) may be listed in
+# scripts/ci/sensitive_defaults_allowlist.txt with a reason.
+
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -34,7 +33,9 @@ cd "$REPO_ROOT"
 SCOPE=(
   "crates/api/src/web"
   "crates/api/src/api_handlers"
-  "crates/worker/src/job_execution"
+  "crates/worker/src"
+  "crates/store/src/postgres"
+  "crates/triage/src"
 )
 
 ALLOWLIST="scripts/ci/sensitive_defaults_allowlist.txt"
@@ -48,7 +49,7 @@ fi
 
 is_allowed() {
   local key="$1" file="$2"
-  local entry reason
+  local entry reason raw
   while IFS= read -r raw || [ -n "$raw" ]; do
     entry="${raw%%#*}"
     reason="${raw#"${entry}"}"
@@ -75,40 +76,68 @@ report() {
   violations=$((violations + 1))
 }
 
+# The production-code line limit per file (first #[cfg(test)] attribute).
+file_cutoff() {
+  local file="$1" cutoff
+  cutoff="$(grep -nE '^[[:space:]]*#\[cfg\(test\)\]' "$file" | head -1 | cut -d: -f1)"
+  if [ -z "$cutoff" ]; then
+    wc -l < "$file"
+  else
+    printf '%s' "$cutoff"
+  fi
+}
+
+# Test-only files (dedicated test modules / fixtures) are exempt by name.
+files="$(find "${SCOPE[@]}" -name '*.rs' -type f 2>/dev/null \
+  ! -name 'tests.rs' ! -name 'test_*.rs' ! -name '*_test.rs' \
+  ! -path '*/tests/*' | sort)"
+
 # ── Pass 1: single-line shapes (including row.try_get defaults). ────────────
-while IFS= read -r match; do
-  [ -z "$match" ] && continue
-  file="${match%%:*}"
-  rest="${match#*:}"
-  line="${rest%%:*}"
-  text="${rest#*:}"
-  report "$file" "$line" "$text"
-done < <(grep -rnE "$SINGLE_LINE_PATTERN" "${SCOPE[@]}" --include='*.rs' || true)
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  cutoff="$(file_cutoff "$file")"
+  head -n "$cutoff" "$file" | grep -nE "$SINGLE_LINE_PATTERN" | while IFS= read -r match; do
+    line="${match%%:*}"
+    text="${match#*:}"
+    if ! is_allowed "$file:$line" "$file"; then
+      echo "SENSITIVE-DEFAULT: $file:$line:$text"
+      echo "__VIOLATION__"
+    fi
+  done
+done <<< "$files" > /tmp/sensitive-defaults-pass1.out || true
+violations=0
+if [ -s /tmp/sensitive-defaults-pass1.out ]; then
+  violations=$((violations + $(grep -c '__VIOLATION__' /tmp/sensitive-defaults-pass1.out || true)))
+  grep -v '__VIOLATION__' /tmp/sensitive-defaults-pass1.out || true
+fi
 
 # ── Pass 2: `.await` at end of a line followed by a method-chain default. ───
-# Only immediate continuation lines (starting with `.`) are followed, so a
-# default on an unrelated struct field a few lines later is not a violation.
-while IFS= read -r match; do
-  [ -z "$match" ] && continue
-  file="${match%%:*}"
-  rest="${match#*:}"
-  line="${rest%%:*}"
-  text="${rest#*:}"
-  report "$file" "$line" "$text"
-done < <(
-  awk '
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  cutoff="$(file_cutoff "$file")"
+  found="$(head -n "$cutoff" "$file" | awk '
     /\.await[[:space:]]*$/ { pending = 1; next }
     pending {
       if ($0 ~ /^[[:space:]]*\.[A-Za-z_]/) {
         if ($0 ~ /\.(unwrap_or|unwrap_or_default|unwrap_or_else|ok\(\)|expect\(|unwrap\()/) {
-          printf "%s:%d:%s\n", FILENAME, FNR, $0
+          printf "%d:%s\n", FNR, $0
         }
         next
       }
       pending = 0
-    }
-  ' $(find "${SCOPE[@]}" -name '*.rs' -type f)
-)
+    }')"
+  [ -z "$found" ] && continue
+  while IFS= read -r match; do
+    line="${match%%:*}"
+    text="${match#*:}"
+    if ! is_allowed "$file:$line" "$file"; then
+      echo "SENSITIVE-DEFAULT: $file:$line:$text"
+      violations=$((violations + 1))
+    fi
+  done <<< "$found"
+done <<< "$files"
+
+rm -f /tmp/sensitive-defaults-pass1.out
 
 if [ "$violations" -gt 0 ]; then
   echo ""

@@ -894,6 +894,14 @@ pub(super) async fn run_recipe_fire(
     let now = Utc::now();
     let mut source_reliability_scores = HashMap::new();
     let mut feature_persistence_failures: u64 = 0;
+    // Sections whose load failed and therefore changed ranking/LLM inputs.
+    let mut context_degraded: Vec<String> = Vec::new();
+    // Evidence sections whose load failed (never silently treated as empty
+    // evidence).
+    let mut evidence_unavailable: Vec<String> = Vec::new();
+    // Context sections that failed to load, per entity (P1-13); `_root` holds
+    // whole-job context failures.
+    let mut ctx_unavailable: HashMap<String, Vec<String>> = HashMap::new();
 
     #[cfg(feature = "llm")]
     let insight_llm_client = {
@@ -2667,6 +2675,7 @@ pub(super) async fn run_recipe_fire(
         }
         Err(error) => {
             tracing::warn!(%error, "recipe_fire: failed to load recent insights for semantic dedup");
+            context_degraded.push(format!("recent-insight saturation unavailable ({error})"));
             HashMap::new()
         }
     };
@@ -2696,9 +2705,6 @@ pub(super) async fn run_recipe_fire(
             })
             .collect()
     };
-
-    // Sections whose load failed and therefore changed ranking/LLM inputs.
-    let mut context_degraded: Vec<String> = Vec::new();
 
     // ----- Go-to-market geographic weighting -----
     // Starz sells battery packs mostly into Morocco, Tunisia and Egypt, with a
@@ -2794,6 +2800,13 @@ pub(super) async fn run_recipe_fire(
             .collect(),
         Err(e) => {
             tracing::warn!("recipe_fire: failed to load company names: {e}");
+            // The LLM context loses every entity name when this fails: record
+            // it as a degraded context section instead of an empty map that
+            // reads as "no names exist".
+            ctx_unavailable
+                .entry("_root".to_string())
+                .or_default()
+                .push(format!("company names unavailable ({e})"));
             HashMap::new()
         }
     };
@@ -2811,6 +2824,10 @@ pub(super) async fn run_recipe_fire(
         }
         Err(e) => {
             tracing::warn!("recipe_fire: failed to load POI names: {e}");
+            ctx_unavailable
+                .entry("_root".to_string())
+                .or_default()
+                .push(format!("key-person names unavailable ({e})"));
             HashMap::new()
         }
     };
@@ -2824,7 +2841,6 @@ pub(super) async fn run_recipe_fire(
         let mut context_map: HashMap<String, EntityContext> = HashMap::new();
         // Context sections that failed to load, per entity (P1-13): surfaced to
         // the LLM and to the run status instead of silently shrinking context.
-        let mut ctx_unavailable: HashMap<String, Vec<String>> = HashMap::new();
         macro_rules! note_ctx_unavailable {
             ($entity:expr, $section:expr) => {
                 ctx_unavailable
@@ -3035,8 +3051,8 @@ pub(super) async fn run_recipe_fire(
                                 "Holds {} certification{}. Issuing body: {}. Scope: {}",
                                 cert.standard,
                                 valid_info,
-                                cert.issuing_body.as_deref().unwrap_or("Unknown"),
-                                cert.scope.as_deref().unwrap_or("General")
+                                cert.issuing_body.as_deref().unwrap_or("not recorded"),
+                                cert.scope.as_deref().unwrap_or("scope not recorded")
                             ),
                             source_url: cert.evidence_url.clone().unwrap_or_default(),
                             signal_type: "certification".to_string(),
@@ -3084,7 +3100,9 @@ pub(super) async fn run_recipe_fire(
                             description: format!(
                                 "Manufacturing capability: {}. Proof level: {}",
                                 cap.capability,
-                                cap.proof_grade.as_deref().unwrap_or("Claimed")
+                                cap.proof_grade
+                                    .as_deref()
+                                    .unwrap_or("proof grade not measured")
                             ),
                             source_url: cap
                                 .evidence_urls
@@ -3128,7 +3146,10 @@ pub(super) async fn run_recipe_fire(
             if let Ok(persons) = persons_result {
                 for person in persons.iter().take(6) {
                     let role = person.current_role.as_deref().unwrap_or("Unknown role");
-                    let influence = person.influence_score.unwrap_or(0.0);
+                    // Unknown influence stays unknown: it is rendered as
+                    // "not measured" and never lowers the evidence relevance
+                    // as if it were a measured low score.
+                    let influence = person.influence_score;
                     let bio_excerpt = person
                         .public_bio
                         .as_deref()
@@ -3142,10 +3163,11 @@ pub(super) async fn run_recipe_fire(
                         .map(|t| t.join(", "))
                         .unwrap_or_default();
 
-                    let mut facts = vec![
-                        format!("Role: {}", role),
-                        format!("Influence: {:.2}", influence),
-                    ];
+                    let mut facts = vec![format!("Role: {}", role)];
+                    match influence {
+                        Some(influence) => facts.push(format!("Influence: {influence:.2}")),
+                        None => facts.push("Influence: not measured".to_string()),
+                    }
                     if !topics.is_empty() {
                         facts.push(format!("Trigger topics: {}", topics));
                     }
@@ -3153,21 +3175,31 @@ pub(super) async fn run_recipe_fire(
                         facts.push(format!("Decision style: {}", style));
                     }
 
-                    let relevance = if influence > 0.7 {
-                        0.75
-                    } else if influence > 0.5 {
-                        0.6
-                    } else {
-                        0.45
+                    // Relevance uses measured influence only to *raise*
+                    // relevance; unmeasured influence carries the neutral
+                    // baseline instead of a fabricated low score.
+                    let relevance = match influence {
+                        Some(influence) if influence > 0.7 => 0.75,
+                        Some(influence) if influence > 0.5 => 0.6,
+                        Some(_) => 0.45,
+                        None => 0.6,
                     };
 
                     let sig = EvidenceSignal {
                         title: format!("{} – {}", person.name, role),
                         description: if bio_excerpt.is_empty() {
-                            format!(
-                                "{} serves as {} with influence score {:.2}",
-                                person.name, role, influence
-                            )
+                            match influence {
+                                Some(influence) => format!(
+                                    "{} serves as {role} with influence score {influence:.2}",
+                                    person.name
+                                ),
+                                None => {
+                                    format!(
+                                        "{} serves as {role}; influence not measured",
+                                        person.name
+                                    )
+                                }
+                            }
                         } else {
                             format!("{}: {}…", role, bio_excerpt)
                         },
@@ -3325,7 +3357,20 @@ pub(super) async fn run_recipe_fire(
             let mut type_counts: HashMap<String, u32> = HashMap::new();
             let obs_rows = match store.get_observations_by_entity(*entity_uuid, 50).await {
                 Ok(rows) => rows,
-                Err(_) => continue,
+                Err(error) => {
+                    // Primary observation evidence is not optional context:
+                    // skipping it silently would let a storage failure look
+                    // like "this entity has no observations".
+                    tracing::warn!(
+                        entity_id = %entity_uuid,
+                        %error,
+                        "recipe_fire: failed to load primary observation evidence"
+                    );
+                    evidence_unavailable.push(format!(
+                        "primary observation evidence unavailable for {entity_uuid} ({error})"
+                    ));
+                    continue;
+                }
             };
 
             // First pass: prioritize rare/high-value types
@@ -3510,42 +3555,67 @@ pub(super) async fn run_recipe_fire(
             let entity_id_str = entity_uuid.to_string();
             // Find related entities (companies linked via graph_edges)
             let related: Vec<(Uuid, String)> =
-                if let Ok(edges) = store.get_graph_edge_evidence(*entity_uuid).await {
-                    edges
-                        .iter()
-                        .filter(|(edge_type, _, _, _, _)| {
-                            matches!(
-                                edge_type.as_str(),
-                                "CompanyCompany"
-                                    | "SupplierOf"
-                                    | "CustomerOf"
-                                    | "CompetesWith"
-                                    | "SubsidiaryOf"
-                                    | "PartnerOf"
-                            )
-                        })
-                        .filter_map(|(_, target_type, target_name, _, _)| {
-                            // Resolve target name back to a UUID
-                            if target_type == "company" {
-                                company_names
-                                    .iter()
-                                    .find(|(_, (name, _, _))| name == target_name)
-                                    .and_then(|(id, (name, _, _))| {
-                                        Uuid::parse_str(id).ok().map(|u| (u, name.clone()))
-                                    })
-                            } else {
-                                None
-                            }
-                        })
-                        .take(3)
-                        .collect()
-                } else {
-                    Vec::new()
+                match store.get_graph_edge_evidence(*entity_uuid).await {
+                    Ok(edges) => {
+                        edges
+                            .iter()
+                            .filter(|(edge_type, _, _, _, _)| {
+                                matches!(
+                                    edge_type.as_str(),
+                                    "CompanyCompany"
+                                        | "SupplierOf"
+                                        | "CustomerOf"
+                                        | "CompetesWith"
+                                        | "SubsidiaryOf"
+                                        | "PartnerOf"
+                                )
+                            })
+                            .filter_map(|(_, target_type, target_name, _, _)| {
+                                // Resolve target name back to a UUID
+                                if target_type == "company" {
+                                    company_names
+                                        .iter()
+                                        .find(|(_, (name, _, _))| name == target_name)
+                                        .and_then(|(id, (name, _, _))| {
+                                            Uuid::parse_str(id).ok().map(|u| (u, name.clone()))
+                                        })
+                                } else {
+                                    None
+                                }
+                            })
+                            .take(3)
+                            .collect()
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            entity_id = %entity_uuid,
+                            %error,
+                            "recipe_fire: failed to load related-entity graph evidence"
+                        );
+                        evidence_unavailable.push(format!(
+                            "related-entity graph evidence unavailable for {entity_uuid} ({error})"
+                        ));
+                        Vec::new()
+                    }
                 };
 
             for (related_uuid, related_name) in &related {
                 // Pull the 2 most recent observations from the related entity
-                if let Ok(rel_obs) = store.get_observations_by_entity(*related_uuid, 2).await {
+                let rel_obs = match store.get_observations_by_entity(*related_uuid, 2).await {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        tracing::warn!(
+                            related_entity_id = %related_uuid,
+                            %error,
+                            "recipe_fire: failed to load related-entity observations"
+                        );
+                        evidence_unavailable.push(format!(
+                            "related-entity observations unavailable for {related_uuid} ({error})"
+                        ));
+                        Vec::new()
+                    }
+                };
+                {
                     for obs in &rel_obs {
                         // Skip low-signal types that add noise
                         if matches!(
@@ -3617,6 +3687,10 @@ pub(super) async fn run_recipe_fire(
         );
 
         for (entity_id, sections) in ctx_unavailable {
+            if entity_id == "_root" {
+                context_degraded.extend(sections);
+                continue;
+            }
             if let Some(ctx) = context_map.get_mut(&entity_id) {
                 ctx.context_unavailable = sections;
             }
@@ -4950,10 +5024,12 @@ pub(super) async fn run_recipe_fire(
                 feature_report.failed.join(",")
             ),
         );
-    } else if !context_degraded.is_empty() {
+    } else if !context_degraded.is_empty() || !evidence_unavailable.is_empty() {
+        let mut reasons = context_degraded.clone();
+        reasons.extend(evidence_unavailable.iter().cloned());
         run.degrade(
             insights_inserted,
-            &format!("{summary} — degraded: {}", context_degraded.join("; ")),
+            &format!("{summary} — degraded: {}", reasons.join("; ")),
         );
     } else {
         run.succeed(insights_inserted, &summary);

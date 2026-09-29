@@ -369,8 +369,11 @@ pub async fn admin_page(
                 recipe_id: 0,
                 name: r.recipe_code.clone(),
                 total_runs: r.fired_count,
-                success_count: ((r.precision_score.clamp(0.0, 1.0)) * r.fired_count as f64).round()
-                    as i64,
+                // Expected successes from measured precision only; an
+                // unreviewed recipe contributes no fabricated count.
+                success_count: r.precision_score.map_or(0, |precision| {
+                    ((precision.clamp(0.0, 1.0)) * r.fired_count as f64).round() as i64
+                }),
                 failure_count: 0,
                 avg_duration_ms: 0,
                 last_run: r

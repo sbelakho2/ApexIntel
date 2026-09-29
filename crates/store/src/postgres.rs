@@ -465,7 +465,10 @@ impl Default for UserSettingsPrefs {
 /// Recipe quality summary - aggregated from recipe stats.
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct RecipeQualitySummaryRow {
-    pub avg_precision_pct: i64,
+    /// Empirical precision percentage; `None` when no outcomes were reviewed.
+    pub avg_precision_pct: Option<i64>,
+    /// Mean model confidence percentage — a distinct metric.
+    pub avg_model_confidence_pct: i64,
     pub coverage_pct: i64,
 }
 
@@ -930,7 +933,6 @@ pub struct CrawlStats {
     pub new_observations: u64,
     pub changed_pages: u64,
     pub bytes_fetched: u64,
-    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -950,7 +952,6 @@ pub struct MiningStats {
     pub candidates_passed_gates: u64,
     pub hypotheses_generated: u64,
     pub recipes_staged: u64,
-    pub errors: Vec<String>,
 }
 
 /// A statistically-mined pattern candidate row to persist for audit and
@@ -976,7 +977,6 @@ pub struct PoiStats {
     pub profiles_updated: u64,
     pub new_pois_discovered: u64,
     pub role_changes_detected: u64,
-    pub errors: Vec<String>,
 }
 
 /// Stats for the drift check pipeline stage.
@@ -986,16 +986,21 @@ pub struct DriftStats {
     pub features_drifted: u64,
     pub drift_scores: Vec<(String, f64)>,
     pub alerts_raised: u64,
-    pub errors: Vec<String>,
 }
 
 /// Row type for staged recipe queries.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct StagedRecipeRow {
     pub recipe_code: String,
-    pub precision_observed: f64,
-    pub recall_observed: f64,
-    pub false_positive_rate: f64,
+    /// Empirical precision; `None` when no outcomes were reviewed.
+    pub precision_observed: Option<f64>,
+    /// Promotion readiness heuristic (measured precision + sample maturity).
+    /// Not recall — recall requires TP/(TP+FN) against an evaluation set.
+    pub promotion_evidence_score: f64,
+    /// False-positive rate over reviewed outcomes; `None` when unmeasured.
+    pub false_positive_rate: Option<f64>,
+    pub reviewed_warnings_total: i32,
+    pub reviewed_true_positives: i32,
     pub sample_size: i32,
     pub days_in_staging: i32,
     pub created_at: DateTime<Utc>,
@@ -1316,8 +1321,13 @@ pub struct EdgeRow {
 pub struct RecipeStatRow {
     pub recipe_code: String,
     pub status: String,
-    pub precision_score: f64,
-    pub false_positive_rate: f64,
+    /// Empirical precision (TP / (TP + FP)); `None` when nothing was reviewed.
+    pub precision_score: Option<f64>,
+    /// Mean model confidence — explicitly not precision.
+    pub avg_model_confidence: Option<f64>,
+    /// False-positive rate over reviewed outcomes; `None` when nothing was
+    /// reviewed (never a synthesized 0%).
+    pub false_positive_rate: Option<f64>,
     pub fired_count: i64,
     pub last_fired: Option<DateTime<Utc>>,
     pub first_fired: Option<DateTime<Utc>>,

@@ -111,8 +111,13 @@ pub struct ScoringConfig {
     pub freshness_halflife_hours: f64,
     /// Minimum measured observations before a source is eligible for a score.
     /// Below this, the ranker reports "insufficient evidence" instead of
-    /// scoring noise.
+    /// scoring noise (and never reschedules a source on one observation).
     pub min_observations_for_score: u64,
+    /// Minimum share (0.0..=1.0) of the five score components that must be
+    /// measured before a score is produced at all. This is the ceiling on
+    /// optimistic renormalization: a couple of favourable dimensions are not
+    /// a basis for adaptive scheduling.
+    pub min_component_completeness: f64,
 }
 
 impl Default for ScoringConfig {
@@ -126,7 +131,10 @@ impl Default for ScoringConfig {
             max_interval_hours: 168.0, // weekly
             min_interval_hours: 1.0,   // hourly
             freshness_halflife_hours: 48.0,
-            min_observations_for_score: 1,
+            // Adaptive scheduling needs real evidence: 10 observations across
+            // at least 60% of the measured dimensions (including freshness).
+            min_observations_for_score: 10,
+            min_component_completeness: 0.6,
         }
     }
 }
@@ -262,18 +270,28 @@ pub fn score_and_rank(telemetry: &[SourceTelemetry], config: &ScoringConfig) -> 
                 measured_components += 1;
             }
             let measurement_completeness = f64::from(measured_components) / 5.0;
-            let eligible = ingested_measured
-                .is_some_and(|ingested| ingested >= config.min_observations_for_score)
-                && measured_components > 0;
+            let enough_observations = ingested_measured
+                .is_some_and(|ingested| ingested >= config.min_observations_for_score);
+            let enough_components = measurement_completeness >= config.min_component_completeness;
+            let freshness_measured = freshness.is_measured();
+            let eligible = enough_observations && enough_components && freshness_measured;
             let ineligibility_reason = if eligible {
                 None
-            } else if ingested_measured.is_some() {
+            } else if ingested_measured.is_none() {
+                Some("no measured telemetry in the window".to_string())
+            } else if !enough_observations {
                 Some(format!(
                     "fewer than {} observations measured in the window",
                     config.min_observations_for_score
                 ))
+            } else if !freshness_measured {
+                Some("freshness not measured".to_string())
             } else {
-                Some("no measured telemetry in the window".to_string())
+                Some(format!(
+                    "measurement completeness {:.0}% below the {:.0}% minimum",
+                    measurement_completeness * 100.0,
+                    config.min_component_completeness * 100.0
+                ))
             };
             let score = if eligible && weight_total > 0.0 {
                 Measurement::measured((weighted_sum / weight_total).clamp(0.0, 1.0))

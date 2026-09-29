@@ -1539,9 +1539,12 @@ impl WarningAnalysisPanel {
             output.prompt_version,
         );
         panel.scope_line = format!(
-            "Direct evidence source: {} · {} warning evidence link(s) · {} entity observation(s)",
+            "Direct evidence source: {} · evidence links: {} ({} resolved observation(s), {} fetched document(s), {} unresolved) · {} entity observation(s)",
             output.evidence_scope.as_str(),
             output.warning_evidence_count,
+            output.resolved_observation_links,
+            output.resolved_document_links,
+            output.unresolved_links,
             output.entity_count,
         );
         panel.quality_line = format!(

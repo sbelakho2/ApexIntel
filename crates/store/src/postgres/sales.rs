@@ -660,9 +660,19 @@ pub struct RealSourceTelemetry {
     pub domain: String,
     pub observations_ingested: i64,
     pub observations_in_fires: i64,
-    pub observations_in_promotions: i64,
-    pub fetch_attempts: i64,
-    pub fetch_errors: i64,
+    /// Real promotion events, when a promotion pipeline records them per
+    /// source. `None` means "not measured" — high-confidence observations are
+    /// NOT promotions and are counted separately below.
+    pub observations_in_promotions: Option<i64>,
+    /// Observations above the confidence threshold. This is a proxy signal,
+    /// named for what it is.
+    pub high_confidence_observations: i64,
+    /// Fetch attempts are not instrumented per source in this query; `None`
+    /// means unmeasured, never zero.
+    pub fetch_attempts: Option<i64>,
+    /// Fetch errors are not instrumented per source in this query; `None`
+    /// means unmeasured, never zero errors.
+    pub fetch_errors: Option<i64>,
     pub median_ingest_latency_secs: Option<f64>,
     pub last_crawl_at: Option<DateTime<Utc>>,
     pub observation_types_produced: Vec<String>,
@@ -777,10 +787,15 @@ impl PgStore {
                 src.source_id                            AS domain,
                 src.observations_ingested,
                 COALESCE(fired.fire_count, 0)            AS observations_in_fires,
-                -- promotions: high-confidence obs as a proxy for promoted-grade signal
-                COALESCE(src.high_conf_count, 0)         AS observations_in_promotions,
-                src.observations_ingested                AS fetch_attempts,
-                0::BIGINT                                AS fetch_errors,
+                -- No per-source promotion events are recorded; unmeasured, not zero.
+                NULL::BIGINT                             AS observations_in_promotions,
+                COALESCE(src.high_conf_count, 0)         AS high_confidence_observations,
+                -- Fetch attempts/errors are not instrumented at this layer:
+                -- persisting observation counts under a "fetch" name would be
+                -- semantically false, so they are NULL until real crawler
+                -- runtime state is joined in.
+                NULL::BIGINT                             AS fetch_attempts,
+                NULL::BIGINT                             AS fetch_errors,
                 NULL::REAL                               AS median_ingest_latency_secs,
                 src.last_crawl_at,
                 COALESCE(src.obs_types, ARRAY[]::TEXT[]) AS observation_types_produced
@@ -804,9 +819,10 @@ pub struct NewCrawlMetric {
     pub window_end: DateTime<Utc>,
     pub observations_ingested: i64,
     pub observations_in_fires: i64,
-    pub observations_in_promotions: i64,
-    pub fetch_attempts: i64,
-    pub fetch_errors: i64,
+    /// `None` = not measured (distinct from a measured zero).
+    pub observations_in_promotions: Option<i64>,
+    pub fetch_attempts: Option<i64>,
+    pub fetch_errors: Option<i64>,
     pub median_ingest_latency_secs: Option<f64>,
     pub last_crawl_at: Option<DateTime<Utc>>,
     pub observation_types_produced: Vec<String>,

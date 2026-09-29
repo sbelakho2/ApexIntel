@@ -254,8 +254,7 @@ impl PgStore {
         .bind(since)
         .bind(until)
         .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
+        .await?;
         self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "warnings", warnings)
             .await?;
         metrics_computed += 1;
@@ -267,8 +266,7 @@ impl PgStore {
         .bind(since)
         .bind(until)
         .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
+        .await?;
         self.upsert_trend_rollup(
             bucket_date,
             bucket_type,
@@ -287,8 +285,7 @@ impl PgStore {
         .bind(since)
         .bind(until)
         .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
+        .await?;
         self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "insights", insights)
             .await?;
         metrics_computed += 1;
@@ -300,8 +297,7 @@ impl PgStore {
         .bind(since)
         .bind(until)
         .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
+        .await?;
         self.upsert_trend_rollup(
             bucket_date,
             bucket_type,
@@ -316,8 +312,7 @@ impl PgStore {
         // Companies tracked
         let companies: i64 = sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM companies")
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+            .await?;
         self.upsert_trend_rollup(
             bucket_date,
             bucket_type,
@@ -332,8 +327,7 @@ impl PgStore {
         // Persons tracked
         let persons: i64 = sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM persons")
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+            .await?;
         self.upsert_trend_rollup(
             bucket_date,
             bucket_type,
@@ -350,8 +344,7 @@ impl PgStore {
             "SELECT COUNT(*)::BIGINT FROM recipes WHERE status IN ('active', 'production')",
         )
         .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
+        .await?;
         self.upsert_trend_rollup(
             bucket_date,
             bucket_type,
@@ -368,8 +361,7 @@ impl PgStore {
             "SELECT COUNT(*)::BIGINT FROM warnings WHERE deleted_at IS NULL AND acknowledged = false",
         )
         .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
+        .await?;
         self.upsert_trend_rollup(
             bucket_date,
             bucket_type,
@@ -393,8 +385,7 @@ impl PgStore {
         .bind(since)
         .bind(until)
         .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        .await?;
         for (entity_id, cnt) in &company_obs_rows {
             self.upsert_trend_rollup(
                 bucket_date,
@@ -422,8 +413,7 @@ impl PgStore {
         .bind(since)
         .bind(until)
         .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        .await?;
         for (entity_id, cnt) in &company_warn_rows {
             self.upsert_trend_rollup(
                 bucket_date,
@@ -616,8 +606,7 @@ impl PgStore {
             )
             .bind(bucket_date)
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+            .await?;
             if existing > 0 {
                 continue;
             }
@@ -643,8 +632,7 @@ impl PgStore {
             )
             .bind(bucket_date)
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+            .await?;
             if existing > 0 {
                 continue;
             }
@@ -670,8 +658,7 @@ impl PgStore {
             )
             .bind(bucket_date)
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+            .await?;
             if existing > 0 {
                 continue;
             }
@@ -697,8 +684,7 @@ impl PgStore {
             )
             .bind(bucket_date)
             .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+            .await?;
             if existing > 0 {
                 continue;
             }

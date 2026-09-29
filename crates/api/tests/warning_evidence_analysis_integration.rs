@@ -133,7 +133,7 @@ async fn source_url_only_warning_analysis_cites_the_linked_evidence() {
     let bundle = gather_evidence(&store, &warning)
         .await
         .expect("gather evidence");
-    assert_eq!(bundle.evidence_scope, EvidenceScope::WarningEvidence);
+    assert_eq!(bundle.evidence_scope, EvidenceScope::WarningObservations);
     assert_eq!(bundle.warning_evidence_count, 1);
     assert_eq!(
         bundle.observations.len(),
@@ -164,7 +164,7 @@ async fn source_url_only_warning_analysis_cites_the_linked_evidence() {
         user.contains(&linked_observation.to_string()),
         "prompt must expose the linked observation id"
     );
-    assert!(user.contains("source: warning_evidence"));
+    assert!(user.contains("source: warning_observations"));
     assert!(system.contains("observation id"));
 
     // A claim citing the linked observation validates against the bundle.
