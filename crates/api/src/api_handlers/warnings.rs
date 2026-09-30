@@ -331,15 +331,16 @@ pub(crate) async fn acknowledge_warning(
     }
 
     let review_outcome = body.review_outcome.as_ref().map(review_outcome_as_str);
+    // Attribution is the authenticated principal, not a client-supplied
+    // string: otherwise any analyst could record acks/reviews as another user
+    // (and contaminate the recipe-precision learning loop).
+    let actor = auth_ctx.user_id.as_str();
 
     match tracing::info_span!("db.acknowledge_warning", request_id = %request_id)
         .in_scope(|| {
-            state.store.acknowledge_warning(
-                id_parsed,
-                body.user_id.trim(),
-                body.note.as_deref(),
-                review_outcome,
-            )
+            state
+                .store
+                .acknowledge_warning(id_parsed, actor, body.note.as_deref(), review_outcome)
         })
         .await
     {
@@ -351,7 +352,7 @@ pub(crate) async fn acknowledge_warning(
                     "warning_acknowledged",
                     &serde_json::json!({
                         "warning_id": id_parsed,
-                        "acknowledged_by": body.user_id,
+                        "acknowledged_by": actor,
                         "review_outcome": review_outcome,
             // false-success-classification: best-effort — optional boolean default; absence is not a failure
                         "has_note": body.note.as_ref().map(|note| !note.trim().is_empty()).unwrap_or(false)
@@ -362,10 +363,10 @@ pub(crate) async fn acknowledge_warning(
             let resp = apex_api::routes::warnings::AcknowledgeResponse {
                 warning_id: id_parsed.to_string(),
                 acknowledged: true,
-                acknowledged_by: body.user_id.clone(),
+                acknowledged_by: actor.to_string(),
                 acknowledged_at: now,
                 review_outcome: review_outcome.map(str::to_string),
-                reviewed_by: review_outcome.map(|_| body.user_id.clone()),
+                reviewed_by: review_outcome.map(|_| actor.to_string()),
                 reviewed_at: review_outcome.map(|_| now),
             };
             let duration_ms = start.elapsed().as_millis() as u64;
@@ -730,18 +731,8 @@ pub(crate) async fn get_warning_analysis_run(
         }
     };
 
-    // Housekeeping before reporting: a run abandoned by a crashed process must
-    // resolve to an explicit failure instead of looking in-progress forever.
-    // The stale threshold covers the configured model timeout plus retries.
-    let stale_seconds = state
-        .llm
-        .as_ref()
-        .map(|runtime| {
-            apex_api::warning_analysis::stale_run_seconds(runtime.primary.timeout_seconds)
-        })
-        .unwrap_or(apex_api::warning_analysis::DEFAULT_STALE_RUN_SECONDS);
-    apex_api::warning_analysis::expire_stale_runs(&state.store, stale_seconds).await;
-
+    // Stale-run housekeeping runs in the status heartbeat, not on every
+    // client poll (this GET was issuing an UPDATE per request).
     let run = match state.store.get_warning_analysis_run(run_uuid).await {
         Ok(Some(run)) if run.warning_id == uid => run,
         Ok(_) => {

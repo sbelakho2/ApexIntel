@@ -10,15 +10,32 @@ pub(crate) struct ExportQuery {
 
 fn csv_escape(value: &str) -> String {
     // B318: neutralize spreadsheet formula injection. Crawled company/person
-    // names can start with =, +, -, or @; without the leading apostrophe,
-    // Excel/Sheets executes them as formulas when the export is opened.
-    let needs_guard = value.strip_prefix(['=', '+', '-', '@']).is_some();
+    // names can start with =, +, -, or @ — or with tab/CR or padding spaces
+    // before one of those — and Excel/Sheets executes them as formulas when
+    // the export is opened.
+    let lead = value
+        .trim_start_matches([' ', '\u{a0}', '\t', '\r'])
+        .chars()
+        .next();
+    let needs_guard = matches!(value.chars().next(), Some('\t' | '\r'))
+        || matches!(lead, Some('=' | '+' | '-' | '@'));
     let guarded = if needs_guard {
         format!("'{value}")
     } else {
         value.to_string()
     };
     format!("\"{}\"", guarded.replace('"', "\"\""))
+}
+
+/// Parse a stored severity/impact string; unknown values fall back to Medium.
+fn insight_severity_from_stored(value: &str) -> apex_insights::InsightSeverity {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "critical" => apex_insights::InsightSeverity::Critical,
+        "high" => apex_insights::InsightSeverity::High,
+        "low" => apex_insights::InsightSeverity::Low,
+        "info" => apex_insights::InsightSeverity::Info,
+        _ => apex_insights::InsightSeverity::Medium,
+    }
 }
 
 fn normalize_export_window(
@@ -91,6 +108,22 @@ pub(crate) async fn export_companies_csv(
     let user_id = auth_ctx.user_id.clone();
     let filters_json = serde_json::json!({"cursor": cursor, "window": window});
 
+    // Audit before the response starts streaming: an export aborted mid-stream
+    // otherwise left no trace (the write inside the stream only ran on
+    // completion).
+    let _ = store
+        .record_audit_event(
+            &user_id,
+            "companies_export_started",
+            &serde_json::json!({
+                "format": "csv",
+                "download_name": "companies.csv",
+                "cursor": cursor,
+                "window": window,
+            }),
+        )
+        .await;
+
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,name,domain,region,country,entity_type,is_competitor,threat_score,capabilities,updated_at\n");
 
@@ -101,10 +134,21 @@ pub(crate) async fn export_companies_csv(
 
     while emitted < target {
         let batch_limit = (target - emitted).min(chunk_size as i64);
-        let rows = store
+        let rows = match store
             .list_companies(&filters, None, true, batch_limit, offset)
             .await
-            .map_err(std::io::Error::other)?;
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                // Signal truncation instead of aborting under an already-sent
+                // 200 that looks complete.
+                tracing::error!(%error, "companies export interrupted");
+                yield axum::body::Bytes::from_static(
+                    b"# EXPORT INCOMPLETE: a data error interrupted this export\n",
+                );
+                break;
+            }
+        };
         if rows.is_empty() {
             break;
         }
@@ -181,6 +225,20 @@ pub(crate) async fn export_persons_csv(
     let user_id = auth_ctx.user_id.clone();
     let filters_json = serde_json::json!({"cursor": cursor, "window": window});
 
+    // Audit before streaming (see companies export).
+    let _ = store
+        .record_audit_event(
+            &user_id,
+            "persons_export_started",
+            &serde_json::json!({
+                "format": "csv",
+                "download_name": "persons.csv",
+                "cursor": cursor,
+                "window": window,
+            }),
+        )
+        .await;
+
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,name,role,role_family,organization,region,priority_score,pain_index,change_risk,role_drift_score,engagement_status,updated_at\n");
 
@@ -191,10 +249,19 @@ pub(crate) async fn export_persons_csv(
 
     while emitted < target {
         let batch_limit = (target - emitted).min(chunk_size as i64);
-        let rows = store
+        let rows = match store
             .list_persons(&filters, None, true, batch_limit, offset)
             .await
-            .map_err(std::io::Error::other)?;
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::error!(%error, "persons export interrupted");
+                yield axum::body::Bytes::from_static(
+                    b"# EXPORT INCOMPLETE: a data error interrupted this export\n",
+                );
+                break;
+            }
+        };
         if rows.is_empty() {
             break;
         }
@@ -258,6 +325,21 @@ pub(crate) async fn export_insights_csv(
     let filters_json =
         serde_json::json!({"exclude_internal": true, "cursor": cursor, "window": window});
 
+    // Audit before streaming (see companies export).
+    let _ = store
+        .record_audit_event(
+            &user_id,
+            "insights_export_started",
+            &serde_json::json!({
+                "format": "csv",
+                "download_name": "insights.csv",
+                "exclude_internal": true,
+                "cursor": cursor,
+                "window": window,
+            }),
+        )
+        .await;
+
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,title,insight_type,summary,region,confidence,created_at\n");
 
@@ -271,10 +353,19 @@ pub(crate) async fn export_insights_csv(
 
     while emitted < target {
         let batch_limit = (target - emitted).min(chunk_size as i64);
-        let rows = store
+        let rows = match store
             .list_insights(&filters, batch_limit, offset)
             .await
-            .map_err(std::io::Error::other)?;
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::error!(%error, "insights export interrupted");
+                yield axum::body::Bytes::from_static(
+                    b"# EXPORT INCOMPLETE: a data error interrupted this export\n",
+                );
+                break;
+            }
+        };
         if rows.is_empty() {
             break;
         }
@@ -376,16 +467,46 @@ pub(crate) async fn export_insight_pdf(
         }
     };
 
+    // Map severity from the stored insight instead of hard-coding Medium; the
+    // stored provenance becomes the report's evidence and sources.
+    let stored_severity = state
+        .store
+        .get_insight_severity(uid)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, insight_id = %uid, "failed to load stored insight severity");
+            None
+        });
+    let severity = stored_severity
+        .as_deref()
+        .map(insight_severity_from_stored)
+        .unwrap_or(apex_insights::InsightSeverity::Medium);
+    let evidence_urls = insight.evidence_urls.clone().unwrap_or_default();
+    let evidence = evidence_urls
+        .iter()
+        .map(|url| {
+            apex_insights::pdf_report::EvidenceItem::new("Source", url)
+                .with_confidence_opt(insight.confidence)
+        })
+        .collect();
+    let sources = evidence_urls
+        .iter()
+        .map(|url| apex_insights::pdf_report::ReportSourceRef {
+            title: url.clone(),
+            url: url.clone(),
+        })
+        .collect();
+
     let report_row = apex_insights::pdf_report::InsightReportRow {
         id: insight.id.to_string(),
         title: insight.title,
         summary: insight.summary,
         insight_type: insight.insight_type.unwrap_or_default(),
-        severity: apex_insights::InsightSeverity::Medium,
+        severity,
         confidence: insight.confidence,
         region: insight.region,
-        evidence: Vec::new(),
-        sources: Vec::new(),
+        evidence,
+        sources,
         tags: insight.tags.unwrap_or_default(),
         generated_at: None,
     };
@@ -706,6 +827,33 @@ mod tests {
     fn test_csv_escape_quotes_and_wraps_fields() {
         assert_eq!(csv_escape("alpha,beta"), "\"alpha,beta\"");
         assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn test_csv_escape_guards_owasp_formula_prefixes() {
+        // Tab and CR are on the OWASP list, and a padding space before a
+        // formula character must not smuggle it through.
+        assert_eq!(csv_escape("\t=cmd"), "\"'\t=cmd\"");
+        assert_eq!(csv_escape("\r=cmd"), "\"'\r=cmd\"");
+        assert_eq!(csv_escape("  =cmd"), "\"'  =cmd\"");
+        assert_eq!(csv_escape("\u{a0}+cmd"), "\"'\u{a0}+cmd\"");
+        assert_eq!(csv_escape("-2+3"), "\"'-2+3\"");
+    }
+
+    #[test]
+    fn stored_severity_maps_to_the_pdf_severity() {
+        assert_eq!(
+            insight_severity_from_stored("Critical"),
+            apex_insights::InsightSeverity::Critical
+        );
+        assert_eq!(
+            insight_severity_from_stored("high"),
+            apex_insights::InsightSeverity::High
+        );
+        assert_eq!(
+            insight_severity_from_stored("unknown-value"),
+            apex_insights::InsightSeverity::Medium
+        );
     }
 
     #[test]

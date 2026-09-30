@@ -23,6 +23,17 @@ pub struct NotFoundPage {
 }
 
 #[derive(Template)]
+#[template(path = "pages/403.html")]
+pub struct ForbiddenPage {
+    pub current_path: String,
+    pub can_admin: bool,
+    pub username: String,
+    pub warning_count: i64,
+    pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
+}
+
+#[derive(Template)]
 #[template(path = "pages/500.html")]
 pub struct InternalErrorPage {
     pub current_path: String,
@@ -50,6 +61,20 @@ pub async fn not_found() -> impl IntoResponse {
     };
 
     super::render_template_with_status(StatusCode::NOT_FOUND, &tpl)
+}
+
+/// Styled 403 page for non-HTMX form posts that hit a write/admin guard.
+pub fn forbidden() -> Response {
+    let tpl = ForbiddenPage {
+        current_path: String::new(),
+        status_strip: crate::system_status::StatusStrip::current(),
+        username: "anonymous".into(),
+        warning_count: 0,
+        theme: String::new(),
+        can_admin: false,
+    };
+
+    super::render_template_with_status(StatusCode::FORBIDDEN, &tpl)
 }
 
 /// Handler for internal server errors — render 500 page with a request ID

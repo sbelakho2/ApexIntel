@@ -1,69 +1,91 @@
 //! P0 auth contract: browser-session authentication against the `/api/admin/*`
 //! surface.
 //!
-//! The admin web session (the configured `APEX_ADMIN_USERNAME` principal) must
-//! be permitted on admin APIs, while an analyst-level session must receive 403.
-//!
-//! The test wires the same production middleware functions the binary uses —
-//! [`authenticate_request_or_session`] (Bearer key, then session fallback) and
-//! [`require_admin`] — and drives them through a real Axum router. When the
-//! P0 auth change landed, sessions for the configured admin username began
-//! mapping to [`ApiRole::Admin`]; every other session stays [`ApiRole::Analyst`].
+//! This exercises the production path — [`require_api_auth`] with a real
+//! [`SessionAuthority`] — rather than the deleted weaker helper that decided
+//! admin by username and skipped the database. The authority is the source of
+//! the role: an admin row is permitted, an analyst row is forbidden, and a
+//! session whose principal no longer resolves is rejected.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use apex_api::auth::ApiRole;
-use apex_api::middleware::auth::{
-    auth_error_response, authenticate_request_or_session, require_admin, session_api_auth_context,
+use apex_api::auth::{ApiKey, ApiRole};
+use apex_api::middleware::auth::require_admin;
+use apex_api::middleware::session::{
+    create_session_token, require_api_auth, ApiAuthState, SessionAuthority, SessionAuthorityError,
+    SessionClaims, WebSession,
 };
-use apex_api::middleware::session::{create_session_token, SessionClaims};
 use apex_core::identity::{UserId, Username};
+use async_trait::async_trait;
 use axum::body::Body;
-use axum::http::{header, HeaderValue, Method, Request, StatusCode};
+use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
+use hmac::{Hmac, Mac};
 use http_body_util::BodyExt;
+use sha2::Sha256;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 const SESSION_SECRET: &str = "session-admin-auth-test-secret";
 
-fn signed_token(username: &str) -> String {
+fn signed_token(username: &str) -> (String, Uuid) {
+    let jti = Uuid::new_v4();
     let claims = SessionClaims {
         user_id: UserId::new(username),
         username: Username::new(username),
         role: ApiRole::Analyst,
-        issued_at: chrono::Utc::now().timestamp(),
+        issued_at: chrono::Utc::now().timestamp_millis(),
         expires_at: i64::MAX,
         session_version: 1,
+        session_id: jti,
     };
-    create_session_token(&claims, SESSION_SECRET).expect("session token")
+    (
+        create_session_token(&claims, SESSION_SECRET).expect("session token"),
+        jti,
+    )
 }
-const ADMIN_USERNAME: &str = "admin";
 
-/// Test stand-in for the binary's `require_auth` middleware: accepts a Bearer
-/// key (none configured here) or the session cookie, using the exact library
-/// function the binary calls.
-async fn session_or_key_auth(
-    mut request: Request<Body>,
-    next: middleware::Next,
-) -> axum::response::Response {
-    let api_keys: HashMap<String, apex_api::auth::ApiKey> = HashMap::new();
-    match authenticate_request_or_session(
-        request.headers(),
-        request.method(),
-        &api_keys,
-        SESSION_SECRET,
-        ADMIN_USERNAME,
-        chrono::Utc::now(),
-    ) {
-        Ok(context) => {
-            request.extensions_mut().insert(context);
-            next.run(request).await
-        }
-        Err(error) => auth_error_response(error),
+/// Independently derive the session-bound CSRF token the way the server does:
+/// `HMAC-SHA256(secret, "csrf:" + session_signature)`.
+fn derived_csrf(token: &str) -> String {
+    let signature = token.split_once('.').expect("token has a signature").1;
+    let mut mac = Hmac::<Sha256>::new_from_slice(SESSION_SECRET.as_bytes()).expect("hmac key");
+    mac.update(b"csrf:");
+    mac.update(signature.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+struct TestAuthority {
+    roles: HashMap<String, ApiRole>,
+}
+
+#[async_trait]
+impl SessionAuthority for TestAuthority {
+    async fn authorize(&self, session: &WebSession) -> Result<WebSession, SessionAuthorityError> {
+        let role = self
+            .roles
+            .get(session.user_id.as_str())
+            .cloned()
+            .ok_or(SessionAuthorityError::UnknownUser)?;
+        Ok(WebSession {
+            role,
+            ..session.clone()
+        })
+    }
+}
+
+fn auth_state() -> ApiAuthState {
+    let mut roles = HashMap::new();
+    roles.insert("admin".to_string(), ApiRole::Admin);
+    roles.insert("analyst-user".to_string(), ApiRole::Analyst);
+    ApiAuthState {
+        api_keys: Arc::new(HashMap::<String, ApiKey>::new()),
+        session_authority: Some(Arc::new(TestAuthority { roles })),
     }
 }
 
@@ -72,12 +94,16 @@ fn admin_surface_router() -> Router {
         .route("/api/admin/probe", get(|| async { "admin-ok" }))
         .route("/api/admin/probe", post(|| async { "admin-post-ok" }))
         .route_layer(middleware::from_fn(require_admin))
-        .route_layer(middleware::from_fn(session_or_key_auth))
+        .route_layer(middleware::from_fn_with_state(
+            auth_state(),
+            require_api_auth,
+        ))
 }
 
-fn session_cookie(username: &str) -> HeaderValue {
-    let token = signed_token(username);
-    HeaderValue::from_str(&format!("apex_session={token}")).expect("cookie header")
+fn session_cookie_header(username: &str) -> (String, HeaderValue) {
+    let (token, _) = signed_token(username);
+    let cookie = HeaderValue::from_str(&format!("apex_session={token}")).expect("cookie header");
+    (token, cookie)
 }
 
 fn request(method: &str, path: &str, cookie: Option<HeaderValue>) -> Request<Body> {
@@ -100,39 +126,17 @@ async fn status_of(app: Router, request: Request<Body>) -> (StatusCode, String) 
     (status, String::from_utf8_lossy(&body).to_string())
 }
 
-#[test]
-fn session_role_mapping_is_admin_for_configured_admin_and_analyst_otherwise() {
-    let admin_headers = {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(header::COOKIE, session_cookie("admin"));
-        headers
-    };
-    let admin =
-        session_api_auth_context(&admin_headers, &Method::GET, SESSION_SECRET, ADMIN_USERNAME)
-            .expect("admin session context");
-    assert_eq!(admin.role, ApiRole::Admin);
-    assert_eq!(admin.user_id, "admin");
-
-    let analyst_headers = {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(header::COOKIE, session_cookie("analyst-user"));
-        headers
-    };
-    let analyst = session_api_auth_context(
-        &analyst_headers,
-        &Method::GET,
-        SESSION_SECRET,
-        ADMIN_USERNAME,
-    )
-    .expect("analyst session context");
-    assert_eq!(analyst.role, ApiRole::Analyst);
+fn set_session_secret() {
+    std::env::set_var("SESSION_SECRET", SESSION_SECRET);
 }
 
 #[tokio::test]
 async fn admin_session_is_permitted_on_admin_api() {
+    set_session_secret();
+    let (_, cookie) = session_cookie_header("admin");
     let (status, body) = status_of(
         admin_surface_router(),
-        request("GET", "/api/admin/probe", Some(session_cookie("admin"))),
+        request("GET", "/api/admin/probe", Some(cookie)),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "admin session should be permitted");
@@ -141,13 +145,11 @@ async fn admin_session_is_permitted_on_admin_api() {
 
 #[tokio::test]
 async fn analyst_session_is_forbidden_on_admin_api() {
+    set_session_secret();
+    let (_, cookie) = session_cookie_header("analyst-user");
     let (status, _) = status_of(
         admin_surface_router(),
-        request(
-            "GET",
-            "/api/admin/probe",
-            Some(session_cookie("analyst-user")),
-        ),
+        request("GET", "/api/admin/probe", Some(cookie)),
     )
     .await;
     assert_eq!(
@@ -158,7 +160,24 @@ async fn analyst_session_is_forbidden_on_admin_api() {
 }
 
 #[tokio::test]
+async fn session_without_a_canonical_row_is_unauthorized() {
+    set_session_secret();
+    let (_, cookie) = session_cookie_header("ghost-user");
+    let (status, _) = status_of(
+        admin_surface_router(),
+        request("GET", "/api/admin/probe", Some(cookie)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the authority is the source of truth; a signed cookie alone is not enough"
+    );
+}
+
+#[tokio::test]
 async fn missing_session_is_unauthorized_on_admin_api() {
+    set_session_secret();
     let (status, _) = status_of(
         admin_surface_router(),
         request("GET", "/api/admin/probe", None),
@@ -169,15 +188,12 @@ async fn missing_session_is_unauthorized_on_admin_api() {
 
 #[tokio::test]
 async fn invalid_bearer_key_is_not_downgraded_to_the_session() {
-    let token = signed_token("admin");
-    let mut request = request("GET", "/api/admin/probe", None);
+    set_session_secret();
+    let (_, cookie) = session_cookie_header("admin");
+    let mut request = request("GET", "/api/admin/probe", Some(cookie));
     request.headers_mut().insert(
         header::AUTHORIZATION,
         HeaderValue::from_static("Bearer not-a-real-key"),
-    );
-    request.headers_mut().insert(
-        header::COOKIE,
-        HeaderValue::from_str(&format!("apex_session={token}")).expect("cookie"),
     );
 
     let (status, _) = status_of(admin_surface_router(), request).await;
@@ -189,26 +205,38 @@ async fn invalid_bearer_key_is_not_downgraded_to_the_session() {
 }
 
 #[tokio::test]
-async fn admin_session_unsafe_method_requires_csrf() {
-    // Without the double-submit token, an unsafe method is rejected.
+async fn admin_session_unsafe_method_requires_the_session_bound_csrf_token() {
+    set_session_secret();
+    let (token, _) = signed_token("admin");
+
+    // Without any CSRF token, an unsafe method is rejected.
+    let (_, cookie) = session_cookie_header("admin");
     let (status, _) = status_of(
         admin_surface_router(),
-        request("POST", "/api/admin/probe", Some(session_cookie("admin"))),
+        request("POST", "/api/admin/probe", Some(cookie)),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // With a matching cookie + header pair, the admin session is permitted.
-    let token = signed_token("admin");
-    let mut request = request("POST", "/api/admin/probe", None);
-    request.headers_mut().insert(
-        header::COOKIE,
-        HeaderValue::from_str(&format!("apex_session={token}; apex_csrf=csrf-token"))
-            .expect("cookie"),
-    );
+    // A planted double-submit pair (attacker-chosen cookie + header) is not the
+    // derived token and is rejected.
+    let planted = HeaderValue::from_str(&format!("apex_session={token}; apex_csrf=attacker-token"))
+        .expect("cookie");
+    let mut planted_request = request("POST", "/api/admin/probe", Some(planted));
+    planted_request
+        .headers_mut()
+        .insert("x-csrf-token", HeaderValue::from_static("attacker-token"));
+    let (status, _) = status_of(admin_surface_router(), planted_request).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // The derived cookie + header pair is accepted.
+    let csrf = derived_csrf(&token);
+    let cookie =
+        HeaderValue::from_str(&format!("apex_session={token}; apex_csrf={csrf}")).expect("cookie");
+    let mut request = request("POST", "/api/admin/probe", Some(cookie));
     request
         .headers_mut()
-        .insert("x-csrf-token", HeaderValue::from_static("csrf-token"));
+        .insert("x-csrf-token", HeaderValue::from_str(&csrf).expect("csrf"));
 
     let (status, body) = status_of(admin_surface_router(), request).await;
     assert_eq!(status, StatusCode::OK);

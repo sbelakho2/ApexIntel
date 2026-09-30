@@ -1793,6 +1793,7 @@ mod tests {
             role: crate::auth::ApiRole::Admin,
             session_version: 1,
             principal_id: uuid::Uuid::new_v4(),
+            session_id: uuid::Uuid::new_v4(),
             issued_at: 0,
             expires_at: i64::MAX,
         }

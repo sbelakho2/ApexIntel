@@ -66,11 +66,53 @@ impl AuthAttemptTracker {
         Self::default()
     }
 
+    /// Read-only evaluation: a probe for an unknown key must not insert an
+    /// entry (unbounded memory growth from attacker-chosen keys).
     pub fn evaluate(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
+        let mut inner = self.inner.lock();
+        match inner.get_mut(attempt_key) {
+            Some(state) => {
+                state.prune(now);
+                state.status(now).into()
+            }
+            None => AuthThrottleStatus {
+                allowed: true,
+                retry_after_secs: 0,
+                failure_count_10m: 0,
+                failure_count_1h: 0,
+                admin_unlock_required: false,
+            },
+        }
+    }
+
+    /// Atomically check-and-record: a locked key is answered without
+    /// incrementing; otherwise this attempt is recorded and reserved
+    /// (`allowed: true`), so concurrent requests cannot all pass a check made
+    /// before any failure was recorded.
+    pub fn reserve(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
         let mut inner = self.inner.lock();
         let state = inner.entry(attempt_key.to_string()).or_default();
         state.prune(now);
-        state.status(now).into()
+        let pre = state.status(now);
+        if !pre.allowed {
+            return pre.into();
+        }
+        let post = state.record_failure(now);
+        AuthThrottleStatus {
+            // The reserved attempt is itself allowed; the next one observes
+            // the recorded state. When this attempt tripped a lock, the
+            // remaining wait is carried so the caller can answer 429 with
+            // Retry-After.
+            allowed: true,
+            retry_after_secs: if !post.allowed {
+                post.retry_after_secs
+            } else {
+                0
+            },
+            failure_count_10m: usize::try_from(post.failure_count_10m).unwrap_or(usize::MAX),
+            failure_count_1h: usize::try_from(post.failure_count_1h).unwrap_or(usize::MAX),
+            admin_unlock_required: false,
+        }
     }
 
     pub fn record_failure(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {

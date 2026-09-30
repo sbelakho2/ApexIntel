@@ -53,27 +53,31 @@
         return match ? decodeURIComponent(match.slice(prefix.length)) : null;
       };
 
+      // The server-written cookie is authoritative: localStorage only mirrors
+      // it (a stale local value previously overrode a Settings choice).
       const getTheme = () => normalizeTheme(
-        window.localStorage?.getItem(storageKey)
-          || readCookie('apex_theme')
+        readCookie('apex_theme')
+          || window.localStorage?.getItem(storageKey)
           || root.dataset.theme
           || 'system'
       );
-      const setTheme = (theme) => {
+      const setTheme = (theme, { persist = true } = {}) => {
         const normalized = normalizeTheme(theme);
         window.localStorage?.setItem(storageKey, normalized);
+        if (persist) {
+          // Mirror the choice into the cookie the server reads, so it follows
+          // the user across devices and matches Settings.
+          const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+          document.cookie = 'apex_theme=' + encodeURIComponent(normalized)
+            + '; Path=/; SameSite=Lax; Max-Age=31536000' + secure;
+        }
         applyTheme(normalized);
       };
       const cycleTheme = () => {
+        // Cycle through all three states: System must be reachable again.
+        const order = ['system', 'dark', 'light'];
         const current = getTheme();
-        let next = 'dark';
-        if (current === 'dark') {
-          next = 'light';
-        } else if (current === 'light') {
-          next = 'dark';
-        } else if (resolveTheme(current) === 'dark') {
-          next = 'light';
-        }
+        const next = order[(order.indexOf(current) + 1) % order.length];
         setTheme(next);
         return next;
       };
@@ -402,7 +406,7 @@
       <div id="mobile-nav-overlay" class="fixed inset-0 z-30 bg-black/60 lg:hidden" hidden aria-hidden="true"></div>
 
       <!-- Mobile navigation drawer -->
-      <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-40 flex w-[min(18rem,82vw)] flex-col border-r border-rams-line bg-rams-module lg:hidden" aria-label="Mobile navigation" aria-hidden="true">
+      <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-40 flex w-[min(18rem,82vw)] flex-col border-r border-rams-line bg-rams-module lg:hidden" aria-label="Mobile navigation" aria-hidden="true" inert>
         <div class="flex items-center justify-between gap-3 border-b border-rams-line px-4 py-3">
           <div class="min-w-0">
             <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Navigation</p>
@@ -646,6 +650,8 @@
         mobileNavOverlay.classList.toggle('is-open', isOpen);
         mobileNavOverlay.hidden = !isOpen;
         mobileNav.setAttribute('aria-hidden', String(!isOpen));
+        // aria-hidden alone leaves the closed drawer's links in the tab order.
+        mobileNav.inert = !isOpen;
         mobileNavToggle?.setAttribute('aria-expanded', String(isOpen));
         mobileNavBottomToggle?.setAttribute('aria-expanded', String(isOpen));
         document.body.classList.toggle('overflow-hidden', isOpen);
@@ -692,7 +698,11 @@
 
       document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') {
-          setMobileNavOpen(false);
+          // Only close (and refocus the hamburger) when the drawer is open:
+          // pressing Escape in the palette/search otherwise stole focus.
+          if (mobileNav?.classList.contains('is-open')) {
+            setMobileNavOpen(false);
+          }
           userMenus.forEach((menu) => {
             menu.open = false;
           });
@@ -713,6 +723,12 @@
       };
 
       document.addEventListener('click', (event) => {
+        // Ignore handled events and non-plain clicks (new tab, download,
+        // middle-click): they do not start an in-page navigation.
+        if (event.defaultPrevented || event.button !== 0
+            || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+          return;
+        }
         const target = event.target;
         if (!(target instanceof Element)) {
           return;
@@ -729,10 +745,21 @@
         if (!(anchor instanceof HTMLAnchorElement)) {
           return;
         }
-        if (anchor.target === '_blank' || anchor.hasAttribute('download')) {
+        // Downloads and modified clicks do not navigate this page; hash-only
+        // same-page links ("Sources", "Jobs") never finish loading. Starting
+        // the bar for them left it stuck forever.
+        const url = new URL(anchor.href, window.location.href);
+        const hashOnly = url.pathname === window.location.pathname
+          && url.search === window.location.search
+          && url.hash !== '';
+        const isDownload = /\/pdf(\?|$)|\/export(\?|$)/.test(url.pathname);
+        if (anchor.target === '_blank'
+            || anchor.hasAttribute('download')
+            || url.pathname.endsWith('.pdf')
+            || isDownload
+            || hashOnly) {
           return;
         }
-        const url = new URL(anchor.href, window.location.href);
         if (url.origin === window.location.origin && routeProgress) {
           routeProgress.classList.add('is-active');
         }
@@ -956,7 +983,9 @@
   {% call nav_group("Command Center") %}
   {% call nav_item("/", "Overview") %}
   {% call nav_item("/executive", "Executive") %}
-  {% call nav_item_badge("/triage", "Triage") %}
+  {# Triage shows no warning badge: the badge belongs to /warnings and
+     showing the warnings count on Triage made the two indistinguishable. #}
+  {% call nav_item("/triage", "Triage") %}
   {% call nav_item("/queue", "Queue") %}
   {% call nav_item("/activity", "Activity") %}
 </div>
@@ -1006,7 +1035,7 @@
 
 {% macro nav_item(href, label) %}
 <a href="{{ href }}"
-   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
+   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(format!("{}/", href).as_str())) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
   {{ label }}
 </a>
@@ -1014,7 +1043,7 @@
 
 {% macro nav_item_badge(href, label) %}
 <a href="{{ href }}"
-   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
+   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(format!("{}/", href).as_str())) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
   {{ label }}
   {# B310: class, not id — the badge is rendered twice (mobile + desktop

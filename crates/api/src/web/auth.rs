@@ -51,20 +51,35 @@ use apex_store::postgres::{AppUserSeed, PgStore};
 use crate::auth::{client_fingerprint, ApiRole, AuthThrottleStatus};
 use crate::login_throttle::LoginThrottle;
 use crate::middleware::session::{
-    clear_session_cookie_headers, create_session_token, session_cookie_header,
-    session_ttl_ms_for_hours, SessionClaims, SESSION_TTL_MS, SESSION_VERSION,
+    clear_session_cookie_headers, create_session_token, current_session_secret, same_site_post,
+    session_cookie_header, session_ttl_ms_for_hours, SessionClaims, SESSION_TTL_MS,
+    SESSION_VERSION,
 };
 
 #[derive(Template)]
 #[template(path = "pages/login.html")]
 struct LoginPage {
     error: Option<String>,
+    next: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct LoginForm {
     username: String,
     password: String,
+    #[serde(default)]
+    next: Option<String>,
+}
+
+/// Only local paths are accepted as a post-login destination: `//host` and
+/// `/\host` are protocol-relative/backslash tricks that leave the site.
+fn safe_next(next: Option<&str>) -> Option<String> {
+    let next = next?.trim();
+    (!next.is_empty()
+        && next.starts_with('/')
+        && !next.starts_with("//")
+        && !next.starts_with("/\\"))
+    .then(|| next.to_string())
 }
 
 /// A configured web login. `WEB_USERS_JSON` entries carry `id`, `username`,
@@ -248,6 +263,10 @@ pub async fn bootstrap_app_users_from_env(store: &PgStore) -> usize {
 /// password hash; once a row has credentials the database is authoritative and
 /// the environment is ignored. When `store` is `None` (unit tests, no-database
 /// deployments) the environment list is the credential source.
+///
+/// Every rejection path that does not verify a real hash pays the
+/// [`password_verification_equalizer`] cost instead, so response timing does
+/// not distinguish unknown, disabled, hashless and wrong-password logins.
 pub async fn resolve_login(
     store: Option<&PgStore>,
     username: &str,
@@ -256,9 +275,13 @@ pub async fn resolve_login(
     let normalized = normalize_login_name(username);
 
     let Some(store) = store else {
-        let user = load_web_users()
+        let Some(user) = load_web_users()
             .into_iter()
-            .find(|user| normalize_login_name(&user.username) == normalized)?;
+            .find(|user| normalize_login_name(&user.username) == normalized)
+        else {
+            password_verification_equalizer(password).await;
+            return None;
+        };
         let role = match user.api_role() {
             Ok(role) => role,
             Err(error) => {
@@ -267,10 +290,11 @@ pub async fn resolve_login(
                     %error,
                     "login rejected: unknown role in WEB_USERS_JSON"
                 );
+                password_verification_equalizer(password).await;
                 return None;
             }
         };
-        if !verify_password_hash(password, &user.password_hash) {
+        if !verify_password_async(password, &user.password_hash).await {
             return None;
         }
         let user_id = UserId::from(user.user_id());
@@ -283,11 +307,12 @@ pub async fn resolve_login(
         });
     };
 
-    bootstrap_app_users_from_env(store).await;
-
     let record = match store.find_app_user_by_username(username).await {
         Ok(Some(record)) => record,
-        Ok(None) => return None,
+        Ok(None) => {
+            password_verification_equalizer(password).await;
+            return None;
+        }
         Err(error) => {
             // A storage failure must never read as "no such user": fail closed
             // and record the real reason.
@@ -297,6 +322,7 @@ pub async fn resolve_login(
     };
     if !record.enabled {
         tracing::warn!(user_id = %record.id, "login rejected: account disabled");
+        password_verification_equalizer(password).await;
         return None;
     }
     // An unknown role must fail authentication, never fall back to a default
@@ -310,11 +336,15 @@ pub async fn resolve_login(
                 role = %record.role,
                 "login rejected: unknown role in app_users"
             );
+            password_verification_equalizer(password).await;
             return None;
         }
     };
-    let password_hash = record.password_hash.as_deref()?;
-    if !verify_password_hash(password, password_hash) {
+    let Some(password_hash) = record.password_hash.as_deref() else {
+        password_verification_equalizer(password).await;
+        return None;
+    };
+    if !verify_password_async(password, password_hash).await {
         return None;
     }
 
@@ -354,6 +384,28 @@ fn legacy_password_hashes_enabled() -> bool {
 /// without mutating the process environment).
 fn legacy_password_hashes_enabled_value(value: Option<&str>) -> bool {
     matches!(value.map(str::trim), Some("true") | Some("1"))
+}
+
+/// A real Argon2id hash used to equalize timing for unknown, disabled and
+/// hashless users: the credential check costs the same whether or not the
+/// account exists, so response time does not enumerate usernames.
+static DUMMY_PASSWORD_HASH: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| hash_password("apex-timing-equalizer").unwrap_or_default());
+
+/// Verify a password off the async runtime: Argon2 is tens of milliseconds of
+/// CPU, and running it directly on a Tokio worker thread lets a login flood
+/// stall every other request.
+async fn verify_password_async(password: &str, stored_hash: &str) -> bool {
+    let (password, stored_hash) = (password.to_owned(), stored_hash.to_owned());
+    tokio::task::spawn_blocking(move || verify_password_hash(&password, &stored_hash))
+        .await
+        .unwrap_or(false)
+}
+
+/// Pay the same verification cost as a real credential check without
+/// revealing whether the account exists.
+async fn password_verification_equalizer(password: &str) {
+    let _ = verify_password_async(password, &DUMMY_PASSWORD_HASH).await;
 }
 
 /// Verify a password against a stored hash. Accepts Argon2id PHC strings and
@@ -413,9 +465,14 @@ pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Er
         .map(|hash| hash.to_string())
 }
 
-/// GET /login — render login page.
-pub async fn login_page() -> impl IntoResponse {
-    LoginPage { error: None }
+/// GET /login — render login page, carrying the `next` destination.
+pub async fn login_page(
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    LoginPage {
+        error: None,
+        next: safe_next(params.get("next").map(String::as_str)),
+    }
 }
 
 /// POST /login — validate credentials, set session cookie, redirect.
@@ -428,11 +485,24 @@ pub async fn login_submit(
     parts: axum::http::request::Parts,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let session_secret = std::env::var("SESSION_SECRET").unwrap_or_default();
+    // Reject cross-site form posts: a forged login would sign the victim into
+    // the attacker's account (session fixation/login CSRF).
+    if !same_site_post(&parts.headers) {
+        tracing::warn!(
+            username = %normalize_login_name(&form.username),
+            "login rejected: cross-site form submission"
+        );
+        return (StatusCode::FORBIDDEN, "Cross-site form submission rejected").into_response();
+    }
+
+    // Use the same cached secret as validation: reading SESSION_SECRET again
+    // here could sign with a different value than the middleware verifies.
+    let session_secret = current_session_secret();
     if session_secret.is_empty() {
         tracing::error!("Auth environment variables not configured");
         return LoginPage {
             error: Some("Server misconfiguration — contact administrator".into()),
+            next: safe_next(form.next.as_deref()),
         }
         .into_response();
     }
@@ -452,33 +522,38 @@ pub async fn login_submit(
     // name is normalised so case/whitespace variants cannot dodge a lockout.
     let attempt_key = login_attempt_key(&form.username, &parts);
 
-    // Evaluate before any password verification: a locked key is rejected
-    // without touching the credential store.
-    let pre_check = throttle.evaluate(&attempt_key, Utc::now()).await;
-    if !pre_check.allowed {
+    // Atomically reserve the attempt *before* password verification. A
+    // check-then-record pair let N concurrent requests all pass the check
+    // before any failure was recorded, so one burst got N guesses. A locked
+    // key is rejected here, and an allowed reservation already counts the
+    // attempt (cleared by record_success below).
+    let reservation = throttle.reserve(&attempt_key, Utc::now()).await;
+    if !reservation.allowed {
         tracing::warn!(
             username = %normalize_login_name(&form.username),
-            retry_after_secs = pre_check.retry_after_secs,
-            admin_unlock_required = pre_check.admin_unlock_required,
+            retry_after_secs = reservation.retry_after_secs,
+            admin_unlock_required = reservation.admin_unlock_required,
             "login rejected: throttle locked"
         );
-        return locked_response(&pre_check);
+        return locked_response(&reservation);
     }
 
     let Some(principal) = resolve_login(store.as_deref(), &form.username, &form.password).await
     else {
-        let post_failure = throttle.record_failure(&attempt_key, Utc::now()).await;
-        if post_failure.is_lockout() {
+        // The failure was already recorded by the reservation; answer 429 when
+        // this attempt tripped a lock, otherwise the generic page.
+        if reservation.is_lockout() {
             tracing::warn!(
                 username = %normalize_login_name(&form.username),
-                retry_after_secs = post_failure.retry_after_secs,
-                admin_unlock_required = post_failure.admin_unlock_required,
+                retry_after_secs = reservation.retry_after_secs,
+                admin_unlock_required = reservation.admin_unlock_required,
                 "login locked after failed attempt"
             );
-            return locked_response(&post_failure);
+            return locked_response(&reservation);
         }
         return LoginPage {
             error: Some("Invalid credentials".into()),
+            next: safe_next(form.next.as_deref()),
         }
         .into_response();
     };
@@ -513,15 +588,22 @@ pub async fn login_submit(
         issued_at: now_ms,
         expires_at: now_ms + session_ttl_ms,
         session_version: principal.session_version,
+        // Revocation id: logout records it in `revoked_sessions`.
+        session_id: uuid::Uuid::new_v4(),
     };
 
-    let Some(token) = create_session_token(&claims, &session_secret) else {
+    let Some(token) = create_session_token(&claims, session_secret) else {
         tracing::error!("failed to serialize session payload");
         return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
     };
 
+    let destination = safe_next(form.next.as_deref()).unwrap_or_else(|| "/".to_string());
     let mut headers = HeaderMap::new();
-    headers.insert(header::LOCATION, HeaderValue::from_static("/"));
+    if let Ok(location) = HeaderValue::from_str(&destination) {
+        headers.insert(header::LOCATION, location);
+    } else {
+        headers.insert(header::LOCATION, HeaderValue::from_static("/"));
+    }
     if let Ok(cookie) = HeaderValue::from_str(&session_cookie_header(&token, session_ttl_ms / 1000))
     {
         headers.append(header::SET_COOKIE, cookie);
@@ -532,11 +614,11 @@ pub async fn login_submit(
 /// Build the throttle key for one login attempt.
 ///
 /// The key is the normalised login name plus a fingerprint of the trusted
-/// client address only:
+/// client address only (see [`crate::middleware::client_ip`] — under
+/// `API_TRUST_PROXY=1` the proxy-appended rightmost `X-Forwarded-For` entry
+/// wins, so a client cannot rotate a spoofed leftmost value into a fresh
+/// lockout bucket):
 ///   * the TCP peer address from `ConnectInfo` is trusted;
-///   * `X-Forwarded-For` is only honored under `API_TRUST_PROXY=1`, where the
-///     deployment's reverse proxy overwrites it (same contract as the API
-///     rate limiter, B298);
 ///   * the User-Agent is deliberately excluded: a client controls that header
 ///     and could otherwise rotate it to land in a fresh lockout bucket;
 ///   * the hash keeps the durable key fixed-size regardless of input size.
@@ -544,23 +626,11 @@ fn login_attempt_key(username: &str, parts: &axum::http::request::Parts) -> Stri
     let peer_ip = parts
         .extensions
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|info| info.ip().to_string());
-    let trusted_ip = if std::env::var("API_TRUST_PROXY")
-        .map(|value| value == "1")
-        .unwrap_or(false)
-    {
-        parts
-            .headers
-            .get("x-forwarded-for")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(',').next())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or(peer_ip)
-    } else {
-        peer_ip
-    };
+        .map(|info| info.ip());
+    // IPv6 is bucketed by /64 so a rotating prefix cannot win fresh lockout
+    // buckets (see `rate_limit_identity`).
+    let trusted_ip = crate::middleware::client_ip::client_ip(&parts.headers, peer_ip)
+        .map(crate::middleware::client_ip::rate_limit_identity);
     format!(
         "{}|{}",
         normalize_login_name(username),
@@ -581,22 +651,50 @@ fn locked_response(status: &AuthThrottleStatus) -> Response {
         StatusCode::TOO_MANY_REQUESTS,
         LoginPage {
             error: Some(message.into()),
+            next: None,
         },
     )
         .into_response();
-    // Admin locks are bounded too, so a known remaining time is advertised.
-    if status.retry_after_secs > 0 {
-        if let Ok(value) = HeaderValue::from_str(&status.retry_after_secs.to_string()) {
-            response.headers_mut().insert(header::RETRY_AFTER, value);
-        }
+    // A 429 always advertises a positive Retry-After: the reserved attempt
+    // that tripped the lock reports retry 0 (it was allowed), so floor at 1.
+    let retry_after = status.retry_after_secs.max(1);
+    if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
     }
     response
 }
 
-/// POST /logout — clear cookie(s), redirect to login.
-pub async fn logout() -> impl IntoResponse {
+/// POST /logout — revoke the session id, clear cookie(s), redirect to login.
+///
+/// Clearing the cookie alone left a copied cookie valid until its signed
+/// expiry (up to 168h); the `jti` is recorded as revoked so the authority
+/// rejects it on the next request.
+pub async fn logout(parts: axum::http::request::Parts) -> Response {
+    if !same_site_post(&parts.headers) {
+        return (StatusCode::FORBIDDEN, "Cross-site form submission rejected").into_response();
+    }
+
+    if let Some(session) =
+        crate::middleware::session::validate_session(&parts.headers, current_session_secret())
+    {
+        if let Some(store) = parts.extensions.get::<Arc<PgStore>>() {
+            let expires_at = chrono::DateTime::<Utc>::from_timestamp_millis(session.expires_at)
+                .unwrap_or_else(Utc::now);
+            if let Err(error) = store.revoke_session(session.session_id, expires_at).await {
+                tracing::warn!(%error, session_id = %session.session_id, "logout revocation write failed");
+            }
+        }
+    }
+
     let mut headers = HeaderMap::new();
     headers.insert(header::LOCATION, HeaderValue::from_static("/login"));
+    // Purge the service-worker HTTP cache on logout so cached sensitive
+    // responses (PDFs, reports) do not survive a session on a shared machine.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::HeaderName::from_static("clear-site-data"),
+        HeaderValue::from_static("\"cache\""),
+    );
     for cookie in clear_session_cookie_headers() {
         if let Ok(value) = HeaderValue::from_str(&cookie) {
             headers.append(header::SET_COOKIE, value);
@@ -837,7 +935,8 @@ mod tests {
         assert_eq!(admin.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(admin.headers().get(header::RETRY_AFTER).unwrap(), "86400");
 
-        // State without a known deadline stays generic with no header.
+        // State without a known deadline still advertises a positive floor:
+        // a 429 must never tell the client to retry immediately (0).
         let undated = locked_response(&AuthThrottleStatus {
             allowed: false,
             retry_after_secs: 0,
@@ -845,6 +944,6 @@ mod tests {
             failure_count_1h: 20,
             admin_unlock_required: true,
         });
-        assert!(undated.headers().get(header::RETRY_AFTER).is_none());
+        assert_eq!(undated.headers().get(header::RETRY_AFTER).unwrap(), "1");
     }
 }

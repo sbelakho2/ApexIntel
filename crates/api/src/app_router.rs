@@ -42,8 +42,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/api/health", get(health))
         .route("/api/health/live", get(health_live))
         .route("/api/health/ready", get(health_ready))
-        .route("/api/health/deep", get(health_deep))
-        .route("/api/health/capabilities", get(health_capabilities))
         // ─── Product surface probes ─────────────────────────────────────────
         // Five root-level health endpoints operators compose into the full
         // product readiness: process liveness/readiness, data acquisition and
@@ -55,10 +53,8 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/data/healthy", get(data_healthy))
         .route("/intelligence/healthy", get(intelligence_healthy))
         .route("/delivery/healthy", get(delivery_healthy))
-        .route("/api/endpoints", get(endpoints))
         .route("/api/openapi.json", get(openapi_json))
         .route("/api/docs", get(api_docs))
-        .route("/api/features", get(api_features))
         .route("/api/version", get(api_version))
         .route(
             "/login",
@@ -597,6 +593,13 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(trends_handlers::trend_comparison),
         )
         .route("/api/trends/entities", get(trends_handlers::entity_trends))
+        // ─── Authenticated metadata / diagnostics (audit P0-8) ─────────────
+        // The deployment surface descriptors and the deep capability probes
+        // (raw DB errors) are not anonymous endpoints.
+        .route("/api/health/deep", get(health_deep))
+        .route("/api/health/capabilities", get(health_capabilities))
+        .route("/api/endpoints", get(endpoints))
+        .route("/api/features", get(api_features))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
         // B300: `/api/trends*` handlers extract `Extension<Arc<PgStore>>`, which
         // was previously provided only to the web-page router — every trends

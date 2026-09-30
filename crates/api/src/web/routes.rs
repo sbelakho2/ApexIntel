@@ -49,6 +49,7 @@ use crate::middleware::session::{require_session, require_web_admin, require_web
 struct WebPages<S> {
     read: Router<S>,
     write: Router<S>,
+    self_service: Router<S>,
     admin: Router<S>,
 }
 
@@ -60,6 +61,7 @@ where
         Self {
             read: Router::new(),
             write: Router::new(),
+            self_service: Router::new(),
             admin: Router::new(),
         }
     }
@@ -81,6 +83,19 @@ where
         T: 'static,
     {
         self.write = self.write.route(path, post(handler));
+        self
+    }
+
+    /// Register a POST mutation a Viewer may perform on their own account
+    /// (theme/appearance settings, marking their own notifications read, their
+    /// own saved searches). Guarded by `require_session` only — CSRF still
+    /// applies — because the handlers scope every write to the session user.
+    fn self_post<H, T>(mut self, path: &str, handler: H) -> Self
+    where
+        H: Handler<T, S>,
+        T: 'static,
+    {
+        self.self_service = self.self_service.route(path, post(handler));
         self
     }
 
@@ -115,12 +130,18 @@ where
             .write
             .route_layer(middleware::from_fn(require_web_write))
             .route_layer(middleware::from_fn(require_session));
+        let self_service_pages = self
+            .self_service
+            .route_layer(middleware::from_fn(require_session));
         let admin_pages = self
             .admin
             .route_layer(middleware::from_fn(require_web_admin))
             .route_layer(middleware::from_fn(require_session));
 
-        web_read_pages.merge(web_write_pages).merge(admin_pages)
+        web_read_pages
+            .merge(web_write_pages)
+            .merge(self_service_pages)
+            .merge(admin_pages)
     }
 }
 
@@ -244,20 +265,6 @@ where
             "/recipes/create-form",
             crate::web::recipes::create_recipe_form,
         )
-        .post("/search/saved-searches", crate::web::search::save_search)
-        .post(
-            "/search/saved-searches/:id/delete",
-            crate::web::search::delete_saved_search,
-        )
-        .post(
-            "/security/trigger-scan",
-            crate::web::security::post_trigger_scan_html,
-        )
-        .post(
-            "/notifications/:id/read",
-            crate::web::notifications::mark_notification_read,
-        )
-        .post("/settings", crate::web::settings::save_settings)
         .post("/workspaces", crate::web::collaboration::create_workspace)
         .post(
             "/workspaces/:id/close",
@@ -309,11 +316,31 @@ where
             "/triage/:id/override",
             crate::web::triage::override_triage_html,
         )
+        // ─── Self-service pages (require_session only; CSRF still applies) ──
+        // Viewers can change their own theme/session length, clear their own
+        // inbox, and manage their own saved searches. Every handler scopes the
+        // write to the session principal.
+        .self_post("/settings", crate::web::settings::save_settings)
+        .self_post(
+            "/notifications/:id/read",
+            crate::web::notifications::mark_notification_read,
+        )
+        .self_post("/search/saved-searches", crate::web::search::save_search)
+        .self_post(
+            "/search/saved-searches/:id/delete",
+            crate::web::search::delete_saved_search,
+        )
         // ─── Admin pages (require_web_admin + require_session) ───────────────
         // The HTML `/admin` page carries the same `can_admin()` authorization
         // as `/api/admin/*`: a browser session without an admin role gets 403,
         // while unauthenticated requests are still redirected to /login.
         .admin_get("/admin", crate::web::admin::admin_page)
+        .admin_post(
+            // Scanning consumes crawler/LLM resources: the API equivalent is
+            // admin-only, and the HTML route must not be weaker.
+            "/security/trigger-scan",
+            crate::web::security::post_trigger_scan_html,
+        )
         .admin_post(
             "/admin/notifications/delivery/replay",
             crate::web::admin::admin_replay_delivery,

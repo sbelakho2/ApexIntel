@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use chrono::{DateTime, Utc};
 
-use crate::auth::{self, ApiKey, ApiRole, AuthResult, PermissionLevel};
+use crate::auth::{self, ApiKey, AuthResult, PermissionLevel};
 use crate::destructive_actions::ApiAuthContext;
 use crate::responses::{error_response, ApiError};
 
@@ -144,73 +144,6 @@ pub fn validate_websocket_token(
             role,
         }),
         _ => Err(ApiError::unauthorized()),
-    }
-}
-
-/// Build a browser-session API principal for `/api/*` requests that arrive
-/// with the ambient `apex_session` cookie instead of a Bearer key.
-///
-/// Role mapping (P0 auth contract): the configured platform administrator
-/// (`APEX_ADMIN_USERNAME`) receives [`ApiRole::Admin`] so session-authenticated
-/// admin API calls are permitted; every other session is [`ApiRole::Analyst`].
-///
-/// Returns `None` when a Bearer `Authorization` header was presented (an
-/// invalid key must fail rather than silently downgrade to the session), the
-/// session is missing/expired, or an unsafe method fails the CSRF check.
-pub fn session_api_auth_context(
-    headers: &HeaderMap,
-    method: &Method,
-    session_secret: &str,
-    admin_username: &str,
-) -> Option<ApiAuthContext> {
-    if headers.contains_key(header::AUTHORIZATION) {
-        return None;
-    }
-    if session_secret.is_empty() {
-        return None;
-    }
-    let session = crate::middleware::session::validate_session(headers, session_secret)?;
-    if !crate::middleware::session::api_session_csrf_ok(headers, method) {
-        tracing::warn!(
-            username = %session.username,
-            "session-authenticated API request rejected: CSRF verification failed"
-        );
-        return None;
-    }
-
-    let admin = admin_username.trim();
-    let role = if !admin.is_empty() && session.username == admin {
-        ApiRole::Admin
-    } else {
-        ApiRole::Analyst
-    };
-
-    Some(ApiAuthContext {
-        key_id: "web-session".to_string(),
-        user_id: session.user_id.clone(),
-        role,
-    })
-}
-
-/// Authenticate an API request, accepting either a Bearer key or (as a
-/// fallback) a browser session cookie. Bearer failures are never downgraded to
-/// the session principal — a presented-but-invalid key fails.
-pub fn authenticate_request_or_session(
-    headers: &HeaderMap,
-    method: &Method,
-    api_keys: &HashMap<String, ApiKey>,
-    session_secret: &str,
-    admin_username: &str,
-    now: DateTime<Utc>,
-) -> Result<ApiAuthContext, ApiError> {
-    match authenticate_api_request(headers, method, api_keys, now) {
-        Ok(authenticated) => Ok(authenticated.auth_context),
-        Err(bearer_error) => {
-            match session_api_auth_context(headers, method, session_secret, admin_username) {
-                Some(context) => Ok(context),
-                None => Err(bearer_error),
-            }
-        }
     }
 }
 

@@ -3,8 +3,8 @@
 -- ════════════════════════════════════════════════════════════════════════════
 --
 -- `configured_min_precision` is configuration named as if it were measured
--- quality, and migration 089 split the measured precision out of it. The
--- runtime now reads `configured_activation_threshold`.
+-- quality; the measured precision was split out of it in an earlier revision.
+-- The runtime now reads `configured_activation_threshold`.
 --
 -- The rename is staged rather than in place:
 --

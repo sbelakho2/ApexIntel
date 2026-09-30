@@ -276,6 +276,7 @@ mod observations;
 mod persons;
 mod preferences;
 mod readiness;
+mod revoked_sessions;
 pub use readiness::{AlertEngineStateRecord, AlertEngineStateRow};
 pub use recipes::{RecipeEngineRow, RecipeMonthlyPerformance};
 mod recipes;

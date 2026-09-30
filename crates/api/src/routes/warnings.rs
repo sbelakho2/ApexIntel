@@ -1,6 +1,6 @@
 //! Warnings route — request/response types and logic for the warnings endpoints.
 
-use apex_core::validation::{normalize_email, validate_uuid};
+use apex_core::validation::validate_uuid;
 use apex_shared::{BayesianInterpretation, ConfidenceInterval};
 use apex_store::postgres::WarningReviewOutcome;
 use chrono::{DateTime, Utc};
@@ -69,7 +69,10 @@ impl SortDirection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcknowledgeRequest {
-    pub user_id: String,
+    /// Ignored: acknowledgement/review attribution comes from the
+    /// authenticated principal, never from the client.
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub note: Option<String>,
     pub review_outcome: Option<WarningReviewOutcome>,
 }
@@ -139,17 +142,8 @@ pub fn validate_warning_id(id: &str) -> Result<Uuid, String> {
 
 /// Validate an acknowledge request.
 pub fn validate_acknowledge(req: &AcknowledgeRequest) -> Result<(), String> {
-    if req.user_id.trim().is_empty() {
-        return Err("user_id is required".to_string());
-    }
-    if req.user_id.chars().count() > 200 {
-        return Err("user_id must be <= 200 characters".to_string());
-    }
-    if let Some(email) = normalize_email(&req.user_id) {
-        if !email.contains('@') && req.user_id.contains('@') {
-            return Err("user_id must be a valid email when '@' is present".to_string());
-        }
-    }
+    // `user_id` is accepted for backward compatibility but ignored: the
+    // principal is the authenticated actor.
     if let Some(note) = &req.note {
         if note.chars().count() > 1000 {
             return Err("note must be <= 1000 characters".to_string());
@@ -274,40 +268,37 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_acknowledge_ok() {
+    fn test_validate_acknowledge_ignores_client_supplied_attribution() {
+        // The actor is the authenticated principal; a client-supplied
+        // `user_id` is accepted for compatibility but never validated as an
+        // identity and never used for attribution.
         let req = AcknowledgeRequest {
-            user_id: "user-1".to_string(),
+            user_id: Some("user-1".to_string()),
             note: Some("Noted".to_string()),
             review_outcome: Some(WarningReviewOutcome::FalsePositive),
         };
         assert!(validate_acknowledge(&req).is_ok());
-    }
 
-    #[test]
-    fn test_validate_acknowledge_empty_user() {
-        let req = AcknowledgeRequest {
-            user_id: "  ".to_string(),
+        let arbitrary = AcknowledgeRequest {
+            user_id: Some("someone-else-admin".to_string()),
             note: None,
             review_outcome: None,
         };
-        assert!(validate_acknowledge(&req).is_err());
+        assert!(validate_acknowledge(&arbitrary).is_ok());
+
+        let none = AcknowledgeRequest {
+            user_id: None,
+            note: None,
+            review_outcome: None,
+        };
+        assert!(validate_acknowledge(&none).is_ok());
     }
 
     #[test]
     fn test_validate_acknowledge_long_note() {
         let req = AcknowledgeRequest {
-            user_id: "user-1".to_string(),
+            user_id: None,
             note: Some("x".repeat(1001)),
-            review_outcome: None,
-        };
-        assert!(validate_acknowledge(&req).is_err());
-    }
-
-    #[test]
-    fn test_validate_acknowledge_long_user_id() {
-        let req = AcknowledgeRequest {
-            user_id: "u".repeat(201),
-            note: None,
             review_outcome: None,
         };
         assert!(validate_acknowledge(&req).is_err());

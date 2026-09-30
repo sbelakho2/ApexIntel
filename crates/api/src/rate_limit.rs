@@ -247,7 +247,13 @@ impl RateLimiter {
             allowed,
             remaining,
             limit: max_requests,
-            retry_after_secs: retry_after.as_secs(),
+            // Never report 0 for a rejected request: `as_secs()` truncates
+            // sub-second waits to 0, which told clients to retry immediately.
+            retry_after_secs: if allowed {
+                0
+            } else {
+                retry_after.as_secs_f64().ceil().max(1.0) as u64
+            },
         }
     }
 

@@ -232,24 +232,20 @@ impl AlertRouter {
         }
     }
 
-    /// Filter an explicit candidate list through each user's delivery policy.
+    /// Apply the alert's delivery policy once for the whole candidate list.
+    ///
+    /// The policy is entity/global configuration and does not vary by user
+    /// (`_user_id` was unused), so evaluating it per recipient ran the same
+    /// two queries N times with identical results.
     async fn filter_by_policy(
         &self,
         candidates: &[Uuid],
         alert: &AlertEvent,
     ) -> AlertRoutingDecision {
-        let mut targets = Vec::with_capacity(candidates.len());
-        for user_id in candidates {
-            match self.policy_allows(*user_id, alert).await {
-                Ok(true) => targets.push(*user_id),
-                Ok(false) => {}
-                Err(error) => return AlertRoutingDecision::RetryableFailure(error),
-            }
-        }
-        if targets.is_empty() {
-            AlertRoutingDecision::NoRecipients
-        } else {
-            AlertRoutingDecision::Targets(targets)
+        match self.policy_allows_alert(alert).await {
+            Ok(true) => AlertRoutingDecision::Targets(candidates.to_vec()),
+            Ok(false) => AlertRoutingDecision::NoRecipients,
+            Err(error) => AlertRoutingDecision::RetryableFailure(error),
         }
     }
 
@@ -287,11 +283,16 @@ impl AlertRouter {
         self.filter_by_policy(&subscribers, alert).await
     }
 
-    /// Check whether a specific user's delivery policy allows this alert.
+    /// Backwards-compatible wrapper: the policy is per alert, not per user.
+    pub async fn policy_allows(&self, _user_id: Uuid, alert: &AlertEvent) -> Result<bool, String> {
+        self.policy_allows_alert(alert).await
+    }
+
+    /// Check whether the alert delivery policy allows this alert at all.
     ///
     /// Returns `Err` when the policy cannot be read: the caller must treat
     /// that as unresolved (retry), never as "allowed".
-    pub async fn policy_allows(&self, _user_id: Uuid, alert: &AlertEvent) -> Result<bool, String> {
+    pub async fn policy_allows_alert(&self, alert: &AlertEvent) -> Result<bool, String> {
         use apex_core::alert_config::AlertChannel;
 
         // If the alert targets a specific entity, check its config

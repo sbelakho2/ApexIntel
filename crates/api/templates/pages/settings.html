@@ -117,6 +117,10 @@
           <input type="time" name="email_digest_time_cet" value="{{ email_digest_time_cet }}" class="h-11 w-32 rounded border border-rams-line bg-rams-chassis px-2 text-xs" />
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
+          <span class="text-sm font-bold">Desktop alerts</span>
+          <button type="button" id="enable-desktop-alerts" class="apex-btn apex-btn-secondary">Enable desktop alerts</button>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
           <span class="text-sm font-bold">Weekly digest day</span>
           <select name="email_digest_weekday" class="h-11 w-32 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
             <option value="Mon" {% if email_digest_weekday == "Mon" %}selected{% endif %}>Mon</option>
@@ -231,6 +235,22 @@
     const storedTheme = "{{ theme }}";
     if (storedTheme && window.ApexTheme) {
       window.ApexTheme.setTheme(storedTheme);
+    }
+
+    // Desktop notification permission is requested here, from an explicit
+    // user gesture, not on the first incoming alert.
+    const button = document.getElementById('enable-desktop-alerts');
+    if (button) {
+      button.addEventListener('click', () => {
+        const client = window.__apexSSE;
+        if (!client || typeof client.requestNotificationPermission !== 'function') {
+          button.textContent = 'Not available';
+          return;
+        }
+        client.requestNotificationPermission().then((granted) => {
+          button.textContent = granted ? 'Enabled' : 'Blocked by browser';
+        });
+      });
     }
   })();
 </script>

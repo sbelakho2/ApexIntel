@@ -1,3 +1,4 @@
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +20,104 @@ use crate::robots::{RobotsCache, RobotsRules};
 const DEFAULT_USER_AGENT: &str = "ApexIntelBot/1.0 (+https://apex-intel.io/bot)";
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+/// Maximum bytes read from a response body (10 MiB); larger bodies are
+/// truncated instead of buffered unbounded into memory.
+const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
+/// Maximum redirects followed; more is treated as an error.
+const MAX_REDIRECTS: usize = 5;
+
+/// Cap on attacker-controlled waits (`Crawl-delay`, `Retry-After`): one hostile
+/// host must not hold a worker slot for hours.
+const MAX_DELAY: Duration = Duration::from_secs(60);
+
+/// Whether an address is a routable public address. Private, loopback,
+/// link-local, CGNAT, documentation, broadcast and unspecified ranges are
+/// rejected so a crawled page (or a redirect) cannot reach cloud metadata
+/// (169.254.169.254), MinIO, NATS monitoring, or internal APIs.
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.octets()[0] == 0
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64))
+        }
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_public(IpAddr::V4(v4)),
+            None => {
+                !(v6.is_loopback()
+                    || v6.is_unspecified()
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80)
+            }
+        },
+    }
+}
+
+/// DNS resolver that only yields public addresses. reqwest skips DNS for
+/// IP-literal URLs, so [`url_allowed`] is also enforced on the request URL and
+/// on every redirect target.
+#[derive(Debug)]
+struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|addr| is_public(addr.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err("resolved only to non-public addresses".into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// http(s) only, and any IP-literal host must be public.
+fn url_allowed(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && match url.host() {
+            Some(url::Host::Ipv4(ip)) => is_public(IpAddr::V4(ip)),
+            Some(url::Host::Ipv6(ip)) => is_public(IpAddr::V6(ip)),
+            Some(url::Host::Domain(_)) => true,
+            None => false,
+        }
+}
+
+/// Client builder with the SSRF protections applied to the request URL, DNS
+/// resolution and every redirect hop. `allow_private_targets` is the explicit
+/// test/dev escape hatch.
+fn secure_client_builder(
+    timeout: Duration,
+    user_agent: &str,
+    allow_private_targets: bool,
+) -> reqwest::ClientBuilder {
+    let builder = reqwest::ClientBuilder::new()
+        .timeout(timeout)
+        .user_agent(user_agent)
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= MAX_REDIRECTS {
+                attempt.error("too many redirects")
+            } else if !allow_private_targets && !url_allowed(attempt.url()) {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }));
+    if allow_private_targets {
+        builder
+    } else {
+        builder.dns_resolver(Arc::new(PublicOnlyResolver))
+    }
+}
+
 #[derive(Clone)]
 pub struct CrawlClientConfig {
     pub timeout: Duration,
@@ -32,6 +131,9 @@ pub struct CrawlClientConfig {
     pub rate_limits: Arc<Mutex<RateLimitManager>>,
     pub robots_cache: Arc<Mutex<RobotsCache>>,
     pub metrics: SharedDomainByteMetrics,
+    /// Test/dev escape hatch: allow loopback/private targets. Production must
+    /// keep this `false` so the crawler cannot reach internal services.
+    pub allow_private_targets: bool,
 }
 
 impl Default for CrawlClientConfig {
@@ -46,6 +148,7 @@ impl Default for CrawlClientConfig {
             rate_limits: Arc::new(Mutex::new(RateLimitManager::new())),
             robots_cache: Arc::new(Mutex::new(RobotsCache::default())),
             metrics: SharedDomainByteMetrics::new(),
+            allow_private_targets: false,
         }
     }
 }
@@ -113,15 +216,17 @@ pub struct FetchResponse {
 
 impl CrawlClient {
     pub fn new(config: CrawlClientConfig) -> Result<Self, CrawlError> {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .user_agent(config.user_agent.clone())
-            .build()
-            .map_err(|error| CrawlError::Transport {
-                url: "client_builder".to_string(),
-                message: error.to_string(),
-                category: CrawlFailureCategory::Network,
-            })?;
+        let client = secure_client_builder(
+            config.timeout,
+            &config.user_agent,
+            config.allow_private_targets,
+        )
+        .build()
+        .map_err(|error| CrawlError::Transport {
+            url: "client_builder".to_string(),
+            message: error.to_string(),
+            category: CrawlFailureCategory::Network,
+        })?;
         let http_concurrency = clamp_http_concurrency(config.max_concurrency);
         Ok(Self {
             client,
@@ -144,24 +249,18 @@ impl CrawlClient {
         &self,
         request: &CrawlRequest<'_>,
     ) -> Result<FetchResponse, CrawlError> {
-        // Bound ordinary HTTP parallelism globally (8–16); each logical fetch
-        // counts as one slot across its retries. Per-domain pacing is applied
-        // separately by `rate_limits` and robots handling below.
-        let _permit = self
-            .http_gate
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|error| CrawlError::Transport {
-                url: request.url.to_string(),
-                message: format!("HTTP concurrency gate closed: {error}"),
-                category: CrawlFailureCategory::Unknown,
-            })?;
-
         let parsed = Url::parse(request.url).map_err(|error| CrawlError::InvalidUrl {
             url: request.url.to_string(),
             message: error.to_string(),
         })?;
+        // SSRF guard for the entry URL: IP-literal hosts never hit DNS, so the
+        // resolver alone is not enough.
+        if !self.config.allow_private_targets && !url_allowed(&parsed) {
+            return Err(CrawlError::InvalidUrl {
+                url: request.url.to_string(),
+                message: "URL must be http(s) and resolve to a public address".to_string(),
+            });
+        }
         let user_agent = request
             .override_user_agent
             .map(ToOwned::to_owned)
@@ -179,13 +278,28 @@ impl CrawlClient {
             .unwrap_or_else(|| request.url.to_string());
 
         if self.config.enforce_robots_txt {
-            self.ensure_robots_allowed(&parsed, &user_agent).await?;
+            self.ensure_robots_allowed(&parsed, &user_agent, request.requires_proxy)
+                .await?;
         }
 
         let domain = parsed.host_str().unwrap_or("unknown");
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {
+            // Acquire the fleet-wide permit per attempt, after robots handling:
+            // holding it across backoff sleeps let one hostile host pin a slot
+            // for hours.
+            let _permit = self
+                .http_gate
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|error| CrawlError::Transport {
+                    url: request.url.to_string(),
+                    message: format!("HTTP concurrency gate closed: {error}"),
+                    category: CrawlFailureCategory::Unknown,
+                })?;
+
             let proxy_url = if request.requires_proxy {
                 self.acquire_proxy(request.url).await?
             } else {
@@ -207,10 +321,7 @@ impl CrawlClient {
                         .get(CONTENT_TYPE)
                         .and_then(|value| value.to_str().ok())
                         .map(ToOwned::to_owned);
-                    let body = resp.text().await.map_err(|error| CrawlError::BodyRead {
-                        url: request.url.to_string(),
-                        message: error.to_string(),
-                    })?;
+                    let body = read_body_capped(resp, request.url).await?;
 
                     self.config.metrics.record_bytes(domain, body.len() as u64);
                     if let Some(proxy) = proxy_url.as_deref() {
@@ -241,8 +352,7 @@ impl CrawlClient {
                             RateLimitManager::retry_after_delay(value, chrono::Utc::now())
                         })
                         .map(|delay| delay.as_secs());
-                    let body_excerpt = resp
-                        .text()
+                    let body_excerpt = read_body_capped(resp, request.url)
                         .await
                         .ok()
                         .map(|body| truncate_utf8(&body, 180).to_string())
@@ -306,9 +416,12 @@ impl CrawlClient {
             return false;
         }
 
+        // Both `Retry-After` and the recommended delay are attacker-influenced:
+        // cap them so one hostile host cannot pin a worker.
         let delay = error
             .retry_after()
-            .unwrap_or_else(|| rate_limits.get_recommended_delay(rate_limit_key));
+            .unwrap_or_else(|| rate_limits.get_recommended_delay(rate_limit_key))
+            .min(MAX_DELAY);
         drop(rate_limits);
         debug!(rate_limit_key, attempt = attempt + 1, delay_ms = delay.as_millis(), error = %error, "crawl_client: retrying request");
         sleep(delay).await;
@@ -319,6 +432,7 @@ impl CrawlClient {
         &self,
         parsed: &Url,
         user_agent: &str,
+        requires_proxy: bool,
     ) -> Result<(), CrawlError> {
         let host = parsed.host_str().ok_or_else(|| CrawlError::InvalidUrl {
             url: parsed.to_string(),
@@ -331,7 +445,10 @@ impl CrawlClient {
         };
         let rules = match rules {
             Some(rules) => rules,
-            None => self.fetch_robots_rules(parsed, host, user_agent).await,
+            None => {
+                self.fetch_robots_rules(parsed, host, user_agent, requires_proxy)
+                    .await
+            }
         };
 
         if !rules.is_allowed(parsed.path()) {
@@ -342,19 +459,45 @@ impl CrawlClient {
         }
 
         if let Some(delay) = rules.crawl_delay_duration() {
-            sleep(delay).await;
+            // `Crawl-delay` is attacker-controlled; cap it.
+            sleep(delay.min(MAX_DELAY)).await;
         }
         Ok(())
     }
 
-    async fn fetch_robots_rules(&self, parsed: &Url, host: &str, user_agent: &str) -> RobotsRules {
+    async fn fetch_robots_rules(
+        &self,
+        parsed: &Url,
+        host: &str,
+        user_agent: &str,
+        requires_proxy: bool,
+    ) -> RobotsRules {
         let authority = match parsed.port() {
             Some(port) => format!("{host}:{port}"),
             None => host.to_string(),
         };
         let robots_url = format!("{}://{authority}/robots.txt", parsed.scheme());
-        let mut rules = match self
-            .client
+        // Fetch robots through the same transport as the target: fetching it
+        // directly would leak the worker's IP to proxied targets.
+        let proxy_url = if requires_proxy {
+            match self.acquire_proxy(&robots_url).await {
+                Ok(proxy) => proxy,
+                Err(error) => {
+                    debug!(robots_url, error = %error, "crawl_client: robots proxy unavailable; failing closed");
+                    return RobotsRules::parse("User-agent: *\nDisallow: /", user_agent);
+                }
+            }
+        } else {
+            None
+        };
+        let client = match self.client_for_proxy(proxy_url.as_deref(), user_agent, &robots_url) {
+            Ok(client) => client,
+            Err(error) => {
+                debug!(robots_url, error = %error, "crawl_client: robots client unavailable; failing closed");
+                return RobotsRules::parse("User-agent: *\nDisallow: /", user_agent);
+            }
+        };
+        let mut rules = match client
             .get(&robots_url)
             .header(USER_AGENT, user_agent)
             .send()
@@ -380,7 +523,17 @@ impl CrawlClient {
                     }
                 }
             }
-            Ok(_) => RobotsRules::parse("", user_agent),
+            // A missing robots.txt (4xx) means no restrictions. A server error
+            // must not turn into allow-all: fail closed until it recovers.
+            Ok(resp) if resp.status().is_client_error() => RobotsRules::parse("", user_agent),
+            Ok(resp) => {
+                warn!(
+                    robots_url,
+                    status = resp.status().as_u16(),
+                    "crawl_client: robots fetch returned a server error; failing closed"
+                );
+                RobotsRules::parse("User-agent: *\nDisallow: /", user_agent)
+            }
             Err(error) => {
                 debug!(robots_url, error = %error, "crawl_client: robots fetch failed; defaulting open");
                 RobotsRules::parse("", user_agent)
@@ -433,9 +586,16 @@ impl CrawlClient {
         request_url: &str,
     ) -> Result<Client, CrawlError> {
         match proxy_url {
-            Some(proxy_url) => Client::builder()
-                .timeout(self.config.timeout)
-                .user_agent(user_agent)
+            Some(proxy_url) => {
+                // SSRF note: with a proxy, reqwest does not resolve locally —
+                // the proxy does. The proxy itself must block internal ranges;
+                // the redirect policy below still rejects private IP-literal
+                // redirect targets before following them.
+                secure_client_builder(
+                    self.config.timeout,
+                    user_agent,
+                    self.config.allow_private_targets,
+                )
                 .proxy(reqwest::Proxy::all(proxy_url).map_err(|error| {
                     CrawlError::ProxyConfiguration {
                         url: request_url.to_string(),
@@ -448,10 +608,46 @@ impl CrawlClient {
                     url: request_url.to_string(),
                     proxy: proxy_url.to_string(),
                     message: error.to_string(),
-                }),
+                })
+            }
             None => Ok(self.client.clone()),
         }
     }
+}
+
+/// Read a response body with a hard byte cap so a hostile or broken server
+/// cannot exhaust memory with an unbounded body.
+async fn read_body_capped(
+    resp: reqwest::Response,
+    request_url: &str,
+) -> Result<String, CrawlError> {
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if bytes.len() + chunk.len() > MAX_BODY_BYTES {
+                    let remaining = MAX_BODY_BYTES.saturating_sub(bytes.len());
+                    bytes.extend_from_slice(&chunk[..remaining]);
+                    warn!(
+                        url = request_url,
+                        cap_bytes = MAX_BODY_BYTES,
+                        "crawl_client: response body exceeded the cap; truncated"
+                    );
+                    break;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                return Err(CrawlError::BodyRead {
+                    url: request_url.to_string(),
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
 fn parse_cache_control_max_age(value: &str) -> Option<Duration> {
@@ -527,6 +723,9 @@ mod tests {
         let config = CrawlClientConfig {
             enforce_robots_txt: false,
             max_retries: 1,
+            // The test server listens on loopback; production keeps the SSRF
+            // guard enabled.
+            allow_private_targets: true,
             ..CrawlClientConfig::default()
         };
         let client = CrawlClient::new(config)
@@ -628,5 +827,55 @@ mod tests {
             client.http_gate.clone().try_acquire_owned().is_err(),
             "a ninth concurrent fetch must wait"
         );
+    }
+
+    #[test]
+    fn ssrf_guard_rejects_non_public_addresses() {
+        for blocked in [
+            "169.254.169.254", // cloud metadata
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "100.64.0.1", // CGNAT
+            "0.0.0.0",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            let ip: IpAddr = blocked.parse().expect("test IP parses");
+            assert!(
+                !is_public(ip),
+                "{blocked} must not be reachable by the crawler"
+            );
+        }
+        for allowed in ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"] {
+            let ip: IpAddr = allowed.parse().expect("test IP parses");
+            assert!(is_public(ip), "{allowed} is a public address");
+        }
+    }
+
+    #[test]
+    fn ssrf_guard_rejects_ip_literal_and_non_http_urls() {
+        // reqwest skips DNS for IP literals, so the URL itself is checked.
+        assert!(url_allowed(
+            &Url::parse("https://example.com/article").expect("url parses")
+        ));
+        assert!(url_allowed(
+            &Url::parse("http://93.184.216.34/").expect("url parses")
+        ));
+        assert!(!url_allowed(
+            &Url::parse("http://169.254.169.254/latest/meta-data/").expect("url parses")
+        ));
+        assert!(!url_allowed(
+            &Url::parse("http://[::1]:8222/").expect("url parses")
+        ));
+        assert!(!url_allowed(
+            &Url::parse("file:///etc/passwd").expect("url parses")
+        ));
+        assert!(!url_allowed(
+            &Url::parse("ftp://example.com/x").expect("url parses")
+        ));
     }
 }

@@ -91,6 +91,7 @@ fn session_cookie(role: ApiRole, user_id: &str, username: &str) -> String {
         issued_at: now,
         expires_at: now + SESSION_TTL_MS,
         session_version: SESSION_VERSION,
+        session_id: uuid::Uuid::new_v4(),
     };
     let token = create_session_token(&claims, TEST_SECRET).expect("sign session token");
     format!("{}={token}", session_cookie_name())
@@ -257,12 +258,18 @@ async fn admin_page_redirects_to_login_without_session() {
         .await
         .expect("request");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        response
-            .headers()
-            .get(header::LOCATION)
-            .and_then(|value| value.to_str().ok()),
-        Some("/login")
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        location.starts_with("/login"),
+        "unauthenticated GET redirects to login, got {location}"
+    );
+    assert!(
+        location.contains("next=%2Fadmin"),
+        "the requested path is preserved for post-login return, got {location}"
     );
 }
 

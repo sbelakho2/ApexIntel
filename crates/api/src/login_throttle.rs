@@ -114,6 +114,29 @@ impl LoginThrottle {
         merge_statuses(statuses).unwrap_or_else(|| self.memory.evaluate(attempt_key, now))
     }
 
+    /// Atomically reserve one login attempt across every configured backend.
+    ///
+    /// A locked key is rejected without incrementing; otherwise the attempt is
+    /// recorded and `allowed: true` is returned for this attempt. This closes
+    /// the evaluate-then-record race where N concurrent requests all passed the
+    /// check before any failure was recorded.
+    pub async fn reserve(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
+        let mut statuses: Vec<AuthThrottleStatus> = Vec::new();
+        if let Some(redis) = &self.redis {
+            match redis_backend::reserve(redis.clone(), attempt_key, now).await {
+                Ok(status) => statuses.push(status.into()),
+                Err(error) => tracing::warn!(%error, "Redis login throttle reserve failed"),
+            }
+        }
+        if let Some(store) = &self.store {
+            match store.login_throttle_reserve(attempt_key, now).await {
+                Ok(status) => statuses.push(status.into()),
+                Err(error) => tracing::warn!(%error, "PostgreSQL login throttle reserve failed"),
+            }
+        }
+        merge_statuses(statuses).unwrap_or_else(|| self.memory.reserve(attempt_key, now))
+    }
+
     /// Record a failed attempt and return the resulting decision.
     ///
     /// The failure is written to every configured durable backend so a later
@@ -268,7 +291,20 @@ if backoff > 0 and now >= backoff then backoff = 0 end
 if lock > 0 and now >= lock then lock = 0 end
 if admin and a_until > 0 and now >= a_until then admin = false; a_until = 0 end
 
-if mode == 'record' then
+-- reserve: blocked keys are answered without mutating state
+if mode == 'reserve' and (admin or lock > now or backoff > now) then
+    local retry = 0
+    if admin then
+        if a_until > now then retry = math.ceil((a_until - now) / 1000) end
+    elseif lock > now then
+        retry = math.ceil((lock - now) / 1000)
+    elseif backoff > now then
+        retry = math.ceil((backoff - now) / 1000)
+    end
+    return {{0, retry, f10, f1h, admin and 1 or 0}}
+end
+
+if mode == 'record' or mode == 'reserve' then
     if f10 == 0 then w10 = now end
     if f1h == 0 then w1h = now end
     f10 = f10 + 1
@@ -295,6 +331,12 @@ if mode == 'record' then
     else
         redis.call('EXPIRE', key, ttl_secs)
     end
+end
+
+-- reserve: the reserved attempt itself is allowed; the next one observes the
+-- recorded state.
+if mode == 'reserve' then
+    return {{1, 0, f10, f1h, 0}}
 end
 
 local retry = 0
@@ -371,6 +413,14 @@ return {{allowed, retry, f10, f1h, admin and 1 or 0}}
     ) -> Result<LoginThrottleStatus, redis::RedisError> {
         run(connection, attempt_key, "record", now).await
     }
+
+    pub async fn reserve(
+        connection: redis::aio::ConnectionManager,
+        attempt_key: &str,
+        now: DateTime<Utc>,
+    ) -> Result<LoginThrottleStatus, redis::RedisError> {
+        run(connection, attempt_key, "reserve", now).await
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +481,47 @@ mod tests {
                 .evaluate("bob|fp", now + Duration::minutes(21))
                 .await
                 .allowed
+        );
+    }
+
+    /// `reserve` is a single check-and-record operation: the failure is
+    /// recorded before the result is returned, so the next attempt already
+    /// observes it. The old evaluate-then-record pair let both of these pass.
+    #[tokio::test]
+    async fn in_memory_reserve_records_before_returning() {
+        let throttle = LoginThrottle::in_memory();
+        let now = Utc::now();
+
+        let first = throttle.reserve("carol|fp", now).await;
+        assert!(first.allowed);
+        assert_eq!(first.failure_count_10m, 1);
+
+        let second = throttle.reserve("carol|fp", now).await;
+        assert!(
+            !second.allowed,
+            "the first reservation's failure must already be visible"
+        );
+        assert_eq!(
+            second.failure_count_10m, 1,
+            "a blocked reserve must not increment the counters"
+        );
+    }
+
+    /// Concurrent reservations against one key cannot all pass: exactly one
+    /// wins and the rest observe the recorded backoff.
+    #[tokio::test]
+    async fn concurrent_reservations_are_serialized() {
+        let throttle = LoginThrottle::in_memory();
+        let now = Utc::now();
+        let attempts = (0..20).map(|_| {
+            let throttle = throttle.clone();
+            async move { throttle.reserve("dave|fp", now).await }
+        });
+        let results = futures_util::future::join_all(attempts).await;
+        let allowed = results.iter().filter(|status| status.allowed).count();
+        assert_eq!(
+            allowed, 1,
+            "exactly one of the concurrent attempts may be reserved"
         );
     }
 

@@ -148,6 +148,91 @@ impl PgStore {
         Ok(status)
     }
 
+    /// Atomically check-and-reserve one login attempt.
+    ///
+    /// A blocked key is returned without mutating state. Otherwise the attempt
+    /// is recorded (so concurrent requests cannot all pass a check made before
+    /// any failure was recorded) and the caller receives `allowed: true` for
+    /// this attempt; `record_success` clears the reservation on a valid login.
+    pub async fn login_throttle_reserve(
+        &self,
+        attempt_key: &str,
+        now: DateTime<Utc>,
+    ) -> Result<LoginThrottleStatus> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "DELETE FROM login_attempt_throttle WHERE expires_at IS NOT NULL AND expires_at < $1",
+        )
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        let sql = format!("{LOGIN_THROTTLE_SELECT} WHERE attempt_key = $1 FOR UPDATE");
+        let existing: Option<LoginThrottleRow> = sqlx::query_as(&sql)
+            .bind(attempt_key)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+        let is_new = existing.is_none();
+        let mut state = match existing {
+            Some(row) => LoginThrottleState::from(row),
+            None => LoginThrottleState::default(),
+        };
+        state.prune(now);
+        let pre = state.status(now);
+        if !pre.allowed {
+            tx.commit().await?;
+            return Ok(pre);
+        }
+
+        if is_new {
+            sqlx::query(
+                "INSERT INTO login_attempt_throttle (attempt_key) VALUES ($1) \
+                 ON CONFLICT (attempt_key) DO NOTHING",
+            )
+            .bind(attempt_key)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let post = state.record_failure(now);
+        let expires_at = state.expires_at(now);
+        sqlx::query(
+            "UPDATE login_attempt_throttle SET \
+                 failure_count_10m = $2, \
+                 failure_count_1h = $3, \
+                 window_10m_started_at = $4, \
+                 window_1h_started_at = $5, \
+                 backoff_until = $6, \
+                 temp_lock_until = $7, \
+                 admin_locked = $8, \
+                 expires_at = $9, \
+                 updated_at = now() \
+             WHERE attempt_key = $1",
+        )
+        .bind(attempt_key)
+        .bind(i32::try_from(state.failures_10m).unwrap_or(i32::MAX))
+        .bind(i32::try_from(state.failures_1h).unwrap_or(i32::MAX))
+        .bind(state.window_10m_started_at)
+        .bind(state.window_1h_started_at)
+        .bind(state.backoff_until)
+        .bind(state.temp_lock_until)
+        .bind(state.admin_locked)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(LoginThrottleStatus {
+            allowed: true,
+            retry_after_secs: 0,
+            failure_count_10m: post.failure_count_10m,
+            failure_count_1h: post.failure_count_1h,
+            admin_unlock_required: false,
+        })
+    }
+
     /// Clear all throttle state for `attempt_key` (successful login).
     pub async fn login_throttle_record_success(&self, attempt_key: &str) -> Result<()> {
         sqlx::query("DELETE FROM login_attempt_throttle WHERE attempt_key = $1")

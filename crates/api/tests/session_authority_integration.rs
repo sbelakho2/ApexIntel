@@ -36,7 +36,6 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const TEST_SECRET: &str = "session-authority-integration-secret";
-const CSRF_TOKEN: &str = "session-authority-csrf";
 
 fn database_url() -> String {
     std::env::var("TEST_DATABASE_URL")
@@ -93,8 +92,9 @@ async fn cleanup(pool: &PgPool, ids: &[String]) {
     }
 }
 
-fn session_cookie(user_id: &str, role: ApiRole, session_version: u32) -> String {
+fn session_cookie_with_jti(user_id: &str, role: ApiRole, session_version: u32) -> (String, Uuid) {
     let now = Utc::now().timestamp_millis();
+    let session_id = Uuid::new_v4();
     let claims = SessionClaims {
         user_id: user_id.into(),
         username: user_id.into(),
@@ -102,9 +102,27 @@ fn session_cookie(user_id: &str, role: ApiRole, session_version: u32) -> String 
         issued_at: now,
         expires_at: now + SESSION_TTL_MS,
         session_version,
+        session_id,
     };
     let token = create_session_token(&claims, TEST_SECRET).expect("sign session token");
-    format!("{}={token}", session_cookie_name())
+    (format!("{}={token}", session_cookie_name()), session_id)
+}
+
+fn session_cookie(user_id: &str, role: ApiRole, session_version: u32) -> String {
+    session_cookie_with_jti(user_id, role, session_version).0
+}
+
+/// Independently derive the session-bound CSRF token the way the server does.
+fn derived_csrf(session_cookie: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let token = session_cookie.split_once('=').expect("cookie name=value").1;
+    let signature = token.split_once('.').expect("payload.signature").1;
+    let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET.as_bytes()).expect("hmac key");
+    mac.update(b"csrf:");
+    mac.update(signature.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
 }
 
 fn legacy_cookie(user_id: &str) -> String {
@@ -139,9 +157,13 @@ fn get_request(path: &str, cookie: Option<&str>) -> Request<Body> {
 fn post_request(path: &str, cookie: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().method("POST").uri(path);
     if let Some(cookie) = cookie {
+        let csrf = derived_csrf(cookie);
         builder = builder
-            .header(header::COOKIE, format!("{cookie}; apex_csrf={CSRF_TOKEN}"))
-            .header("x-csrf-token", HeaderValue::from_static(CSRF_TOKEN));
+            .header(header::COOKIE, format!("{cookie}; apex_csrf={csrf}"))
+            .header(
+                "x-csrf-token",
+                HeaderValue::from_str(&csrf).expect("csrf header"),
+            );
     }
     builder.body(Body::empty()).expect("request")
 }
@@ -304,12 +326,14 @@ async fn disabled_user_is_rejected_immediately() {
         StatusCode::SEE_OTHER,
         "a disabled account must not keep a live session"
     );
-    assert_eq!(
-        response
-            .headers()
-            .get(header::LOCATION)
-            .and_then(|value| value.to_str().ok()),
-        Some("/login")
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        location.starts_with("/login"),
+        "a disabled account is redirected to login, got {location}"
     );
 
     cleanup(&pool, std::slice::from_ref(&user)).await;
@@ -531,5 +555,64 @@ async fn api_session_fallback_uses_the_database_role() {
         &[demoted.clone(), promoted.clone(), disabled.clone()],
     )
     .await;
+    pool.close().await;
+}
+
+/// Logout revocation: the `jti` recorded in `revoked_sessions` invalidates a
+/// copied cookie on the very next request, independent of `session_version`.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn revoked_session_is_rejected_immediately() {
+    ensure_session_secret();
+    let pool = setup().await;
+    let store = Arc::new(PgStore::from_pool(pool.clone()));
+    let user_id = format!("usr-revoke-{}", Uuid::new_v4().simple());
+    insert_user(
+        &pool,
+        &user_id,
+        &user_id,
+        "analyst",
+        true,
+        SESSION_VERSION as i32,
+    )
+    .await;
+
+    let (cookie, jti) = session_cookie_with_jti(&user_id, ApiRole::Analyst, SESSION_VERSION);
+    let router = authority_router(&store);
+
+    assert_eq!(
+        status(router.clone(), get_request("/page", Some(&cookie))).await,
+        StatusCode::OK,
+        "the session is valid before revocation"
+    );
+
+    // Logout records the session id.
+    store
+        .revoke_session(jti, Utc::now() + chrono::Duration::hours(1))
+        .await
+        .expect("record revocation");
+
+    assert_eq!(
+        status(router.clone(), get_request("/page", Some(&cookie))).await,
+        StatusCode::SEE_OTHER,
+        "a revoked session cookie must be rejected on the next request"
+    );
+
+    // A different session for the same principal is unaffected.
+    let (other_cookie, other_jti) =
+        session_cookie_with_jti(&user_id, ApiRole::Analyst, SESSION_VERSION);
+    assert_eq!(
+        status(router, get_request("/page", Some(&other_cookie))).await,
+        StatusCode::OK,
+        "revocation is per session id, not per user"
+    );
+
+    sqlx::query("DELETE FROM revoked_sessions WHERE jti = $1 OR jti = $2")
+        .bind(jti)
+        .bind(other_jti)
+        .execute(&pool)
+        .await
+        .expect("cleanup revocations");
+    cleanup(&pool, &[user_id]).await;
     pool.close().await;
 }

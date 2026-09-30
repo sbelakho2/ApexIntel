@@ -198,21 +198,25 @@ pub async fn graph_page(
         HashMap::new()
     } else {
         let activity_state = DataState::from_result(
+            // Filter with the array-overlap operator first so the GIN indexes
+            // on `warnings.entity_ids` / `insights.entity_ids` are used, and
+            // do not fabricate activity with a `now()` fallback for rows whose
+            // timestamps are missing.
             sqlx::query_as::<_, EntityActivityRow>(
-                r#"SELECT entity_id, MAX(last_activity) AS last_activity
+                r#"SELECT e::text AS entity_id, MAX(ts) AS last_activity
                FROM (
-                   SELECT unnest(entity_ids)::text AS entity_id, ts_utc AS last_activity
+                   SELECT unnest(entity_ids) e, ts_utc AS ts
                    FROM warnings
-                   WHERE entity_ids IS NOT NULL
+                   WHERE entity_ids && $1::uuid[]
                    UNION ALL
-                   SELECT unnest(entity_ids)::text AS entity_id, COALESCE(updated_at, created_at, now()) AS last_activity
+                   SELECT unnest(entity_ids), COALESCE(updated_at, created_at)
                    FROM insights
-                   WHERE entity_ids IS NOT NULL
+                   WHERE entity_ids && $1::uuid[]
                ) activity
-               WHERE entity_id = ANY($1)
-               GROUP BY entity_id"#,
+               WHERE e = ANY($1::uuid[])
+               GROUP BY e"#,
             )
-            .bind(node_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>())
+            .bind(node_ids.clone())
             .fetch_all(&store.pool)
             .await,
             "failed to fetch entity activity",
@@ -606,9 +610,11 @@ pub async fn graph_page(
                         None
                     }
                 })
-            })
-            .or_else(|| company_rows.first().map(|company| company.id.to_string()));
+            });
 
+        // No `.or_else(|| company_rows.first())` fallback: attaching an
+        // entity-less tender to an arbitrary company fabricated a
+        // relationship. Unanchored tenders stay unlinked.
         if let Some(anchor_id) = anchor_id {
             if synthetic_edge_seen.insert((anchor_id.clone(), tender_id.clone())) {
                 synthetic_edges.push(synthetic_edge(anchor_id, tender_id, "tender_signal"));
@@ -919,7 +925,9 @@ fn synthetic_edge(source: String, target: String, edge_type: &str) -> GraphEdge 
         confidence: 1.0,
         first_seen: None,
         last_confirmed: None,
-        evidence_count: Some(1),
+        // Structural catalog/derived edges carry no evidence rows; claiming
+        // one fabricated provenance.
+        evidence_count: None,
         source_label: Some("catalog".to_string()),
     }
 }

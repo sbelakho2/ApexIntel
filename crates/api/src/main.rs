@@ -1,7 +1,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use anyhow::{Context, Result};
-use apex_api::auth::ApiKey;
 use apex_api::config::ApiRuntimeConfig;
 use apex_api::filters::validate_search_text;
 use apex_api::middleware::auth::{auth_error_response, authenticate_api_request};
@@ -11,8 +10,8 @@ use apex_api::responses::{
     ComponentHealth, ErrorCode, HealthResponse, HealthStatus, PagedResponse, ResponseMeta,
 };
 use apex_api::routes::capabilities::{
-    probe_capabilities, probe_capabilities_for_profile, readiness_http_status, Capabilities,
-    ProbeContext, ProductSurface, ReadinessReport, SchemaLineageReport, SurfaceHealth,
+    probe_capabilities, readiness_http_status, Capabilities, ProbeContext, ProductSurface,
+    ReadinessReport, SchemaLineageReport, SurfaceHealth,
 };
 use apex_api::routes::companies::{
     validate_company_id, CompanyDetail, CompanyEvent, CompanyKeyPerson, CompanyListItem,
@@ -161,7 +160,8 @@ struct AppState {
     store: Arc<PgStore>,
     search_index: Arc<SearchIndex>,
     autocomplete_index: Arc<std::sync::RwLock<AutocompleteIndex>>,
-    api_keys: Arc<HashMap<String, ApiKey>>,
+    /// Hot-reloadable API key registry (env or file backed).
+    api_keys: Arc<apex_api::api_keys::ApiKeyManager>,
     redis: Option<redis::aio::ConnectionManager>,
     rate_limiter: Arc<RateLimiter>,
     /// Durable login throttle (Redis when configured, otherwise PostgreSQL).
@@ -181,6 +181,13 @@ struct AppState {
     embedding_generator: Option<Arc<dyn EmbeddingGenerator>>,
     /// SSE manager for real-time alert streaming.
     sse_manager: Option<Arc<apex_api::sse::SseManager>>,
+    /// Last measured capability report, refreshed by the status heartbeat
+    /// every 30s. Public probes read this cache instead of re-running the
+    /// expensive probe set (LLM call, embedding round trip, browser render,
+    /// NATS connect) on every anonymous request.
+    capabilities_cache: Arc<std::sync::RwLock<Option<Capabilities>>>,
+    /// Cancellation token for graceful shutdown (SIGTERM / Ctrl-C).
+    shutdown: tokio_util::sync::CancellationToken,
     #[cfg(feature = "llm")]
     llm: Option<LlmRuntime>,
 }
@@ -216,7 +223,20 @@ async fn main() -> Result<()> {
     {
         tracing::warn!(error = %error, "failed to record startup API heartbeat");
     }
+    // Prime the capability cache so no public request ever triggers the
+    // expensive probe set itself.
+    let initial_capabilities =
+        probe_capabilities(&probe_context(&state, Some(&nats_url_from_env()), None)).await;
+    if let Ok(mut cache) = state.capabilities_cache.write() {
+        *cache = Some(initial_capabilities);
+    }
     start_status_heartbeat(state.clone());
+    // Hot-reload API keys and provision any new principals.
+    apex_api::api_keys::spawn_api_key_reloader_with_provisioning(
+        state.api_keys.clone(),
+        std::time::Duration::from_secs(state.config.api_keys.reload_interval_secs),
+        Some(state.store.clone()),
+    );
 
     let cors = CorsLayer::new()
         .allow_origin(
@@ -252,18 +272,81 @@ async fn main() -> Result<()> {
         // ConnectInfo powers the rate limiter's per-client identity (B298).
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("received shutdown signal, draining connections");
-    })
+    .with_graceful_shutdown(shutdown_signal(state.shutdown.clone()))
     .await?;
     state.store.pool.close().await;
     tracing::info!("database pool closed, shutdown complete");
     Ok(())
 }
 
+/// Resolve on Ctrl-C or SIGTERM (docker stop / Kubernetes pod termination),
+/// then cancel the token so SSE streams end and the server can drain.
+async fn shutdown_signal(shutdown: tokio_util::sync::CancellationToken) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.ok();
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("received shutdown signal, draining connections");
+    shutdown.cancel();
+}
+
+/// Documented placeholder / CI secrets that must never sign real sessions.
+const KNOWN_PLACEHOLDER_SESSION_SECRETS: &[&str] = &[
+    "<openssl rand -hex 32>",
+    "<GENERATE_64_CHAR_HEX_SECRET>",
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+];
+
+/// Reject placeholder, too-short, or low-entropy session secrets at startup.
+///
+/// A non-empty documented placeholder otherwise signs cookies that pass the
+/// database authority check, so anyone could forge an admin session.
+/// `APEX_ALLOW_TEST_SESSION_SECRET=1` is the explicit test/CI override.
+fn validate_session_secret(secret: &str) -> Result<()> {
+    let secret = secret.trim();
+    anyhow::ensure!(
+        secret.len() >= 32,
+        "SESSION_SECRET must be at least 32 bytes (generate one with `openssl rand -hex 32`)"
+    );
+    let test_override = std::env::var("APEX_ALLOW_TEST_SESSION_SECRET").as_deref() == Ok("1");
+    anyhow::ensure!(
+        test_override
+            || (!secret.contains('<') && !KNOWN_PLACEHOLDER_SESSION_SECRETS.contains(&secret)),
+        "SESSION_SECRET is a documented placeholder/test value; \
+         generate a real secret with `openssl rand -hex 32`"
+    );
+    let distinct: std::collections::HashSet<char> = secret.chars().collect();
+    anyhow::ensure!(
+        distinct.len() >= 8,
+        "SESSION_SECRET has too little entropy (fewer than 8 distinct characters)"
+    );
+    Ok(())
+}
+
 async fn build_state() -> Result<AppState> {
     dotenvy::dotenv().ok();
+
+    // Fail startup on a placeholder/short secret: serving with one would let
+    // anyone forge an admin session.
+    validate_session_secret(&std::env::var("SESSION_SECRET").unwrap_or_default())?;
 
     let config = ApiRuntimeConfig::from_env()?;
     let validation_errors = config.validate();
@@ -330,31 +413,13 @@ async fn build_state() -> Result<AppState> {
     let autocomplete_index = Arc::new(std::sync::RwLock::new(autocomplete_index));
     // ──────────────────────────────────────────────────────────────────────
 
-    let api_keys = load_api_keys()?;
-    tracing::info!(count = %api_keys.len(), "API keys loaded");
-
-    // Provision every API-key owner in the canonical `app_users` identity
-    // table (migration 059). API-key principals never log in, but the
-    // user-owned tables now carry an `app_users(id)` foreign key, so without
-    // this first write (watchlist, preferences, annotation, subscription)
-    // would fail. Insert-only: an existing verified identity is never
-    // overwritten with the key's configured role.
-    for key in api_keys.values() {
-        if let Err(err) = store
-            .ensure_app_user_exists(
-                key.owner_user_id.as_str(),
-                key.owner_user_id.as_str(),
-                key.role.as_str(),
-            )
-            .await
-        {
-            tracing::warn!(
-                key_id = %key.key_id,
-                owner_user_id = %key.owner_user_id,
-                "failed to provision app_users identity for API-key owner: {err:#}"
-            );
-        }
-    }
+    // The manager honors API_KEYS_FILE, API_KEYS_RELOAD_INTERVAL_SECS and
+    // API_KEYS_ENV_SLOTS, hot-reloads file changes, and feeds the per-key
+    // rate limit; the previous `load_api_keys_from_env(50)` ignored all of
+    // that and made key revocation a restart.
+    let api_keys = Arc::new(apex_api::api_keys::ApiKeyManager::new(&config.api_keys)?);
+    tracing::info!(count = %api_keys.key_count(), "API keys loaded");
+    apex_api::api_keys::ensure_api_key_principals(&store, &api_keys.snapshot()).await;
 
     // Environment credentials are bootstrap-only: they seed `app_users` rows
     // that do not yet carry a password hash. Once a row has credentials, the
@@ -366,7 +431,9 @@ async fn build_state() -> Result<AppState> {
 
     let redis = {
         let redis_url = config.app.redis_url.expose_secret();
-        if !redis_url.is_empty() && redis_url != "redis://127.0.0.1:6379" {
+        // An explicitly configured localhost Redis is still configured: the
+        // old default-address comparison silently disabled it.
+        if !redis_url.trim().is_empty() {
             let client = redis::Client::open(redis_url)?;
             let conn = client.get_connection_manager().await?;
             tracing::info!("Redis connection established");
@@ -477,7 +544,7 @@ async fn build_state() -> Result<AppState> {
         store,
         search_index,
         autocomplete_index,
-        api_keys: Arc::new(api_keys),
+        api_keys,
         redis,
         rate_limiter,
         login_throttle,
@@ -489,6 +556,8 @@ async fn build_state() -> Result<AppState> {
         llm_probe_target,
         embedding_generator,
         sse_manager,
+        capabilities_cache: Arc::new(std::sync::RwLock::new(None)),
+        shutdown: tokio_util::sync::CancellationToken::new(),
         #[cfg(feature = "llm")]
         llm,
     })
@@ -548,13 +617,6 @@ fn build_llm_runtime(_config: &ApiRuntimeConfig) -> Result<Option<()>> {
     Ok(None)
 }
 
-fn load_api_keys() -> Result<HashMap<String, ApiKey>> {
-    // B317: 50 slots to match the documented API_KEYS_ENV_SLOTS default —
-    // keys 17..50 were silently ignored with the previous hardcoded 16.
-    // A malformed slot or unknown role is a startup configuration error.
-    apex_api::api_keys::load_api_keys_from_env(50)
-}
-
 #[cfg(feature = "llm")]
 fn infer_llm_provider(config: &ApiRuntimeConfig, base_url: &str) -> LlmProvider {
     use apex_api::config::LlmProviderChoice;
@@ -583,15 +645,33 @@ async fn require_auth(
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let result = authenticate_api_request(
-        request.headers(),
-        request.method(),
-        &state.api_keys,
-        Utc::now(),
-    );
+    // Snapshot once per request: a concurrent hot reload keeps serving the
+    // previous consistent registry instead of tearing.
+    let api_keys = state.api_keys.snapshot();
+    let result =
+        authenticate_api_request(request.headers(), request.method(), &api_keys, Utc::now());
 
     match result {
         Ok(auth) => {
+            // Enforce the key's own per-minute limit (the registry carried
+            // `rate_limit_per_min` but nothing applied it).
+            let limit = auth.rate_limit_per_min.max(1);
+            let decision = state.rate_limiter.check_with_limit(
+                &auth.auth_context.key_id,
+                "api-key",
+                limit,
+                std::time::Duration::from_secs(60),
+            );
+            if !decision.allowed {
+                let retry_after = decision.retry_after_secs.max(1) as u32;
+                let mut response = auth_error_response(ApiError::rate_limited(retry_after));
+                if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
+                    response
+                        .headers_mut()
+                        .insert(axum::http::header::RETRY_AFTER, value);
+                }
+                return response;
+            }
             request.extensions_mut().insert(auth.auth_context);
             next.run(request).await
         }
@@ -637,38 +717,40 @@ async fn add_rate_limit_headers(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    // Apply rate limit check
-    let tier =
-        apex_api::rate_limit::classify_endpoint(request.uri().path(), request.method().as_str());
-    // B298: identify clients by their socket address. The previous scheme
-    // trusted the client-supplied `x-forwarded-for` header (rotate it to bypass
-    // limits entirely) and lumped everyone else into one shared "unknown"
-    // bucket. `X-Forwarded-For` is honored only when API_TRUST_PROXY=1, for
-    // deployments behind a reverse proxy that overwrites the header.
-    let identifier = if std::env::var("API_TRUST_PROXY")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        request
-            .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| connect_info.ip().to_string())
-    } else {
-        connect_info.ip().to_string()
-    };
+    let path = request.uri().path();
+    // Static assets and the service worker are not API budget: charging every
+    // page load's CSS/JS against 120/min 429s offices behind one NAT.
+    if path.starts_with("/static/") || path == "/sw.js" {
+        return next.run(request).await;
+    }
+
+    let tier = apex_api::rate_limit::classify_endpoint(path, request.method().as_str());
+    // B298: identify clients by the trusted address. `X-Forwarded-For` is
+    // honored only under API_TRUST_PROXY=1, and then only its rightmost
+    // (proxy-appended) entry — the leftmost entry is client-controlled and
+    // trivially rotated to bypass limits.
+    // IPv6 clients are bucketed by /64 so a subscriber cannot rotate through
+    // its prefix to get fresh buckets (see `rate_limit_identity`).
+    let identifier =
+        apex_api::middleware::client_ip::client_ip(request.headers(), Some(connect_info.ip()))
+            .map(apex_api::middleware::client_ip::rate_limit_identity)
+            .unwrap_or_else(|| {
+                apex_api::middleware::client_ip::rate_limit_identity(connect_info.ip())
+            });
     let result = limiter.check(&identifier, tier);
     if !result.allowed {
-        let api_err = ApiError::rate_limited(result.retry_after_secs as u32);
-        let resp = (
+        let retry_after = result.retry_after_secs.max(1) as u32;
+        let api_err = ApiError::rate_limited(retry_after);
+        let mut resp = (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             Json(error_response::<()>(api_err)),
-        );
-        return resp.into_response();
+        )
+            .into_response();
+        if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
+            resp.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        return resp;
     }
     let mut response = next.run(request).await;
     response.headers_mut().insert(
@@ -722,6 +804,22 @@ fn process_instance_id() -> String {
         })
 }
 
+/// The heartbeat-measured capability report. Public probes read this cache so
+/// an anonymous client cannot drive the LLM call, embedding round trip,
+/// browser render, or NATS connect per request. Only a process whose cache was
+/// never primed (tests) pays for a live probe.
+async fn capabilities_snapshot(state: &AppState) -> Capabilities {
+    if let Some(cached) = state
+        .capabilities_cache
+        .read()
+        .ok()
+        .and_then(|cache| cache.clone())
+    {
+        return cached;
+    }
+    probe_capabilities(&probe_context(state, Some(&nats_url_from_env()), None)).await
+}
+
 /// Resolve the capability probe context from process state. `nats_url` is
 /// `None` when the profile does not require NATS, so optional probes stay
 /// side-effect free.
@@ -763,8 +861,12 @@ fn start_status_heartbeat(state: AppState) {
             apex_api::system_status::StatusStrip::publish(capabilities.status_strip());
             // The same measured report powers the server-rendered capability
             // badges (admin page), so the UI never claims a state the probes
-            // did not measure.
+            // did not measure, and public probes read this cached copy instead
+            // of re-running the expensive probe set per request.
             apex_api::system_status::publish_capabilities(&capabilities);
+            if let Ok(mut cache) = state.capabilities_cache.write() {
+                *cache = Some(capabilities.clone());
+            }
 
             if let Err(error) = state
                 .store
@@ -772,6 +874,36 @@ fn start_status_heartbeat(state: AppState) {
                 .await
             {
                 tracing::warn!(error = %error, "failed to record API heartbeat");
+            }
+
+            // Bounded maintenance: logout revocations are only kept until the
+            // revoked session's own expiry.
+            match state.store.purge_expired_revoked_sessions(Utc::now()).await {
+                Ok(purged) if purged > 0 => {
+                    tracing::debug!(purged, "purged expired revoked sessions");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to purge revoked sessions");
+                }
+            }
+
+            // Housekeeping moved off the polling GET: a warning-analysis run
+            // abandoned by a crashed process must resolve to an explicit
+            // failure, but the UPDATE belongs on the heartbeat, not per poll.
+            // (The warning-analysis pipeline only exists with the `llm` feature.)
+            #[cfg(feature = "llm")]
+            {
+                let stale_seconds = state
+                    .llm
+                    .as_ref()
+                    .map(|runtime| {
+                        apex_api::warning_analysis::stale_run_seconds(
+                            runtime.primary.timeout_seconds,
+                        )
+                    })
+                    .unwrap_or(apex_api::warning_analysis::DEFAULT_STALE_RUN_SECONDS);
+                apex_api::warning_analysis::expire_stale_runs(&state.store, stale_seconds).await;
             }
         }
     });
@@ -781,30 +913,31 @@ fn start_status_heartbeat(state: AppState) {
 /// probes (database, LLM endpoint, embeddings canary, NATS, browser render
 /// self-test, search index lag, worker heartbeat, data freshness, source
 /// coverage, alert-engine state, outbox backlog, scheduled-job freshness).
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     let uptime_secs = STARTED_AT
         .get()
         .map(|started| (Utc::now() - started).num_seconds() as u64)
         .unwrap_or(0);
 
-    let nats_url = nats_url_from_env();
-    let capabilities = probe_capabilities(&probe_context(&state, Some(&nats_url), None)).await;
+    let capabilities = capabilities_snapshot(&state).await;
     let checks = capabilities.health_checks();
     let overall = aggregate_health(&checks);
 
-    Json(HealthResponse {
-        status: overall,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        uptime_secs,
-        checks,
-    })
+    (
+        readiness_http_status(&overall),
+        Json(HealthResponse {
+            status: overall,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_secs,
+            checks,
+        }),
+    )
 }
 
 /// `/api/health/capabilities` — per-capability probe report for the UI,
 /// dashboards, and operational tooling.
 async fn health_capabilities(State(state): State<AppState>) -> Json<Capabilities> {
-    let nats_url = nats_url_from_env();
-    Json(probe_capabilities(&probe_context(&state, Some(&nats_url), None)).await)
+    Json(capabilities_snapshot(&state).await)
 }
 
 async fn health_live() -> StatusCode {
@@ -827,17 +960,14 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Readin
     // are not measured, keeping the frequently polled probe cheap. The schema
     // lineage is measured once and reused by both the `schema` capability and
     // the readiness report, so the two always describe the same snapshot.
-    let nats_url = nats_url_from_env();
     let schema_lineage = state
         .store
         .schema_lineage()
         .await
         .map_err(|error| error.to_string());
-    let capabilities = probe_capabilities_for_profile(
-        &probe_context(&state, Some(&nats_url), schema_lineage.as_ref().ok()),
-        state.profile,
-    )
-    .await;
+    // The capability snapshot comes from the heartbeat cache; only the cheap
+    // lineage query is measured per request to keep the report self-consistent.
+    let capabilities = capabilities_snapshot(&state).await;
     let checks = capabilities.readiness_checks(state.profile);
     let surfaces = capabilities.surface_reports(state.profile);
     let overall = aggregate_health(&checks);
@@ -867,10 +997,7 @@ async fn surface_health(
     state: &AppState,
     surface: ProductSurface,
 ) -> (StatusCode, Json<SurfaceHealth>) {
-    let nats_url = nats_url_from_env();
-    let capabilities =
-        probe_capabilities_for_profile(&probe_context(state, Some(&nats_url), None), state.profile)
-            .await;
+    let capabilities = capabilities_snapshot(state).await;
     let report =
         SurfaceHealth::from_checks(surface, capabilities.surface_checks(surface, state.profile));
     (report.http_status(), Json(report))
@@ -1182,6 +1309,8 @@ async fn post_rebuild_autocomplete(
 async fn alert_sse_handler(
     State(state): State<AppState>,
     Extension(auth): Extension<ApiAuthContext>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
 ) -> axum::response::Response {
     let Some(ref sse_manager) = state.sse_manager else {
         return (
@@ -1198,13 +1327,25 @@ async fn alert_sse_handler(
     // clients no longer leak subscriber slots.
     let user_id = auth.user_id;
     let principal_id = principal_uuid_from_user_id(&user_id);
-    let (tx, rx) = sse_manager.register(principal_id).await;
+
+    // Replay/resync cursor: browsers send `Last-Event-ID` on native reconnect;
+    // a query parameter covers clients whose reconnect is a fresh fetch.
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| query.get("last_event_id").cloned())
+        .or_else(|| query.get("lastEventId").cloned());
+    let (tx, rx) = sse_manager
+        .register_with_last_event_id(principal_id, last_event_id.as_deref())
+        .await;
 
     let stream = apex_api::sse::SseManager::build_sse_stream_with_cleanup(
         rx,
         sse_manager.clone(),
         principal_id,
         tx,
+        state.shutdown.clone(),
     );
     stream.into_response()
 }
@@ -1608,48 +1749,82 @@ fn extract_phone_from_artifact(artifact: &ArtifactRow) -> Option<String> {
         .unwrap_or(artifact.title.as_deref().unwrap_or(""));
     let mut current = String::new();
     let mut candidates: Vec<String> = Vec::new();
+    let mut consider = |candidate: &str| {
+        let candidate = candidate.trim();
+        let digits = candidate.chars().filter(char::is_ascii_digit).count();
+        // 7+ digits also matches dates like "2024-03-15"; a phone number has
+        // 9–15 digits and is not the dddd-dd-dd shape.
+        let parts: Vec<&str> = candidate.split('-').collect();
+        let is_date = parts.len() == 3 && parts.iter().map(|part| part.len()).eq([4, 2, 2]);
+        if (9..=15).contains(&digits) && !is_date {
+            candidates.push(candidate.to_string());
+        }
+    };
     for ch in haystack.chars() {
         if ch.is_ascii_digit() || ch == '+' || ch == '-' || ch == ' ' {
             current.push(ch);
         } else {
-            if current.chars().filter(char::is_ascii_digit).count() >= 7 {
-                candidates.push(current.trim().to_string());
-            }
+            consider(&current);
             current.clear();
         }
     }
-    if current.chars().filter(char::is_ascii_digit).count() >= 7 {
-        candidates.push(current.trim().to_string());
-    }
+    consider(&current);
     candidates.into_iter().next()
 }
 
+/// Classify a person's buying-center role from whole tokens in the title.
+/// Substring matching misclassified every C-suite title as "unknown" and
+/// matched fragments like "vp" inside unrelated words.
 fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
-    let title_lower = title.to_lowercase();
-    let family_lower = role_family.to_lowercase();
+    let tokens: Vec<String> = title
+        .to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect();
+    let has_token = |candidates: &[&str]| {
+        tokens
+            .iter()
+            .any(|token| candidates.contains(&token.as_str()))
+    };
 
-    if title_lower.contains("vp")
-        || title_lower.contains("vice president")
-        || title_lower.contains("director")
-    {
+    if has_token(&[
+        "vp",
+        "svp",
+        "evp",
+        "ceo",
+        "cto",
+        "cfo",
+        "coo",
+        "cio",
+        "ciso",
+        "cmo",
+        "chro",
+        "chief",
+        "president",
+        "founder",
+        "owner",
+        "director",
+        "head",
+    ]) {
         return "decision_maker";
     }
-    if title_lower.contains("manager") || title_lower.contains("lead") {
+    if has_token(&["manager", "lead", "leader"]) {
         return "influencer";
     }
-    if title_lower.contains("buyer")
-        || title_lower.contains("procurement")
-        || title_lower.contains("purchasing")
-    {
+    if has_token(&["buyer", "procurement", "purchasing", "sourcing"]) {
         return "purchasing";
     }
-    if title_lower.contains("engineer")
-        || title_lower.contains("analyst")
-        || title_lower.contains("specialist")
-    {
+    if has_token(&[
+        "engineer",
+        "analyst",
+        "specialist",
+        "technician",
+        "architect",
+    ]) {
         return "technical";
     }
-    if family_lower.contains("user") {
+    if role_family.to_lowercase().contains("user") {
         return "user";
     }
     "unknown"
@@ -1915,5 +2090,57 @@ mod tests {
             "purchasing"
         );
         assert_eq!(classify_buying_center_role("End User", "user"), "user");
+
+        // C-suite must not classify as unknown.
+        for title in [
+            "Chief Executive Officer",
+            "CTO",
+            "CFO",
+            "President",
+            "Founder",
+            "Owner",
+        ] {
+            assert_eq!(
+                classify_buying_center_role(title, "executive"),
+                "decision_maker",
+                "{title} is a decision maker"
+            );
+        }
+
+        // Whole-token matching: "lead" as a word is an influencer role, and a
+        // title fragment must not trigger "vp".
+        assert_eq!(
+            classify_buying_center_role("Lead Developer", "technical"),
+            "influencer"
+        );
+    }
+
+    #[test]
+    fn phone_extraction_does_not_surface_dates() {
+        let artifact = |summary: &str| ArtifactRow {
+            id: Uuid::new_v4(),
+            person_id: None,
+            artifact_type: "note".to_string(),
+            title: None,
+            content_summary: Some(summary.to_string()),
+            url: "https://example.com".to_string(),
+            source_domain: None,
+            language: None,
+            topics: None,
+            sentiment_score: None,
+            key_phrases: None,
+            ts_utc: Utc::now(),
+            provenance: serde_json::json!({}),
+            metadata: None,
+            created_at: None,
+        };
+        assert_eq!(
+            extract_phone_from_artifact(&artifact("Report dated 2024-03-15.")),
+            None
+        );
+        assert_eq!(
+            extract_phone_from_artifact(&artifact("Call +212 555 123 456 today")),
+            Some("+212 555 123 456".to_string())
+        );
     }
 }

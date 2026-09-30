@@ -2,7 +2,10 @@
 
 set -euo pipefail
 
-HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8080/api/health/deep}"
+# `/api/health` reports the measured overall status (with an HTTP status code
+# that matches); the deep capability probe is authenticated and unsuitable for
+# an unauthenticated uptime check.
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8080/api/health}"
 PAGE_WEBHOOK_URL="${PAGE_WEBHOOK_URL:-}"
 
 payload=$(curl -fsS --max-time 15 "${HEALTHCHECK_URL}") || {

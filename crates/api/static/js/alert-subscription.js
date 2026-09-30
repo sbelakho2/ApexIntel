@@ -38,7 +38,7 @@
       method: method,
       headers: {
         Accept: "application/json",
-        "x-csrf-token": getCookie("apex_csrf")
+        "x-csrf-token": getCookie("apex_csrf") || getCookie("__Host-apex_csrf")
       },
       credentials: "same-origin"
     };

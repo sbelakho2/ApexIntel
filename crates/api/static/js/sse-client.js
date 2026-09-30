@@ -30,6 +30,8 @@ class ApexIntelSSE {
     this.eventHandlers = {};
     /** @type {EventSource|null} */
     this.eventSource = null;
+    /** @type {string|null} Last SSE event id, for replay on reconnect. */
+    this.lastEventId = null;
     /** @type {number} */
     this.currentReconnectDelay = this.reconnectDelay;
     /** @type {boolean} */
@@ -49,7 +51,14 @@ class ApexIntelSSE {
       this.eventSource.close();
     }
 
-    this.eventSource = new EventSource(this.url);
+    // Preserve the replay cursor across client-driven reconnects: a brand-new
+    // EventSource does not send `Last-Event-ID` by itself.
+    const target = new URL(this.url, window.location.href);
+    if (this.lastEventId) {
+      target.searchParams.set('last_event_id', this.lastEventId);
+    }
+
+    this.eventSource = new EventSource(target.toString());
     this.intentionalClose = false;
 
     this.eventSource.onopen = () => {
@@ -68,7 +77,13 @@ class ApexIntelSSE {
         this.onErrorCallback();
       }
 
-      this.scheduleReconnect();
+      // Let the browser's own backoff reconnect (it resends Last-Event-ID);
+      // only schedule a fresh EventSource when the stream is permanently
+      // closed. Recreating on every error defeated native retry and dropped
+      // the replay cursor.
+      if (this.eventSource && this.eventSource.readyState === EventSource.CLOSED) {
+        this.scheduleReconnect();
+      }
     };
 
     // Generic message handler dispatches by event type
@@ -134,6 +149,10 @@ class ApexIntelSSE {
       return;
     }
     this.eventSource.addEventListener(eventType, (event) => {
+      // Track the cursor for reconnects that create a new EventSource.
+      if (event.lastEventId) {
+        this.lastEventId = event.lastEventId;
+      }
       try {
         const data = JSON.parse(event.data);
         handler(data);
@@ -217,30 +236,47 @@ class ApexIntelSSE {
 
   /**
    * Handle an incoming insight alert.
-   * Override this method or use .on('new_insight', handler).
+   *
+   * Insights do not change the warning badge: incrementing it made the count
+   * meaningless.
    */
   handleInsight(data) {
     this.showNotification(data);
-    this.updateBadge(data);
   }
 
   /**
-   * Show a browser/desktop notification if permission is granted.
+   * Show a browser/desktop notification if permission is already granted.
+   *
+   * Permission is requested from an explicit Settings button
+   * ({@link requestNotificationPermission}); prompting here fired without a
+   * user gesture, which browsers suppress or penalise.
    */
   showNotification(alert) {
     if (!('Notification' in window)) {
       return;
     }
-
     if (Notification.permission === 'granted') {
       this.createNotification(alert);
-    } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission().then((permission) => {
-        if (permission === 'granted') {
-          this.createNotification(alert);
-        }
-      });
     }
+  }
+
+  /**
+   * Request desktop-notification permission from an explicit user gesture.
+   * @returns {Promise<boolean>} whether notifications are granted.
+   */
+  requestNotificationPermission() {
+    if (!('Notification' in window)) {
+      return Promise.resolve(false);
+    }
+    if (Notification.permission === 'granted') {
+      return Promise.resolve(true);
+    }
+    if (Notification.permission === 'denied') {
+      return Promise.resolve(false);
+    }
+    return Notification.requestPermission().then(
+      (permission) => permission === 'granted'
+    );
   }
 
   /**
@@ -258,11 +294,9 @@ class ApexIntelSSE {
       const notification = new Notification(title, options);
       notification.onclick = () => {
         window.focus();
-        if (alert.entity_id) {
-          window.location.href = `/warnings/${alert.entity_id}`;
-        } else {
-          window.location.href = '/warnings';
-        }
+        // Server-built link (never a client-chosen target); the payload has
+        // `entity_ids`, not `entity_id`, so the old code always fell back.
+        window.location.href = alert.link || '/warnings';
         notification.close();
       };
 
@@ -290,7 +324,8 @@ class ApexIntelSSE {
     badges.forEach((badge) => {
       badge.textContent = String(newCount);
       badge.classList.remove('hidden');
-      badge.style.display = 'inline';
+      // No inline `display: inline`: it permanently overrode the `hidden`
+      // class, so later zero counts left a visible "0".
     });
   }
 

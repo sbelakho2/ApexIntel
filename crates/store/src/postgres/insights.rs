@@ -9,6 +9,20 @@ fn normalize_insight_window(limit: i64, offset: i64) -> (i64, i64) {
 }
 
 impl PgStore {
+    /// Stored severity signal for an insight: the worker's written
+    /// `metadata.severity` when present, otherwise the legacy `impact` column.
+    /// `None` when nothing is stored (callers must not invent a severity).
+    pub async fn get_insight_severity(&self, insight_id: Uuid) -> Result<Option<String>> {
+        let severity: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(metadata->>'severity', impact) FROM insights WHERE id = $1",
+        )
+        .bind(insight_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        Ok(severity)
+    }
+
     pub async fn insert_insight(
         &self,
         title: &str,

@@ -37,9 +37,20 @@ RUN mkdir -p /opt/apexintel/data/search /opt/apexintel/logs && \
 
 USER apexintel
 ENV RUST_LOG=info
+
+# ServeDir resolves relative to this path in the runtime image; without it the
+# container looked for /build/crates/api/static (build-stage path) and every
+# CSS/JS/font request 404'd.
+ENV APEX_STATIC_DIR=/opt/apexintel/static
+
+# Search index data lives outside the image layer so it survives upgrades.
+VOLUME ["/opt/apexintel/data/search"]
+
 EXPOSE 8080
 
-HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/health || exit 1
+# Liveness must be cheap and must not run the full capability probe set every
+# 15 seconds; `/api/health/live` is a bare 200.
+HEALTHCHECK --interval=15s --timeout=3s --retries=3 \
+    CMD curl -fsS http://localhost:8080/api/health/live || exit 1
 
 CMD ["apex-api"]

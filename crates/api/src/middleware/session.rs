@@ -50,9 +50,10 @@ use crate::middleware::auth::{auth_error_response, authenticate_api_request};
 use crate::responses::ApiError;
 
 type HmacSha256 = Hmac<Sha256>;
-const CSRF_COOKIE_NAME: &str = "apex_csrf";
 const LEGACY_SESSION_COOKIE_NAME: &str = "apex_session";
 const SECURE_SESSION_COOKIE_NAME: &str = "__Host-apex_session";
+const LEGACY_CSRF_COOKIE_NAME: &str = "apex_csrf";
+const SECURE_CSRF_COOKIE_NAME: &str = "__Host-apex_csrf";
 /// Appearance cookies mirror the user's persisted `user_preferences` row so
 /// the very first HTML response on a new device can apply the saved theme and
 /// table layout without a client-side round-trip.
@@ -86,6 +87,82 @@ pub fn session_ttl_ms_for_hours(hours: i64) -> i64 {
 static SESSION_SECRET: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| std::env::var("SESSION_SECRET").unwrap_or_default());
 const CSRF_HEADER_NAME: &str = "x-csrf-token";
+
+/// CSRF token derived from the session signature: `HMAC(secret, "csrf:" + sig)`.
+///
+/// Binding the token to the session defeats plain double-submit: a sibling
+/// subdomain (or HTTP on a non-HSTS host) that can plant cookies can set a
+/// matching cookie+header pair, but cannot compute the derived value without
+/// the server's secret and the victim's session signature.
+fn csrf_for(session_signature_hex: &str) -> Option<String> {
+    let secret = current_session_secret();
+    if secret.is_empty() {
+        return None;
+    }
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(b"csrf:");
+    mac.update(session_signature_hex.as_bytes());
+    Some(hex::encode(mac.finalize().into_bytes()))
+}
+
+/// The HMAC signature part of the session cookie, if a session cookie is
+/// present. Used to derive/validate the CSRF token.
+fn session_cookie_signature(headers: &HeaderMap) -> Option<String> {
+    let token = extract_session_cookie(headers)?;
+    let (_, sig) = token.split_once('.')?;
+    (!sig.is_empty()).then(|| sig.to_string())
+}
+
+fn csrf_cookie_name() -> &'static str {
+    if cookie_secure_enabled() {
+        SECURE_CSRF_COOKIE_NAME
+    } else {
+        LEGACY_CSRF_COOKIE_NAME
+    }
+}
+
+/// Extract the CSRF cookie value, honoring the deployment's cookie name with a
+/// fallback to the legacy name during the rename.
+fn extract_csrf_cookie(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = extract_cookie_value(headers, csrf_cookie_name()) {
+        return Some(value.to_string());
+    }
+    if cookie_secure_enabled() {
+        return extract_cookie_value(headers, LEGACY_CSRF_COOKIE_NAME).map(str::to_string);
+    }
+    None
+}
+
+/// Same-site check for browser form posts to public routes (login/logout).
+///
+/// Accepts requests whose `Sec-Fetch-Site` is `same-origin`/`none`, or, when
+/// that header is absent (older browsers, non-browser clients), falls back to
+/// comparing `Origin` with `Host`. A cross-site auto-submitting form is
+/// rejected so it cannot log a victim into an attacker's account or out of
+/// their own.
+pub fn same_site_post(headers: &HeaderMap) -> bool {
+    match headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+    {
+        Some("same-origin") | Some("none") => true,
+        Some(_) => false,
+        None => match (headers.get(header::ORIGIN), headers.get(header::HOST)) {
+            (Some(origin), Some(host)) => {
+                let origin = origin.to_str().unwrap_or_default();
+                let origin_host = origin
+                    .split("://")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .trim_end_matches('/');
+                origin_host == host.to_str().unwrap_or_default()
+            }
+            // No Origin header: a browser form post always sends Origin for
+            // cross-site requests, so absence is treated as same-site.
+            _ => true,
+        },
+    }
+}
 const CSRF_FORM_FIELD: &str = "csrf_token";
 // Must match the router's DefaultBodyLimit (64 KiB) so a legitimately large
 // form is rejected as over-limit rather than a misleading CSRF 403.
@@ -102,8 +179,12 @@ pub struct WebSession {
     pub session_version: u32,
     /// Stable principal UUID used to key real-time connections and to address alerts.
     pub principal_id: Uuid,
+    /// Unique session id (`jti`). Logout inserts it into `revoked_sessions`
+    /// and the authority rejects any session whose id is revoked, so a copied
+    /// cookie stops working immediately instead of lasting until `exp`.
+    pub session_id: Uuid,
     pub issued_at: i64,
-    /// Signed expiry (`exp`) claim. Required — a session without one is
+    /// Signed expiry (`exp`). Required — a session without one is
     /// rejected as a pre-principal legacy cookie.
     pub expires_at: i64,
 }
@@ -139,6 +220,8 @@ pub struct SessionClaims {
     pub issued_at: i64,
     pub expires_at: i64,
     pub session_version: u32,
+    /// Unique session id (`jti`) used for revocation.
+    pub session_id: Uuid,
 }
 
 /// Sign a session payload: `base64url(JSON) + "." + HMAC-SHA256 hex`.
@@ -153,8 +236,10 @@ pub fn create_session_token(claims: &SessionClaims, session_secret: &str) -> Opt
         iat: i64,
         exp: i64,
         sv: u32,
+        jti: &'a str,
     }
 
+    let jti = claims.session_id.to_string();
     let payload = SessionPayload {
         uid: claims.user_id.as_str(),
         sub: claims.username.as_str(),
@@ -162,6 +247,7 @@ pub fn create_session_token(claims: &SessionClaims, session_secret: &str) -> Opt
         iat: claims.issued_at,
         exp: claims.expires_at,
         sv: claims.session_version,
+        jti: &jti,
     };
     let payload_bytes = serde_json::to_vec(&payload).ok()?;
 
@@ -193,6 +279,8 @@ struct StoredSessionPayload {
     exp: Option<i64>,
     #[serde(default)]
     sv: u32,
+    #[serde(default)]
+    jti: Option<String>,
 }
 
 /// Cryptographically verify a signed session cookie and parse its principal
@@ -273,6 +361,20 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
         return None;
     }
 
+    // `jti` is mandatory: without it the session could never be revoked, so a
+    // cookie predating revocation forces reauthentication.
+    let session_id = match payload
+        .jti
+        .as_deref()
+        .and_then(|jti| Uuid::parse_str(jti.trim()).ok())
+    {
+        Some(session_id) => session_id,
+        None => {
+            tracing::debug!("session rejected: missing/invalid `jti` (legacy cookie)");
+            return None;
+        }
+    };
+
     let user_id = UserId::from(uid);
     let username = Username::from(payload.sub);
     let principal_id = apex_core::alert_config::principal_uuid_from_user_id(&user_id);
@@ -283,6 +385,7 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
         role,
         session_version: payload.sv,
         principal_id,
+        session_id,
         issued_at: payload.iat,
         expires_at,
     })
@@ -298,6 +401,8 @@ pub enum SessionAuthorityError {
     /// The row's `session_version` does not match the signed `sv` (or is not
     /// positive), so the session was revoked.
     StaleSession,
+    /// The session id (`jti`) was explicitly revoked at logout.
+    Revoked,
     /// The canonical row's role is missing or unknown.
     UnknownRole,
     /// The authoritative lookup itself failed.
@@ -356,6 +461,7 @@ pub fn authorize_against_record(
         username: Username::from(record.username.clone()),
         role,
         session_version: db_version,
+        session_id: session.session_id,
         issued_at: session.issued_at,
         expires_at: session.expires_at,
     })
@@ -376,6 +482,22 @@ impl SessionAuthority for PgStore {
                 SessionAuthorityError::Unavailable
             })?
             .ok_or(SessionAuthorityError::UnknownUser)?;
+        // Explicit logout revocation is checked on every request; a copied
+        // cookie stops working immediately.
+        let revoked = self
+            .is_session_revoked(session.session_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    %error,
+                    session_id = %session.session_id,
+                    "session revocation lookup failed"
+                );
+                SessionAuthorityError::Unavailable
+            })?;
+        if revoked {
+            return Err(SessionAuthorityError::Revoked);
+        }
         authorize_against_record(session, &record)
     }
 }
@@ -401,6 +523,10 @@ fn extract_cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a st
 /// accepted so logged-in users are not evicted by the rename.
 fn extract_session_cookie(headers: &HeaderMap) -> Option<&str> {
     if cookie_secure_enabled() {
+        // REMOVAL DATE: 2026-12-31 — the legacy name is accepted only so
+        // pre-`__Host-` sessions survive the migration. Every cookie issued
+        // before the migration has expired by then (max 168h TTL), so delete
+        // the fallback branch on that date.
         extract_cookie_value(headers, SECURE_SESSION_COOKIE_NAME)
             .or_else(|| extract_cookie_value(headers, LEGACY_SESSION_COOKIE_NAME))
     } else {
@@ -459,12 +585,14 @@ pub fn session_cookie_header(token: &str, max_age_secs: i64) -> String {
 pub fn appearance_cookie_headers(theme: &str, table_layout: &str) -> Vec<String> {
     let suffix = cookie_secure_suffix();
     let mut cookies = Vec::new();
-    if !theme.is_empty() {
+    // The values are persisted user preferences; validate them so an
+    // out-of-band database value can never inject cookie attributes.
+    if matches!(theme, "light" | "dark" | "system") {
         cookies.push(format!(
             "{THEME_COOKIE_NAME}={theme}; Path=/; SameSite=Lax; Max-Age={APPEARANCE_COOKIE_MAX_AGE_SECS}{suffix}"
         ));
     }
-    if !table_layout.is_empty() {
+    if matches!(table_layout, "compact" | "comfortable") {
         cookies.push(format!(
             "{TABLE_LAYOUT_COOKIE_NAME}={table_layout}; Path=/; SameSite=Lax; Max-Age={APPEARANCE_COOKIE_MAX_AGE_SECS}{suffix}"
         ));
@@ -501,17 +629,19 @@ pub fn clear_session_cookie_headers() -> Vec<String> {
         .collect()
 }
 
-fn issue_csrf_cookie(response: &mut Response, existing: Option<&str>) {
-    let generated_token;
-    let token = match existing {
-        Some(token) => token,
-        None => {
-            generated_token = Uuid::new_v4().to_string();
-            &generated_token
-        }
+/// Issue the session-bound CSRF cookie. The value is derived from the session
+/// signature, so it cannot be planted by a cookie-setting sibling origin, and
+/// its `Max-Age` matches the remaining session lifetime so a tab left open
+/// overnight does not fail its next submit.
+fn issue_csrf_cookie(response: &mut Response, session_signature: &str, session_expires_at_ms: i64) {
+    let Some(token) = csrf_for(session_signature) else {
+        return;
     };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let max_age_secs = ((session_expires_at_ms - now_ms) / 1000).max(0);
     let cookie = format!(
-        "{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax; Max-Age=86400{}",
+        "{}={token}; Path=/; SameSite=Lax; Max-Age={max_age_secs}{}",
+        csrf_cookie_name(),
         cookie_secure_suffix()
     );
     if let Ok(header_value) = HeaderValue::from_str(&cookie) {
@@ -540,17 +670,24 @@ pub fn api_session_csrf_ok(headers: &HeaderMap, method: &Method) -> bool {
     if !requires_csrf(method) {
         return true;
     }
-    let Some(cookie_token) = extract_cookie_value(headers, CSRF_COOKIE_NAME) else {
+    let Some(expected) = session_cookie_signature(headers).and_then(|sig| csrf_for(&sig)) else {
+        return false;
+    };
+    let Some(cookie_token) = extract_csrf_cookie(headers) else {
         return false;
     };
     let header_token = headers
         .get(CSRF_HEADER_NAME)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
-    !header_token.is_empty()
-        && cookie_token
+    cookie_token
+        .as_bytes()
+        .ct_eq(expected.as_bytes())
+        .unwrap_u8()
+        == 1
+        && header_token
             .as_bytes()
-            .ct_eq(header_token.as_bytes())
+            .ct_eq(expected.as_bytes())
             .unwrap_u8()
             == 1
 }
@@ -677,7 +814,7 @@ pub async fn require_web_write(request: Request, next: Next) -> Response {
             path = %request.uri().path(),
             "web page mutation denied: write role required"
         );
-        return (StatusCode::FORBIDDEN, "Insufficient permissions").into_response();
+        return web_denied_response(&request, "Insufficient permissions");
     }
     next.run(request).await
 }
@@ -694,9 +831,18 @@ pub async fn require_web_admin(request: Request, next: Next) -> Response {
             role = %session.role.as_str(),
             "web page access denied: admin role required"
         );
-        return (StatusCode::FORBIDDEN, "Admin role required").into_response();
+        return web_denied_response(&request, "Admin role required");
     }
     next.run(request).await
+}
+
+/// A denied web request renders the styled 403 page for normal form posts;
+/// HTMX keeps a short text body so the client can surface it in a toast.
+fn web_denied_response(request: &Request, message: &str) -> Response {
+    if request.headers().contains_key("hx-request") {
+        return (StatusCode::FORBIDDEN, message.to_string()).into_response();
+    }
+    crate::web::errors::forbidden()
 }
 
 fn extract_form_csrf_token(body: &[u8]) -> Option<String> {
@@ -718,31 +864,61 @@ fn validate_csrf_request(method: &Method, headers: &HeaderMap, body: &[u8]) -> b
         return true;
     }
 
-    let Some(cookie_token) = extract_cookie_value(headers, CSRF_COOKIE_NAME) else {
+    // The token is derived from the authenticated session, not merely echoed
+    // from a client-set cookie.
+    let Some(expected) = session_cookie_signature(headers).and_then(|sig| csrf_for(&sig)) else {
         return false;
     };
+    let Some(cookie_token) = extract_csrf_cookie(headers) else {
+        return false;
+    };
+    if cookie_token
+        .as_bytes()
+        .ct_eq(expected.as_bytes())
+        .unwrap_u8()
+        != 1
+    {
+        return false;
+    }
 
     if let Some(header_token) = headers
         .get(CSRF_HEADER_NAME)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
     {
-        return cookie_token
+        return header_token
             .as_bytes()
-            .ct_eq(header_token.as_bytes())
+            .ct_eq(expected.as_bytes())
             .unwrap_u8()
             == 1;
     }
 
     if let Some(form_token) = extract_form_csrf_token(body) {
-        return cookie_token
-            .as_bytes()
-            .ct_eq(form_token.as_bytes())
-            .unwrap_u8()
-            == 1;
+        return form_token.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() == 1;
     }
 
     false
+}
+
+/// Redirect an unauthenticated request to `/login`, preserving the requested
+/// path+query as `next` for GET navigations so the user returns to their place
+/// after signing in. `next` is only ever a local path.
+fn login_redirect(request: &Request) -> Response {
+    if request.method() != Method::GET {
+        return Redirect::to("/login").into_response();
+    }
+    let target = request
+        .uri()
+        .path_and_query()
+        .map(|path_and_query| path_and_query.as_str())
+        .unwrap_or("/");
+    let same_site_path =
+        target.starts_with('/') && !target.starts_with("//") && !target.starts_with("/\\");
+    if !same_site_path {
+        return Redirect::to("/login").into_response();
+    }
+    let encoded: String = url::form_urlencoded::byte_serialize(target.as_bytes()).collect();
+    Redirect::to(&format!("/login?next={encoded}")).into_response()
 }
 
 /// Axum middleware: require a signed, unexpired session cookie whose
@@ -757,7 +933,7 @@ pub async fn require_session(mut request: Request, next: Next) -> Response {
 
     let signed_session = match validate_session(request.headers(), session_secret) {
         Some(session) => session,
-        None => return Redirect::to("/login").into_response(),
+        None => return login_redirect(&request),
     };
 
     // The cookie proves this server minted the token; the canonical row is the
@@ -786,12 +962,12 @@ pub async fn require_session(mut request: Request, next: Next) -> Response {
                 ?reason,
                 "web session rejected by session authority"
             );
-            return Redirect::to("/login").into_response();
+            return login_redirect(&request);
         }
     };
 
     let method = request.method().clone();
-    let csrf_cookie = extract_cookie_value(request.headers(), CSRF_COOKIE_NAME).map(str::to_string);
+    let csrf_session_signature = session_cookie_signature(request.headers());
 
     // Mirror the persisted personal appearance preferences (theme, table
     // layout) into cookies on safe navigations so a new device renders the
@@ -822,11 +998,16 @@ pub async fn require_session(mut request: Request, next: Next) -> Response {
         None
     };
 
+    let session_expires_at = session.expires_at;
     request.extensions_mut().insert(session);
 
     if !requires_csrf(&method) {
         let mut response = next.run(request).await;
-        issue_csrf_cookie(&mut response, csrf_cookie.as_deref());
+        // The CSRF cookie is bound to the session signature and expires with
+        // the session (a tab left open overnight keeps working).
+        if let Some(signature) = csrf_session_signature.as_deref() {
+            issue_csrf_cookie(&mut response, signature, session_expires_at);
+        }
         if let Some((theme, table_layout)) = appearance {
             for cookie in appearance_cookie_headers(&theme, &table_layout) {
                 if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -857,7 +1038,11 @@ pub async fn require_session(mut request: Request, next: Next) -> Response {
     let (parts, body) = request.into_parts();
     let body_bytes = match to_bytes(body, MAX_CSRF_FORM_BYTES).await {
         Ok(bytes) => bytes,
-        Err(_) => return (StatusCode::FORBIDDEN, "CSRF verification failed").into_response(),
+        // Over-limit (or otherwise unreadable) body: this is a payload-size
+        // problem, not a CSRF failure — answer with the matching status.
+        Err(_) => {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "Form submission too large").into_response()
+        }
     };
 
     if !validate_csrf_request(&method, &parts.headers, &body_bytes) {
@@ -908,6 +1093,7 @@ mod tests {
             issued_at: now,
             expires_at: now + SESSION_TTL_MS,
             session_version: SESSION_VERSION,
+            session_id: Uuid::new_v4(),
         };
         let token = create_session_token(&claims, secret).unwrap();
         format!("{}={token}", session_cookie_name())
@@ -975,11 +1161,13 @@ mod tests {
         let secret = "test-secret";
         let now = chrono::Utc::now().timestamp_millis();
         let exp = now + SESSION_TTL_MS;
+        let jti = Uuid::new_v4().to_string();
         let base = |extra: serde_json::Value| {
             let mut value = serde_json::json!({
                 "sub": "alice",
                 "iat": now,
                 "exp": exp,
+                "jti": jti.clone(),
             });
             for (key, field) in extra.as_object().unwrap() {
                 value[key] = field.clone();
@@ -1041,6 +1229,63 @@ mod tests {
     }
 
     #[test]
+    fn legacy_session_without_jti_is_rejected() {
+        // Sessions without a revocation id could never be logged out, so the
+        // pre-revocation cookie shape forces reauthentication.
+        let secret = "test-secret";
+        let now = chrono::Utc::now().timestamp_millis();
+        let payload = serde_json::json!({
+            "uid": "usr-alice",
+            "sub": "alice",
+            "role": "analyst",
+            "iat": now,
+            "exp": now + SESSION_TTL_MS,
+            "sv": SESSION_VERSION,
+        });
+        let headers = headers_with_cookie(&signed_payload_cookie(&payload, secret));
+
+        assert!(
+            validate_session(&headers, secret).is_none(),
+            "a session without `jti` must be rejected"
+        );
+    }
+
+    #[test]
+    fn same_site_post_checks_sec_fetch_site_and_origin_fallback() {
+        let mut same_origin = HeaderMap::new();
+        same_origin.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(same_site_post(&same_origin));
+
+        let mut cross_site = HeaderMap::new();
+        cross_site.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+        assert!(!same_site_post(&cross_site));
+
+        let mut typed_none = HeaderMap::new();
+        typed_none.insert("sec-fetch-site", HeaderValue::from_static("none"));
+        assert!(same_site_post(&typed_none));
+
+        // No Sec-Fetch-Site: fall back to Origin vs Host.
+        let no_headers = HeaderMap::new();
+        assert!(same_site_post(&no_headers));
+
+        let mut origin_mismatch = HeaderMap::new();
+        origin_mismatch.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
+        origin_mismatch.insert(header::HOST, HeaderValue::from_static("apex.example"));
+        assert!(!same_site_post(&origin_mismatch));
+
+        let mut origin_match = HeaderMap::new();
+        origin_match.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://apex.example"),
+        );
+        origin_match.insert(header::HOST, HeaderValue::from_static("apex.example"));
+        assert!(same_site_post(&origin_match));
+    }
+
+    #[test]
     fn session_with_unknown_role_is_rejected() {
         let secret = "test-secret";
         let now = chrono::Utc::now().timestamp_millis();
@@ -1051,6 +1296,7 @@ mod tests {
             "iat": now,
             "exp": now + SESSION_TTL_MS,
             "sv": SESSION_VERSION,
+            "jti": Uuid::new_v4().to_string(),
         });
         let headers = headers_with_cookie(&signed_payload_cookie(&payload, secret));
 
@@ -1205,6 +1451,7 @@ mod tests {
                 issued_at: now - 2 * SESSION_TTL_MS,
                 expires_at: now - SESSION_TTL_MS,
                 session_version: SESSION_VERSION,
+                session_id: Uuid::new_v4(),
             },
             secret,
         )
@@ -1233,32 +1480,83 @@ mod tests {
         assert_eq!(session_cookie_name_for(false), "apex_session");
     }
 
+    /// Build a session cookie plus the CSRF cookie derived from its signature.
+    fn session_and_csrf_cookies(secret: &str) -> (String, String) {
+        // `csrf_for` derives from the process session secret.
+        std::env::set_var("SESSION_SECRET", secret);
+        let cookie = signed_principal_cookie("usr-alice", "alice", ApiRole::Analyst, secret);
+        let signature = cookie
+            .split('=')
+            .nth(1)
+            .and_then(|token| token.split_once('.'))
+            .map(|(_, signature)| signature.to_string())
+            .expect("session signature");
+        let csrf = csrf_for(&signature).expect("csrf token");
+        (cookie, csrf)
+    }
+
     #[test]
     fn test_validate_csrf_request_rejects_post_without_matching_token() {
-        let headers = headers_with_cookie("apex_session=test-session");
+        // A session cookie alone is not enough: an unsafe request needs the
+        // derived CSRF token in the cookie *and* the header/form.
+        let secret = "test-secret";
+        let (session_cookie, csrf) = session_and_csrf_cookies(secret);
+        let headers = headers_with_cookie(&format!("{session_cookie}; apex_csrf={csrf}"));
         assert!(!validate_csrf_request(&Method::POST, &headers, b""));
+
+        // No session at all: rejected even with a token present.
+        let mut no_session = HeaderMap::new();
+        no_session.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("apex_csrf={csrf}")).unwrap(),
+        );
+        no_session.insert(CSRF_HEADER_NAME, HeaderValue::from_str(&csrf).unwrap());
+        assert!(!validate_csrf_request(&Method::POST, &no_session, b""));
     }
 
     #[test]
     fn test_validate_csrf_request_accepts_matching_header_token() {
-        let mut headers = headers_with_cookie("apex_session=test-session; apex_csrf=known-token");
-        headers.insert(CSRF_HEADER_NAME, HeaderValue::from_static("known-token"));
+        let secret = "test-secret";
+        let (session_cookie, csrf) = session_and_csrf_cookies(secret);
+        let mut headers = headers_with_cookie(&format!("{session_cookie}; apex_csrf={csrf}"));
+        headers.insert(CSRF_HEADER_NAME, HeaderValue::from_str(&csrf).unwrap());
 
         assert!(validate_csrf_request(&Method::POST, &headers, b""));
     }
 
     #[test]
     fn test_validate_csrf_request_accepts_matching_form_token() {
-        let headers = headers_with_cookie("apex_session=test-session; apex_csrf=known-token");
-        let body = b"username=alice&csrf_token=known-token";
+        let secret = "test-secret";
+        let (session_cookie, csrf) = session_and_csrf_cookies(secret);
+        let headers = headers_with_cookie(&format!("{session_cookie}; apex_csrf={csrf}"));
+        let body = format!("username=alice&csrf_token={csrf}");
 
-        assert!(validate_csrf_request(&Method::POST, &headers, body));
+        assert!(validate_csrf_request(
+            &Method::POST,
+            &headers,
+            body.as_bytes()
+        ));
     }
 
     #[test]
     fn test_validate_csrf_request_rejects_mismatched_header_token() {
-        let mut headers = headers_with_cookie("apex_session=test-session; apex_csrf=known-token");
+        let secret = "test-secret";
+        let (session_cookie, csrf) = session_and_csrf_cookies(secret);
+        let mut headers = headers_with_cookie(&format!("{session_cookie}; apex_csrf={csrf}"));
         headers.insert(CSRF_HEADER_NAME, HeaderValue::from_static("wrong-token"));
+
+        assert!(!validate_csrf_request(&Method::POST, &headers, b""));
+    }
+
+    /// A planted cookie+header pair (sibling subdomain / non-HSTS HTTP) is not
+    /// the derived token, so plain double-submit no longer passes.
+    #[test]
+    fn test_validate_csrf_request_rejects_planted_double_submit_pair() {
+        let secret = "test-secret";
+        let (session_cookie, _) = session_and_csrf_cookies(secret);
+        let mut headers =
+            headers_with_cookie(&format!("{session_cookie}; apex_csrf=attacker-token"));
+        headers.insert(CSRF_HEADER_NAME, HeaderValue::from_static("attacker-token"));
 
         assert!(!validate_csrf_request(&Method::POST, &headers, b""));
     }

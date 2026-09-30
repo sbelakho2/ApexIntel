@@ -36,7 +36,6 @@ use chrono::Utc;
 use tower::ServiceExt;
 
 const TEST_SECRET: &str = "web-authz-matrix-session-secret";
-const CSRF_TOKEN: &str = "web-authz-matrix-csrf";
 
 fn ensure_session_secret() {
     std::env::set_var("SESSION_SECRET", TEST_SECRET);
@@ -77,6 +76,7 @@ fn session_cookie(role: ApiRole, user_id: &str) -> String {
         issued_at: now,
         expires_at: now + SESSION_TTL_MS,
         session_version: SESSION_VERSION,
+        session_id: uuid::Uuid::new_v4(),
     };
     let token = create_session_token(&claims, TEST_SECRET).expect("sign session token");
     format!("{}={token}", session_cookie_name())
@@ -109,15 +109,33 @@ fn get_request(path: &str, cookie: Option<&str>) -> Request<Body> {
     builder.body(Body::empty()).expect("request")
 }
 
+/// Independently derive the session-bound CSRF token (HMAC over the session
+/// signature) the way the server does; a planted static value no longer passes.
+fn derived_csrf(session_cookie: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let token = session_cookie.split_once('=').expect("cookie name=value").1;
+    let signature = token.split_once('.').expect("payload.signature").1;
+    let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET.as_bytes()).expect("hmac key");
+    mac.update(b"csrf:");
+    mac.update(signature.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
 /// Unsafe request with an optional session cookie. When a session cookie is
-/// present, a matching CSRF cookie + header is added so the request clears the
-/// `require_session` CSRF check and reaches the role guard under test.
+/// present, the derived CSRF cookie + header is added so the request clears
+/// the `require_session` CSRF check and reaches the role guard under test.
 fn post_request(path: &str, cookie: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().method("POST").uri(path);
     if let Some(cookie) = cookie {
+        let csrf = derived_csrf(cookie);
         builder = builder
-            .header(header::COOKIE, format!("{cookie}; apex_csrf={CSRF_TOKEN}"))
-            .header("x-csrf-token", HeaderValue::from_static(CSRF_TOKEN));
+            .header(header::COOKIE, format!("{cookie}; apex_csrf={csrf}"))
+            .header(
+                "x-csrf-token",
+                HeaderValue::from_str(&csrf).expect("csrf header"),
+            );
     }
     builder.body(Body::empty()).expect("request")
 }
@@ -156,12 +174,14 @@ async fn status(router: Router, request: Request<Body>) -> StatusCode {
 async fn assert_redirects_to_login(router: Router, request: Request<Body>) {
     let response = router.oneshot(request).await.expect("request");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        response
-            .headers()
-            .get(header::LOCATION)
-            .and_then(|value| value.to_str().ok()),
-        Some("/login")
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        location.starts_with("/login"),
+        "expected a /login redirect (with optional ?next=), got {location}"
     );
 }
 
@@ -365,15 +385,20 @@ async fn every_registered_browser_mutation_requires_a_write_role() {
 
     let mutations = registered_paths(WEB_ROUTES_RS, "post");
     let admin_mutations = registered_paths(WEB_ROUTES_RS, "admin_post");
+    let self_mutations = registered_paths(WEB_ROUTES_RS, "self_post");
     assert!(
-        mutations.len() >= 25,
+        mutations.len() >= 20,
         "expected to parse the browser mutation list, found {}",
         mutations.len()
     );
-    assert_eq!(
-        admin_mutations.len(),
-        2,
-        "the two admin replay mutations must be registered as admin routes"
+    assert!(
+        admin_mutations.len() >= 3,
+        "admin replay mutations and trigger-scan must be registered as admin routes, found {}",
+        admin_mutations.len()
+    );
+    assert!(
+        !self_mutations.is_empty(),
+        "self-service mutations (settings, notifications, saved searches) must be registered"
     );
 
     let router = apex_api::web::routes::build_web_pages::<()>().layer(Extension(authority()));
@@ -403,6 +428,34 @@ async fn every_registered_browser_mutation_requires_a_write_role() {
             response.status(),
             StatusCode::FORBIDDEN,
             "{concrete} must refuse a Viewer browser session"
+        );
+    }
+
+    // Self-service mutations are session-only by design (Viewers manage their
+    // own settings/inbox/searches): they still redirect unauthenticated, and a
+    // Viewer must not be refused by the guard.
+    for path in &self_mutations {
+        let concrete = concrete_path(path);
+        let response = router
+            .clone()
+            .oneshot(post_request(&concrete, None))
+            .await
+            .expect("request");
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "{concrete} must redirect unauthenticated mutations"
+        );
+
+        let response = router
+            .clone()
+            .oneshot(post_request(&concrete, Some(&viewer)))
+            .await
+            .expect("request");
+        assert_ne!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{concrete} is self-service and must not be refused to a Viewer"
         );
     }
 }

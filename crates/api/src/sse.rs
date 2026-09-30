@@ -13,8 +13,7 @@
 use crate::alert_router::{AlertAudience, AlertRouter, AlertRoutingDecision};
 use anyhow::{Context, Result};
 use axum::response::sse::{Event, KeepAlive, Sse};
-#[cfg(test)]
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::stream::Stream;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -28,6 +27,64 @@ use uuid::Uuid;
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// The subset of an alert sent to SSE clients. Deliberately excludes
+/// `audience` (co-recipient principal UUIDs) and `metadata` (internal worker
+/// fields); `link` is built server-side from the alert's own metadata.
+#[derive(Debug, Clone, Serialize)]
+struct ClientAlert<'a> {
+    id: Uuid,
+    event_type: &'a str,
+    severity: apex_core::alert_config::AlertSeverity,
+    title: &'a str,
+    description: &'a str,
+    entity_ids: &'a [Uuid],
+    entity_name: Option<&'a str>,
+    link: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl<'a> From<&'a crate::alert_router::AlertEvent> for ClientAlert<'a> {
+    fn from(alert: &'a crate::alert_router::AlertEvent) -> Self {
+        Self {
+            id: alert.id,
+            event_type: alert.event_type.as_str(),
+            severity: alert.severity,
+            title: &alert.title,
+            description: &alert.description,
+            entity_ids: &alert.entity_ids,
+            entity_name: alert.entity_name.as_deref(),
+            link: alert_client_link(alert),
+            created_at: alert.created_at,
+        }
+    }
+}
+
+/// Server-built destination for a notification click. Only ids the server
+/// itself persisted are used, so a client cannot choose a redirect target.
+fn alert_client_link(alert: &crate::alert_router::AlertEvent) -> Option<String> {
+    let id_field = |key: &str| {
+        alert
+            .metadata
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(warning_id) = id_field("warning_id") {
+        return Some(format!("/warnings/{warning_id}"));
+    }
+    if let Some(insight_id) = id_field("insight_id") {
+        return Some(format!("/insights/{insight_id}"));
+    }
+    if alert.event_type.as_str().contains("insight") {
+        return Some(format!("/insights/{}", alert.id));
+    }
+    if alert.event_type.as_str().contains("warning") {
+        return Some(format!("/warnings/{}", alert.id));
+    }
+    None
+}
 
 /// An SSE event ready to be sent to a client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +142,15 @@ impl SseEvent {
 /// Maximum events buffered per client. A slow client that fills its buffer has
 /// newer events dropped rather than growing memory without bound.
 const SSE_CHANNEL_CAPACITY: usize = 1024;
+
+/// Maximum concurrent SSE streams per principal. Excess connections evict the
+/// oldest, so one principal cannot pin an unbounded number of streams.
+const SSE_MAX_CONNECTIONS_PER_USER: usize = 8;
+
+/// Maximum lifetime of one SSE stream. The stream is closed after this and the
+/// client's native reconnect re-authenticates, so a disabled session stops
+/// receiving alerts within the cap.
+const SSE_CONNECTION_MAX_SECS: u64 = 900;
 
 /// Maximum number of recently dispatched events retained for `Last-Event-ID`
 /// reconnects. Older events are evicted; a client whose cursor has been evicted
@@ -221,7 +287,13 @@ impl SseManager {
                 },
             };
 
-            conns.entry(user_id).or_default().push(tx.clone());
+            let senders = conns.entry(user_id).or_default();
+            if senders.len() >= SSE_MAX_CONNECTIONS_PER_USER {
+                // Evict the oldest stream: a principal gets a bounded number
+                // of concurrent connections.
+                senders.remove(0);
+            }
+            senders.push(tx.clone());
             info!(
                 user_id = %user_id,
                 total_connections = conns.get(&user_id).map_or(0, Vec::len),
@@ -277,9 +349,14 @@ impl SseManager {
     /// Returns the number of clients the event was sent to. Events are dropped
     /// for clients whose buffer is full (slow consumers).
     pub async fn dispatch_alert(&self, alert: &crate::alert_router::AlertEvent) -> usize {
+        // Never serialize the internal event: it carries the full audience
+        // (every other recipient's principal UUID) and the worker's raw
+        // metadata. Clients receive only the fields they render, with the
+        // link built server-side.
+        let client_alert = ClientAlert::from(alert);
         let event = SseEvent::new(
             alert.event_type.as_str(),
-            serde_json::to_string(alert).unwrap_or_else(|_| "{}".to_string()),
+            serde_json::to_string(&client_alert).unwrap_or_else(|_| "{}".to_string()),
         );
 
         let conns = self.connections.read().await;
@@ -698,6 +775,7 @@ impl SseManager {
         manager: Arc<Self>,
         user_id: uuid::Uuid,
         tx: mpsc::Sender<SseEvent>,
+        shutdown: tokio_util::sync::CancellationToken,
     ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
         struct UnregisterGuard {
             manager: Arc<SseManager>,
@@ -720,10 +798,21 @@ impl SseManager {
             user_id,
             tx,
         };
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(move |event| {
-            let _guard = &guard;
-            Ok::<_, std::convert::Infallible>(event.into_axum_event())
-        });
+        // End the stream on process shutdown (SIGTERM/ctrl-c) so graceful
+        // drain is not blocked by open streams, and cap the stream's lifetime
+        // so long-lived connections periodically re-authenticate — a disabled
+        // user stops receiving alerts within the cap.
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
+            .take_until(async move {
+                tokio::select! {
+                    _ = shutdown.cancelled() => {},
+                    _ = tokio::time::sleep(Duration::from_secs(SSE_CONNECTION_MAX_SECS)) => {},
+                }
+            })
+            .map(move |event| {
+                let _guard = &guard;
+                Ok::<_, std::convert::Infallible>(event.into_axum_event())
+            });
 
         Sse::new(stream).keep_alive(
             KeepAlive::new()

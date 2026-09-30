@@ -236,6 +236,10 @@ steps:
       # rejected by default (ALLOW_LEGACY_PASSWORD_HASHES unset).
       APEX_ADMIN_PASSWORD_HASH: '$argon2id$v=19$m=19456,t=2,p=1$Qe/tm9Em6f7USVaFRR+YXg$TxfPRKI0V+m+Dx/BcP5Ybv2d8hbiQoI8oxMENcztwL4'
       SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      # CI only: allow a documented non-secret so startup validation passes.
+      APEX_ALLOW_TEST_SESSION_SECRET: "1"
+      # Service key for authenticated metadata checks (>= 32 chars).
+      API_KEY_1: ci-features-check-key-0123456789abcdef,ci-check,service,ci-service
       SEARCH_INDEX_PATH: /tmp/apex-index
       RATE_LIMIT_DISABLED: "true"
       HOST: 127.0.0.1
@@ -255,8 +259,9 @@ steps:
       - cargo build --release --bin apex-api --features llm --locked
       - ./target/release/apex-api & sleep 6
       - curl -sf http://127.0.0.1:9095/api/health
-      # Production artifact must advertise the LLM capability.
-      - curl -sf http://127.0.0.1:9095/api/features | grep -q '"llm_enabled":true'
+      # Production artifact must advertise the LLM capability. `/api/features`
+      # is authenticated (audit P0-8), so the service key is presented.
+      - curl -sf -H "X-API-Key: ci-features-check-key-0123456789abcdef" http://127.0.0.1:9095/api/features | grep -q '"llm_enabled":true'
       # Deployment provenance route must answer with the running service identity.
       - curl -sf http://127.0.0.1:9095/api/version | grep -q '"service":"apex-api"'
       - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs
@@ -278,6 +283,10 @@ steps:
       # rejected by default (ALLOW_LEGACY_PASSWORD_HASHES unset).
       APEX_ADMIN_PASSWORD_HASH: '$argon2id$v=19$m=19456,t=2,p=1$Qe/tm9Em6f7USVaFRR+YXg$TxfPRKI0V+m+Dx/BcP5Ybv2d8hbiQoI8oxMENcztwL4'
       SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      # CI only: allow a documented non-secret so startup validation passes.
+      APEX_ALLOW_TEST_SESSION_SECRET: "1"
+      # Service key for authenticated metadata checks (>= 32 chars).
+      API_KEY_1: ci-features-check-key-0123456789abcdef,ci-check,service,ci-service
       SEARCH_INDEX_PATH: /tmp/apex-index-journeys
       RATE_LIMIT_DISABLED: "true"
       HOST: 127.0.0.1

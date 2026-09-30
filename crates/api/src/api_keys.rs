@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -102,6 +102,18 @@ impl ApiKeyManager {
 }
 
 pub fn spawn_api_key_reloader(manager: Arc<ApiKeyManager>, interval: Duration) {
+    spawn_api_key_reloader_with_provisioning(manager, interval, None);
+}
+
+/// Reload keys on an interval and, when a store is supplied, provision the
+/// canonical `app_users` rows for any principals introduced by the new
+/// snapshot. Without this, a hot-reloaded key owner would fail the
+/// `app_users(id)` foreign keys on user-owned tables.
+pub fn spawn_api_key_reloader_with_provisioning(
+    manager: Arc<ApiKeyManager>,
+    interval: Duration,
+    store: Option<Arc<apex_store::postgres::PgStore>>,
+) {
     if interval.is_zero() {
         return;
     }
@@ -112,7 +124,10 @@ pub fn spawn_api_key_reloader(manager: Arc<ApiKeyManager>, interval: Duration) {
             ticker.tick().await;
             match manager.reload() {
                 Ok(true) => {
-                    tracing::info!(api_key_count = manager.key_count(), "API keys reloaded")
+                    tracing::info!(api_key_count = manager.key_count(), "API keys reloaded");
+                    if let Some(store) = &store {
+                        ensure_api_key_principals(store, &manager.snapshot()).await;
+                    }
                 }
                 Ok(false) => {}
                 Err(err) => {
@@ -121,6 +136,32 @@ pub fn spawn_api_key_reloader(manager: Arc<ApiKeyManager>, interval: Duration) {
             }
         }
     });
+}
+
+/// Provision every API-key owner in the canonical `app_users` identity table
+/// (migration 059). API-key principals never log in, but user-owned tables
+/// carry an `app_users(id)` foreign key. Insert-only: an existing verified
+/// identity is never overwritten with the key's configured role.
+pub async fn ensure_api_key_principals(
+    store: &apex_store::postgres::PgStore,
+    keys: &HashMap<String, ApiKey>,
+) {
+    for key in keys.values() {
+        if let Err(err) = store
+            .ensure_app_user_exists(
+                key.owner_user_id.as_str(),
+                key.owner_user_id.as_str(),
+                key.role.as_str(),
+            )
+            .await
+        {
+            tracing::warn!(
+                key_id = %key.key_id,
+                owner_user_id = %key.owner_user_id,
+                "failed to provision app_users identity for API-key owner: {err:#}"
+            );
+        }
+    }
 }
 
 fn load_from_source(
@@ -149,6 +190,7 @@ fn file_modified_at(path: &Path) -> Result<Option<SystemTime>> {
 /// role must never be silently rewritten to a different privilege level.
 pub fn load_api_keys_from_env(slots: usize) -> Result<HashMap<String, ApiKey>> {
     let mut registry = HashMap::new();
+    let mut seen_hashes: HashSet<String> = HashSet::new();
     for i in 1..=slots {
         let env_key = format!("API_KEY_{}", i);
         let Ok(val) = std::env::var(&env_key) else {
@@ -170,6 +212,11 @@ pub fn load_api_keys_from_env(slots: usize) -> Result<HashMap<String, ApiKey>> {
         if raw_key.is_empty() {
             anyhow::bail!("{env_key}: raw_key must not be empty");
         }
+        if raw_key.len() < 32 {
+            anyhow::bail!(
+                "{env_key}: raw_key must be at least 32 characters (generate with `openssl rand -hex 32`)"
+            );
+        }
         let name = parts[1].trim();
         let role = parts[2].trim().parse::<ApiRole>().map_err(|error| {
             anyhow::anyhow!("{env_key}: invalid role '{}': {error}", parts[2].trim())
@@ -181,12 +228,20 @@ pub fn load_api_keys_from_env(slots: usize) -> Result<HashMap<String, ApiKey>> {
             .map(UserId::from)
             .unwrap_or_else(|| UserId::new(format!("user-{}", i)));
         let key_id = format!("key-{}", i);
+        let key_hash = auth::hash_api_key(raw_key);
+        if !seen_hashes.insert(key_hash.clone()) {
+            // With a duplicate hash, `validate_token` would pick a role based
+            // on HashMap iteration order.
+            anyhow::bail!(
+                "{env_key}: duplicate API key material (already present in an earlier slot)"
+            );
+        }
         registry.insert(
             key_id.clone(),
             ApiKey {
                 key_id,
                 owner_user_id,
-                key_hash: auth::hash_api_key(raw_key),
+                key_hash,
                 name: name.to_string(),
                 role,
                 created_at: Utc::now(),
@@ -205,6 +260,7 @@ pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<Stri
     let records: Vec<ApiKeyFileRecord> = serde_json::from_str(&raw)
         .map_err(|error| anyhow::anyhow!("{}: invalid API key file: {error}", path.display()))?;
     let mut registry = HashMap::new();
+    let mut seen_hashes: HashSet<String> = HashSet::new();
 
     for (index, record) in records.into_iter().take(slots).enumerate() {
         let key_id = format!("file-key-{}", index + 1);
@@ -231,12 +287,30 @@ pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<Stri
                 record.name.trim()
             );
         }
+        if record.raw_key.trim().len() < 32 {
+            anyhow::bail!(
+                "{}: entry #{} (name '{}'): raw_key must be at least 32 characters \
+                 (generate with `openssl rand -hex 32`)",
+                path.display(),
+                index + 1,
+                record.name.trim()
+            );
+        }
+        let key_hash = auth::hash_api_key(record.raw_key.trim());
+        if !seen_hashes.insert(key_hash.clone()) {
+            anyhow::bail!(
+                "{}: entry #{} (name '{}'): duplicate API key material",
+                path.display(),
+                index + 1,
+                record.name.trim()
+            );
+        }
         registry.insert(
             key_id.clone(),
             ApiKey {
                 key_id,
                 owner_user_id,
-                key_hash: auth::hash_api_key(record.raw_key.trim()),
+                key_hash,
                 name: record.name.trim().to_string(),
                 role,
                 created_at: Utc::now(),
@@ -269,11 +343,37 @@ mod tests {
     }
 
     #[test]
+    fn short_api_keys_are_rejected() {
+        let path = temp_file(
+            "api-keys-short",
+            r#"[{"raw_key":"short","name":"Short","role":"admin"}]"#,
+        );
+        assert!(
+            load_api_keys_from_file(&path, 50).is_err(),
+            "keys below the 32-character floor must be rejected"
+        );
+    }
+
+    #[test]
+    fn duplicate_api_key_material_is_rejected() {
+        // Duplicate hashes make `validate_token` pick a role by HashMap
+        // iteration order, so they are a configuration error.
+        let key = "duplicate-key-0123456789abcdef012345";
+        let path = temp_file(
+            "api-keys-duplicate",
+            &format!(
+                r#"[{{"raw_key":"{key}","name":"A","role":"admin"}},{{"raw_key":"{key}","name":"B","role":"viewer"}}]"#
+            ),
+        );
+        assert!(load_api_keys_from_file(&path, 50).is_err());
+    }
+
+    #[test]
     fn api_key_file_records_carry_a_canonical_user_id() {
         let path = temp_file(
             "api-keys-user-id",
-            r#"[{"raw_key":"alpha","name":"Alpha","role":"analyst","user_id":"usr-42"},
-                {"raw_key":"beta","name":"Beta","role":"viewer"}]"#,
+            r#"[{"raw_key":"alpha-key-0123456789abcdef01234567","name":"Alpha","role":"analyst","user_id":"usr-42"},
+                {"raw_key":"beta-key-0123456789abcdef012345678","name":"Beta","role":"viewer"}]"#,
         );
         let keys = load_api_keys_from_file(&path, 50).expect("load keys");
 
@@ -296,7 +396,7 @@ mod tests {
     fn api_keys_reload_after_file_change() {
         let path = temp_file(
             "api-keys-reload",
-            r#"[{"raw_key":"alpha","name":"Alpha","role":"admin"}]"#,
+            r#"[{"raw_key":"alpha-key-0123456789abcdef01234567","name":"Alpha","role":"admin"}]"#,
         );
         let config = ApiKeysConfig {
             file_path: Some(path.clone()),
@@ -309,7 +409,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
         fs::write(
             &path,
-            r#"[{"raw_key":"beta","name":"Beta","role":"viewer"},{"raw_key":"gamma","name":"Gamma","role":"admin"}]"#,
+            r#"[{"raw_key":"beta-key-0123456789abcdef012345678","name":"Beta","role":"viewer"},{"raw_key":"gamma-key-0123456789abcdef0123456","name":"Gamma","role":"admin"}]"#,
         )
         .expect("update api key file");
 
@@ -321,7 +421,7 @@ mod tests {
     fn api_keys_keep_old_snapshot_when_reload_fails() {
         let path = temp_file(
             "api-keys-fail",
-            r#"[{"raw_key":"alpha","name":"Alpha","role":"admin"}]"#,
+            r#"[{"raw_key":"alpha-key-0123456789abcdef01234567","name":"Alpha","role":"admin"}]"#,
         );
         let config = ApiKeysConfig {
             file_path: Some(path.clone()),
@@ -340,7 +440,10 @@ mod tests {
     #[test]
     fn invalid_env_role_fails_loudly_and_names_the_variable() {
         let _guard = env_lock();
-        std::env::set_var("API_KEY_50", "secret,Ops Key,superuser,user-50");
+        std::env::set_var(
+            "API_KEY_50",
+            "secret-key-0123456789abcdef01234567,Ops Key,superuser,user-50",
+        );
         let error = load_api_keys_from_env(50).expect_err("an invalid env role must fail loudly");
         std::env::remove_var("API_KEY_50");
 
@@ -378,7 +481,7 @@ mod tests {
     fn invalid_file_role_fails_with_file_and_entry_context() {
         let path = temp_file(
             "api-keys-bad-role",
-            r#"[{"raw_key":"alpha","name":"Alpha","role":"root"}]"#,
+            r#"[{"raw_key":"alpha-key-0123456789abcdef01234567","name":"Alpha","role":"root"}]"#,
         );
         let error = load_api_keys_from_file(&path, 50).expect_err("an invalid role must fail");
         let message = error.to_string();
@@ -392,7 +495,7 @@ mod tests {
     fn api_keys_reload_keeps_previous_snapshot_when_new_role_is_invalid() {
         let path = temp_file(
             "api-keys-bad-role-reload",
-            r#"[{"raw_key":"alpha","name":"Alpha","role":"admin"}]"#,
+            r#"[{"raw_key":"alpha-key-0123456789abcdef01234567","name":"Alpha","role":"admin"}]"#,
         );
         let config = ApiKeysConfig {
             file_path: Some(path.clone()),
@@ -404,8 +507,11 @@ mod tests {
         assert!(original.values().any(|key| key.role == ApiRole::Admin));
 
         std::thread::sleep(Duration::from_millis(10));
-        fs::write(&path, r#"[{"raw_key":"beta","name":"Beta","role":"root"}]"#)
-            .expect("write malformed role");
+        fs::write(
+            &path,
+            r#"[{"raw_key":"beta-key-0123456789abcdef012345678","name":"Beta","role":"root"}]"#,
+        )
+        .expect("write malformed role");
 
         assert!(
             manager.reload().is_err(),
@@ -423,7 +529,7 @@ mod tests {
     fn revoked_key_is_rejected_after_reload() {
         let path = temp_file(
             "api-keys-revoke",
-            r#"[{"raw_key":"alpha","name":"Alpha","role":"admin"}]"#,
+            r#"[{"raw_key":"alpha-key-0123456789abcdef01234567","name":"Alpha","role":"admin"}]"#,
         );
         let config = ApiKeysConfig {
             file_path: Some(path.clone()),
@@ -434,7 +540,7 @@ mod tests {
         let snapshot = manager.snapshot();
         assert!(snapshot
             .values()
-            .any(|key| auth::hash_api_key("alpha") == key.key_hash));
+            .any(|key| auth::hash_api_key("alpha-key-0123456789abcdef01234567") == key.key_hash));
 
         std::thread::sleep(Duration::from_millis(10));
         fs::write(&path, r#"[]"#).expect("revoke all api keys");
@@ -442,6 +548,6 @@ mod tests {
         let next = manager.snapshot();
         assert!(!next
             .values()
-            .any(|key| auth::hash_api_key("alpha") == key.key_hash));
+            .any(|key| auth::hash_api_key("alpha-key-0123456789abcdef01234567") == key.key_hash));
     }
 }
