@@ -65,13 +65,14 @@ fn test_api_key(key_id: &str, user_id: &str, raw_key: &str, role: ApiRole) -> Ap
 }
 
 fn test_api_keys() -> HashMap<String, ApiKey> {
+    // The registry is keyed by key hash (O(1) validation).
     HashMap::from([
         (
-            "admin".to_string(),
+            apex_api::auth::hash_api_key("admin-secret"),
             test_api_key("admin-key", "usr-admin", "admin-secret", ApiRole::Admin),
         ),
         (
-            "analyst".to_string(),
+            apex_api::auth::hash_api_key("analyst-secret"),
             test_api_key(
                 "analyst-key",
                 "usr-analyst",

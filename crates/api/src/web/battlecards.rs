@@ -58,6 +58,7 @@ pub struct BattlecardSectionRow {
 pub struct BattlecardsListPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -78,6 +79,7 @@ pub struct BattlecardsListPage {
 pub struct BattlecardDetailPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -196,6 +198,7 @@ pub async fn list_battlecards(
         warning_count,
         theme: String::new(),
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         battlecards,
         total,
         page,
@@ -309,6 +312,7 @@ pub async fn get_battlecard(
                 warning_count: 0,
                 theme: String::new(),
                 can_admin: session.can_admin(),
+                can_write: session.can_write(),
                 battlecard: response,
                 sections,
                 competitor_name: String::new(),
@@ -324,6 +328,7 @@ pub async fn get_battlecard(
                 warning_count: 0,
                 theme: String::new(),
                 can_admin: session.can_admin(),
+                can_write: session.can_write(),
                 requested_path: format!("/battlecards/{}", id),
             };
             super::render_template_with_status(axum::http::StatusCode::NOT_FOUND, &tpl)
@@ -337,6 +342,7 @@ pub async fn get_battlecard(
                 warning_count: 0,
                 theme: String::new(),
                 can_admin: session.can_admin(),
+                can_write: session.can_write(),
                 error_message: "Failed to load battlecard".to_string(),
                 request_id: String::new(),
             };

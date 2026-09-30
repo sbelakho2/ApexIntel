@@ -9,9 +9,10 @@ use chrono::Utc;
 
 fn api_keys() -> HashMap<String, ApiKey> {
     let now = Utc::now();
+    // Registry keyed by key hash (O(1) validation).
     HashMap::from([
         (
-            "admin".to_string(),
+            hash_api_key("admin-secret"),
             ApiKey {
                 key_id: "admin-key".to_string(),
                 owner_user_id: "user-admin".into(),
@@ -26,7 +27,7 @@ fn api_keys() -> HashMap<String, ApiKey> {
             },
         ),
         (
-            "viewer".to_string(),
+            hash_api_key("viewer-secret"),
             ApiKey {
                 key_id: "viewer-key".to_string(),
                 owner_user_id: "user-viewer".into(),

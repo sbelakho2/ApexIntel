@@ -161,6 +161,10 @@ pub struct CrawlClient {
     /// fleet-wide parallelism.
     http_gate: Arc<Semaphore>,
     http_concurrency: usize,
+    /// One pooled reqwest client per (proxy, user-agent): building a new
+    /// client per proxied request threw away its connection pool and paid a
+    /// fresh TLS handshake every time.
+    proxy_clients: std::sync::Mutex<std::collections::HashMap<String, Client>>,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +237,7 @@ impl CrawlClient {
             config,
             http_gate: Arc::new(Semaphore::new(http_concurrency)),
             http_concurrency,
+            proxy_clients: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -591,7 +596,13 @@ impl CrawlClient {
                 // the proxy does. The proxy itself must block internal ranges;
                 // the redirect policy below still rejects private IP-literal
                 // redirect targets before following them.
-                secure_client_builder(
+                let cache_key = format!("{proxy_url}|{user_agent}");
+                if let Ok(cache) = self.proxy_clients.lock() {
+                    if let Some(client) = cache.get(&cache_key) {
+                        return Ok(client.clone());
+                    }
+                }
+                let client = secure_client_builder(
                     self.config.timeout,
                     user_agent,
                     self.config.allow_private_targets,
@@ -608,7 +619,13 @@ impl CrawlClient {
                     url: request_url.to_string(),
                     proxy: proxy_url.to_string(),
                     message: error.to_string(),
-                })
+                })?;
+                // The proxy pool is small and bounded by configuration; one
+                // client per (proxy, user-agent) keeps its connection pool.
+                if let Ok(mut cache) = self.proxy_clients.lock() {
+                    cache.insert(cache_key, client.clone());
+                }
+                Ok(client)
             }
             None => Ok(self.client.clone()),
         }

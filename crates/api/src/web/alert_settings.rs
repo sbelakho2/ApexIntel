@@ -23,6 +23,7 @@ use apex_core::data_state::{DataState, DegradedNotice};
 pub struct AlertSettingsPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -97,6 +98,7 @@ pub async fn alert_settings_page(
     render_template(&AlertSettingsPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,

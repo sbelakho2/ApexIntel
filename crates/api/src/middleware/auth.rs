@@ -186,9 +186,10 @@ mod tests {
 
     fn api_keys() -> HashMap<String, ApiKey> {
         let now = Utc::now();
+        // The registry is keyed by key hash (O(1) validation).
         HashMap::from([
             (
-                "admin".to_string(),
+                hash_api_key("admin-secret"),
                 ApiKey {
                     key_id: "admin-key".to_string(),
                     owner_user_id: "user-admin".to_string().into(),
@@ -203,7 +204,7 @@ mod tests {
                 },
             ),
             (
-                "viewer".to_string(),
+                hash_api_key("viewer-secret"),
                 ApiKey {
                     key_id: "viewer-key".to_string(),
                     owner_user_id: "user-viewer".to_string().into(),

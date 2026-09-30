@@ -42,6 +42,7 @@ pub struct TrendsPage {
     // ── base layout fields ──
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -384,6 +385,7 @@ pub async fn trends_page(
     let page = TrendsPage {
         current_path: "/trends".to_string(),
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         max_val,
         max_val_half,

@@ -129,7 +129,7 @@ unicode-normalization = "0.1"
 pgvector = { version = "0.4", features = ["sqlx"] }
 
 # Redis
-redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
 
 # Config
 dotenvy = "0.15"

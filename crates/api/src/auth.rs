@@ -323,19 +323,16 @@ pub fn validate_token(
     let token_hash = hash_api_key(token);
     let token_bytes = token_hash.as_bytes();
 
-    // Constant-time scan: always iterate all keys, no early exit
-    let mut matched_key: Option<&ApiKey> = None;
-    for key in registry.values() {
-        let stored_bytes = key.key_hash.as_bytes();
-        if stored_bytes.len() == token_bytes.len() && bool::from(stored_bytes.ct_eq(token_bytes)) {
-            matched_key = Some(key);
-        }
-    }
-
-    let key = match matched_key {
-        Some(k) => k,
+    // O(1): the registry is keyed by key hash. The constant-time comparison is
+    // kept as defense-in-depth against a lookup/collision side channel.
+    let key = match registry.get(&token_hash) {
+        Some(key) => key,
         None => return AuthResult::InvalidKey,
     };
+    let stored_bytes = key.key_hash.as_bytes();
+    if stored_bytes.len() != token_bytes.len() || !bool::from(stored_bytes.ct_eq(token_bytes)) {
+        return AuthResult::InvalidKey;
+    }
 
     if !key.enabled {
         return AuthResult::Disabled {
@@ -414,7 +411,7 @@ mod tests {
             rate_limit_per_min: 100,
             allowed_origins: vec![],
         };
-        reg.insert("k1".to_string(), admin_key);
+        reg.insert(admin_key.key_hash.clone(), admin_key);
 
         let viewer_key = ApiKey {
             key_id: "k2".to_string(),
@@ -428,7 +425,7 @@ mod tests {
             rate_limit_per_min: 30,
             allowed_origins: vec!["https://app.starz.com".to_string()],
         };
-        reg.insert("k2".to_string(), viewer_key);
+        reg.insert(viewer_key.key_hash.clone(), viewer_key);
 
         let disabled_key = ApiKey {
             key_id: "k3".to_string(),
@@ -442,7 +439,7 @@ mod tests {
             rate_limit_per_min: 50,
             allowed_origins: vec![],
         };
-        reg.insert("k3".to_string(), disabled_key);
+        reg.insert(disabled_key.key_hash.clone(), disabled_key);
 
         let expired_key = ApiKey {
             key_id: "k4".to_string(),
@@ -456,7 +453,7 @@ mod tests {
             rate_limit_per_min: 50,
             allowed_origins: vec![],
         };
-        reg.insert("k4".to_string(), expired_key);
+        reg.insert(expired_key.key_hash.clone(), expired_key);
 
         reg
     }

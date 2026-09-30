@@ -236,8 +236,10 @@ pub fn load_api_keys_from_env(slots: usize) -> Result<HashMap<String, ApiKey>> {
                 "{env_key}: duplicate API key material (already present in an earlier slot)"
             );
         }
+        // Keyed by key hash so `validate_token` is O(1) rather than a scan
+        // over every key on every request.
         registry.insert(
-            key_id.clone(),
+            key_hash.clone(),
             ApiKey {
                 key_id,
                 owner_user_id,
@@ -305,8 +307,9 @@ pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<Stri
                 record.name.trim()
             );
         }
+        // Keyed by key hash (O(1) `validate_token`).
         registry.insert(
-            key_id.clone(),
+            key_hash.clone(),
             ApiKey {
                 key_id,
                 owner_user_id,

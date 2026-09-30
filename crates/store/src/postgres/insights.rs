@@ -23,6 +23,40 @@ impl PgStore {
         Ok(severity)
     }
 
+    /// Keyset page ordered by `id` for exports, preserving the export's
+    /// `exclude_internal` and legacy-visibility rules (a hidden row must never
+    /// reach a CSV).
+    pub async fn list_insights_after(
+        &self,
+        after_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<InsightRow>> {
+        let limit = clamp_limit(limit);
+        // `title`/`summary` are non-null on the current schema but legacy rows
+        // can carry NULL; `InsightRow` requires strings, so coalesce for the
+        // export instead of failing the whole stream.
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
+                    insight_type, region, confidence,
+                    evidence_urls, entity_ids, tags, metadata, created_at, updated_at
+             FROM insights WHERE id > COALESCE(",
+        );
+        // A missing cursor starts before the nil UUID (every generated id is
+        // greater), so the predicate stays a single bound parameter.
+        qb.push_bind(after_id)
+            .push("::uuid, '00000000-0000-0000-0000-000000000000'::uuid) AND ");
+        append_internal_insight_filter_sql_clause(&mut qb, "");
+        qb.push(" AND ");
+        append_legacy_malformed_veracity_sql_clause(&mut qb, "");
+        qb.push(" ORDER BY id ASC LIMIT ").push_bind(limit);
+
+        let rows = qb
+            .build_query_as::<InsightRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(filter_visible_insights(rows))
+    }
+
     pub async fn insert_insight(
         &self,
         title: &str,

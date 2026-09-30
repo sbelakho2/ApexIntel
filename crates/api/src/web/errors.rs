@@ -15,6 +15,7 @@ use axum::{
 pub struct NotFoundPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -27,6 +28,7 @@ pub struct NotFoundPage {
 pub struct ForbiddenPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -38,6 +40,7 @@ pub struct ForbiddenPage {
 pub struct InternalErrorPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -57,6 +60,7 @@ pub async fn not_found() -> impl IntoResponse {
         warning_count: 0,
         theme: String::new(),
         can_admin: false,
+        can_write: false,
         requested_path: String::new(),
     };
 
@@ -72,6 +76,7 @@ pub fn forbidden() -> Response {
         warning_count: 0,
         theme: String::new(),
         can_admin: false,
+        can_write: false,
     };
 
     super::render_template_with_status(StatusCode::FORBIDDEN, &tpl)
@@ -87,6 +92,7 @@ pub async fn internal_error(error_message: &str, request_id: &str) -> Response {
         warning_count: 0,
         theme: String::new(),
         can_admin: false,
+        can_write: false,
         error_message: error_message.to_string(),
         request_id: request_id.to_string(),
     };
@@ -103,6 +109,7 @@ pub fn not_found_with_context(username: &str, path: &str, warning_count: i64) ->
         warning_count,
         theme: String::new(),
         can_admin: false,
+        can_write: false,
         requested_path: path.to_string(),
     };
 
@@ -123,6 +130,7 @@ pub fn internal_error_with_context(
         warning_count,
         theme: String::new(),
         can_admin: false,
+        can_write: false,
         error_message: error_message.to_string(),
         request_id: request_id.to_string(),
     };
@@ -141,9 +149,21 @@ mod tests {
             warning_count: 0,
             theme: String::new(),
             can_admin,
+            // A test page with an admin principal is also writable.
+            can_write: can_admin,
             status_strip: crate::system_status::StatusStrip::unknown(),
             requested_path: "/missing".to_string(),
         }
+    }
+
+    /// Non-writing principals get the `apex-readonly` body class that hides
+    /// write controls (CSS fallback); the route guards remain enforcement.
+    #[test]
+    fn readonly_class_marks_non_writing_principals() {
+        let viewer_html = page(false).render().expect("render 404 page");
+        assert!(viewer_html.contains("<body data-sse class=\"apex-readonly\">"));
+        let admin_html = page(true).render().expect("render 404 page");
+        assert!(!admin_html.contains("<body data-sse class=\"apex-readonly\">"));
     }
 
     #[test]

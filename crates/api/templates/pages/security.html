@@ -23,6 +23,9 @@
 <div class="mb-4 apex-card p-3">
   <div class="flex flex-wrap items-center justify-between gap-2">
     <p class="text-[11px] text-rams-muted">Run an on-demand security crawl job and refresh posture findings.</p>
+    {# The API equivalent is admin-only; the HTML control must not be shown to
+       non-admins. #}
+    {% if can_admin %}
     <button
       type="button"
       hx-post="/security/trigger-scan"
@@ -33,6 +36,7 @@
     >
       Run Security Scan
     </button>
+    {% endif %}
   </div>
   <div id="security-trigger-status" class="mt-2"></div>
 </div>

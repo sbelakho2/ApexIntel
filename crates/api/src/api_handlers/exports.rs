@@ -5,7 +5,10 @@ use crate::*;
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ExportQuery {
     pub window: Option<u32>,
-    pub cursor: Option<u32>,
+    /// Keyset cursor: the `id` of the last row of the previous page. Offset
+    /// paging could duplicate or skip rows when the table changed between
+    /// pages, so exports resume strictly after this id.
+    pub cursor: Option<uuid::Uuid>,
 }
 
 fn csv_escape(value: &str) -> String {
@@ -41,7 +44,7 @@ fn insight_severity_from_stored(value: &str) -> apex_insights::InsightSeverity {
 fn normalize_export_window(
     config: &ApiRuntimeConfig,
     query: &ExportQuery,
-) -> std::result::Result<(u32, u32), ApiError> {
+) -> std::result::Result<(u32, Option<uuid::Uuid>), ApiError> {
     let window = query.window.unwrap_or(config.export.default_window);
     if window == 0 {
         return Err(ApiError::bad_request(
@@ -55,7 +58,7 @@ fn normalize_export_window(
         )));
     }
 
-    Ok((window, query.cursor.unwrap_or(0)))
+    Ok((window, query.cursor))
 }
 
 fn export_error_response(err: ApiError) -> axum::response::Response {
@@ -67,7 +70,7 @@ fn csv_stream_response(
     body: axum::body::Body,
     download_name: &str,
     window: u32,
-    cursor: u32,
+    cursor: Option<uuid::Uuid>,
     chunk_size: u32,
 ) -> axum::response::Response {
     axum::response::Response::builder()
@@ -78,7 +81,12 @@ fn csv_stream_response(
             format!("attachment; filename=\"{}\"", download_name),
         )
         .header("x-export-window", window.to_string())
-        .header("x-export-cursor", cursor.to_string())
+        // The resume cursor is the id of the last emitted row (empty when the
+        // export returned no rows).
+        .header(
+            "x-export-cursor",
+            cursor.map(|id| id.to_string()).unwrap_or_default(),
+        )
         .header("x-export-chunk-size", chunk_size.to_string())
         .body(body)
         .unwrap_or_else(|err| {
@@ -127,17 +135,13 @@ pub(crate) async fn export_companies_csv(
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,name,domain,region,country,entity_type,is_competitor,threat_score,capabilities,updated_at\n");
 
-    let filters = CompanyListFilters::default();
     let mut emitted: i64 = 0;
-    let mut offset = cursor as i64;
+    let mut last_id = cursor;
     let target = window as i64;
 
     while emitted < target {
         let batch_limit = (target - emitted).min(chunk_size as i64);
-        let rows = match store
-            .list_companies(&filters, None, true, batch_limit, offset)
-            .await
-        {
+        let rows = match store.list_companies_after(last_id, batch_limit).await {
             Ok(rows) => rows,
             Err(error) => {
                 // Signal truncation instead of aborting under an already-sent
@@ -156,6 +160,7 @@ pub(crate) async fn export_companies_csv(
         let fetched = rows.len() as i64;
         let mut chunk = String::new();
         for row in rows {
+            last_id = Some(row.id);
             let item = company_row_to_item(row);
             chunk.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{},{}\n",
@@ -175,7 +180,6 @@ pub(crate) async fn export_companies_csv(
         }
 
         emitted += fetched;
-        offset += fetched;
         yield axum::body::Bytes::from(chunk);
 
         if fetched < batch_limit {
@@ -242,17 +246,13 @@ pub(crate) async fn export_persons_csv(
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,name,role,role_family,organization,region,priority_score,pain_index,change_risk,role_drift_score,engagement_status,updated_at\n");
 
-    let filters = PersonListFilters::default();
     let mut emitted: i64 = 0;
-    let mut offset = cursor as i64;
+    let mut last_id = cursor;
     let target = window as i64;
 
     while emitted < target {
         let batch_limit = (target - emitted).min(chunk_size as i64);
-        let rows = match store
-            .list_persons(&filters, None, true, batch_limit, offset)
-            .await
-        {
+        let rows = match store.list_persons_after(last_id, batch_limit).await {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::error!(%error, "persons export interrupted");
@@ -269,12 +269,12 @@ pub(crate) async fn export_persons_csv(
         let fetched = rows.len() as i64;
         let mut chunk = String::new();
         for row in rows {
+            last_id = Some(row.id);
             let item = person_row_to_item(row);
             chunk.push_str(&person_csv_row(&item));
         }
 
         emitted += fetched;
-        offset += fetched;
         yield axum::body::Bytes::from(chunk);
 
         if fetched < batch_limit {
@@ -343,20 +343,13 @@ pub(crate) async fn export_insights_csv(
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,title,insight_type,summary,region,confidence,created_at\n");
 
-    let filters = InsightListFilters {
-        exclude_internal: true,
-        ..Default::default()
-    };
     let mut emitted: i64 = 0;
-    let mut offset = cursor as i64;
+    let mut last_id = cursor;
     let target = window as i64;
 
     while emitted < target {
         let batch_limit = (target - emitted).min(chunk_size as i64);
-        let rows = match store
-            .list_insights(&filters, batch_limit, offset)
-            .await
-        {
+        let rows = match store.list_insights_after(last_id, batch_limit).await {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::error!(%error, "insights export interrupted");
@@ -373,6 +366,7 @@ pub(crate) async fn export_insights_csv(
         let fetched = rows.len() as i64;
         let mut chunk = String::new();
         for row in rows {
+            last_id = Some(row.id);
             chunk.push_str(&format!(
                 "{},{},{},{},{},{},{}\n",
                 csv_escape(&row.id.to_string()),
@@ -388,7 +382,6 @@ pub(crate) async fn export_insights_csv(
         }
 
         emitted += fetched;
-        offset += fetched;
         yield axum::body::Bytes::from(chunk);
 
         if fetched < batch_limit {
@@ -874,7 +867,7 @@ mod tests {
             &config,
             &ExportQuery {
                 window: Some(0),
-                cursor: Some(0),
+                cursor: None,
             },
         )
         .expect_err("zero window should fail");
@@ -884,7 +877,7 @@ mod tests {
             &config,
             &ExportQuery {
                 window: Some(config.export.max_window + 1),
-                cursor: Some(0),
+                cursor: None,
             },
         )
         .expect_err("oversized window should fail");

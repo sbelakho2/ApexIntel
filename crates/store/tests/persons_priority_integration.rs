@@ -287,3 +287,53 @@ async fn priority_filters_and_ordering_use_the_canonical_score() {
             .expect("cleanup");
     }
 }
+
+/// Keyset export queries execute against the real schema and page strictly
+/// forward by id (no duplicates or skips, unlike OFFSET paging).
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn keyset_export_queries_page_by_id() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+
+    let companies = store
+        .list_companies_after(None, 5)
+        .await
+        .expect("companies keyset query");
+    if let Some(last) = companies.last().map(|row| row.id) {
+        let next = store
+            .list_companies_after(Some(last), 5)
+            .await
+            .expect("companies next page");
+        assert!(
+            next.iter().all(|row| row.id > last),
+            "the next page must be strictly after the cursor"
+        );
+    }
+
+    let persons = store
+        .list_persons_after(None, 5)
+        .await
+        .expect("persons keyset query");
+    if let Some(last) = persons.last().map(|row| row.id) {
+        let next = store
+            .list_persons_after(Some(last), 5)
+            .await
+            .expect("persons next page");
+        assert!(next.iter().all(|row| row.id > last));
+    }
+
+    let insights = store
+        .list_insights_after(None, 5)
+        .await
+        .expect("insights keyset query");
+    if let Some(last) = insights.last().map(|row| row.id) {
+        let next = store
+            .list_insights_after(Some(last), 5)
+            .await
+            .expect("insights next page");
+        assert!(next.iter().all(|row| row.id > last));
+    }
+
+    pool.close().await;
+}

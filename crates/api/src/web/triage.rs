@@ -44,6 +44,7 @@ pub struct OverrideForm {
 pub(crate) struct TriageQueuePage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -63,6 +64,7 @@ pub(crate) struct TriageQueuePage {
 pub(crate) struct TriageQueuePartial {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -82,6 +84,7 @@ pub(crate) struct TriageQueuePartial {
 pub(crate) struct TriageDetailPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -122,13 +125,14 @@ fn parse_status(s: Option<&str>) -> Option<TriageStatus> {
     s.map(TriageStatus::from_str)
 }
 
-fn page_from_ctx(ctx: &PageContext) -> (String, String, i64, String, bool) {
+fn page_from_ctx(ctx: &PageContext) -> (String, String, i64, String, bool, bool) {
     (
         ctx.current_path.clone(),
         ctx.username.clone(),
         ctx.warning_count,
         ctx.theme.clone(),
         ctx.can_admin,
+        ctx.can_write,
     )
 }
 
@@ -236,7 +240,7 @@ pub async fn list_triage(
     );
     DegradedNotice::capture(&unack_state, &mut degraded_notice);
     let pctx = PageContext::from_session(&session, "/triage", unack_state.into_loaded_or(0));
-    let (current_path, username, warning_count, theme, can_admin) = page_from_ctx(&pctx);
+    let (current_path, username, warning_count, theme, can_admin, can_write) = page_from_ctx(&pctx);
 
     if is_htmx_request(&headers) {
         let partial = TriageQueuePartial {
@@ -245,6 +249,7 @@ pub async fn list_triage(
             warning_count,
             theme,
             can_admin,
+            can_write,
             status_strip: pctx.status_strip.clone(),
             degraded_notice: degraded_notice.clone(),
             items,
@@ -262,6 +267,7 @@ pub async fn list_triage(
             warning_count,
             theme,
             can_admin,
+            can_write,
             status_strip: pctx.status_strip.clone(),
             degraded_notice,
             items,
@@ -287,7 +293,8 @@ pub async fn get_triage_item(
     match queue.get_by_id(id).await {
         Ok(Some(item)) => {
             let pctx = PageContext::from_session(&session, &format!("/triage/{}", id), 0);
-            let (current_path, username, warning_count, theme, can_admin) = page_from_ctx(&pctx);
+            let (current_path, username, warning_count, theme, can_admin, can_write) =
+                page_from_ctx(&pctx);
             let dims = item.dimensions.as_ref();
             render_template(&TriageDetailPage {
                 current_path,
@@ -295,6 +302,7 @@ pub async fn get_triage_item(
                 warning_count,
                 theme,
                 can_admin,
+                can_write,
                 status_strip: pctx.status_strip.clone(),
                 score_pct: (item.composite_score * 100.0) as i64,
                 urgency_pct: (dims.map(|d| d.urgency).unwrap_or(0.0) * 100.0) as i64,
@@ -417,6 +425,7 @@ mod tests {
         let page = TriageQueuePage {
             current_path: "/triage".into(),
             can_admin: false,
+            can_write: false,
             username: "analyst".into(),
             warning_count: 0,
             theme: String::new(),
@@ -443,6 +452,7 @@ mod tests {
         let page = TriageQueuePage {
             current_path: "/triage".into(),
             can_admin: false,
+            can_write: false,
             username: "analyst".into(),
             warning_count: 0,
             theme: String::new(),

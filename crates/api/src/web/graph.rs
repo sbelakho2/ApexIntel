@@ -103,6 +103,7 @@ pub struct GraphEdgeRow {
 pub struct GraphPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -875,6 +876,7 @@ pub async fn graph_page(
     let tpl = GraphPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,

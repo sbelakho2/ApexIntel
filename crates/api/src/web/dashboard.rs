@@ -320,6 +320,7 @@ pub struct DashboardPage {
     // ── base layout fields ──
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -1226,6 +1227,7 @@ pub async fn dashboard(
     let page = DashboardPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -1380,6 +1382,7 @@ mod tests {
         DashboardPage {
             current_path: "/".into(),
             can_admin: false,
+            can_write: false,
             username: "analyst".into(),
             warning_count: 0,
             theme: String::new(),

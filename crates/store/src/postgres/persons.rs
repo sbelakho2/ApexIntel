@@ -826,6 +826,42 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Keyset page ordered by `p.id` for exports (no duplicates/skips under
+    /// concurrent writes, unlike `OFFSET` paging).
+    pub async fn list_persons_after(
+        &self,
+        after_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<PersonListRow>> {
+        let limit = clamp_limit(limit);
+        let rows = sqlx::query_as::<_, PersonListRow>(
+            "SELECT p.id,
+                    p.name,
+                    COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
+                    c.name AS organization,
+                    COALESCE(p.region, '') AS region,
+                    COALESCE(p.country_code, '') AS country,
+                    COALESCE(p.role_family, 'Unknown') AS role_family,
+                    p.priority_vector AS priority_vector,
+                    p.influence_score AS influence,
+                    p.pain_index AS pain_index,
+                    p.change_risk AS change_risk,
+                    p.role_drift_score AS role_drift_score,
+                    p.metadata->>'engagement_status' AS engagement_status,
+                    COALESCE(p.updated_at, p.created_at, now()) AS updated_at
+             FROM persons p
+             LEFT JOIN companies c ON p.primary_org_id = c.id
+             WHERE ($1::uuid IS NULL OR p.id > $1)
+             ORDER BY p.id ASC
+             LIMIT $2",
+        )
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn get_person_dossier(&self, person_id: Uuid) -> Result<Option<PersonDossier>> {
         let person = match self.get_person(person_id).await? {
             Some(person) => person,

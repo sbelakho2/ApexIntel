@@ -190,6 +190,7 @@ pub struct WarningsListPage {
     // base
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -265,6 +266,7 @@ pub struct WarningDetailPage {
     // base
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -819,6 +821,7 @@ pub async fn list_warnings(
     let tpl = WarningsListPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -1137,6 +1140,7 @@ pub async fn get_warning(
     let tpl = WarningDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -1969,6 +1973,7 @@ mod tests {
         WarningDetailPage {
             current_path: "/warnings/w-1".into(),
             can_admin: true,
+            can_write: true,
             username: "admin".into(),
             warning_count: 1,
             theme: "light".into(),

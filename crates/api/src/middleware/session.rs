@@ -470,8 +470,11 @@ pub fn authorize_against_record(
 #[async_trait]
 impl SessionAuthority for PgStore {
     async fn authorize(&self, session: &WebSession) -> Result<WebSession, SessionAuthorityError> {
-        let record = self
-            .get_app_user(session.user_id.as_str())
+        // One query: identity row + logout-revocation state. Explicit logout
+        // revocation therefore takes effect on the very next request, and the
+        // per-page authority cost stays at a single round trip.
+        let (record, revoked) = self
+            .get_app_user_authority(session.user_id.as_str(), session.session_id)
             .await
             .map_err(|error| {
                 tracing::error!(
@@ -482,19 +485,6 @@ impl SessionAuthority for PgStore {
                 SessionAuthorityError::Unavailable
             })?
             .ok_or(SessionAuthorityError::UnknownUser)?;
-        // Explicit logout revocation is checked on every request; a copied
-        // cookie stops working immediately.
-        let revoked = self
-            .is_session_revoked(session.session_id)
-            .await
-            .map_err(|error| {
-                tracing::error!(
-                    %error,
-                    session_id = %session.session_id,
-                    "session revocation lookup failed"
-                );
-                SessionAuthorityError::Unavailable
-            })?;
         if revoked {
             return Err(SessionAuthorityError::Revoked);
         }

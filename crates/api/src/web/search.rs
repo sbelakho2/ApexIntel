@@ -97,6 +97,7 @@ pub struct SaveSearchForm {
 pub struct SearchPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -318,6 +319,7 @@ pub async fn search_page(
         let tpl = SearchPage {
             current_path: ctx.current_path,
             can_admin: ctx.can_admin,
+            can_write: ctx.can_write,
             status_strip: crate::system_status::StatusStrip::current(),
             username: ctx.username,
             warning_count: ctx.warning_count,

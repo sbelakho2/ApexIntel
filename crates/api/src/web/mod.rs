@@ -88,6 +88,10 @@ pub struct PageContext {
     pub role: String,
     /// True when the principal's role passes `ApiRole::can_admin()`.
     pub can_admin: bool,
+    /// True when the principal's role passes `ApiRole::can_write()`; templates
+    /// hide write controls from Viewers/Service instead of rendering buttons
+    /// that will be refused.
+    pub can_write: bool,
     /// Measured system/data status for the `base.html` status strip. Replaces
     /// the previously hard-coded "System Online" / "Data Fresh" labels.
     pub status_strip: crate::system_status::StatusStrip,
@@ -102,6 +106,7 @@ impl PageContext {
             theme: String::new(), // client-side via JS
             role: session.role.as_str().to_string(),
             can_admin: session.role.can_admin(),
+            can_write: session.role.can_write(),
             status_strip: crate::system_status::StatusStrip::current(),
         }
     }

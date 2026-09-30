@@ -258,6 +258,7 @@ pub struct ShareItem {
 pub(crate) struct WorkspacesPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -273,6 +274,7 @@ pub(crate) struct WorkspacesPage {
 pub(crate) struct WorkspaceDetailPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -290,6 +292,7 @@ pub(crate) struct WorkspaceDetailPage {
 pub(crate) struct QueuePage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -305,6 +308,7 @@ pub(crate) struct QueuePage {
 pub(crate) struct ActivityPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -317,6 +321,7 @@ pub(crate) struct ActivityPage {
 pub(crate) struct SupplierRiskPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -331,6 +336,7 @@ pub(crate) struct SupplierRiskPage {
 pub(crate) struct PipelinePage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -344,6 +350,7 @@ pub(crate) struct PipelinePage {
 pub(crate) struct EvidencePage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -357,6 +364,7 @@ pub(crate) struct EvidencePage {
 pub(crate) struct TeamAssignmentsPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -472,6 +480,7 @@ pub async fn list_workspaces(
     let page = WorkspacesPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -494,6 +503,7 @@ pub async fn list_workspaces(
 pub struct WorkspaceNewPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -620,6 +630,7 @@ pub async fn new_workspace_page(
     let page = WorkspaceNewPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -855,6 +866,7 @@ pub async fn get_workspace(
     let page = WorkspaceDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1074,6 +1086,7 @@ pub async fn list_queue(
     let page = QueuePage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1231,6 +1244,7 @@ pub async fn list_activity(
     let page = ActivityPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1305,6 +1319,7 @@ pub async fn list_supplier_risks(
     let page = SupplierRiskPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1425,6 +1440,7 @@ pub async fn list_pipeline(
     let page = PipelinePage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1571,6 +1587,7 @@ pub async fn list_evidence(
     let page = EvidencePage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1684,6 +1701,7 @@ pub async fn list_team_assignments(
     let page = TeamAssignmentsPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,

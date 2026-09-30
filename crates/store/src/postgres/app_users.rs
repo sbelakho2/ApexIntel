@@ -144,6 +144,34 @@ impl PgStore {
         Ok(record)
     }
 
+    /// Canonical principal plus logout-revocation state in one round trip.
+    ///
+    /// The session authority runs on every page request; composing the
+    /// revocation check into the identity lookup keeps it at one query
+    /// instead of two.
+    pub async fn get_app_user_authority(
+        &self,
+        user_id: &str,
+        session_id: Uuid,
+    ) -> Result<Option<(AppUserRecord, bool)>> {
+        let sql = format!(
+            "SELECT {APP_USER_COLUMNS}, \
+                    EXISTS(SELECT 1 FROM revoked_sessions WHERE jti = $2) AS revoked \
+             FROM app_users WHERE id = $1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(user_id)
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let revoked: bool = sqlx::Row::try_get(&row, "revoked")?;
+        let record = <AppUserRecord as sqlx::FromRow<'_, sqlx::postgres::PgRow>>::from_row(&row)?;
+        Ok(Some((record, revoked)))
+    }
+
     /// Resolve the canonical login row for a user name.
     ///
     /// Since migration 070 `uq_app_users_username_ci` guarantees at most one

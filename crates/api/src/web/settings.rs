@@ -436,6 +436,7 @@ pub struct SettingsPage {
     // ── base layout fields ──
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     /// Stored theme (`light` | `dark` | `system`) rendered server-side so the
@@ -629,6 +630,7 @@ fn render_settings_page(
     SettingsPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme,

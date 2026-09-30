@@ -482,6 +482,33 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Keyset page ordered by `id`: `WHERE id > after_id ORDER BY id ASC`.
+    ///
+    /// Exports use this instead of `OFFSET` paging: offset over a non-unique
+    /// order can duplicate or skip rows when the table changes between pages.
+    pub async fn list_companies_after(
+        &self,
+        after_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<CompanyRow>> {
+        let limit = clamp_limit(limit);
+        let rows = sqlx::query_as::<_, CompanyRow>(
+            "SELECT id, name, legal_name, domain, country_code, region, company_type,
+                    industry_tags, employee_estimate, revenue_estimate_usd,
+                    risk_score, threat_score, overlap_score, strategic_relevance,
+                    is_competitor, metadata, created_at, updated_at
+             FROM companies
+             WHERE ($1::uuid IS NULL OR id > $1)
+             ORDER BY id ASC
+             LIMIT $2",
+        )
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn count_companies(&self, filters: &CompanyListFilters) -> Result<i64> {
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT COUNT(*) FROM companies");
         let mut has_where = false;

@@ -307,6 +307,7 @@ fn trend_bucket(kind: &str) -> &'static str {
 pub struct InsightsListPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -373,6 +374,7 @@ pub struct InsightsListPartial {
 pub struct InsightDetailPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -906,6 +908,7 @@ pub async fn list_insights(
     let tpl = InsightsListPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1158,6 +1161,7 @@ pub async fn get_insight(
     let tpl = InsightDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1572,6 +1576,7 @@ mod tests {
         InsightDetailPage {
             current_path: "/insights/i-1".into(),
             can_admin: false,
+            can_write: false,
             username: "analyst".into(),
             warning_count: 0,
             theme: String::new(),

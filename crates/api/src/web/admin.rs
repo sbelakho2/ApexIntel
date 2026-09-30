@@ -228,6 +228,7 @@ const DEAD_LETTER_LIST_LIMIT: i64 = 25;
 pub struct AdminPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -722,6 +723,7 @@ pub async fn admin_page(
     let tpl = AdminPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,

@@ -377,15 +377,14 @@ return {{allowed, retry, f10, f1h, admin and 1 or 0}}
         now: DateTime<Utc>,
     ) -> Result<LoginThrottleStatus, redis::RedisError> {
         let key = storage_key(attempt_key);
-        // EVAL rather than the gated `script` cargo feature: the script is
-        // small, and one round trip keeps the read-modify-write atomic.
-        let values: Vec<i64> = redis::cmd("EVAL")
-            .arg(script_source())
-            .arg(1)
-            .arg(key)
+        // EVALSHA via `redis::Script` (uploads once, then runs by digest with
+        // automatic `EVAL` fallback on NOSCRIPT) instead of shipping the whole
+        // script on every login attempt.
+        let values: Vec<i64> = redis::Script::new(script_source())
+            .key(key)
             .arg(mode)
             .arg(now.timestamp_millis())
-            .query_async(&mut connection)
+            .invoke_async(&mut connection)
             .await?;
 
         let value = |index: usize| values.get(index).copied().unwrap_or(0);

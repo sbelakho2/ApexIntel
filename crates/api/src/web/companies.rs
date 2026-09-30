@@ -227,6 +227,7 @@ pub struct CompanyFilterChip {
 pub struct CompaniesListPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -353,6 +354,7 @@ pub struct CompanyDossierTabPartial {
 pub struct CompanyDetailPage {
     pub current_path: String,
     pub can_admin: bool,
+    pub can_write: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -685,6 +687,7 @@ pub async fn list_companies(
     let tpl = CompaniesListPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1314,6 +1317,7 @@ pub async fn get_company(
     let tpl = CompanyDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
         status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,
@@ -1507,6 +1511,7 @@ mod tests {
         CompanyDetailPage {
             current_path: format!("/companies/{company_id}"),
             can_admin: true,
+            can_write: true,
             username: "admin".into(),
             warning_count: 1,
             theme: "light".into(),
