@@ -18,7 +18,7 @@ use serde::Deserialize;
 use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
 
-use super::{is_htmx_request, PageContext};
+use super::{is_htmx_request, safe_href, PageContext};
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
@@ -962,7 +962,7 @@ pub async fn get_warning(
         .map(|(i, url)| EvidenceItem {
             id: i.to_string(),
             source: url.split('/').nth(2).unwrap_or("unknown").to_string(),
-            url: url.clone(),
+            url: safe_href(url),
             snippet: String::new(),
             found_at: warning.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
         })
@@ -1696,11 +1696,13 @@ pub async fn analyze_warning_html(
                 }
             }
             Err(error) => {
+                // The store error (relation/constraint detail) is logged, not
+                // rendered into the panel.
                 tracing::error!(warning_id = %id, error = %error, "warning analysis enqueue failed");
                 let panel = WarningAnalysisPanel::unavailable(
                     &id,
                     &warning.title,
-                    &format!("Analysis could not be started: {error}. The warning is unchanged."),
+                    "Analysis could not be started. The warning is unchanged.",
                 );
                 super::render_template(&panel)
             }
@@ -1765,17 +1767,9 @@ pub async fn warning_analysis_status_html(
 
     #[cfg(feature = "llm")]
     {
-        // Housekeeping: resolve runs abandoned by a crashed process so the poll
-        // terminates instead of spinning forever. The stale threshold covers
-        // the configured model timeout plus retries.
-        let stale_seconds = _model
-            .as_ref()
-            .map(|Extension(model)| {
-                crate::warning_analysis::stale_run_seconds(model.primary.timeout_seconds)
-            })
-            .unwrap_or(crate::warning_analysis::DEFAULT_STALE_RUN_SECONDS);
-        crate::warning_analysis::expire_stale_runs(&store, stale_seconds).await;
-
+        // Abandoned runs are reconciled by the status heartbeat, not by this
+        // polling GET (the UPDATE per poll was the audit finding). The poll
+        // only reads.
         let run = match store.get_warning_analysis_run(run_uuid).await {
             Ok(Some(run)) if run.warning_id == uuid => run,
             Ok(_) => {
@@ -1913,9 +1907,13 @@ pub async fn review_warning_html(
 pub async fn create_warning_note(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
-    Path(id): Path<String>,
+    // Typed path extraction: a malformed id is rejected before the annotation
+    // is written and before the id can reach `Redirect::to`, which panics on
+    // non-header values (e.g. a percent-encoded newline).
+    Path(id): Path<Uuid>,
     Form(form): Form<WarningNoteForm>,
 ) -> impl IntoResponse {
+    let id = id.to_string();
     let body = form.body.trim();
     if body.len() < 3 {
         return Redirect::to(&format!("/warnings/{id}")).into_response();

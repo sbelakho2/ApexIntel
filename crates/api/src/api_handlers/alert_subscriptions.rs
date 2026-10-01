@@ -37,7 +37,8 @@ fn parse_entity_id(raw: &str) -> Result<Uuid, ApiError> {
 }
 
 fn store_err(err: impl std::fmt::Display) -> ApiError {
-    ApiError::internal(format!("Alert subscription store error: {err}"))
+    tracing::error!(error = %err, "alert subscription store error");
+    ApiError::internal("Alert subscription store error")
 }
 
 /// GET /api/entities/:id/alert-subscription
@@ -157,4 +158,20 @@ pub(crate) async fn delete_entity_alert_subscription(
     }
 
     Ok(Json(success(serde_json::json!({ "deleted": true }))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::store_err;
+
+    #[test]
+    fn store_errors_do_not_leak_internal_details() {
+        let err = store_err(
+            "error returned from database: column \"subscription_secret\" does not exist",
+        );
+
+        assert_eq!(err.message, "Alert subscription store error");
+        assert!(!err.message.contains("subscription_secret"));
+        assert_eq!(err.http_status(), 500);
+    }
 }

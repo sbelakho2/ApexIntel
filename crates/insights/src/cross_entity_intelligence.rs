@@ -794,10 +794,14 @@ impl NetworkAnalyzer {
         for company_id in company_ids {
             if let Some(positions) = self.leadership.get(company_id) {
                 for pos in positions {
-                    person_companies
-                        .entry(pos.person_id.clone())
-                        .or_default()
-                        .push(company_id.clone());
+                    let companies_for_person =
+                        person_companies.entry(pos.person_id.clone()).or_default();
+                    // A person can hold several positions at the same company
+                    // (e.g. executive + board member); the company must be
+                    // listed once or the person links it to itself.
+                    if !companies_for_person.contains(company_id) {
+                        companies_for_person.push(company_id.clone());
+                    }
                 }
             }
         }
@@ -835,10 +839,12 @@ impl NetworkAnalyzer {
             connections,
             shared_person_count,
             total_connections,
-            network_density: if !company_ids.is_empty() {
-                (total_connections as f64)
-                    / (company_ids.len() as f64 * (company_ids.len() - 1) as f64 / 2.0)
+            network_density: if company_ids.len() >= 2 {
+                ((total_connections as f64)
+                    / (company_ids.len() as f64 * (company_ids.len() - 1) as f64 / 2.0))
+                    .clamp(0.0, 1.0)
             } else {
+                // A single company has no pairs; 0/0 would otherwise produce NaN.
                 0.0
             },
         }
@@ -2336,6 +2342,53 @@ mod tests {
 
         let network = analyzer.map_leadership_network(&["c-001".to_string(), "c-002".to_string()]);
         assert_eq!(network.shared_person_count, 1);
+    }
+
+    #[test]
+    fn test_leadership_network_density_is_finite_for_single_company() {
+        let mut analyzer = NetworkAnalyzer::new();
+        analyzer.add_leadership_position(LeadershipPosition {
+            person_id: "p-001".to_string(),
+            company_id: "c-001".to_string(),
+            title: "CEO".to_string(),
+            title_level: 1,
+            is_board_member: true,
+            compensation: None,
+            tenure_start: None,
+        });
+
+        // One company = zero possible pairs; the density must be 0, not 0/0.
+        let network = analyzer.map_leadership_network(&["c-001".to_string()]);
+        assert!(network.network_density.is_finite());
+        assert_eq!(network.network_density, 0.0);
+    }
+
+    #[test]
+    fn test_leadership_network_deduplicates_multiple_roles_at_same_company() {
+        let mut analyzer = NetworkAnalyzer::new();
+        for (person, title) in [("p-001", "CEO"), ("p-001", "Board Member")] {
+            analyzer.add_leadership_position(LeadershipPosition {
+                person_id: person.to_string(),
+                company_id: "c-001".to_string(),
+                title: title.to_string(),
+                title_level: 1,
+                is_board_member: true,
+                compensation: None,
+                tenure_start: None,
+            });
+        }
+
+        // Two roles at one company must not create a self-connection.
+        let network = analyzer.map_leadership_network(&["c-001".to_string(), "c-002".to_string()]);
+        assert!(
+            network
+                .connections
+                .iter()
+                .all(|c| c.company_a != c.company_b),
+            "dual roles at one company must not link it to itself"
+        );
+        assert!(network.network_density.is_finite());
+        assert!((0.0..=1.0).contains(&network.network_density));
     }
 
     #[test]

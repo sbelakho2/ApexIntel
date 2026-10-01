@@ -687,12 +687,43 @@ async fn require_auth(
             if let Some(ctx) =
                 session_fallback_context(request.headers(), request.method(), &state).await
             {
+                // The Bearer path already rejects a Viewer/Service key on
+                // unsafe methods; the session path must match, otherwise a
+                // Viewer browser session could POST/PUT/PATCH/DELETE every
+                // non-admin `/api/*` mutation.
+                if !session_method_allowed(&ctx.role, request.method()) {
+                    tracing::warn!(
+                        user_id = %ctx.user_id,
+                        role = %ctx.role.as_str(),
+                        path = %request.uri().path(),
+                        "session-authenticated API mutation rejected: role is read-only"
+                    );
+                    return auth_error_response(ApiError::forbidden("this role is read-only"));
+                }
                 request.extensions_mut().insert(ctx);
                 return next.run(request).await;
             }
             auth_error_response(api_err)
         }
     }
+}
+
+/// HTTP methods that mutate state and therefore require a write-capable role.
+fn is_unsafe_method(method: &axum::http::Method) -> bool {
+    matches!(
+        *method,
+        axum::http::Method::POST
+            | axum::http::Method::PUT
+            | axum::http::Method::PATCH
+            | axum::http::Method::DELETE
+    )
+}
+
+/// Whether a session role may use this method on `/api/*`: safe methods for
+/// every role, mutations only for write-capable roles (mirrors the Bearer-key
+/// permission model; Viewers are read-only).
+fn session_method_allowed(role: &apex_api::auth::ApiRole, method: &axum::http::Method) -> bool {
+    !is_unsafe_method(method) || role.can_write()
 }
 
 /// Build an `ApiAuthContext` from the browser session cookie.
@@ -960,11 +991,13 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Readin
     // are not measured, keeping the frequently polled probe cheap. The schema
     // lineage is measured once and reused by both the `schema` capability and
     // the readiness report, so the two always describe the same snapshot.
-    let schema_lineage = state
-        .store
-        .schema_lineage()
-        .await
-        .map_err(|error| error.to_string());
+    let schema_lineage = state.store.schema_lineage().await.map_err(|error| {
+        // The readiness report is public; the raw DB error is logged, not
+        // returned (the detail field previously carried `error.to_string()`,
+        // exposing relation/constraint/schema names anonymously).
+        tracing::warn!(%error, "readiness schema lineage probe failed");
+        "schema lineage unavailable".to_string()
+    });
     // The capability snapshot comes from the heartbeat cache; only the cheap
     // lineage query is measured per request to keep the report self-consistent.
     let capabilities = capabilities_snapshot(&state).await;
@@ -2142,5 +2175,30 @@ mod tests {
             extract_phone_from_artifact(&artifact("Call +212 555 123 456 today")),
             Some("+212 555 123 456".to_string())
         );
+    }
+
+    #[test]
+    fn unsafe_methods_require_a_write_capable_role() {
+        use axum::http::Method;
+        for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
+            assert!(is_unsafe_method(&method), "{method} mutates state");
+        }
+        for method in [Method::GET, Method::HEAD, Method::OPTIONS] {
+            assert!(!is_unsafe_method(&method), "{method} is safe");
+        }
+
+        // Session-role gate: an Analyst/Admin may mutate over /api/*, a
+        // Viewer/Service may not (P0: the session path previously had no
+        // method check, letting Viewers perform every non-admin mutation).
+        use apex_api::auth::ApiRole;
+        for role in [ApiRole::Admin, ApiRole::Analyst] {
+            assert!(session_method_allowed(&role, &Method::POST));
+            assert!(session_method_allowed(&role, &Method::DELETE));
+        }
+        for role in [ApiRole::Viewer, ApiRole::Service] {
+            assert!(!session_method_allowed(&role, &Method::POST));
+            assert!(!session_method_allowed(&role, &Method::DELETE));
+            assert!(session_method_allowed(&role, &Method::GET));
+        }
     }
 }

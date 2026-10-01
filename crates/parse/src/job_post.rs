@@ -241,7 +241,9 @@ pub fn extract_job_posting(body_text: &str, title: &str, source_url: &str) -> Jo
     let cert_kws = crate::multilingual::certification_keywords("en");
     let all_kws: Vec<&str> = ems_kws.into_iter().chain(cert_kws).collect();
     let keywords = crate::multilingual::contains_keywords(&normalized_body, &all_kws);
-    let normalized_url = normalize_url(source_url).unwrap_or_else(|| source_url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(source_url).unwrap_or_default();
 
     JobPosting {
         title: normalizer::normalize_whitespace(title),

@@ -166,6 +166,21 @@ const TITLE_PATTERNS: &[&str] = &[
     " will be ",
 ];
 
+/// Largest char boundary at or below `index`, clamped to `s.len()`.
+///
+/// Artifact text is untrusted multibyte input; byte offsets derived from a
+/// lowercased copy can land inside a character when slicing the original.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut boundary = index;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
 /// Advanced multi-strategy org extraction from text.
 pub fn extract_org_heuristic(text: &str) -> (Option<String>, f64) {
     let text_lower = text.to_lowercase();
@@ -174,10 +189,15 @@ pub fn extract_org_heuristic(text: &str) -> (Option<String>, f64) {
         for pat in *patterns {
             let pat_lower = pat.to_lowercase();
             if let Some(pos) = text_lower.find(&pat_lower) {
-                let rest = &text[pos + pat.len()..].trim();
+                // `pos` comes from `text_lower`; lowercasing can change byte
+                // lengths, so never use it as a raw index into `text`.
+                let Some(rest) = text.get(pos + pat.len()..) else {
+                    continue;
+                };
+                let rest = rest.trim();
                 let end = rest
                     .find(['.', ',', ';', '\n', '('])
-                    .unwrap_or(rest.len().min(100));
+                    .unwrap_or_else(|| floor_char_boundary(rest, 100));
                 let candidate = rest[..end].trim().to_string();
                 if candidate.len() > 2 && candidate.len() < 100 {
                     let cleaned = clean_org_name(&candidate);
@@ -282,16 +302,24 @@ pub fn extract_title_heuristic_near(
     for pat in TITLE_PATTERNS {
         let pat_lower = pat.to_lowercase();
         if let Some(pos) = text_lower.find(&pat_lower) {
-            let rest = &text[pos + pat.len()..].trim();
+            // `pos` indexes `text_lower`; guard the slice of `text` against
+            // lowercasing-induced byte-length changes.
+            let Some(rest) = text.get(pos + pat.len()..) else {
+                continue;
+            };
+            let rest = rest.trim();
             let end = rest
                 .find(['.', ',', ';', '\n'])
-                .unwrap_or(rest.len().min(150));
+                .unwrap_or_else(|| floor_char_boundary(rest, 150));
             let candidate = rest[..end].trim().to_string();
             if is_plausible_title(&candidate) {
                 // If person_name is known, check proximity
                 if !name_words.is_empty() {
-                    let window_start = pos.saturating_sub(120);
-                    let window_end = (pos + pat.len() + end).min(text.len());
+                    let window_start = floor_char_boundary(&text_lower, pos.saturating_sub(120));
+                    let window_end = floor_char_boundary(
+                        &text_lower,
+                        (pos + pat.len() + end).min(text_lower.len()),
+                    );
                     let window = &text_lower[window_start..window_end];
                     let name_in_window = name_words.iter().all(|w| window.contains(w));
                     if name_in_window {
@@ -342,21 +370,26 @@ pub fn extract_title_heuristic_near(
     ];
 
     for title_prefix in &known_titles {
-        if let Some(pos) = text_lower.find(&title_prefix.to_lowercase()) {
+        if let Some(raw_pos) = text_lower.find(&title_prefix.to_lowercase()) {
+            // Anchor the original-text slice on a char boundary before using
+            // the offset from the lowercased copy.
+            let pos = floor_char_boundary(text, raw_pos);
+            let after = &text[pos..];
             let start = text[..pos]
                 .rfind(['.', ',', ';'])
                 .map(|p| p + 1)
                 .unwrap_or(0);
-            let end = text[pos..]
+            let end = after
                 .find(['.', ',', ';'])
                 .map(|p| pos + p)
-                .unwrap_or(text.len().min(pos + 80));
+                .unwrap_or_else(|| floor_char_boundary(text, pos + 80));
             let candidate = text[start..end].trim().to_string();
             if is_plausible_title(&candidate) {
                 // Check name proximity when available
                 if !name_words.is_empty() {
-                    let window_start = start.saturating_sub(120);
-                    let window_end = (end + 40).min(text.len());
+                    let window_start = floor_char_boundary(&text_lower, start.saturating_sub(120));
+                    let window_end =
+                        floor_char_boundary(&text_lower, (end + 40).min(text_lower.len()));
                     let window = &text_lower[window_start..window_end];
                     let name_in_window = name_words.iter().all(|w| window.contains(w));
                     if name_in_window {
@@ -1159,5 +1192,33 @@ mod tests {
         assert!(ext.is_llm_backed());
         ext.extraction_source = "llm+heuristic".to_string();
         assert!(ext.is_llm_backed());
+    }
+
+    #[test]
+    fn test_org_heuristic_multibyte_truncation_does_not_panic() {
+        // 99 ASCII bytes then a 2-byte char straddling the 100-byte cap.
+        let text = format!("joins {}é and partners", "a".repeat(99));
+        let _ = extract_org_heuristic(&text);
+    }
+
+    #[test]
+    fn test_title_heuristic_multibyte_truncation_does_not_panic() {
+        // 149 ASCII bytes then a 2-byte char straddling the 150-byte cap.
+        let text = format!("promoted to {}é recently", "a".repeat(149));
+        let _ = extract_title_heuristic(&text);
+    }
+
+    #[test]
+    fn test_org_heuristic_case_folding_offset_does_not_panic() {
+        // KELVIN SIGN lowercases from 3 bytes to 1, shifting byte offsets.
+        let text = format!("{}é joins Acme", "\u{212a}".repeat(10));
+        let _ = extract_org_heuristic(&text);
+    }
+
+    #[test]
+    fn test_title_heuristic_near_multibyte_window_does_not_panic() {
+        // Window arithmetic must stay on char boundaries for multibyte text.
+        let text = format!("x.{}{} as CEO at Acme", "é".repeat(61), "€");
+        let _ = extract_title_heuristic_near(&text, Some("Jane Doe"));
     }
 }

@@ -8,7 +8,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use super::PageContext;
+use super::{safe_relative_href, PageContext};
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters};
@@ -19,7 +19,10 @@ pub struct NotificationItem {
     pub category: String,
     pub title: String,
     pub body: String,
-    pub action_url: String,
+    /// Internal action link. `None` means the stored value was absent or not
+    /// a safe relative path, in which case the template renders no link
+    /// (audit #52: never emit a stored URL into `href` unfiltered).
+    pub action_url: Option<String>,
     pub entity_label: String,
     pub created_at: String,
     pub is_read: bool,
@@ -97,9 +100,10 @@ pub async fn list_notifications_page(
                 category: notification.category.replace('_', " "),
                 title: notification.title,
                 body: notification.body,
-                action_url: notification
-                    .action_url
-                    .unwrap_or_else(|| "/notifications".to_string()),
+                action_url: match notification.action_url.as_deref() {
+                    None => Some("/notifications".to_string()),
+                    Some(raw) => safe_relative_href(raw),
+                },
                 entity_label: match (notification.entity_type, notification.entity_id) {
                     (Some(entity_type), Some(entity_id)) => {
                         format!("{} · {}", entity_type, entity_id)

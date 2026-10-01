@@ -129,10 +129,17 @@ impl SourceGroundingValidator {
         for (i, text) in self.source_texts.iter().enumerate() {
             let text_lower = text.to_lowercase();
             if text_lower.contains(&value_lower) {
-                // Find the surrounding context
-                let idx = text_lower.find(&value_lower).unwrap_or(0);
-                let start = idx.saturating_sub(50);
-                let end = (idx + value.len() + 50).min(text.len());
+                // Find the surrounding context. `idx` is a byte offset in the
+                // lowercased text, which can be longer than `text` (e.g.
+                // 'İ' -> "i\u{307}"), so clamp to `text.len()` and to UTF-8
+                // char boundaries before slicing.
+                let idx = text_lower.find(&value_lower).unwrap_or(0).min(text.len());
+                let start = text.floor_char_boundary(idx.saturating_sub(50));
+                let end = text.ceil_char_boundary(
+                    idx.saturating_add(value.len())
+                        .saturating_add(50)
+                        .min(text.len()),
+                );
                 let context = &text[start..end];
 
                 return SourceGrounding {
@@ -741,5 +748,19 @@ mod tests {
         assert_eq!(summary.sourced_fields, 1);
         assert_eq!(summary.unsourced_fields, 1);
         assert!((summary.grounding_ratio - 0.5).abs() < 0.01);
+    }
+
+    // Audit: the ±50-byte context window must be clamped to UTF-8 char
+    // boundaries; lowercased offsets can also run past the original text.
+    #[test]
+    fn test_exact_match_multibyte_context_no_panic() {
+        let mut validator = SourceGroundingValidator::new();
+        let source = format!("{} alpha beta gamma", "é".repeat(40));
+        validator.add_source(&source, Some("https://example.com"));
+
+        let result = validator.validate_field("name", "alpha beta gamma");
+        assert!(matches!(result.match_method, MatchMethod::Exact));
+        let context = result.source_text.expect("context recorded");
+        assert!(context.contains("alpha beta gamma"));
     }
 }

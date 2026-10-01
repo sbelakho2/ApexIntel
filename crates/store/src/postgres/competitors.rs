@@ -26,7 +26,10 @@ impl PgStore {
     pub async fn list_competitors(&self, limit: i64, offset: i64) -> Result<Vec<CompanyRow>> {
         let (limit, offset) = normalize_competitor_window(limit, offset);
         let rows = sqlx::query_as::<_, CompanyRow>(
-            "SELECT * FROM companies WHERE (metadata->>'is_competitor')::boolean = true ORDER BY name ASC LIMIT $1 OFFSET $2"
+            "SELECT * FROM companies \
+             WHERE is_competitor = TRUE \
+                OR lower(metadata->>'is_competitor') IN ('true', 't', '1') \
+             ORDER BY name ASC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
@@ -37,7 +40,9 @@ impl PgStore {
 
     pub async fn count_competitors(&self) -> Result<i64> {
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM companies WHERE (metadata->>'is_competitor')::boolean = true",
+            "SELECT COUNT(*) FROM companies \
+             WHERE is_competitor = TRUE \
+                OR lower(metadata->>'is_competitor') IN ('true', 't', '1')",
         )
         .fetch_one(&self.pool)
         .await?;

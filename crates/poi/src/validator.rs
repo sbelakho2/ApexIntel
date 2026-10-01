@@ -421,13 +421,21 @@ fn validate_bio_field(profile: &PoiProfile) -> FieldValidation {
         issues.push("Bio is too generic — likely auto-generated".to_string());
     }
 
+    let truncated_bio = if profile.public_bio.len() > 100 {
+        // Truncate on a UTF-8 character boundary: public bios are free text
+        // (crawled/LLM) and byte 100 may split a multibyte character.
+        let mut end = 100;
+        while end > 0 && !profile.public_bio.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &profile.public_bio[..end])
+    } else {
+        profile.public_bio.clone()
+    };
+
     FieldValidation {
         field: "public_bio".to_string(),
-        current_value: if profile.public_bio.len() > 100 {
-            format!("{}...", &profile.public_bio[..100])
-        } else {
-            profile.public_bio.clone()
-        },
+        current_value: truncated_bio,
         has_evidence,
         evidence_sources,
         confidence,
@@ -499,29 +507,63 @@ fn validate_name_field(profile: &PoiProfile) -> FieldValidation {
 
 // ─── Utility Functions ───
 
+/// Maximum number of bytes per input compared by [`longest_common_substring`].
+///
+/// The computation is quadratic in input length; artifact summaries come from
+/// arbitrary crawled pages and can be megabytes, so a full DP table would
+/// allocate `a.len() * b.len() * 4` bytes (terabytes for 10 MB inputs) and
+/// OOM. Callers only use the result to detect a ≥30-byte bio/artifact overlap,
+/// so comparing the first 2 KiB of each input preserves that signal while
+/// bounding the work. The only semantics change is that a match occurring
+/// entirely beyond the window is no longer detected; a match inside the window
+/// is detected exactly as before.
+const MAX_LCS_INPUT_BYTES: usize = 2048;
+
+/// Truncate `value` to at most `max_bytes` bytes on a UTF-8 char boundary.
+fn bounded_prefix(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 /// Compute the longest common substring between two strings.
+///
+/// Only the first [`MAX_LCS_INPUT_BYTES`] bytes of each input are compared
+/// (see the constant for the semantics); memory is one rolling DP row, so the
+/// allocation stays O(b.len()) regardless of input size.
 fn longest_common_substring(a: &str, b: &str) -> String {
+    let a = bounded_prefix(a, MAX_LCS_INPUT_BYTES);
+    let b = bounded_prefix(b, MAX_LCS_INPUT_BYTES);
     let a_bytes: Vec<u8> = a.bytes().collect();
     let b_bytes: Vec<u8> = b.bytes().collect();
-    let mut max_len = 0;
-    let mut max_end = 0;
+    let mut max_len: usize = 0;
+    let mut max_end: usize = 0;
 
-    // Simple O(n*m) DP — good enough for short strings
-    let mut dp = vec![vec![0u32; b_bytes.len() + 1]; a_bytes.len() + 1];
+    let mut prev = vec![0u32; b_bytes.len() + 1];
+    let mut curr = vec![0u32; b_bytes.len() + 1];
     for i in 1..=a_bytes.len() {
         for j in 1..=b_bytes.len() {
             if a_bytes[i - 1] == b_bytes[j - 1] {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
-                if dp[i][j] > max_len {
-                    max_len = dp[i][j];
+                let len = prev[j - 1] + 1;
+                curr[j] = len;
+                if len as usize > max_len {
+                    max_len = len as usize;
                     max_end = i;
                 }
+            } else {
+                curr[j] = 0;
             }
         }
+        std::mem::swap(&mut prev, &mut curr);
     }
 
     if max_len > 0 {
-        String::from_utf8_lossy(&a_bytes[max_end - max_len as usize..max_end]).to_string()
+        String::from_utf8_lossy(&a_bytes[max_end - max_len..max_end]).to_string()
     } else {
         String::new()
     }
@@ -766,5 +808,41 @@ mod tests {
         assert!(!lcs.is_empty());
         // "hello" should be the LCS (length 5) - matches both contain it
         assert!(lcs.len() >= 5);
+    }
+
+    #[test]
+    fn test_longest_common_substring_pathological_size_is_bounded() {
+        // Two multi-megabyte inputs: before bounding, the DP table allocated
+        // a.len()*b.len() u32 cells (terabytes here) and OOM'd. The overlap
+        // sits inside the bounded window, so it is still found.
+        let shared = "the quick brown fox jumps over the lazy dog";
+        let a = format!("{shared}{}", "a".repeat(4_000_000));
+        let b = format!("prefix {shared} suffix{}", "b".repeat(4_000_000));
+        let lcs = longest_common_substring(&a, &b);
+        assert!(lcs.len() >= 30, "expected shared overlap, got {lcs:?}");
+    }
+
+    #[test]
+    fn test_longest_common_substring_truncates_on_char_boundary() {
+        // A multibyte char straddling the cap must not panic; the prefix is
+        // backed off to a char boundary.
+        let a = format!("{}é", "a".repeat(MAX_LCS_INPUT_BYTES - 1));
+        let b = format!("{}é", "a".repeat(MAX_LCS_INPUT_BYTES - 1));
+        let lcs = longest_common_substring(&a, &b);
+        assert!(lcs.len() >= MAX_LCS_INPUT_BYTES - 1);
+    }
+
+    #[test]
+    fn test_validate_bio_multibyte_does_not_panic() {
+        let mut profile = make_test_profile();
+        // 99 ASCII bytes followed by a 2-byte character straddling byte 100.
+        profile.public_bio = format!("{}é tail", "a".repeat(99));
+        let validation = validate_profile(&profile);
+        let bio = validation
+            .fields
+            .iter()
+            .find(|f| f.field == "public_bio")
+            .unwrap_or_else(|| panic!("bio field should be validated"));
+        assert!(bio.current_value.ends_with("..."));
     }
 }

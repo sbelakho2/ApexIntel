@@ -100,7 +100,9 @@ pub fn extract_award(body_text: &str, title: &str, url: &str, jurisdiction: &str
     let ems_kws = crate::multilingual::ems_keywords("en");
     let keywords = crate::multilingual::contains_keywords(body_text, &ems_kws);
 
-    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(url).unwrap_or_default();
 
     AwardExtract {
         award_name,

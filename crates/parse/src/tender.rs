@@ -69,7 +69,9 @@ pub fn extract_tender(body_text: &str, title: &str, url: &str, portal: &str) -> 
     let ems_kws = crate::multilingual::ems_keywords("en");
     let all_kws: Vec<&str> = proc_kws.into_iter().chain(ems_kws).collect();
     let keywords = crate::multilingual::contains_keywords(&normalized_body, &all_kws);
-    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(url).unwrap_or_default();
 
     TenderExtract {
         title: normalizer::normalize_whitespace(title),

@@ -140,6 +140,32 @@ pub fn is_private_host(host: &str) -> bool {
     }
 }
 
+/// Whether the browser renderer may issue one network request.
+///
+/// Applied to the navigation URL and, through CDP `Fetch` interception, to
+/// every redirect hop, subresource, iframe and worker request the rendered
+/// page triggers — a validated navigation URL alone does not stop a hostile
+/// page from fetching `http://169.254.169.254/` or an internal host.
+///
+/// `data:`/`about:`/`blob:` are local to the renderer and cannot egress;
+/// every other non-http(s) scheme (`file:`, `ftp:`, `javascript:`, …) is
+/// rejected. http(s) requests must resolve to public addresses, and resolution
+/// failures fail closed, mirroring [`validate_browser_url`].
+pub(crate) async fn browser_request_allowed(url: &str, allow_private_hosts: bool) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "http" | "https" => {}
+        "data" | "about" | "blob" => return true,
+        _ => return false,
+    }
+    if allow_private_hosts {
+        return true;
+    }
+    assert_public_resolution(&parsed).await.is_ok()
+}
+
 /// Re-resolve the host immediately before navigating and reject any private
 /// address. Resolution failures fail closed: an attacker-influenced URL whose
 /// public resolution cannot be verified is rejected as a network failure (the
@@ -410,5 +436,33 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn request_policy_blocks_private_targets_and_non_http_schemes() {
+        for blocked in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8080/admin",
+            "http://localhost/",
+            "http://[::1]/",
+            "file:///etc/passwd",
+            "ftp://example.com/x",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert!(
+                !browser_request_allowed(blocked, false).await,
+                "page resource request must be blocked: {blocked}"
+            );
+        }
+
+        // Public IP literals skip DNS, so this holds without network access.
+        assert!(browser_request_allowed("https://93.184.216.34/", false).await);
+        // Local schemes cannot reach the network and are used by the renderer
+        // itself (the self-test `data:` fixture).
+        assert!(browser_request_allowed("data:text/html,<p>x</p>", false).await);
+        assert!(browser_request_allowed("about:blank", false).await);
+        // The explicit test escape hatch mirrors the navigation guard.
+        assert!(browser_request_allowed("http://127.0.0.1:8080/", true).await);
     }
 }

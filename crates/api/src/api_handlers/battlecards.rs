@@ -276,12 +276,16 @@ pub(crate) async fn delete_battlecard(
     };
 
     match state.store.delete_battlecard(uid).await {
-        Ok(()) => (
+        Ok(true) => (
             StatusCode::OK,
             Json(success_with_meta(
                 serde_json::json!({"deleted": true}),
                 ResponseMeta::now().with_request_id(request_id),
             )),
+        ),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(error_response(ApiError::not_found("Battlecard", &id))),
         ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "delete_battlecard failed: {err:#}");
@@ -304,6 +308,7 @@ pub struct UpdateSectionRequest {
 
 pub(crate) async fn update_battlecard_section(
     State(state): State<AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
     Json(payload): Json<UpdateSectionRequest>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
@@ -322,15 +327,19 @@ pub(crate) async fn update_battlecard_section(
 
     match state
         .store
-        .update_battlecard_section(uid, &payload.section, &payload.data)
+        .update_battlecard_section(uid, &payload.section, &payload.data, auth.user_id.as_str())
         .await
     {
-        Ok(()) => (
+        Ok(true) => (
             StatusCode::OK,
             Json(success_with_meta(
                 serde_json::json!({"updated": true}),
                 ResponseMeta::now().with_request_id(request_id),
             )),
+        ),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(error_response(ApiError::not_found("Battlecard", &id))),
         ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "update_battlecard_section failed: {err:#}");
@@ -395,6 +404,7 @@ fn infer_category(industry: &[String]) -> apex_insights::entity_relevance::Entit
 /// section is persisted back to the battlecard's JSONB columns.
 pub(crate) async fn regenerate_battlecard(
     State(state): State<AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let request_id = Uuid::new_v4().to_string();
@@ -635,12 +645,21 @@ pub(crate) async fn regenerate_battlecard(
         ),
     ];
     for (section, json) in sections {
-        if let Err(e) = state
+        match state
             .store
-            .update_battlecard_section(uid, section, &json)
+            .update_battlecard_section(uid, section, &json, auth.user_id.as_str())
             .await
         {
-            tracing::warn!(section, error = %e, "regenerate_battlecard: persist section failed");
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    section,
+                    "regenerate_battlecard: battlecard missing while persisting section"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(section, error = %e, "regenerate_battlecard: persist section failed");
+            }
         }
     }
     // Timestamp touch-up on an already-persisted battlecard; a failure must

@@ -11,6 +11,32 @@ use serde::{Deserialize, Serialize};
 /// Maximum allowed lag days in transform specs (B211).
 pub const MAX_LAG_DAYS: i32 = 365;
 
+/// Join dimensions the recipe schema accepts. An LLM-produced hypothesis with
+/// an unknown join can never fire predictably, so it must not reach the recipe
+/// store.
+pub const ALLOWED_JOINS: &[&str] = &["Entity", "Site", "Geo", "Industry", "Lane", "Domain"];
+
+/// Statistical tests the recipe schema accepts.
+pub const ALLOWED_TEST_TYPES: &[&str] = &[
+    "FisherExact",
+    "CrossCorrelation",
+    "MutualInformation",
+    "HazardUplift",
+];
+
+/// Bounds keeping generated recipe fields reviewable and renderable.
+const MAX_RECIPE_ID_BYTES: usize = 128;
+const MAX_OUTCOME_BYTES: usize = 256;
+const MAX_SIGNALS: usize = 64;
+const MAX_SIGNAL_NAME_BYTES: usize = 64;
+const MAX_NARRATIVE_BYTES: usize = 4096;
+const MAX_ACTIONS: usize = 32;
+const MAX_ACTION_BYTES: usize = 2000;
+const MAX_APPLICABILITY_VALUES: usize = 32;
+const MAX_APPLICABILITY_VALUE_BYTES: usize = 128;
+const MAX_NOTES_BYTES: usize = 1024;
+const MAX_EVIDENCE_SLOTS: usize = 64;
+
 /// Known top-level JSON fields in a hypothesis response (B212).
 const KNOWN_FIELDS: &[&str] = &[
     "id",
@@ -401,18 +427,104 @@ pub fn validate_hypothesis(
 
     if hyp.id.is_empty() {
         issues.push("empty id".to_string());
+    } else if hyp.id.len() > MAX_RECIPE_ID_BYTES {
+        issues.push(format!(
+            "id exceeds {MAX_RECIPE_ID_BYTES} bytes ({} bytes)",
+            hyp.id.len()
+        ));
+    } else if !is_safe_field_text(&hyp.id) {
+        issues.push("id contains control characters".to_string());
     }
     if existing_ids.contains(&hyp.id) {
         issues.push(format!("duplicate id: {}", hyp.id));
     }
+
+    if !ALLOWED_JOINS
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(&hyp.join))
+    {
+        issues.push(format!(
+            "unknown join '{}' (allowed: {:?})",
+            hyp.join, ALLOWED_JOINS
+        ));
+    }
+    if !ALLOWED_TEST_TYPES
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(&hyp.test_type))
+    {
+        issues.push(format!(
+            "unknown test type '{}' (allowed: {:?})",
+            hyp.test_type, ALLOWED_TEST_TYPES
+        ));
+    }
+
+    if hyp.outcome.trim().is_empty() {
+        issues.push("empty outcome".to_string());
+    } else if hyp.outcome.len() > MAX_OUTCOME_BYTES || !is_safe_field_text(&hyp.outcome) {
+        issues.push("outcome is too long or contains control characters".to_string());
+    }
+
     if hyp.signals.is_empty() {
         issues.push("no signals".to_string());
     }
+    if hyp.signals.len() > MAX_SIGNALS {
+        issues.push(format!(
+            "too many signals ({} > {MAX_SIGNALS})",
+            hyp.signals.len()
+        ));
+    }
+    for signal in &hyp.signals {
+        if signal.is_empty() || signal.len() > MAX_SIGNAL_NAME_BYTES {
+            issues.push(format!("invalid signal name: '{signal}'"));
+        } else if !signal
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            issues.push(format!(
+                "signal name '{signal}' contains characters outside [a-z0-9_]"
+            ));
+        }
+    }
+
     if hyp.narrative_template.is_empty() {
         issues.push("empty narrative_template".to_string());
+    } else if hyp.narrative_template.len() > MAX_NARRATIVE_BYTES {
+        issues.push(format!(
+            "narrative_template exceeds {MAX_NARRATIVE_BYTES} bytes"
+        ));
+    } else if !is_safe_field_text(&hyp.narrative_template) {
+        issues.push("narrative_template contains control characters".to_string());
     }
+
     if hyp.action_playbook.is_empty() {
         issues.push("empty action_playbook".to_string());
+    }
+    if hyp.action_playbook.len() > MAX_ACTIONS {
+        issues.push(format!(
+            "too many actions ({} > {MAX_ACTIONS})",
+            hyp.action_playbook.len()
+        ));
+    }
+    for action in &hyp.action_playbook {
+        if action.trim().is_empty() {
+            issues.push("action_playbook contains an empty action".to_string());
+        } else if action.len() > MAX_ACTION_BYTES || !is_safe_field_text(action) {
+            issues.push(format!("action is too long or unsafe: '{action}'"));
+        }
+    }
+
+    for (name, value) in [
+        ("min_effect", hyp.thresholds.min_effect),
+        ("max_p_value", hyp.thresholds.max_p_value),
+        ("min_stability", hyp.thresholds.min_stability),
+        ("max_false_alarm_rate", hyp.thresholds.max_false_alarm_rate),
+    ] {
+        if !value.is_finite() {
+            issues.push(format!("threshold {name} is not finite"));
+        }
+    }
+    if hyp.thresholds.min_effect < 0.0 {
+        issues.push("min_effect threshold must be >= 0".to_string());
     }
 
     // Check thresholds are consistent with candidate stats
@@ -427,9 +539,78 @@ pub fn validate_hypothesis(
     // Check narrative uses evidence slots
     if !hyp.narrative_template.contains("{{evidence:") {
         issues.push("narrative lacks {{evidence:...}} slots".to_string());
+    } else {
+        let slots = evidence_slots_in_template(&hyp.narrative_template);
+        if slots.is_empty() || slots.len() > MAX_EVIDENCE_SLOTS {
+            issues.push(format!(
+                "narrative declares {} evidence slots (must be 1..={MAX_EVIDENCE_SLOTS})",
+                slots.len()
+            ));
+        }
+        for slot in &slots {
+            if slot.is_empty() {
+                issues.push("narrative contains an empty evidence slot".to_string());
+            } else if slot.len() > MAX_SIGNAL_NAME_BYTES {
+                issues.push(format!("evidence slot name too long: '{slot}'"));
+            }
+        }
     }
 
+    check_applicability(&hyp.applicability, &mut issues);
+
     issues
+}
+
+/// Reject control characters (except newline/tab) in values that are persisted
+/// verbatim and later embedded in prompts, markdown, HTML and logs.
+fn is_safe_field_text(value: &str) -> bool {
+    !value
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+}
+
+/// Extract and normalize `{{evidence:NAME}}` slot names in order.
+fn evidence_slots_in_template(template: &str) -> Vec<String> {
+    const PREFIX: &str = "{{evidence:";
+    let mut slots = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find(PREFIX) {
+        let after = &rest[start + PREFIX.len()..];
+        match after.find("}}") {
+            Some(end) => {
+                slots.push(normalize_signal_name(&after[..end]));
+                rest = &after[end + 2..];
+            }
+            None => break,
+        }
+    }
+    slots
+}
+
+fn check_applicability(applicability: &Applicability, issues: &mut Vec<String>) {
+    for (label, values) in [
+        ("geos", &applicability.geos),
+        ("industries", &applicability.industries),
+    ] {
+        if values.len() > MAX_APPLICABILITY_VALUES {
+            issues.push(format!(
+                "applicability.{label} has {} values (max {MAX_APPLICABILITY_VALUES})",
+                values.len()
+            ));
+        }
+        for value in values {
+            if value.trim().is_empty() || value.len() > MAX_APPLICABILITY_VALUE_BYTES {
+                issues.push(format!("invalid applicability.{label} value: '{value}'"));
+            } else if !is_safe_field_text(value) {
+                issues.push(format!(
+                    "applicability.{label} value contains control characters"
+                ));
+            }
+        }
+    }
+    if applicability.notes.len() > MAX_NOTES_BYTES || !is_safe_field_text(&applicability.notes) {
+        issues.push("applicability.notes is too long or contains control characters".to_string());
+    }
 }
 
 // ────────────────────────────────────────────
@@ -726,6 +907,115 @@ mod tests {
 
         let issues = validate_hypothesis(&hyp, &c, &[]);
         assert!(issues.iter().any(|i| i.contains("min_effect")));
+    }
+
+    // ── Schema/field-safety validation before promotion ──────────────
+
+    fn valid_hypothesis() -> RecipeHypothesis {
+        RecipeHypothesis {
+            id: "valid_recipe".to_string(),
+            join: "Entity".to_string(),
+            outcome: "supplier_distress".to_string(),
+            signals: vec!["late_filing".to_string()],
+            transforms: vec![],
+            test_type: "FisherExact".to_string(),
+            thresholds: HypothesisThresholds {
+                min_effect: 1.5,
+                max_p_value: 0.01,
+                min_stability: 0.6,
+                max_false_alarm_rate: 0.05,
+            },
+            narrative_template: "Alert: {{evidence:late_filing}}".to_string(),
+            action_playbook: vec!["Review contract".to_string()],
+            applicability: Applicability {
+                geos: vec!["TN".to_string()],
+                industries: vec!["EMS".to_string()],
+                notes: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_join_and_test_type() {
+        let candidate = sample_candidate();
+        let mut hyp = valid_hypothesis();
+        hyp.join = "Everything".to_string();
+        hyp.test_type = "VibesBased".to_string();
+
+        let issues = validate_hypothesis(&hyp, &candidate, &[]);
+        assert!(issues.iter().any(|i| i.contains("join")), "{issues:?}");
+        assert!(issues.iter().any(|i| i.contains("test type")), "{issues:?}");
+    }
+
+    #[test]
+    fn test_validate_accepts_every_documented_join_and_test() {
+        let candidate = sample_candidate();
+        for join in ALLOWED_JOINS {
+            for test_type in ALLOWED_TEST_TYPES {
+                let mut hyp = valid_hypothesis();
+                hyp.join = (*join).to_string();
+                hyp.test_type = (*test_type).to_string();
+                assert!(
+                    validate_hypothesis(&hyp, &candidate, &[]).is_empty(),
+                    "join={join} test={test_type} should validate"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_control_characters_and_oversized_fields() {
+        let candidate = sample_candidate();
+
+        let mut hyp = valid_hypothesis();
+        hyp.narrative_template = "Alert: {{evidence:late_filing}}\u{0}hidden".to_string();
+        let issues = validate_hypothesis(&hyp, &candidate, &[]);
+        assert!(
+            issues.iter().any(|i| i.contains("control")),
+            "NUL must be rejected: {issues:?}"
+        );
+
+        let mut hyp = valid_hypothesis();
+        hyp.action_playbook = vec!["x".repeat(MAX_ACTION_BYTES + 1)];
+        assert!(validate_hypothesis(&hyp, &candidate, &[])
+            .iter()
+            .any(|i| i.contains("action")));
+
+        let mut hyp = valid_hypothesis();
+        hyp.id = "i".repeat(MAX_RECIPE_ID_BYTES + 1);
+        assert!(validate_hypothesis(&hyp, &candidate, &[])
+            .iter()
+            .any(|i| i.contains("id exceeds")));
+
+        let mut hyp = valid_hypothesis();
+        hyp.signals = vec!["Late Filing!!".to_string()];
+        assert!(validate_hypothesis(&hyp, &candidate, &[])
+            .iter()
+            .any(|i| i.contains("signal name")));
+    }
+
+    #[test]
+    fn test_validate_rejects_non_finite_thresholds() {
+        let candidate = sample_candidate();
+        let mut hyp = valid_hypothesis();
+        hyp.thresholds.min_effect = f64::NAN;
+        let issues = validate_hypothesis(&hyp, &candidate, &[]);
+        assert!(
+            issues.iter().any(|i| i.contains("not finite")),
+            "NaN threshold must be rejected: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_evidence_slot() {
+        let candidate = sample_candidate();
+        let mut hyp = valid_hypothesis();
+        hyp.narrative_template = "Alert: {{evidence:}}".to_string();
+        let issues = validate_hypothesis(&hyp, &candidate, &[]);
+        assert!(
+            issues.iter().any(|i| i.contains("empty evidence slot")),
+            "{issues:?}"
+        );
     }
 
     // ── B211: lag days bounds ──────────────────

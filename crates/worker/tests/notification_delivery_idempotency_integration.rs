@@ -19,7 +19,9 @@ use apex_store::postgres::{DeliveryChannel, PgStore};
 use apex_worker::notification_delivery::{
     notification_event_for, ChannelTransport, ConfiguredChannelRouter, NotificationDelivery,
 };
-use apex_worker::notifications::{AlertSeverity, NotificationConfig, PendingAlert, WebhookConfig};
+use apex_worker::notifications::{
+    AlertSeverity, NotificationConfig, PendingAlert, WebhookConfig, WebhookFormat,
+};
 use sqlx::postgres::PgPoolOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -191,6 +193,8 @@ async fn crash_after_send_keeps_the_delivery_key_stable_across_reclaims() {
             name: "webhook".to_string(),
             url: destination.clone(),
             bearer_token: None,
+            // The receiver asserts the Slack body carries `text`.
+            format: WebhookFormat::Slack,
             min_severity: AlertSeverity::Low,
             min_priority: 0.0,
         }],

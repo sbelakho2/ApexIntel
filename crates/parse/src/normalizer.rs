@@ -265,11 +265,36 @@ pub fn extract_emails(text: &str) -> Vec<String> {
 }
 
 /// Extract phone numbers (basic international format).
+///
+/// The regex is deliberately broad, so matches are validated afterwards: a
+/// phone number carries 9–15 digits, and bare date shapes (`2024-01-01`) that
+/// the regex also matches are rejected. Without this, "2024-01-01" and
+/// "1.......2" were reported as phone numbers.
 pub fn extract_phones(text: &str) -> Vec<String> {
     RE_PHONE
         .find_iter(text)
-        .map(|m| m.as_str().to_string())
+        .filter_map(|m| {
+            let candidate = m.as_str().trim();
+            let digits = candidate.chars().filter(char::is_ascii_digit).count();
+            if !(9..=15).contains(&digits) {
+                return None;
+            }
+            if is_date_shape(candidate) {
+                return None;
+            }
+            Some(candidate.to_string())
+        })
         .collect()
+}
+
+/// Whether the candidate is a pure date shape (yyyy-mm-dd or dd-mm-yyyy).
+fn is_date_shape(candidate: &str) -> bool {
+    let parts: Vec<&str> = candidate.split('-').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let lengths: Vec<usize> = parts.iter().map(|part| part.len()).collect();
+    lengths == [4, 2, 2] || lengths == [2, 2, 4]
 }
 
 /// Normalize an entity name for consistent cross-module comparison (B101).
@@ -611,6 +636,26 @@ mod tests {
     #[test]
     fn fuzz_extract_phones_empty() {
         assert!(extract_phones("").is_empty());
+    }
+
+    #[test]
+    fn extract_phones_rejects_dates_and_short_digit_runs() {
+        assert!(extract_phones("Report dated 2024-01-01").is_empty());
+        assert!(extract_phones("code 1.......2").is_empty());
+        assert!(extract_phones("2024-01-01").is_empty());
+        assert!(extract_phones("call 12-34-5678").is_empty());
+    }
+
+    #[test]
+    fn extract_phones_accepts_international_formats() {
+        assert_eq!(
+            extract_phones("Call +212 555 123 456 today"),
+            vec!["+212 555 123 456".to_string()]
+        );
+        assert_eq!(
+            extract_phones("Or 212-555-1234."),
+            vec!["212-555-1234".to_string()]
+        );
     }
 
     #[test]

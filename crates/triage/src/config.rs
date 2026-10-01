@@ -4,6 +4,8 @@ use apex_core::triage::{TriageThresholds, TriageWeights};
 use apex_llm::{ModelConfig, SpendTracker};
 use serde::{Deserialize, Serialize};
 
+use crate::semantic_dedup::DedupConfig;
+
 /// Configuration for the triage engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriageConfig {
@@ -87,6 +89,17 @@ impl TriageConfig {
         let config: TriageConfig = serde_yaml::from_str(&content)?;
         Ok(config)
     }
+
+    /// Semantic-dedup engine config derived from this triage config.
+    ///
+    /// Applies the configured `dedup_similarity_threshold`; every other dedup
+    /// knob keeps its engine default.
+    pub fn dedup_config(&self) -> DedupConfig {
+        DedupConfig {
+            threshold: self.dedup_similarity_threshold,
+            ..DedupConfig::default()
+        }
+    }
 }
 
 /// Tracks LLM API spend for triage operations.
@@ -149,6 +162,24 @@ mod tests {
         assert!(config.local_only);
         assert!((config.weights.urgency - 0.30).abs() < 1e-9);
         assert!((config.thresholds.critical - 0.80).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_dedup_config_uses_configured_threshold() {
+        let config = TriageConfig::default();
+        let dedup = config.dedup_config();
+        assert!((dedup.threshold - config.dedup_similarity_threshold).abs() < 1e-9);
+        // Remaining dedup knobs keep the engine defaults.
+        let defaults = DedupConfig::default();
+        assert_eq!(dedup.max_candidates, defaults.max_candidates);
+        assert_eq!(dedup.entity_type, defaults.entity_type);
+        assert_eq!(dedup.min_text_length, defaults.min_text_length);
+
+        let custom = TriageConfig {
+            dedup_similarity_threshold: 0.75,
+            ..TriageConfig::default()
+        };
+        assert!((custom.dedup_config().threshold - 0.75).abs() < 1e-9);
     }
 
     #[test]

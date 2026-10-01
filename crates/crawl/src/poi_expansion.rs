@@ -308,13 +308,16 @@ impl PoiExpansionEngine {
     /// Build the engine.  `proxy_rotator` is optional; if `None` all requests
     /// use the default network interface.
     pub fn new(proxy_rotator: Option<Arc<Mutex<ProxyRotator>>>) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10))
-            .user_agent("Mozilla/5.0 AppleWebKit/537.36")
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()
-            .context("PoiExpansionEngine: build client")?;
+        // Hardened builder shared with `CrawlClient`: public-only DNS and a
+        // redirect policy that refuses private IP literals. See
+        // `crate::client::secure_crawl_builder`.
+        let client = crate::client::secure_crawl_builder(
+            Duration::from_secs(30),
+            "Mozilla/5.0 AppleWebKit/537.36",
+        )
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .context("PoiExpansionEngine: build client")?;
         Ok(Self {
             client,
             proxy_rotator,
@@ -807,25 +810,33 @@ impl PoiExpansionEngine {
     }
 
     async fn fetch_page(&self, url: &str) -> Result<FetchedPage> {
+        let parsed = Url::parse(url).with_context(|| format!("invalid URL {url}"))?;
+        // IP-literal hosts skip DNS, so the resolver alone is not enough:
+        // reject private/metadata literals before any request goes out. The
+        // same guard runs on every redirect hop through the client builder.
+        if !crate::client::url_allowed(&parsed) {
+            anyhow::bail!("URL must be http(s) and resolve to a public address: {url}");
+        }
+
         let proxy = self.proxy_rotator.as_ref().and_then(|rotator| {
             let mut guard = rotator.lock().ok()?;
             guard.get_next()
         });
 
         let client = if let Some(proxy_url) = proxy.as_ref() {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .connect_timeout(Duration::from_secs(10))
-                .user_agent("Mozilla/5.0 AppleWebKit/537.36")
-                .redirect(reqwest::redirect::Policy::limited(5))
-                .proxy(reqwest::Proxy::all(proxy_url).context("invalid proxy url")?)
-                .build()
-                .context("PoiExpansionEngine: build proxied client")?
+            crate::client::secure_crawl_builder(
+                Duration::from_secs(30),
+                "Mozilla/5.0 AppleWebKit/537.36",
+            )
+            .connect_timeout(Duration::from_secs(10))
+            .proxy(reqwest::Proxy::all(proxy_url).context("invalid proxy url")?)
+            .build()
+            .context("PoiExpansionEngine: build proxied client")?
         } else {
             self.client.clone()
         };
 
-        let mut req = client.get(url);
+        let mut req = client.get(parsed);
         req = req.headers(random_headers(None));
         let resp = req.send().await.context("GET failed")?;
         let status = resp.status();
@@ -844,7 +855,9 @@ impl PoiExpansionEngine {
             return Err(anyhow::anyhow!("HTTP {}", status));
         }
         let final_url = resp.url().clone();
-        let text = resp.text().await.context("read body")?;
+        let text = crate::client::read_body_capped(resp, url)
+            .await
+            .context("read body")?;
         Ok(FetchedPage {
             final_url,
             body: text,
@@ -2838,6 +2851,31 @@ mod tests {
             &valid_our_team_page
         ));
         assert!(is_valid_leadership_page_url(&homepage, &valid_about_page));
+    }
+
+    #[tokio::test]
+    async fn fetch_page_rejects_private_ip_literals_before_any_request() {
+        let engine = PoiExpansionEngine::new(None)
+            .unwrap_or_else(|error| panic!("test: build POI expansion engine: {error}"));
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8222/",
+            "http://[::1]/",
+            "http://[::169.254.169.254]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "file:///etc/passwd",
+        ] {
+            let error = engine
+                .fetch_page(url)
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("test: {url} must be rejected by the SSRF guard"));
+            assert!(
+                error.to_string().contains("public address"),
+                "unexpected error for {url}: {error}"
+            );
+        }
     }
 }
 

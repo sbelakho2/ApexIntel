@@ -47,7 +47,8 @@ pub(crate) async fn vector_search(
     let embedding = match generate_embedding(&state, &params.q).await {
         Ok(emb) => emb,
         Err(e) => {
-            let err = ApiError::internal(format!("failed to generate embedding: {e}"));
+            tracing::error!(request_id = %request_id, "failed to generate embedding: {e:#}");
+            let err = ApiError::internal("Failed to generate embedding");
             return (
                 StatusCode::from_u16(err.http_status())
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -71,7 +72,8 @@ pub(crate) async fn vector_search(
     let db_results = match results {
         Ok(hits) => hits,
         Err(e) => {
-            let err = ApiError::internal(format!("vector search query failed: {e}"));
+            tracing::error!(request_id = %request_id, "vector search query failed: {e:#}");
+            let err = ApiError::internal("Vector search query failed");
             return (
                 StatusCode::from_u16(err.http_status())
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -142,7 +144,8 @@ pub(crate) async fn similar_entities(
             );
         }
         Err(e) => {
-            let err = ApiError::internal(format!("failed to fetch embedding: {e}"));
+            tracing::error!(request_id = %request_id, "failed to fetch embedding: {e:#}");
+            let err = ApiError::internal("Failed to fetch embedding");
             return (
                 StatusCode::from_u16(err.http_status())
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -156,7 +159,8 @@ pub(crate) async fn similar_entities(
     let results = match state.store.vector_search(&embedding, limit).await {
         Ok(hits) => hits,
         Err(e) => {
-            let err = ApiError::internal(format!("similarity search failed: {e}"));
+            tracing::error!(request_id = %request_id, "similarity search failed: {e:#}");
+            let err = ApiError::internal("Similarity search failed");
             return (
                 StatusCode::from_u16(err.http_status())
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -245,7 +249,7 @@ pub(crate) async fn reindex_embeddings(
                 String::new(),
                 0u64,
                 "error".to_string(),
-                format!("Failed to enqueue embedding reindex: {e}"),
+                "Failed to enqueue embedding reindex".to_string(),
             )
         }
     };

@@ -1135,35 +1135,24 @@ pub async fn dashboard(
     // battlecard/memo generation, recipe promotion, and job lifecycle event.
     // Previously this widget UNIONed only `warnings` + `insights`, which hid the
     // bulk of genuine system activity and made the feed look empty/stubbed.
-    #[derive(sqlx::FromRow)]
-    struct ActivityRow {
-        action_type: String,
-        actor_name: String,
-        entity_type: Option<String>,
-        entity_id: Option<String>,
-        entity_name: Option<String>,
-        details: serde_json::Value,
-        created_at: DateTime<Utc>,
-    }
-
-    let activity_result: Result<Vec<ActivityRow>, sqlx::Error> = sqlx::query_as::<_, ActivityRow>(
-        r#"SELECT action_type,
-                  actor_name,
-                  entity_type,
-                  entity_id,
-                  entity_name,
-                  COALESCE(details, '{}'::jsonb) AS details,
-                  created_at
-             FROM activity_feed
-            ORDER BY created_at DESC
-            LIMIT 12"#,
-    )
-    .fetch_all(&store.pool)
-    .await;
-    let activity_state =
-        DataState::from_result(activity_result, "failed to fetch activity feed", |rows| {
-            rows.is_empty()
-        });
+    // Read the activity feed through the visibility-scoped store query: rows
+    // attached to workspaces the caller cannot see, and other actors' private
+    // rows, must never render on the dashboard. (The raw `activity_feed` query
+    // this replaces had no workspace/visibility filter.)
+    let activity_state = DataState::from_result(
+        store
+            .list_activity_feed(
+                session.user_id.as_str(),
+                session.role.can_admin(),
+                None,
+                None,
+                None,
+                12,
+            )
+            .await,
+        "failed to fetch activity feed",
+        |rows| rows.is_empty(),
+    );
     DegradedNotice::capture(&activity_state, &mut degraded_notice);
     let activity_rows = activity_state.into_items();
 

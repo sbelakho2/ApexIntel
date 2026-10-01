@@ -328,7 +328,7 @@ pub async fn get_triage_item(
             crate::web::errors::internal_error_with_context(
                 &pctx.username,
                 pctx.warning_count,
-                &e.to_string(),
+                "Failed to load triage item",
                 "",
             )
         }

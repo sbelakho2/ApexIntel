@@ -32,7 +32,6 @@ pub mod slack;
 pub mod storage;
 pub mod trend_aggregator;
 pub mod warning_verifier;
-pub mod webhooks;
 pub mod weekly;
 
 /// Build metadata: whether the `llm` feature was compiled into this binary.

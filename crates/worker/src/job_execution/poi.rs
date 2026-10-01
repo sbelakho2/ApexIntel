@@ -1463,10 +1463,13 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 priority_vector: PoiPriorityVector::zero(),
                 psychological: PsychProfile::default_profile(),
                 influence: InfluenceProfile {
-                    // Seed with the measured influence; an unmeasured person
-                    // starts from the neutral base that the refresh recomputes
-                    // and (for the first time) writes back below.
-                    influence_score: row.influence.unwrap_or(0.5),
+                    // Carried from the stored row for in-memory derivations.
+                    // This refresh has no influence inputs to measure (it
+                    // loads neither graph centrality nor artifacts/role
+                    // history), so the stored score is never overwritten
+                    // below — an unmeasured person stays unmeasured rather
+                    // than being given a fabricated value.
+                    influence_score: row.influence.unwrap_or(0.0),
                     graph_centrality: 0.0,
                     public_recurrence: 0.0,
                     role_seniority_score: 0.0,
@@ -1490,22 +1493,20 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 completeness = profile.profile_completeness,
                 "poi_refresh: profile updated"
             );
-            let changed = match row.influence {
-                Some(previous) => (profile.influence.influence_score - previous).abs() > 1e-6,
-                // First measurement: always persist it.
-                None => true,
-            };
-            if changed {
-                if let Err(e) = store
-                    .update_person_influence_score(row.id, profile.influence.influence_score)
-                    .await
-                {
-                    tracing::warn!(
-                        person = %row.name,
-                        error = %e,
-                        "poi_refresh: failed to write-back influence score"
-                    );
-                }
+            // Influence is NOT recomputed or written back here. A real
+            // recompute needs the graph/artifact inputs that feed
+            // `apex_poi::features::compute_influence_score` (graph centrality,
+            // role seniority, public recurrence), and this refresh loads none
+            // of them. `update_profile_with_llm` above correctly no-ops
+            // without new data, so the previous "first measurement" write only
+            // persisted the seed. Leaving the stored value untouched is the
+            // honest outcome until those inputs are loaded and the 0-100
+            // influence scale is reconciled with `persons.influence_score`.
+            if row.influence.is_none() {
+                tracing::debug!(
+                    person = %row.name,
+                    "poi_refresh: influence score left unmeasured (graph/artifact inputs not loaded)"
+                );
             }
 
             // Fix 23-25: Persist computed scores (pain_index, change_risk, role_drift_score)

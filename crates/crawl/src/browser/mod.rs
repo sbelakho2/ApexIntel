@@ -31,6 +31,11 @@
 //! must not be reintroduced. URLs are restricted to `http`/`https` and
 //! private/loopback/link-local/CGNAT/unique-local/`localhost` targets —
 //! including DNS-rebinding answers — are rejected by the validation module.
+//! The renderer also enables CDP `Fetch` interception, so the initial
+//! navigation URL *and* every redirect hop, subresource, XHR/fetch and
+//! auto-attached iframe/worker request the page triggers are re-checked before
+//! Chromium sends them (a validated entry URL alone would still allow a
+//! hostile page to pivot to cloud metadata or internal services).
 
 pub mod validation;
 

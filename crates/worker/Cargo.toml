@@ -37,6 +37,7 @@ apex-core = { path = "../core" }
 apex-store = { path = "../store" }
 apex-crawl = { path = "../crawl" }
 apex-recipes = { path = "../recipes" }
+apex-shared = { path = "../shared" }
 apex-llm = { path = "../llm", optional = true }
 apex-learning = { path = "../learning", optional = true }
 apex-insights = { path = "../insights", optional = true, features = ["llm"] }
@@ -46,6 +47,7 @@ apex-triage = { path = "../triage" }
 apex-threat-intel = { path = "../threat_intel", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
+url = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
@@ -71,6 +73,7 @@ unicode-normalization = { workspace = true }
 async-nats = { workspace = true }
 printpdf = { workspace = true }
 tempfile = { workspace = true }
+shlex = "1"
 
 [lints]
 workspace = true

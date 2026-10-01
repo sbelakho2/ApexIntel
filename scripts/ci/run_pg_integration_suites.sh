@@ -98,6 +98,12 @@ run cargo test -p apex-api --test app_users_login_integration --locked -- --igno
 # cookies, all resolved against the real `app_users` table.
 run cargo test -p apex-api --test session_authority_integration --locked -- --ignored --test-threads=1
 
+# ── Collaboration workspace authorization (audit #50/#51/#53/#54/#55/#58/#59/#60/#62) ──
+# Workspace visibility/share/assignment matrix, list and activity-feed SQL
+# filtering, owner-only annotation deletes, partial-PATCH column preservation,
+# queue completion timestamps, assignment upsert and form validation.
+run cargo test -p apex-api --test workspace_authorization_integration --locked -- --ignored --test-threads=1
+
 # ── Seed bootstrap preserves authoritative recipe lifecycle ─────────────────
 run cargo test -p apex-worker --test recipe_lifecycle_preservation_integration --locked -- --ignored --test-threads=1
 
@@ -109,6 +115,9 @@ run cargo test -p apex-store --test persons_priority_integration --locked -- --i
 
 # ── Alert routing policy: suppressed targets receive zero SSE events ────────
 run cargo test -p apex-api --test alert_routing_policy_integration --locked -- --ignored --test-threads=1
+
+# ── Login throttle: concurrent reserves serialize on the attempt key ────────
+run cargo test -p apex-store --test login_throttle_pg_integration --locked -- --ignored --test-threads=1
 
 # ── Warning analysis consumes explicit warning_evidence links ────────────────
 run cargo test -p apex-api --test warning_evidence_analysis_integration --features llm \

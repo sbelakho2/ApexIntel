@@ -11,7 +11,7 @@
 //! via fan-out per user. Each authenticated user gets their own event stream.
 
 use crate::alert_router::{AlertAudience, AlertRouter, AlertRoutingDecision};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use chrono::{DateTime, Utc};
 use futures_util::stream::Stream;
@@ -449,8 +449,12 @@ impl SseManager {
 
         let jetstream = async_nats::jetstream::new(client.clone());
 
-        // Ensure stream exists (idempotent — worker may have already created it)
-        if let Err(e) = Self::ensure_stream(&jetstream).await {
+        // Ensure the stream exists with the ONE canonical config defined in
+        // `apex-shared`. The helper is idempotent and also reconciles an
+        // existing stream whose mutable config differs (for example one the
+        // API created before the worker ran, which would otherwise keep the
+        // broker's 2-minute duplicate-window default; audit #78).
+        if let Err(e) = apex_shared::ensure_alerts_stream(&jetstream).await {
             warn!(error = %e, "Failed to ensure JetStream stream 'alerts'");
         }
 
@@ -722,33 +726,6 @@ impl SseManager {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
-    }
-
-    async fn ensure_stream(jetstream: &async_nats::jetstream::Context) -> Result<()> {
-        use async_nats::jetstream::stream::Config;
-
-        match jetstream.get_stream("alerts").await {
-            Ok(_) => {
-                info!("JetStream stream 'alerts' already exists");
-                Ok(())
-            }
-            Err(_) => {
-                let cfg = Config {
-                    name: "alerts".to_string(),
-                    subjects: vec!["alerts.>".to_string()],
-                    max_age: Duration::from_secs(7 * 86400),
-                    storage: async_nats::jetstream::stream::StorageType::File,
-                    retention: async_nats::jetstream::stream::RetentionPolicy::Interest,
-                    ..Config::default()
-                };
-                jetstream
-                    .create_stream(cfg)
-                    .await
-                    .context("failed to create JetStream stream 'alerts'")?;
-                info!("JetStream stream 'alerts' created");
-                Ok(())
-            }
-        }
     }
 
     /// Build the SSE response stream for a user's receiver.

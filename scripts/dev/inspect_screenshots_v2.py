@@ -37,7 +37,10 @@ ALL_SCREENSHOTS = [
     "workspaces.png",
 ]
 
-BASE = "/Users/sabelakhoua/IdeaProjects/ApexIntel/screenshots"
+BASE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "screenshots",
+)
 
 # Pages that are expected to have data tables/cards
 DATA_PAGES = {

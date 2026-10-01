@@ -2,9 +2,9 @@
 //! observed by user B on the SSE channel, while explicit broadcasts still fan
 //! out to every connected subscriber.
 //!
-//! This exercises the [`SseManager`] fan-out used by both the
-//! `/api/v1/events/stream` SSE endpoint and the `/ws/warnings` WebSocket
-//! bridge.
+//! This exercises the [`SseManager`] fan-out used by the
+//! `/api/v1/events/stream` SSE endpoint. (The old `/ws/warnings` WebSocket
+//! bridge has been removed.)
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

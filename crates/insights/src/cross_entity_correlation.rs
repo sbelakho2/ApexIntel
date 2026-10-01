@@ -336,7 +336,7 @@ impl RelationshipTracker {
                             confidence: pattern.weight,
                             evidence: vec![RelationshipEvidence {
                                 source: source.to_string(),
-                                snippet: content[..content.len().min(200)].to_string(),
+                                snippet: apex_core::text::truncate_utf8(content, 200).to_string(),
                                 timestamp,
                             }],
                             last_confirmed: timestamp,
@@ -781,6 +781,28 @@ mod tests {
             has_partner || has_competitor || has_supplier,
             "Should find at least one relationship type"
         );
+    }
+
+    #[test]
+    fn test_relationship_snippet_multibyte_boundary_does_not_panic() {
+        let mut tracker = RelationshipTracker::new();
+        tracker.record_mention("NVIDIA", "tech company", "test", 1234567890);
+        tracker.record_mention("Microsoft", "tech company", "test", 1234567890);
+
+        // 200 bytes lands inside the multi-byte padding; a raw byte slice at
+        // content.len().min(200) would split a character and panic.
+        let padding = "é".repeat(120); // 240 bytes of 2-byte chars
+        let content = format!(
+            "NVIDIA and Microsoft are based in the region and headquartered there. {padding} ☕ tail"
+        );
+
+        let relationships = tracker.infer_relationships(&content, "test_source", 1234567890);
+        assert!(!relationships.is_empty());
+        for relationship in &relationships {
+            let snippet = &relationship.evidence[0].snippet;
+            assert!(snippet.len() <= 200);
+            assert!(!snippet.contains('\u{FFFD}'));
+        }
     }
 
     #[test]

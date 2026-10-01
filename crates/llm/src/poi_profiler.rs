@@ -138,12 +138,17 @@ impl PoiProfiler {
         poi_role: &str,
         artifacts: &[(String, String)],
     ) -> Result<LlmPsychProfile> {
-        let artifacts_text = format_artifacts(artifacts, 6000);
+        let artifacts_text =
+            crate::insight_gen::evidence_block("artifacts", &format_artifacts(artifacts, 6000));
 
-        let system = concat!(
-            "You are a senior B2B sales intelligence analyst specializing in psychographic profiling ",
-            "of procurement, quality, and engineering executives in the electronics and defense manufacturing ",
-            "sector. Your analysis is precise, evidence-based, and actionable.\n/no_think"
+        let system = format!(
+            "{base}\n{instruction}\n/no_think",
+            base = concat!(
+                "You are a senior B2B sales intelligence analyst specializing in psychographic profiling ",
+                "of procurement, quality, and engineering executives in the electronics and defense manufacturing ",
+                "sector. Your analysis is precise, evidence-based, and actionable."
+            ),
+            instruction = crate::insight_gen::SECURE_EVIDENCE_INSTRUCTION,
         );
 
         let user = format!(
@@ -173,8 +178,8 @@ Respond ONLY with valid JSON matching this exact schema:
   "profile_confidence": <0.0 to 1.0>,
   "reasoning": "<1-2 sentence explanation of profile>"
 }}"#,
-            poi_name = poi_name,
-            poi_role = poi_role,
+            poi_name = crate::insight_gen::escape_prompt_value(poi_name),
+            poi_role = crate::insight_gen::escape_prompt_value(poi_role),
             artifacts_text = artifacts_text,
         );
 
@@ -251,25 +256,29 @@ Respond ONLY with valid JSON matching this exact schema:
         let news_section = match recent_news {
             Some(n) => format!(
                 "\nRECENT NEWS ABOUT THEIR COMPANY:\n{}",
-                crate::truncate_utf8(n, 500)
+                crate::insight_gen::evidence_block("recent_news", crate::truncate_utf8(n, 500))
             ),
             None => String::new(),
         };
 
-        let system = concat!(
-            "You are an expert enterprise B2B copywriter. ",
-            "You write concise, compelling outreach that is highly personalized to the specific role and responsibilities of the recipient. ",
-            "Tailor the message to their actual function:\n",
-            "- For procurement/supply chain/purchasing: emphasize TCO, supply security, lead times, compliance\n",
-            "- For quality/compliance: emphasize certifications, audit readiness, process capability, traceability\n",
-            "- For engineering/R&D: emphasize DFM support, prototyping speed, technical collaboration, BOM optimization\n",
-            "- For operations/manufacturing: emphasize line stability, capacity flexibility, OTD, escalation paths\n",
-            "- For executives/C-suite: emphasize strategic partnership, growth, regional advantage, innovation\n",
-            "- For security/IT: emphasize zero-trust, incident response, vendor risk management\n",
-            "- For finance: emphasize cost transparency, ROI, margin impact\n",
-            "Match the tone to their seniority: technical depth for engineers, strategic framing for executives, operational specifics for managers.\n",
-            "IMPORTANT: Never default to CEO/executive framing when the recipient is a functional buyer or manager. ",
-            "A procurement manager needs cost and supply details, not strategic vision.\n/no_think"
+        let system = format!(
+            "{base}\n{instruction}\n/no_think",
+            base = concat!(
+                "You are an expert enterprise B2B copywriter. ",
+                "You write concise, compelling outreach that is highly personalized to the specific role and responsibilities of the recipient. ",
+                "Tailor the message to their actual function:\n",
+                "- For procurement/supply chain/purchasing: emphasize TCO, supply security, lead times, compliance\n",
+                "- For quality/compliance: emphasize certifications, audit readiness, process capability, traceability\n",
+                "- For engineering/R&D: emphasize DFM support, prototyping speed, technical collaboration, BOM optimization\n",
+                "- For operations/manufacturing: emphasize line stability, capacity flexibility, OTD, escalation paths\n",
+                "- For executives/C-suite: emphasize strategic partnership, growth, regional advantage, innovation\n",
+                "- For security/IT: emphasize zero-trust, incident response, vendor risk management\n",
+                "- For finance: emphasize cost transparency, ROI, margin impact\n",
+                "Match the tone to their seniority: technical depth for engineers, strategic framing for executives, operational specifics for managers.\n",
+                "IMPORTANT: Never default to CEO/executive framing when the recipient is a functional buyer or manager. ",
+                "A procurement manager needs cost and supply details, not strategic vision."
+            ),
+            instruction = crate::insight_gen::SECURE_EVIDENCE_INSTRUCTION,
         );
 
         let user = format!(
@@ -296,9 +305,9 @@ Respond ONLY with valid JSON:
   "tone": "<formal|conversational|technical|executive>",
   "full_message": "<complete assembled message combining all sections>"
 }}"#,
-            poi_name = poi_name,
-            poi_role = poi_role,
-            company_name = company_name,
+            poi_name = crate::insight_gen::escape_prompt_value(poi_name),
+            poi_role = crate::insight_gen::escape_prompt_value(poi_role),
+            company_name = crate::insight_gen::escape_prompt_value(company_name),
             decision_style = psych_profile.decision_style,
             change_appetite = psych_profile.change_appetite,
             pain_index = psych_profile.pain_index,
@@ -329,11 +338,16 @@ Respond ONLY with valid JSON:
         poi_role: &str,
         artifacts: &[(String, String)],
     ) -> Result<PoiBackgroundSummary> {
-        let artifacts_text = format_artifacts(artifacts, 8000);
+        let artifacts_text =
+            crate::insight_gen::evidence_block("artifacts", &format_artifacts(artifacts, 8000));
 
-        let system = concat!(
-            "You are an OSINT analyst compiling background intelligence dossiers on business executives. ",
-            "You are precise, fact-based, and flag uncertainty when evidence is thin.\n/no_think"
+        let system = format!(
+            "{base}\n{instruction}\n/no_think",
+            base = concat!(
+                "You are an OSINT analyst compiling background intelligence dossiers on business executives. ",
+                "You are precise, fact-based, and flag uncertainty when evidence is thin."
+            ),
+            instruction = crate::insight_gen::SECURE_EVIDENCE_INSTRUCTION,
         );
 
         let user = format!(
@@ -352,8 +366,8 @@ Respond ONLY with valid JSON:
   "notable_connections": ["<person/org of interest>"],
   "confidence": <0.0 to 1.0 based on artifact richness>
 }}"#,
-            poi_name = poi_name,
-            poi_role = poi_role,
+            poi_name = crate::insight_gen::escape_prompt_value(poi_name),
+            poi_role = crate::insight_gen::escape_prompt_value(poi_role),
             artifacts_text = artifacts_text,
         );
 

@@ -30,7 +30,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use url::Url;
 
-use crate::browser::cdp::{CdpClient, CdpSession};
+use crate::browser::cdp::{fetch_enable_params, CdpClient, CdpSession};
 use crate::browser::readiness::{
     PageSample, ReadinessDecision, ReadinessTracker, RenderPolicy, DEFAULT_MAX_RENDER_TIME,
     DEFAULT_MAX_SCROLL_STEPS, DEFAULT_NETWORK_QUIET_WINDOW, DEFAULT_SAMPLE_INTERVAL,
@@ -371,7 +371,9 @@ impl PersistentChromiumBrowser {
             .context("CDP did not return a sessionId")?
             .to_string();
 
-        let network = client.register_session(&session_id).await;
+        let network = client
+            .register_session(&session_id, self.config.allow_private_hosts)
+            .await;
         let session = CdpSession::new(client.clone(), session_id.clone(), network);
 
         let budget = policy
@@ -453,6 +455,27 @@ impl PersistentChromiumBrowser {
     ) -> Result<BrowserPage> {
         session.call("Page.enable", json!({})).await?;
         session.call("Network.enable", json!({})).await?;
+        // Intercept every request the page makes (navigation, redirects,
+        // subresources, XHR/fetch) so a validated navigation URL cannot be
+        // turned into an SSRF pivot by hostile page content. Fail closed: if
+        // interception cannot be enabled, the page must not be rendered.
+        session.call("Fetch.enable", fetch_enable_params()).await?;
+        // Best-effort: auto-attach out-of-process iframes/workers so their
+        // requests also pass through the Fetch guard. If this fails, in-process
+        // page requests remain guarded.
+        if let Err(error) = session
+            .call(
+                "Target.setAutoAttach",
+                json!({
+                    "autoAttach": true,
+                    "waitForDebuggerOnStart": true,
+                    "flatten": true,
+                }),
+            )
+            .await
+        {
+            warn!(error = %error, "browser: could not auto-attach child targets; out-of-process frames are not intercepted");
+        }
         let navigation = session
             .call("Page.navigate", json!({ "url": parsed.as_str() }))
             .await?;
@@ -870,6 +893,10 @@ mod tests {
             quiet_window: Duration::from_millis(750),
             sample_interval: Duration::from_millis(200),
             max_scroll_steps: 3,
+            // This test renders a loopback fixture directly through
+            // `render()`, so the test-only private-host escape hatch mirrors
+            // `BrowserFetcher::fetch`.
+            allow_private_hosts: true,
             ..BrowserConfig::default()
         };
         let browser = PersistentChromiumBrowser::new(config.clone());
@@ -909,6 +936,66 @@ mod tests {
             !page.readiness.timed_out,
             "should settle well within budget"
         );
+    }
+
+    /// Real-browser verification of the request guard: with private hosts
+    /// disallowed, the CDP `Fetch` handler fails Chromium's navigation before
+    /// the request is sent, so the private server never sees a connection.
+    #[tokio::test]
+    #[ignore = "requires a real Chromium binary (HEADLESS_BROWSER_BIN)"]
+    async fn render_denies_private_navigation_when_private_hosts_disallowed() {
+        use tokio::net::TcpListener;
+
+        let binary = match std::env::var("HEADLESS_BROWSER_BIN") {
+            Ok(binary) if !binary.trim().is_empty() => PathBuf::from(binary),
+            _ => {
+                eprintln!("skipping: set HEADLESS_BROWSER_BIN to a Chromium binary");
+                return;
+            }
+        };
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind private fixture listener");
+        let addr = listener.local_addr().expect("private fixture addr");
+        let config = BrowserConfig {
+            chrome_binary: binary,
+            max_render_time: Duration::from_secs(5),
+            allow_private_hosts: false,
+            ..BrowserConfig::default()
+        };
+        let browser = PersistentChromiumBrowser::new(config.clone());
+        let url = Url::parse(&format!("http://{addr}/")).expect("test url");
+
+        let error = browser
+            .render(&url, &config.policy())
+            .await
+            .expect_err("private navigation must be denied by Fetch interception");
+        let message = error.to_string();
+        assert!(
+            message.contains("ERR_BLOCKED_BY_CLIENT")
+                || error.downcast_ref::<RenderTimeout>().is_some(),
+            "unexpected error: {message}"
+        );
+        // Chromium may pre-open a socket before interception settles, so the
+        // guarantee to assert is that no HTTP request bytes reach the private
+        // server.
+        if let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_secs(1), listener.accept()).await
+        {
+            use tokio::io::AsyncReadExt;
+            let mut buffer = [0_u8; 512];
+            let read = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buffer)).await;
+            let bytes = match read {
+                Ok(Ok(read)) => read,
+                _ => 0,
+            };
+            assert_eq!(
+                bytes,
+                0,
+                "the blocked request reached the private server: {:?}",
+                String::from_utf8_lossy(&buffer[..bytes])
+            );
+        }
     }
 
     #[test]

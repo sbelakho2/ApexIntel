@@ -54,10 +54,10 @@ use apex_core::alert_config::{AlertAudience, AlertSeverity};
 use apex_core::triage::TriageItemType;
 use apex_store::postgres::{PgStore, SemanticDedupBackend, SemanticDedupStatus};
 use apex_triage::semantic_dedup::{
-    DedupConfig, IngestOutcome, IngestQueue, PgSemanticDedupStore, SemanticDedup, TriageIngestor,
+    IngestOutcome, IngestQueue, PgSemanticDedupStore, SemanticDedup, TriageIngestor,
     TriageSubmission,
 };
-use apex_triage::TriageQueue;
+use apex_triage::{TriageConfig, TriageQueue};
 
 use crate::alert_evaluator::AlertEvaluator;
 use apex_worker::activity_logger::{ActivityEvent, ActivityLogger};
@@ -851,9 +851,24 @@ pub async fn build(
     evaluator: Option<Arc<AlertEvaluator>>,
 ) -> IntelligenceIngress {
     let dedup_store = Box::new(PgSemanticDedupStore::new(store.pool.clone()));
-    let embedding_client = apex_worker::embedding_indexer::configured_embedding_client();
+    // The dedup engine only gets an embedding client when semantic dedup is
+    // enabled; with it disabled the lexical/text stages still run.
+    let triage_config = TriageConfig::from_env();
+    let embedding_client = if triage_config.enable_semantic_dedup {
+        apex_worker::embedding_indexer::configured_embedding_client()
+    } else {
+        None
+    };
 
-    let (dedup_status, dedup_detail) = if embedding_client.is_some() {
+    let (dedup_status, dedup_detail) = if !triage_config.enable_semantic_dedup {
+        (
+            SemanticDedupStatus::Degraded,
+            Some(
+                "semantic dedup disabled by TRIAGE_ENABLE_DEDUP=false; \
+                 pg_trgm text-similarity dedup only",
+            ),
+        )
+    } else if embedding_client.is_some() {
         (SemanticDedupStatus::Ok, None)
     } else {
         (
@@ -875,9 +890,19 @@ pub async fn build(
         );
     }
 
+    tracing::info!(
+        semantic_dedup_enabled = triage_config.enable_semantic_dedup,
+        dedup_threshold = triage_config.dedup_similarity_threshold,
+        "intelligence_ingress: triage config loaded"
+    );
+
     let triage = TriageIngestor::new(
         TriageQueue::new(store.pool.clone()),
-        SemanticDedup::new(embedding_client, Some(dedup_store), DedupConfig::default()),
+        SemanticDedup::new(
+            embedding_client,
+            Some(dedup_store),
+            triage_config.dedup_config(),
+        ),
     );
 
     let alerts = match std::env::var("NATS_URL") {

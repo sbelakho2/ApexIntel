@@ -8,6 +8,7 @@
 //! service) and reads `TEST_DATABASE_URL` or `DATABASE_URL`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use chrono::Utc;
 use sqlx::{postgres::PgPoolOptions, Row};
 
 async fn connect() -> sqlx::PgPool {
@@ -1614,6 +1615,131 @@ async fn identity_fks_are_validated_and_orphans_are_reconciled() {
     );
 
     sqlx::query("DROP TABLE IF EXISTS identity_orphan_probe")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn worker_job_interruption_is_scoped_to_the_owning_instance() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+
+    let state_a = format!("instance_scope_a_{}", uuid::Uuid::new_v4());
+    let state_b = format!("instance_scope_b_{}", uuid::Uuid::new_v4());
+    let history_a = format!("instance-scope-a-{}", uuid::Uuid::new_v4());
+    let history_b = format!("instance-scope-b-{}", uuid::Uuid::new_v4());
+
+    assert!(store
+        .try_claim_scheduled_job(&state_a, "instance-a", 3600)
+        .await
+        .unwrap());
+    assert!(store
+        .try_claim_scheduled_job(&state_b, "instance-b", 3600)
+        .await
+        .unwrap());
+    // Within the lease a second replica cannot steal a running job...
+    assert!(
+        !store
+            .try_claim_scheduled_job(&state_a, "instance-b", 3600)
+            .await
+            .unwrap(),
+        "a running claim must not be stolen inside its lease"
+    );
+    // ...and the winning replica is recorded on the row.
+    let owner: String =
+        sqlx::query_scalar("SELECT instance_id FROM worker_job_state WHERE job_kind = $1")
+            .bind(&state_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(owner, "instance-a");
+
+    for (run_id, instance) in [(&history_a, "instance-a"), (&history_b, "instance-b")] {
+        store
+            .insert_worker_job_history(&apex_store::postgres::WorkerJobHistoryRecord {
+                run_id: run_id.clone(),
+                job_kind: state_a.clone(),
+                status: "running".to_string(),
+                started_at: Utc::now(),
+                finished_at: None,
+                duration_ms: None,
+                items_processed: 0,
+                notes: String::new(),
+                instance_id: instance.to_string(),
+                created_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+    }
+
+    // Reconciling instance A's shutdown interrupts exactly A's state and
+    // history rows; B's live job is untouched.
+    let interrupted = store
+        .mark_running_jobs_interrupted("instance-a")
+        .await
+        .unwrap();
+    assert_eq!(
+        interrupted, 2,
+        "only instance A's running state + history rows may be interrupted"
+    );
+
+    let status_a: String =
+        sqlx::query_scalar("SELECT last_status FROM worker_job_state WHERE job_kind = $1")
+            .bind(&state_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status_a, "interrupted");
+    let status_b: String =
+        sqlx::query_scalar("SELECT last_status FROM worker_job_state WHERE job_kind = $1")
+            .bind(&state_b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_b, "running",
+        "another replica's live job must survive"
+    );
+
+    let history_a_status: String =
+        sqlx::query_scalar("SELECT status FROM worker_job_history WHERE run_id = $1")
+            .bind(&history_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(history_a_status, "interrupted");
+    let history_b_status: String =
+        sqlx::query_scalar("SELECT status FROM worker_job_history WHERE run_id = $1")
+            .bind(&history_b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        history_b_status, "running",
+        "another replica's running history row must survive"
+    );
+
+    // An interrupted job is re-claimable once its status leaves 'running'.
+    assert!(
+        store
+            .try_claim_scheduled_job(&state_a, "instance-a", 3600)
+            .await
+            .unwrap(),
+        "instance A must be able to re-claim its interrupted job"
+    );
+
+    sqlx::query("DELETE FROM worker_job_state WHERE job_kind = ANY($1)")
+        .bind(vec![state_a.clone(), state_b.clone()])
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM worker_job_history WHERE run_id = ANY($1)")
+        .bind(vec![history_a.clone(), history_b.clone()])
         .execute(&pool)
         .await
         .unwrap();

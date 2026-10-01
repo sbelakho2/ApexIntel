@@ -3,8 +3,14 @@ use std::collections::HashMap;
 
 /// Influence score formula from IMPLEMENTATION.md:
 /// 0.3 × GraphCentrality + 0.4 × RoleSeniority + 0.3 × PublicRecurrence
+///
+/// NaN inputs are treated as 0.0 so a non-finite feature cannot poison the
+/// score; infinities clamp to the [0, 100] range.
 pub fn influence_score(graph_centrality: f64, role_seniority: f64, public_recurrence: f64) -> f64 {
-    let raw = 0.3 * graph_centrality + 0.4 * role_seniority + 0.3 * public_recurrence;
+    let gc = graph_centrality.max(0.0);
+    let rs = role_seniority.max(0.0);
+    let pr = public_recurrence.max(0.0);
+    let raw = 0.3 * gc + 0.4 * rs + 0.3 * pr;
     raw.clamp(0.0, 100.0)
 }
 
@@ -193,6 +199,26 @@ mod tests {
     fn test_influence_score_zero() {
         let score = influence_score(0.0, 0.0, 0.0);
         assert!((score - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_influence_score_nan_inputs_are_finite() {
+        let score = influence_score(f64::NAN, 90.0, 70.0);
+        assert!(
+            score.is_finite(),
+            "NaN input must not propagate into the score: {score}"
+        );
+        let all_nan = influence_score(f64::NAN, f64::NAN, f64::NAN);
+        assert!(
+            all_nan.is_finite(),
+            "all-NaN inputs must yield a finite score: {all_nan}"
+        );
+    }
+
+    #[test]
+    fn test_influence_score_infinite_input_clamped() {
+        let score = influence_score(f64::INFINITY, 0.0, 0.0);
+        assert!((score - 100.0).abs() < 0.01);
     }
 
     #[test]

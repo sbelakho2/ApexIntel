@@ -54,6 +54,19 @@ pub struct LoggingAlertDispatcher {
     db_pool: Option<sqlx::PgPool>,
 }
 
+/// Truncate a description to at most `max_bytes` bytes without splitting a
+/// UTF-8 character (descriptions come from crawled/LLM text).
+fn truncate_on_char_boundary(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 impl LoggingAlertDispatcher {
     /// Create a dispatcher that logs to console only.
     pub fn console_only() -> Self {
@@ -106,7 +119,7 @@ impl AlertDispatcher for LoggingAlertDispatcher {
                 "composite_score": composite_score,
                 "severity": severity,
                 "entity_name": entity_name,
-                "description": if description.len() > 500 { &description[..500] } else { description },
+                "description": truncate_on_char_boundary(description, 500),
             });
             let _ = sqlx::query(
                 "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
@@ -300,5 +313,37 @@ mod tests {
         assert_eq!(triage_score_to_alert_severity(0.50), "medium");
         assert_eq!(triage_score_to_alert_severity(0.30), "low");
         assert_eq!(triage_score_to_alert_severity(0.10), "low");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_alert_multibyte_description_does_not_panic() {
+        let integration = RouterIntegration::new(Box::new(LoggingAlertDispatcher::console_only()));
+        // 499 ASCII bytes followed by a 2-byte character straddling byte 500.
+        let description = format!("{}é tail", "a".repeat(499));
+        let user_ids = integration
+            .dispatch_triage_alert(TriageAlertRequest {
+                item_type: &TriageItemType::Warning,
+                source_id: "warn-multibyte",
+                title: "Multibyte",
+                description: &description,
+                composite_score: 0.9,
+                entity_id: None,
+                entity_name: None,
+            })
+            .await;
+        assert!(user_ids.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_on_char_boundary_never_splits_multibyte() {
+        let value = format!("{}é tail", "a".repeat(499));
+        // Byte 500 falls inside the 2-byte 'é'; truncation must back off to 499.
+        let truncated = truncate_on_char_boundary(&value, 500);
+        assert_eq!(truncated, "a".repeat(499));
+
+        // Short values are returned unchanged.
+        assert_eq!(truncate_on_char_boundary("short", 500), "short");
+        // A boundary capped by a leading multibyte char degrades to empty.
+        assert_eq!(truncate_on_char_boundary("é", 1), "");
     }
 }

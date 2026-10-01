@@ -670,6 +670,31 @@ impl EntityPatternExtractor {
 // Emerging Entity Detection Logic
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Find `needle` in `haystack` ignoring ASCII case.
+///
+/// Returns a byte index into `haystack` (not a lowercased copy) that is
+/// guaranteed to fall on a char boundary, so callers can slice safely even
+/// when earlier characters lowercase to a different byte length.
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let hay = haystack.as_bytes();
+    let len = needle.len();
+    if len > hay.len() {
+        return None;
+    }
+    for start in 0..=hay.len() - len {
+        if !haystack.is_char_boundary(start) || !haystack.is_char_boundary(start + len) {
+            continue;
+        }
+        if hay[start..start + len].eq_ignore_ascii_case(needle.as_bytes()) {
+            return Some(start);
+        }
+    }
+    None
+}
+
 /// Extract entity mentions from observation text using simple regex/NER patterns.
 ///
 /// This is a lightweight NER replacement that looks for capitalized words,
@@ -691,13 +716,16 @@ fn extract_entity_mentions(text: &str) -> Vec<String> {
         "NV",
     ];
 
-    // Check for entity patterns in the text
-    let text_lower = text.to_lowercase();
+    // Check for entity patterns in the text. Match against the original string
+    // so byte offsets stay meaningful for arbitrary Unicode crawled text.
     for pattern in &known_patterns {
-        let pat_lower = pattern.to_lowercase();
-        if let Some(pos) = text_lower.find(&pat_lower) {
-            // Extract the entity name before the suffix
-            let start = pos.saturating_sub(40);
+        if let Some(pos) = find_ascii_case_insensitive(text, pattern) {
+            // Extract the entity name before the suffix, snapping the start to
+            // a char boundary.
+            let mut start = pos.saturating_sub(40);
+            while start < pos && !text.is_char_boundary(start) {
+                start += 1;
+            }
             let preceding = &text[start..pos];
             let words: Vec<&str> = preceding.split_whitespace().collect();
             if let Some(last_word) = words.last() {
@@ -1726,6 +1754,21 @@ mod tests {
                 .any(|m| m.contains("Advanced Micro Devices")),
             "Should find capitalized multi-word entities"
         );
+    }
+
+    #[test]
+    fn test_extract_entity_mentions_multibyte_text_does_not_panic() {
+        // 'İ' lowercases to two chars (3 bytes), so offsets taken from a
+        // lowercased copy no longer line up with the original string, and
+        // pos - 40 lands inside a multi-byte character.
+        let text = format!("{}Acme Inc. won the contract.", "İ".repeat(40));
+        let mentions = extract_entity_mentions(&text);
+
+        assert!(
+            mentions.iter().any(|m| m.contains("Inc.")),
+            "suffix extraction must survive multi-byte surrounding text: {mentions:?}"
+        );
+        assert!(!mentions.iter().any(|m| m.contains('\u{FFFD}')));
     }
 
     // ── New: should_track tests ──────────────────────────────────────────

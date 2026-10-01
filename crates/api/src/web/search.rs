@@ -15,7 +15,7 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::{is_htmx_request, PageContext};
+use super::{is_htmx_request, safe_href, PageContext};
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::autocomplete::AutocompleteIndex;
@@ -231,7 +231,7 @@ pub async fn search_page(
                         subtitle: sr.region.clone(),
                         snippet: sr.snippet.clone(),
                         score: sr.score as f64,
-                        url,
+                        url: safe_href(&url),
                     }
                 })
                 .collect();

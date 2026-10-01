@@ -90,19 +90,25 @@ pub struct JobTitleExtraction {
 /// Matches against known title lists and pattern-based extraction.
 pub fn extract_job_title_with_confidence(text: &str) -> Vec<JobTitleExtraction> {
     let mut results = Vec::new();
-    let text_lower = text.to_lowercase();
+    // ASCII-only lowercasing preserves byte offsets and char boundaries, unlike
+    // `str::to_lowercase`, whose output can be longer than the input (e.g.
+    // 'İ' -> "i\u{307}"). Searching the ASCII-lowered haystack keeps every
+    // offset valid for slicing the original text.
+    let text_ascii_lower = text.to_ascii_lowercase();
 
-    // Try known-title matching first
+    // Try known-title matching first (the EN list is ASCII-only)
     for known in KNOWN_JOB_TITLES_EN.iter() {
-        let lower = known.to_lowercase();
-        if let Some(pos) = text_lower.find(&lower) {
+        let lower = known.to_ascii_lowercase();
+        if let Some(pos) = text_ascii_lower.find(&lower) {
             let end = pos + known.len();
-            results.push(JobTitleExtraction {
-                title: text[pos..end].to_string(),
-                confidence: 0.9,
-                role_family: classify_title_to_role_family(known),
-                span: Some((pos, end)),
-            });
+            if let Some(title) = text.get(pos..end) {
+                results.push(JobTitleExtraction {
+                    title: title.to_string(),
+                    confidence: 0.9,
+                    role_family: classify_title_to_role_family(known),
+                    span: Some((pos, end)),
+                });
+            }
         }
     }
 
@@ -2621,5 +2627,22 @@ mod tests {
         let text = "Apple Inc. 苹果 M. Jean Dupont";
         let entities = extract_entities(text, "auto");
         assert!(!entities.is_empty());
+    }
+
+    // Audit: `to_lowercase` can change byte length ('İ' expands to "i\u{307}"),
+    // so offsets found in the lowercased copy must never slice the original
+    // text. The extractor must find the title and slice it safely.
+    #[test]
+    fn test_job_title_extraction_case_expanding_unicode_no_panic() {
+        let text = "İ Chief Executive Officer";
+        let results = extract_job_title_with_confidence(text);
+        assert!(
+            results.iter().any(|r| r.title == "Chief Executive Officer"),
+            "expected the known title to be extracted intact: {results:?}"
+        );
+        for result in &results {
+            let (start, end) = result.span.expect("span recorded");
+            assert_eq!(&text[start..end], result.title);
+        }
     }
 }

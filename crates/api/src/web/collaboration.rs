@@ -20,7 +20,13 @@ use uuid::Uuid;
 use apex_store::postgres::PgStore;
 
 use crate::middleware::session::WebSession;
-use crate::routes::collaboration::{fmt_json_value, format_activity_details};
+use crate::routes::collaboration::{
+    authorize_workspace, fmt_json_value, format_activity_details, validate_access_level,
+    validate_evidence_type, validate_priority, validate_probability, validate_reliability_score,
+    validate_risk_category, validate_risk_score, validate_share_type, validate_stage,
+    validate_team_assignment_role, validate_workspace_assignment_role, validate_workspace_name,
+    WsAccess,
+};
 use crate::web::{render_template, PageContext};
 
 // ─── Query parameters ───────────────────────────────────────────────────
@@ -431,7 +437,19 @@ pub async fn list_workspaces(
 
     let status_filter = params.status.as_deref();
 
-    let workspaces = match store.list_investigation_workspaces(100).await {
+    // Visibility is enforced in SQL (admin bypass, owner, assignment,
+    // unexpired share, organization/public), so private workspaces never
+    // appear, and the status filter runs before LIMIT.
+    let workspaces = match store
+        .list_visible_investigation_workspaces(
+            session.user_id.as_str(),
+            session.role.can_admin(),
+            None,
+            status_filter,
+            100,
+        )
+        .await
+    {
         Ok(value) => value,
         Err(error) => {
             tracing::error!("load workspaces failed (web collaboration): {error:#}");
@@ -444,19 +462,10 @@ pub async fn list_workspaces(
         }
     };
 
-    let filtered: Vec<_> = if let Some(status) = status_filter {
-        workspaces
-            .into_iter()
-            .filter(|w| w.status == status)
-            .collect()
-    } else {
-        workspaces
-    };
+    let total = workspaces.len();
+    let open_count = workspaces.iter().filter(|w| w.status == "open").count();
 
-    let total = filtered.len();
-    let open_count = filtered.iter().filter(|w| w.status == "open").count();
-
-    let items: Vec<WorkspaceItem> = filtered
+    let items: Vec<WorkspaceItem> = workspaces
         .into_iter()
         .map(|w| WorkspaceItem {
             id: w.id.to_string(),
@@ -621,6 +630,7 @@ pub async fn new_workspace_page(
         "structured".to_string()
     };
     let error_notice = query.error.as_deref().map(|code| match code {
+        "invalid_name" => "Workspace name must be between 3 and 255 characters.".to_string(),
         "create_failed" => {
             "Workspace could not be created. Check the name and type, then try again.".to_string()
         }
@@ -646,12 +656,38 @@ pub async fn new_workspace_page(
     render_template(&page)
 }
 
+/// Redirect back to the workspace form carrying an error code (and the
+/// entity/signal prefill) so a rejected submission is a one-click retry.
+fn workspace_form_error_redirect(
+    form: &CreateWorkspaceForm,
+    code: &str,
+) -> axum::response::Response {
+    let mut params: Vec<(&str, &str)> = vec![("error", code)];
+    if let Some(entity_id) = form.entity_id.as_deref().filter(|v| !v.trim().is_empty()) {
+        params.push(("entity_id", entity_id));
+    }
+    if let Some(signal_id) = form.signal_id.as_deref().filter(|v| !v.trim().is_empty()) {
+        params.push(("signal_id", signal_id));
+    }
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(params)
+        .finish();
+    Redirect::to(&format!("/workspaces/new?{query}")).into_response()
+}
+
 /// POST /workspaces — create a new workspace.
 pub async fn create_workspace(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreateWorkspaceForm>,
 ) -> impl IntoResponse {
+    // The API enforces 3–255 characters; the form used to accept anything and
+    // let the database truncate/reject it.
+    if let Err(error) = validate_workspace_name(&form.name) {
+        tracing::warn!(?error, "create_workspace: invalid name");
+        return workspace_form_error_redirect(&form, "invalid_name");
+    }
+
     let from_signal = form
         .signal_id
         .as_deref()
@@ -715,17 +751,7 @@ pub async fn create_workspace(
             tracing::warn!(%error, "create_workspace failed");
             // Surface the failure on the form instead of pretending success,
             // and keep the entity/signal prefill so the retry is one click.
-            let mut params: Vec<(&str, &str)> = vec![("error", "create_failed")];
-            if let Some(entity_id) = form.entity_id.as_deref().filter(|v| !v.trim().is_empty()) {
-                params.push(("entity_id", entity_id));
-            }
-            if let Some(signal_id) = form.signal_id.as_deref().filter(|v| !v.trim().is_empty()) {
-                params.push(("signal_id", signal_id));
-            }
-            let query = url::form_urlencoded::Serializer::new(String::new())
-                .extend_pairs(params)
-                .finish();
-            Redirect::to(&format!("/workspaces/new?{query}")).into_response()
+            workspace_form_error_redirect(&form, "create_failed")
         }
     }
 }
@@ -763,10 +789,34 @@ pub async fn get_workspace(
         }
     };
 
-    let workspace = match store.get_investigation_workspace(workspace_id).await {
-        Ok(Some(w)) => w,
-        _ => {
-            return (StatusCode::NOT_FOUND, "Workspace not found").into_response();
+    // Authorization denials render as not-found, never as forbidden: a 403
+    // would confirm that a private workspace exists. The guard returns the
+    // record so the detail page needs no second read.
+    let workspace = match authorize_workspace(
+        store.as_ref(),
+        workspace_id,
+        session.user_id.as_str(),
+        session.role.can_admin(),
+        WsAccess::Read,
+    )
+    .await
+    {
+        Ok(workspace) => workspace,
+        Err(error) if error.http_status() == 404 => {
+            return super::errors::not_found_with_context(
+                &session.username,
+                &format!("/workspaces/{id}"),
+                warning_count,
+            );
+        }
+        Err(error) => {
+            tracing::error!(?error, workspace_id = %id, "get_workspace: authorization failed");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                warning_count,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
         }
     };
 
@@ -795,7 +845,14 @@ pub async fn get_workspace(
         }
     };
     let activity = match store
-        .list_activity_feed(Some(workspace_id), None, None, 50)
+        .list_activity_feed(
+            session.user_id.as_str(),
+            session.role.can_admin(),
+            Some(workspace_id),
+            None,
+            None,
+            50,
+        )
         .await
     {
         Ok(value) => value,
@@ -882,7 +939,7 @@ pub async fn get_workspace(
 
 /// POST /workspaces/:id/close — close a workspace.
 pub async fn close_workspace(
-    _session: Extension<WebSession>,
+    session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
@@ -893,31 +950,44 @@ pub async fn close_workspace(
         }
     };
 
-    let workspace = match store.get_investigation_workspace(uuid).await {
-        Ok(Some(workspace)) => workspace,
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, "Workspace not found").into_response();
+    // Closing is a write: only the owner, an admin, or a write-level
+    // share/assignment may do it. Denials render as not-found.
+    if let Err(error) = authorize_workspace(
+        store.as_ref(),
+        uuid,
+        session.user_id.as_str(),
+        session.role.can_admin(),
+        WsAccess::Write,
+    )
+    .await
+    {
+        if error.http_status() == 404 {
+            return super::errors::not_found_with_context(
+                &session.username,
+                &format!("/workspaces/{id}"),
+                0,
+            );
         }
-        Err(error) => {
-            tracing::error!(%error, workspace_id = %id, "close_workspace: load failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to close workspace",
-            )
-                .into_response();
-        }
-    };
+        tracing::error!(?error, workspace_id = %id, "close_workspace: authorization failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to close workspace",
+        )
+            .into_response();
+    }
 
     // Authoritative persistence: the redirect must not claim the workspace
-    // was closed when the update failed.
+    // was closed when the update failed. Absent columns keep their values in
+    // SQL (`COALESCE`), so concurrent edits are not rolled back.
     if let Err(error) = store
         .update_investigation_workspace(
             uuid,
-            Some(&workspace.name),
+            None, // name — leave as-is
             None, // description — leave as-is
             Some("closed"),
-            Some(&workspace.tags),
-            Some(&workspace.entity_focus),
+            None, // tags — leave as-is
+            None, // entity_focus — leave as-is
+            None, // metadata — leave as-is
             None, // findings — leave as-is
             None, // conclusions — leave as-is
         )
@@ -947,8 +1017,43 @@ pub async fn assign_user_to_workspace(
             return (StatusCode::BAD_REQUEST, "Invalid workspace ID").into_response();
         }
     };
+    // The API enforces a non-empty user and the exact role set; the form used
+    // to hand anything to the store.
+    if form.user_id.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "User ID is required").into_response();
+    }
+    if let Err(error) = validate_workspace_assignment_role(&form.role) {
+        tracing::warn!(?error, "assign_user_to_workspace: invalid role");
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+
+    // Managing members requires Manage rights (owner/lead or admin share).
+    if let Err(error) = authorize_workspace(
+        store.as_ref(),
+        uuid,
+        session.user_id.as_str(),
+        session.role.can_admin(),
+        WsAccess::Manage,
+    )
+    .await
+    {
+        if error.http_status() == 404 {
+            return super::errors::not_found_with_context(
+                &session.username,
+                &format!("/workspaces/{id}"),
+                0,
+            );
+        }
+        tracing::error!(?error, workspace_id = %id, "assign_user_to_workspace: authorization failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to assign user to workspace",
+        )
+            .into_response();
+    }
+
     if let Err(error) = store
-        .create_workspace_assignment(uuid, &form.user_id, &form.role, &session.user_id)
+        .create_workspace_assignment(uuid, form.user_id.trim(), &form.role, &session.user_id)
         .await
     {
         // Authoritative persistence: never redirect as if the assignment
@@ -976,6 +1081,17 @@ pub async fn share_workspace(
             return (StatusCode::BAD_REQUEST, "Invalid workspace ID").into_response();
         }
     };
+    // The API enforces these exact sets; the form used to hand anything to
+    // the store and let the database constraint reject it as a 500.
+    if form.shared_with.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "Share recipient is required").into_response();
+    }
+    if let Err(error) = validate_share_type(&form.share_type) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+    if let Err(error) = validate_access_level(&form.access_level) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
     let expires_at = match form
         .expires_at
         .as_deref()
@@ -992,13 +1108,40 @@ pub async fn share_workspace(
         },
         None => None,
     };
+
+    // Sharing requires Manage rights (owner/lead or admin share). Denials
+    // render as not-found so a private workspace's existence is not leaked.
+    if let Err(error) = authorize_workspace(
+        store.as_ref(),
+        uuid,
+        session.user_id.as_str(),
+        session.role.can_admin(),
+        WsAccess::Manage,
+    )
+    .await
+    {
+        if error.http_status() == 404 {
+            return super::errors::not_found_with_context(
+                &session.username,
+                &format!("/workspaces/{id}"),
+                0,
+            );
+        }
+        tracing::error!(?error, workspace_id = %id, "share_workspace: authorization failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to share workspace",
+        )
+            .into_response();
+    }
+
     // Authoritative persistence: a failed share write must not redirect as if
     // the workspace had been shared.
     if let Err(error) = store
         .create_investigation_share(
             uuid,
             &session.user_id,
-            &form.shared_with,
+            form.shared_with.trim(),
             &form.share_type,
             &form.access_level,
             form.message.as_deref(),
@@ -1106,6 +1249,12 @@ pub async fn add_to_queue(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<AddToQueueForm>,
 ) -> impl IntoResponse {
+    // The API enforces 1–100; the form previously reached the DB constraint
+    // and surfaced as a 500.
+    if let Err(error) = validate_priority(form.priority) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+
     // A malformed item reference is a validation error: substituting a fresh
     // UUID would queue a fabricated identity that no dossier can resolve.
     let item_id = match Uuid::parse_str(form.item_id.trim()) {
@@ -1213,7 +1362,14 @@ pub async fn list_activity(
     let limit = params.limit.unwrap_or(100);
 
     let items = match store
-        .list_activity_feed(workspace_id, params.team_id.as_deref(), None, limit)
+        .list_activity_feed(
+            session.user_id.as_str(),
+            session.role.can_admin(),
+            workspace_id,
+            params.team_id.as_deref(),
+            None,
+            limit,
+        )
         .await
     {
         Ok(value) => value,
@@ -1338,6 +1494,16 @@ pub async fn add_supplier_risk(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<AddSupplierRiskForm>,
 ) -> impl IntoResponse {
+    // The API enforces the category set and a finite 0.0–1.0 score;
+    // `serde_urlencoded` parses "NaN"/"inf" into f64, so the range check
+    // alone is not enough.
+    if let Err(error) = validate_risk_category(&form.risk_category) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+    if let Err(error) = validate_risk_score(form.risk_score) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+
     let risk_factors: serde_json::Value = form
         .risk_factors
         .as_deref()
@@ -1458,6 +1624,26 @@ pub async fn create_pipeline_opportunity(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreatePipelineForm>,
 ) -> impl IntoResponse {
+    // The API enforces the stage set and a finite 0.0–1.0 probability.
+    if let Err(error) = validate_stage(&form.stage) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+    if let Err(error) = validate_probability(form.probability) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+    // `value_estimate` has no range of its own, but the form parses it with
+    // `serde_urlencoded`, which happily turns "NaN"/"inf" into an f64, and
+    // PostgreSQL NUMERIC accepts NaN. Only finite values may be stored.
+    if let Some(value_estimate) = form.value_estimate {
+        if !value_estimate.is_finite() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Value estimate must be a finite number",
+            )
+                .into_response();
+        }
+    }
+
     let expected_close = match form
         .expected_close
         .as_deref()
@@ -1512,6 +1698,11 @@ pub async fn update_pipeline_stage(
             return (StatusCode::BAD_REQUEST, "Invalid opportunity ID").into_response();
         }
     };
+    // The API enforces the stage set; without this the database constraint
+    // rejected bad values as a 500.
+    if let Err(error) = validate_stage(&form.stage) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
     if let Err(error) = store.update_pipeline_stage(uuid, &form.stage, None).await {
         // Authoritative persistence: the redirect must not claim the
         // stage change was stored when the write failed.
@@ -1575,7 +1766,8 @@ pub async fn list_evidence(
             entity_type: e.entity_type,
             entity_id: e.entity_id,
             evidence_type: e.evidence_type,
-            source_url: e.source_url,
+            // Stored rows predating the write-side check still render safely.
+            source_url: crate::web::safe_href(&e.source_url),
             source_domain: fmt_opt(&e.source_domain),
             source_name: fmt_opt(&e.source_name),
             reliability_score: e.reliability_score,
@@ -1605,12 +1797,48 @@ pub async fn add_evidence(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<AddEvidenceForm>,
 ) -> impl IntoResponse {
+    // The API enforces the evidence-type set and a finite 0.0–1.0 reliability
+    // score; the form previously bypassed both.
+    if let Err(error) = validate_evidence_type(&form.evidence_type) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+    if let Err(error) = validate_reliability_score(form.reliability_score) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+    let source_url = form.source_url.trim();
+    if source_url.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Evidence source URL is required").into_response();
+    }
+    // Stored evidence URLs are rendered into an href; non-http(s) schemes are
+    // rejected at the door (stored-XSS defense in depth).
+    if crate::web::safe_href(source_url) == "#" {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Evidence source URL must be an http(s) URL",
+        )
+            .into_response();
+    }
+
     // `source_evidence.entity_id` is a VARCHAR reference (seeds use ids like
     // `comp-001`), so the contract is a non-empty trimmed id, not a UUID.
     let entity_id = form.entity_id.trim();
     if entity_id.is_empty() {
         return (StatusCode::BAD_REQUEST, "Evidence entity ID is required").into_response();
     }
+
+    // Prefer the submitted domain; fall back to the URL host so the column is
+    // populated even when the form omits it.
+    let source_domain = form
+        .source_domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            url::Url::parse(source_url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(str::to_string))
+        });
 
     // Authoritative persistence: a failed insert must not redirect as if the
     // evidence had been stored.
@@ -1619,8 +1847,8 @@ pub async fn add_evidence(
             &form.entity_type,
             entity_id,
             &form.evidence_type,
-            &form.source_url,
-            form.source_domain.as_deref(),
+            source_url,
+            source_domain.as_deref(),
             form.source_name.as_deref(),
             form.reliability_score,
             form.excerpt.as_deref(),
@@ -1719,6 +1947,17 @@ pub async fn create_team_assignment(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreateTeamAssignmentForm>,
 ) -> impl IntoResponse {
+    // The API enforces non-empty team/assignee fields and the exact role set.
+    if form.team_id.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "Team ID is required").into_response();
+    }
+    if form.assigned_to.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "Assignee is required").into_response();
+    }
+    if let Err(error) = validate_team_assignment_role(&form.role) {
+        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    }
+
     // `team_assignments.entity_id` is a VARCHAR reference, so the contract is
     // a non-empty trimmed id, not a UUID.
     let entity_id = form.entity_id.trim();
@@ -1890,7 +2129,10 @@ mod tests {
         AddEvidenceForm {
             entity_type: "company".to_string(),
             entity_id: entity_id.to_string(),
-            evidence_type: "news".to_string(),
+            // Must stay inside the API's accepted set (the database check
+            // constraint mirrors it): the legacy "news" value was rejected by
+            // the API while the web form accepted it.
+            evidence_type: "news_article".to_string(),
             source_url: "https://example.com".to_string(),
             source_domain: None,
             source_name: None,

@@ -71,20 +71,18 @@ pub struct LoginForm {
     next: Option<String>,
 }
 
-/// Only local paths are accepted as a post-login destination: `//host` and
-/// `/\host` are protocol-relative/backslash tricks that leave the site.
+/// Only local paths are accepted as a post-login destination: `//host`,
+/// `/\host` and control-character obfuscation (`"/\t/evil"` is normalized by
+/// browsers to `"//evil"`, a protocol-relative external URL) all leave the
+/// site. Reuses [`crate::web::safe_relative_href`], whose control-character
+/// rejection also keeps `Redirect::to` from panicking on a non-header value.
 fn safe_next(next: Option<&str>) -> Option<String> {
-    let next = next?.trim();
-    (!next.is_empty()
-        && next.starts_with('/')
-        && !next.starts_with("//")
-        && !next.starts_with("/\\"))
-    .then(|| next.to_string())
+    crate::web::safe_relative_href(next?)
 }
 
 /// A configured web login. `WEB_USERS_JSON` entries carry `id`, `username`,
 /// `password_hash` and `role`; `id` defaults to the username when omitted.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct WebUser {
     #[serde(default)]
     pub id: String,
@@ -92,6 +90,20 @@ pub struct WebUser {
     pub password_hash: String,
     #[serde(default)]
     pub role: String,
+}
+
+impl std::fmt::Debug for WebUser {
+    /// Redacts the credential: `Debug` output of configuration must never
+    /// print a password hash.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebUser")
+            .field("id", &self.id)
+            .field("username", &self.username)
+            .field("password_hash", &"[redacted]")
+            .field("role", &self.role)
+            .finish()
+    }
 }
 
 impl WebUser {
@@ -397,9 +409,15 @@ static DUMMY_PASSWORD_HASH: std::sync::LazyLock<String> =
 /// stall every other request.
 async fn verify_password_async(password: &str, stored_hash: &str) -> bool {
     let (password, stored_hash) = (password.to_owned(), stored_hash.to_owned());
-    tokio::task::spawn_blocking(move || verify_password_hash(&password, &stored_hash))
-        .await
-        .unwrap_or(false)
+    match tokio::task::spawn_blocking(move || verify_password_hash(&password, &stored_hash)).await {
+        Ok(verified) => verified,
+        Err(error) => {
+            // A cancelled or panicked verification task must never
+            // authenticate; report it explicitly instead of defaulting silent.
+            tracing::error!(%error, "password verification task failed");
+            false
+        }
+    }
 }
 
 /// Pay the same verification cost as a real credential check without
@@ -711,6 +729,34 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(password.as_bytes());
         hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn safe_next_allows_only_local_paths() {
+        assert_eq!(
+            safe_next(Some("/warnings/42")).as_deref(),
+            Some("/warnings/42")
+        );
+        assert_eq!(
+            safe_next(Some(" /search?q=x ")).as_deref(),
+            Some("/search?q=x")
+        );
+        assert!(safe_next(None).is_none());
+        assert!(safe_next(Some("")).is_none());
+        assert!(safe_next(Some("https://evil.example")).is_none());
+        assert!(safe_next(Some("//evil.example")).is_none());
+        assert!(safe_next(Some("/\\evil.example")).is_none());
+    }
+
+    #[test]
+    fn safe_next_rejects_control_character_open_redirect_obfuscation() {
+        // Browsers strip tab/newline before parsing a URL, so `"/\t/evil"`
+        // becomes the protocol-relative `"//evil"` and leaves the origin.
+        assert!(safe_next(Some("/\t/evil")).is_none());
+        assert!(safe_next(Some("/\n/evil")).is_none());
+        assert!(safe_next(Some("/\r/evil")).is_none());
+        assert!(safe_next(Some("/\u{000B}/evil")).is_none());
+        assert!(safe_next(Some("/evil\r\nSet-Cookie: x=1")).is_none());
     }
 
     #[test]

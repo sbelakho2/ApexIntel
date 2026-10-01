@@ -279,10 +279,21 @@ impl ModelConfig {
             None => "(none)".to_string(),
             Some(k) => {
                 let k = k.expose_secret();
-                if k.len() <= 8 {
+                // Count and slice by chars: a non-ASCII key must not panic the
+                // redaction helper that exists specifically for safe logging.
+                if k.chars().count() <= 8 {
                     "***".to_string()
                 } else {
-                    format!("{}...{}", &k[..4], &k[k.len() - 4..])
+                    let prefix: String = k.chars().take(4).collect();
+                    let suffix: String = k
+                        .chars()
+                        .rev()
+                        .take(4)
+                        .collect::<Vec<char>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    format!("{}...{}", prefix, suffix)
                 }
             }
         }
@@ -295,6 +306,32 @@ impl ModelConfig {
 
 /// Maximum LLM response size in bytes before truncation (B206).
 pub const MAX_RESPONSE_SIZE: usize = 512_000; // 512 KB
+
+/// Read an HTTP response body with a hard byte cap.
+///
+/// The configured LLM endpoint is normally trusted infrastructure, but a
+/// compromised or spoofed endpoint can return an arbitrarily large body;
+/// `Response::json`/`Response::text` would buffer it without bound. Streaming
+/// the body and rejecting anything over `limit` keeps memory use bounded even
+/// for chunked responses with no `Content-Length`.
+pub(crate) async fn read_body_limited(
+    mut resp: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    if let Some(len) = resp.content_length() {
+        if len > limit as u64 {
+            anyhow::bail!("LLM response body of {len} bytes exceeds the {limit}-byte limit");
+        }
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > limit {
+            anyhow::bail!("LLM response body exceeds the {limit}-byte limit");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 /// Routing policy that determines which provider handles each task class.
 ///
@@ -742,7 +779,9 @@ impl OpenAiCompatibleClient {
                 continue;
             }
 
-            let resp_body: serde_json::Value = resp.json().await?;
+            let resp_body_bytes = read_body_limited(resp, MAX_RESPONSE_SIZE).await?;
+            let resp_body: serde_json::Value = serde_json::from_slice(&resp_body_bytes)
+                .map_err(|error| anyhow::anyhow!("Invalid JSON in LLM response: {error}"))?;
 
             if !status.is_success() {
                 let error_msg = resp_body
@@ -1310,10 +1349,117 @@ mod tests {
         assert!(redacted.contains("..."));
     }
 
+    // Audit: redaction is used for safe logging and must not panic on a key
+    // containing non-ASCII characters. The old byte slicing panicked at a
+    // non-char-boundary index.
+    #[test]
+    fn test_redacted_api_key_multibyte_no_panic() {
+        let mut cfg = ModelConfig::openai_default();
+        cfg.api_key = Some(ApiKeySecret::from("aéééééééééé"));
+        let redacted = cfg.redacted_api_key();
+        assert!(redacted.starts_with("aééé"));
+        assert!(redacted.contains("..."));
+        assert_ne!(redacted, "aéééééééééé");
+
+        // Short multi-byte keys are fully redacted rather than sliced.
+        cfg.api_key = Some(ApiKeySecret::from("aéééé"));
+        assert_eq!(cfg.redacted_api_key(), "***");
+    }
+
     // ── B206: MAX_RESPONSE_SIZE constant ─────────────────────────
     #[test]
     fn test_max_response_size_constant() {
         assert_eq!(MAX_RESPONSE_SIZE, 512_000);
+    }
+
+    async fn spawn_raw_http_response(
+        response: String,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("test listener should bind: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("test listener address: {error}"));
+        let server = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                // Drain the request headers first. Closing a socket while the
+                // peer's request is still unread can trigger a TCP RST that
+                // discards the response, making the test flaky.
+                let mut received = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match socket.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            received.extend_from_slice(&buf[..n]);
+                            if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (addr, server)
+    }
+
+    // Audit: a valid, small response must still parse after the bounded-body
+    // refactor.
+    #[tokio::test]
+    async fn small_response_body_is_parsed() {
+        let body = r#"{"choices":[{"message":{"content":"{\"ok\":true}"}}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (addr, server) = spawn_raw_http_response(response).await;
+
+        let mut config = ModelConfig::openai_default();
+        config.base_url = format!("http://{addr}");
+        config.timeout_seconds = 5;
+        let client = OpenAiCompatibleClient::new(config);
+        let generated = client
+            .generate_text("system", "user")
+            .await
+            .unwrap_or_else(|error| panic!("valid response should parse: {error}"));
+        assert_eq!(generated, "{\"ok\":true}");
+        server.abort();
+    }
+
+    // Audit: MAX_RESPONSE_SIZE must actually cap the bytes buffered from the
+    // endpoint. A hostile/compromised server returning a chunked body larger
+    // than the limit must be rejected, not buffered without bound.
+    #[tokio::test]
+    async fn oversized_response_body_is_rejected() {
+        let chunk = "x".repeat(100_000);
+        let chunks = (MAX_RESPONSE_SIZE / chunk.len()) + 2;
+        let mut body = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n");
+        for _ in 0..chunks {
+            body.push_str(&format!("{:x}\r\n{}\r\n", chunk.len(), chunk));
+        }
+        body.push_str("0\r\n\r\n");
+        let (addr, server) = spawn_raw_http_response(body).await;
+
+        let mut config = ModelConfig::openai_default();
+        config.base_url = format!("http://{addr}");
+        config.timeout_seconds = 5;
+        let client = OpenAiCompatibleClient::new(config);
+        let error = client
+            .generate_text("system", "user")
+            .await
+            .expect_err("oversized response body must be rejected");
+        assert!(
+            error.to_string().contains("limit"),
+            "unexpected error: {error}"
+        );
+        server.abort();
     }
 
     // ── B208: allowed_providers config ───────────────────────────

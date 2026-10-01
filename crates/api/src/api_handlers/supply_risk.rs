@@ -4,7 +4,6 @@
 
 use crate::*;
 use serde::Serialize;
-use sqlx::Row;
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -20,30 +19,25 @@ pub struct SupplyRiskItem {
 
 pub(crate) async fn get_supply_risks(
     State(state): State<AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
 ) -> (StatusCode, Json<ApiResponse<Vec<SupplyRiskItem>>>) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
 
-    let rows = match sqlx::query(
-        r#"
-        SELECT
-            id::text,
-            COALESCE(entity_name, 'Unknown') AS name,
-            COALESCE(details->>'risk_level', 'medium') AS risk_level,
-            COALESCE(details->>'category', 'supplier') AS category,
-            COALESCE((details->>'impact_score')::int, 50) AS impact_score,
-            COALESCE(details->>'detected_at', created_at::text) AS last_detected
-        FROM activity_feed
-        WHERE action_type = 'threat_detected'
-           OR details->>'category' IN ('supplier', 'logistics', 'geopolitical', 'regulatory')
-        ORDER BY created_at DESC
-        LIMIT 100
-        "#,
-    )
-    .fetch_all(&state.store.pool)
-    .await
+    // Visibility-scoped read (see get_threat_intel).
+    let records = match state
+        .store
+        .list_activity_feed(
+            auth.user_id.as_str(),
+            auth.role.can_admin(),
+            None,
+            None,
+            None,
+            500,
+        )
+        .await
     {
-        Ok(rows) => rows,
+        Ok(records) => records,
         Err(err) => {
             tracing::error!(request_id = %request_id, "get_supply_risks query failed: {err:#}");
             return (
@@ -55,15 +49,48 @@ pub(crate) async fn get_supply_risks(
         }
     };
 
-    let items: Vec<SupplyRiskItem> = rows
+    let category_of = |record: &apex_store::postgres::ActivityFeedRecord| {
+        record
+            .details
+            .get("category")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("supplier")
+            .to_string()
+    };
+    let items: Vec<SupplyRiskItem> = records
         .iter()
-        .map(|row| SupplyRiskItem {
-            id: row.get::<String, _>("id"),
-            name: row.get::<String, _>("name"),
-            risk_level: row.get::<String, _>("risk_level"),
-            category: row.get::<String, _>("category"),
-            impact_score: row.get::<i32, _>("impact_score") as i64,
-            last_detected: row.get::<String, _>("last_detected"),
+        .filter(|record| {
+            record.action_type == "threat_detected"
+                || matches!(
+                    category_of(record).as_str(),
+                    "supplier" | "logistics" | "geopolitical" | "regulatory"
+                )
+        })
+        .take(100)
+        .map(|record| SupplyRiskItem {
+            id: record.id.to_string(),
+            name: record
+                .entity_name
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string()),
+            risk_level: record
+                .details
+                .get("risk_level")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("medium")
+                .to_string(),
+            category: category_of(record),
+            impact_score: record
+                .details
+                .get("impact_score")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(50),
+            last_detected: record
+                .details
+                .get("detected_at")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| record.created_at.to_rfc3339()),
         })
         .collect();
 

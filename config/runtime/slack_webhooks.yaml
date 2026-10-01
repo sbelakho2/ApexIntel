@@ -3,11 +3,12 @@
 # Multiple webhook URLs for different channels. Each channel maps to a Slack
 # Incoming Webhook URL. Messages are routed based on alert type.
 #
-# Environment variables override these settings:
-#   SLACK_WEBHOOK_URLS             - comma-separated default URLs
+# Environment variables override these settings (the surviving, single set —
+# the older SLACK_WEBHOOK_URLS / SLACK_WEBHOOK_CHANNEL_* variables were
+# removed; channel routing below is file-based):
+#   SLACK_WEBHOOK_URL              - default webhook URL
+#   SLACK_WEBHOOK_FORMAT           - payload format: slack | teams | json
 #   SLACK_WEBHOOK_TIMEOUT_SECS     - timeout (default: 10)
-#   SLACK_WEBHOOK_CHANNEL_<NAME>   - channel-specific URLs
-#   SLACK_WEBHOOK_<CHANNEL>_URL    - single channel URL (e.g., SLACK_WEBHOOK_SECURITY_URL)
 # ---------------------------------------------------------------------------
 timeout_secs: 10
 

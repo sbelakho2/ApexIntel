@@ -1,30 +1,50 @@
-//! Real-time alert notification dispatch system.
+//! Alert data types, channel configuration and formatters for the durable
+//! notification pipeline.
 //!
-//! Sends structured alert notifications over multiple channels when insight
-//! cards breach severity / priority thresholds.
-//!
-//! # Supported channels
-//! - **Webhook** — generic HTTP POST (JSON payload); used for Slack, Teams, etc.
-//! - **Email** — SMTP via external relay (prepared but not sent here; caller
-//!   injects an email sender)
-//! - **Log** — structured tracing emit; always active for audit purposes
-//!
-//! # Design
-//! `NotificationDispatcher::dispatch` is the main entry point.  It accepts a
-//! slice of `InsightCard`-derived `PendingAlert` items, filters them through
-//! configured thresholds, and fires one `Notification` per channel per alert.
+//! Delivery is owned exclusively by
+//! [`crate::notification_delivery`]: alerts are persisted, one row per channel
+//! selected by [`crate::notification_delivery::ConfiguredChannelRouter::channels_for`]
+//! (severity/priority thresholds applied), and the retry processor performs
+//! the webhook/SMTP sends. This module no longer performs any network sends.
 //!
 //! LLM-enhanced alert bodies are available when the `llm` feature is active.
 
-use anyhow::{Context, Result};
 use apex_core::config::ConfigErrors;
 use apex_core::sla::SeveritySlaConfig;
 use chrono::{DateTime, Utc};
-use lettre::message::{header::ContentType, Mailbox, SinglePart};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::info;
+
+use crate::slack::{clip, slack_escape};
+
+/// Redact a credential-bearing URL to `scheme://host/…last4`.
+///
+/// Webhook URLs embed their secret in the path, so they must never be written
+/// to logs or persisted error text. Keeping the scheme, host and last four
+/// characters lets an operator identify the endpoint without leaking it.
+pub(crate) fn redact_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, trimmed),
+    };
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|host| !host.is_empty())
+        .unwrap_or("…");
+    let last4: String = {
+        let chars: Vec<char> = trimmed.chars().collect();
+        chars[chars.len().saturating_sub(4)..].iter().collect()
+    };
+    match scheme {
+        Some(scheme) => format!("{scheme}://{host}/…{last4}"),
+        None => format!("{host}/…{last4}"),
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Alert data types
@@ -220,37 +240,57 @@ pub struct Notification {
     pub error_message: Option<String>,
 }
 
-impl Notification {
-    fn new(channel: &str, alert: PendingAlert, formatted_body: String) -> Self {
-        Self {
-            id: format!("{}:{}", channel, alert.source_id),
-            channel: channel.to_string(),
-            destination: None,
-            alert,
-            subject: None,
-            formatted_body,
-            dispatched_at: None,
-            dispatch_success: None,
-            error_message: None,
-        }
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Channel configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Wire format used to render an alert for a webhook endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebhookFormat {
+    /// Slack Block Kit payload (Slack incoming webhook).
+    Slack,
+    /// Microsoft Teams `MessageCard` payload.
+    Teams,
+    /// Generic JSON object: `{title, severity, description, entity, link}`.
+    #[default]
+    Json,
+}
+
 /// A webhook endpoint destination (Slack, Teams, generic HTTP).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebhookConfig {
     pub name: String,
     pub url: String,
     /// Optional `Authorization: Bearer <token>` header.
     pub bearer_token: Option<String>,
+    /// Wire format for this endpoint. Slack hooks use [`WebhookFormat::Slack`];
+    /// non-Slack endpoints default to [`WebhookFormat::Json`].
+    #[serde(default)]
+    pub format: WebhookFormat,
     /// Minimum severity to send over this webhook.
     pub min_severity: AlertSeverity,
     /// Minimum priority_score [0, 1] to send over this webhook.
     pub min_priority: f64,
+}
+
+/// `Debug` must never print the webhook URL or bearer token: both are
+/// credentials. The URL is shown redacted and the token as `<redacted>`
+/// (audit #73).
+impl std::fmt::Debug for WebhookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookConfig")
+            .field("name", &self.name)
+            .field("url", &redact_url(&self.url))
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("format", &self.format)
+            .field("min_severity", &self.min_severity)
+            .field("min_priority", &self.min_priority)
+            .finish()
+    }
 }
 
 impl WebhookConfig {
@@ -259,6 +299,7 @@ impl WebhookConfig {
             name: "slack".into(),
             url: url.into(),
             bearer_token: None,
+            format: WebhookFormat::Slack,
             min_severity: AlertSeverity::Medium,
             min_priority: 0.5,
         }
@@ -269,8 +310,22 @@ impl WebhookConfig {
             name: name.into(),
             url: url.into(),
             bearer_token: None,
+            // A critical paging hook is usually a non-Slack receiver; its
+            // historical Slack-shaped body was unintended (audit #72).
+            format: WebhookFormat::Json,
             min_severity: AlertSeverity::Critical,
             min_priority: 0.8,
+        }
+    }
+
+    /// Read a `<HOOK>_FORMAT` env override (`slack`, `teams`, `json`).
+    fn format_from_env(key: &str) -> Option<WebhookFormat> {
+        let value = std::env::var(key).ok()?;
+        match value.trim().to_ascii_lowercase().as_str() {
+            "slack" => Some(WebhookFormat::Slack),
+            "teams" => Some(WebhookFormat::Teams),
+            "json" => Some(WebhookFormat::Json),
+            _ => None,
         }
     }
 }
@@ -297,10 +352,13 @@ pub struct NotificationConfig {
 impl NotificationConfig {
     /// Create from environment variables.
     ///
-    /// Reads:
-    /// - `SLACK_WEBHOOK_URL`
-    /// - `CRITICAL_WEBHOOK_URL` (optional extra endpoint)
-    /// - `ALERT_EMAIL_TO` (comma-separated list)
+    /// This is the single environment contract for Slack/webhook alert
+    /// delivery (audit #81). Reads:
+    /// - `SLACK_WEBHOOK_URL` — Slack endpoint (format defaults to Slack,
+    ///   override with `SLACK_WEBHOOK_FORMAT=slack|teams|json`)
+    /// - `CRITICAL_WEBHOOK_URL` — critical-only paging endpoint (format
+    ///   defaults to JSON, override with `CRITICAL_WEBHOOK_FORMAT`)
+    /// - `ALERT_EMAIL_TO` (comma-separated list, empty entries ignored)
     /// - `ALERT_EMAIL_FROM`
     pub fn from_env() -> Self {
         let mut cfg = NotificationConfig {
@@ -309,24 +367,38 @@ impl NotificationConfig {
         };
 
         if let Ok(url) = std::env::var("SLACK_WEBHOOK_URL") {
-            cfg.webhooks.push(WebhookConfig::slack(url));
+            let mut webhook = WebhookConfig::slack(url);
+            if let Some(format) = WebhookConfig::format_from_env("SLACK_WEBHOOK_FORMAT") {
+                webhook.format = format;
+            }
+            cfg.webhooks.push(webhook);
         }
         if let Ok(url) = std::env::var("CRITICAL_WEBHOOK_URL") {
-            cfg.webhooks
-                .push(WebhookConfig::critical_only(url, "critical-hook"));
+            let mut webhook = WebhookConfig::critical_only(url, "critical-hook");
+            if let Some(format) = WebhookConfig::format_from_env("CRITICAL_WEBHOOK_FORMAT") {
+                webhook.format = format;
+            }
+            cfg.webhooks.push(webhook);
         }
         if let Ok(to_raw) = std::env::var("ALERT_EMAIL_TO") {
-            let to_addresses: Vec<String> =
-                to_raw.split(',').map(|s| s.trim().to_string()).collect();
-            let from = std::env::var("ALERT_EMAIL_FROM")
-                .unwrap_or_else(|_| "alerts@apexintel.io".to_string());
-            cfg.email = Some(EmailConfig {
-                to_addresses,
-                from_address: from,
-                subject_prefix: "[ApexIntel Alert]".to_string(),
-                min_severity: AlertSeverity::High,
-                min_priority: 0.65,
-            });
+            // A trailing comma (or a whitespace-only entry) must not create a
+            // delivery row that can never succeed (audit #74).
+            let to_addresses: Vec<String> = to_raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !to_addresses.is_empty() {
+                let from = std::env::var("ALERT_EMAIL_FROM")
+                    .unwrap_or_else(|_| "alerts@apexintel.io".to_string());
+                cfg.email = Some(EmailConfig {
+                    to_addresses,
+                    from_address: from,
+                    subject_prefix: "[ApexIntel Alert]".to_string(),
+                    min_severity: AlertSeverity::High,
+                    min_priority: 0.65,
+                });
+            }
         }
 
         cfg
@@ -342,7 +414,7 @@ impl NotificationConfig {
 ///
 /// When no per-entity config exists the alert is allowed through (the caller
 /// should fall back to channel-level thresholds in
-/// [`NotificationDispatcher::dispatch_batch`]).
+/// [`crate::notification_delivery::ConfiguredChannelRouter::channels_for`]).
 pub fn should_send_alert(
     alert: &PendingAlert,
     entity_config: Option<&apex_core::alert_config::EntityAlertConfig>,
@@ -354,246 +426,15 @@ pub fn should_send_alert(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Dispatcher
+// Formatters
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Dispatches alerts to all configured channels.
+/// Slack Block Kit JSON for an alert.
 ///
-/// This type only performs synchronous fan-out for callers that need an
-/// immediate result (and for backwards compatibility). Durable alert delivery
-/// goes through the outbox pipeline: a domain alert is persisted, queued per
-/// channel in `notification_delivery_state`, and delivered by the retry
-/// processor. This dispatcher deliberately holds **no** NATS branch — real-time
-/// alert publication is exclusively the outbox publisher's job.
-pub struct NotificationDispatcher {
-    config: NotificationConfig,
-    http: reqwest::Client,
-}
-
-impl NotificationDispatcher {
-    /// Build the dispatcher. A client that cannot be built is an `Err` the
-    /// caller must handle; this constructor never panics.
-    pub fn new(config: NotificationConfig) -> Result<Self> {
-        Ok(Self {
-            config,
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .context("failed to build notification HTTP client")?,
-        })
-    }
-
-    pub fn from_env() -> Result<Self> {
-        Self::new(NotificationConfig::from_env())
-    }
-
-    /// Dispatch a batch of pending alerts; returns all `Notification` records
-    /// (dispatched and skipped) for audit logging.
-    pub async fn dispatch_batch(&self, alerts: Vec<PendingAlert>) -> Vec<Notification> {
-        let mut records = Vec::new();
-
-        for alert in alerts {
-            // Always log
-            if alert.severity >= self.config.log_min_severity {
-                info!(
-                    entity = %alert.display_name(),
-                    title = %alert.title,
-                    severity = %alert.severity.as_str(),
-                    priority = %alert.priority_score,
-                    "🔔 Alert dispatched"
-                );
-            }
-
-            // Fire webhooks
-            for webhook in &self.config.webhooks {
-                if alert.severity < webhook.min_severity
-                    || alert.priority_score < webhook.min_priority
-                {
-                    debug!(webhook = %webhook.name, "Alert below webhook threshold — skipping");
-                    continue;
-                }
-
-                let body = self.format_slack_message(&alert);
-                let mut notif = Notification::new(&webhook.name, alert.clone(), body.clone());
-                notif.destination = Some(webhook.url.clone());
-
-                match self.send_webhook_with_retry(webhook, &body).await {
-                    Ok(_) => {
-                        notif.dispatched_at = Some(Utc::now());
-                        notif.dispatch_success = Some(true);
-                        debug!(webhook = %webhook.name, "Webhook delivered");
-                    }
-                    Err(e) => {
-                        error!(webhook = %webhook.name, error = %e, "Webhook delivery failed");
-                        notif.dispatch_success = Some(false);
-                        notif.error_message = Some(e.to_string());
-                    }
-                }
-                records.push(notif);
-            }
-
-            // Deliver alert emails through the same retrying dispatcher path.
-            if let Some(ref email_cfg) = self.config.email {
-                if alert.severity >= email_cfg.min_severity
-                    && alert.priority_score >= email_cfg.min_priority
-                {
-                    let subject = format!(
-                        "{} [{}] {}",
-                        email_cfg.subject_prefix,
-                        alert.severity.as_str().to_uppercase(),
-                        alert.title
-                    );
-                    let formatted = self.format_email_body(&alert);
-                    let mut notif = Notification::new("email", alert.clone(), formatted.clone());
-                    notif.destination = Some(email_cfg.to_addresses.join(","));
-                    notif.subject = Some(subject.clone());
-
-                    match self
-                        .send_email_with_retry(email_cfg, &subject, &formatted)
-                        .await
-                    {
-                        Ok(_) => {
-                            notif.dispatched_at = Some(Utc::now());
-                            notif.dispatch_success = Some(true);
-                        }
-                        Err(e) => {
-                            error!(error = %e, "Email delivery failed");
-                            notif.dispatch_success = Some(false);
-                            notif.error_message = Some(e.to_string());
-                        }
-                    }
-                    records.push(notif);
-                }
-            }
-        }
-
-        records
-    }
-
-    async fn send_webhook(&self, cfg: &WebhookConfig, body: &str) -> Result<()> {
-        let mut req = self
-            .http
-            .post(&cfg.url)
-            .header("Content-Type", "application/json")
-            .body(body.to_string());
-
-        if let Some(ref token) = cfg.bearer_token {
-            req = req.header("Authorization", format!("Bearer {token}"));
-        }
-
-        let resp = req.send().await.context("Webhook HTTP request failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Webhook returned {status}: {text}");
-        }
-
-        Ok(())
-    }
-
-    async fn send_webhook_with_retry(&self, cfg: &WebhookConfig, body: &str) -> Result<()> {
-        let mut last_error = None;
-        for attempt in 1..=3 {
-            match self.send_webhook(cfg, body).await {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    last_error = Some(err);
-                    if attempt < 3 {
-                        tokio::time::sleep(std::time::Duration::from_millis(300 * attempt)).await;
-                    }
-                }
-            }
-        }
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("webhook delivery failed")))
-    }
-
-    async fn send_email(&self, cfg: &EmailConfig, subject: &str, text_body: &str) -> Result<()> {
-        let smtp_host =
-            std::env::var("ALERT_SMTP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let smtp_port = std::env::var("ALERT_SMTP_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(25);
-        let smtp_user = std::env::var("ALERT_SMTP_USER").unwrap_or_default();
-        let smtp_pass = std::env::var("ALERT_SMTP_PASS").unwrap_or_default();
-        let smtp_starttls = std::env::var("ALERT_SMTP_STARTTLS")
-            .ok()
-            .map(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
-
-        let mut builder = Message::builder()
-            .from(cfg.from_address.parse::<Mailbox>()?)
-            .subject(subject);
-        for to in &cfg.to_addresses {
-            builder = builder.to(to.parse::<Mailbox>()?);
-        }
-
-        let email = builder.singlepart(
-            SinglePart::builder()
-                .header(ContentType::TEXT_PLAIN)
-                .body(text_body.to_string()),
-        )?;
-
-        let mailer = if smtp_starttls {
-            let mut transport =
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)?.port(smtp_port);
-            if !smtp_user.trim().is_empty() {
-                transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
-            }
-            transport.build()
-        } else {
-            let mut transport =
-                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_host).port(smtp_port);
-            if !smtp_user.trim().is_empty() {
-                transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
-            }
-            transport.build()
-        };
-
-        mailer.send(email).await?;
-        Ok(())
-    }
-
-    async fn send_email_with_retry(
-        &self,
-        cfg: &EmailConfig,
-        subject: &str,
-        text_body: &str,
-    ) -> Result<()> {
-        let mut last_error = None;
-        for attempt in 1..=3 {
-            match self.send_email(cfg, subject, text_body).await {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    last_error = Some(err);
-                    if attempt < 3 {
-                        tokio::time::sleep(std::time::Duration::from_millis(300 * attempt)).await;
-                    }
-                }
-            }
-        }
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("email delivery failed")))
-    }
-
-    // ── Formatters ────────────────────────────────────────────────────────────
-
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
-    fn format_slack_message(&self, alert: &PendingAlert) -> String {
-        format_slack_message(alert)
-    }
-
-    fn format_email_body(&self, alert: &PendingAlert) -> String {
-        format_email_body(alert)
-    }
-}
-
-/// Slack Block Kit JSON for an alert (legacy webhook body format).
+/// This is the Slack rendering used by the durable channel router; the former
+/// `NotificationDispatcher` fan-out that duplicated webhook and SMTP sending
+/// was dead code and has been removed (audit #81) — the router in
+/// `notification_delivery.rs` is the single delivery pipeline.
 pub(crate) fn format_slack_message(alert: &PendingAlert) -> String {
     let emoji = match alert.severity {
         AlertSeverity::Critical => "🚨",
@@ -606,34 +447,49 @@ pub(crate) fn format_slack_message(alert: &PendingAlert) -> String {
     let body_text = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
     let region = alert.region.as_deref().unwrap_or("Global");
     let entity = alert.display_name();
+    let severity_upper = alert.severity.as_str().to_uppercase();
 
+    // Every crawled/human-authored string is escaped before it reaches a
+    // mrkdwn field, and every block is clipped to its Slack limit (header 150,
+    // field 2000, section 3000, top-level text 4000) so oversized alert text
+    // is delivered instead of rejected as `invalid_blocks` (audit #56/#68).
     serde_json::json!({
-        "text": format!("{emoji} *[{}] {}*\n", alert.severity.as_str().to_uppercase(), alert.title),
+        "text": clip(
+            &format!(
+                "{emoji} *[{}] {}*\n",
+                severity_upper,
+                slack_escape(&alert.title)
+            ),
+            4000
+        ),
         "blocks": [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": format!("{emoji} {} — {}", alert.severity.as_str().to_uppercase(), alert.title)
+                    "text": clip(
+                        &format!("{emoji} {} — {}", severity_upper, alert.title),
+                        150
+                    )
                 }
             },
             {
                 "type": "section",
                 "fields": [
-                    { "type": "mrkdwn", "text": format!("*Entity:*\n{}", entity) },
-                    { "type": "mrkdwn", "text": format!("*Region:*\n{}", region) },
-                    { "type": "mrkdwn", "text": format!("*Category:*\n{}", alert.category) },
-                    { "type": "mrkdwn", "text": format!("*Priority Score:*\n{:.2}", alert.priority_score) },
+                    { "type": "mrkdwn", "text": clip(&format!("*Entity:*\n{}", slack_escape(&entity)), 2000) },
+                    { "type": "mrkdwn", "text": clip(&format!("*Region:*\n{}", slack_escape(region)), 2000) },
+                    { "type": "mrkdwn", "text": clip(&format!("*Category:*\n{}", slack_escape(&alert.category)), 2000) },
+                    { "type": "mrkdwn", "text": clip(&format!("*Priority Score:*\n{:.2}", alert.priority_score), 2000) },
                 ]
             },
             {
                 "type": "section",
-                "text": { "type": "mrkdwn", "text": body_text }
+                "text": { "type": "mrkdwn", "text": clip(&slack_escape(body_text), 3000) }
             },
             {
                 "type": "context",
                 "elements": [
-                    { "type": "mrkdwn", "text": format!("Source ID: `{}` | {}", alert.source_id, alert.created_at.format("%Y-%m-%d %H:%M UTC")) }
+                    { "type": "mrkdwn", "text": clip(&format!("Source ID: `{}` | {}", alert.source_id, alert.created_at.format("%Y-%m-%d %H:%M UTC")), 3000) }
                 ]
             }
         ]
@@ -667,63 +523,6 @@ pub(crate) fn format_email_body(alert: &PendingAlert) -> String {
         alert.source_id,
         alert.created_at.format("%Y-%m-%d %H:%M UTC"),
     )
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Slack integration bridge
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Send a Slack alert for a pending alert using the dedicated Block Kit module.
-///
-/// Bridges the legacy notification system with [`slack::SlackMessage`] and
-/// [`slack::SlackWebhook`].  Configuration is loaded from environment variables
-/// or the YAML config file.
-///
-/// # Errors
-///
-/// Returns an error if the Slack webhook client cannot be created or if all
-/// webhook deliveries fail after retries.
-pub async fn send_slack_alert(alert: &PendingAlert) -> anyhow::Result<()> {
-    let config = crate::slack::SlackConfig::from_env();
-    let webhook = crate::slack::SlackWebhook::new(&config)
-        .context("failed to create Slack webhook client for alert dispatch")?;
-
-    let severity = match alert.severity {
-        AlertSeverity::Critical => crate::slack::SlackMessageSeverity::Critical,
-        AlertSeverity::High => crate::slack::SlackMessageSeverity::High,
-        AlertSeverity::Medium => crate::slack::SlackMessageSeverity::Medium,
-        AlertSeverity::Low => crate::slack::SlackMessageSeverity::Low,
-        AlertSeverity::Info => crate::slack::SlackMessageSeverity::Info,
-    };
-
-    let alert_type = match alert.category.as_str() {
-        "security" | "security_breach" | "cyber" => crate::slack::AlertType::Security,
-        "insight" | "competitive_intel" | "market_intelligence" => crate::slack::AlertType::Insight,
-        "recipe_match" | "opportunity" | "demand_procurement" => {
-            crate::slack::AlertType::RecipeMatch
-        }
-        "poi_update" | "poi" | "talent_movement" => crate::slack::AlertType::PoiUpdate,
-        "warning" | "verification" | "sla_breach" | "sla_reminder" => {
-            crate::slack::AlertType::Warning
-        }
-        _ => crate::slack::AlertType::General,
-    };
-
-    let body = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
-    let mut msg = crate::slack::SlackMessage::new(severity, alert_type, &alert.title, body)
-        .with_entity(alert.display_name());
-
-    if let Some(ref region) = alert.region {
-        msg = msg.with_region(region);
-    }
-
-    msg = msg.with_field("Priority Score", format!("{:.2}", alert.priority_score));
-    msg = msg.with_field("Source ID", &alert.source_id);
-
-    webhook
-        .send(&msg)
-        .await
-        .map_err(|e| anyhow::anyhow!("Slack alert delivery failed for {}: {e}", alert.source_id))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -836,7 +635,8 @@ impl SlaWarningRecord {
 /// The caller is responsible for:
 /// 1. Fetching `SlaWarningRecord`s from the database.
 /// 2. Calling `check_sla_violations()` with those records.
-/// 3. Passing the returned `Vec<PendingAlert>` to `NotificationDispatcher::dispatch_batch()`.
+/// 3. Enqueuing the returned `Vec<PendingAlert>` into the durable pipeline
+///    with [`crate::notification_delivery::ConfiguredChannelRouter::channels_for`].
 ///
 /// ```
 /// use apex_core::sla::SeveritySlaConfig;
@@ -1019,49 +819,194 @@ mod tests {
 
     #[test]
     fn slack_message_format_is_valid_json() {
-        let cfg = NotificationConfig::default();
-        let dispatcher = NotificationDispatcher::new(cfg).expect("client builds");
         let alert = make_alert(AlertSeverity::Critical, 0.95);
-        let msg = dispatcher.format_slack_message(&alert);
+        let msg = format_slack_message(&alert);
         let _parsed: serde_json::Value =
             serde_json::from_str(&msg).expect("slack message should be valid JSON");
     }
 
     #[test]
     fn email_body_contains_entity_name() {
-        let cfg = NotificationConfig::default();
-        let dispatcher = NotificationDispatcher::new(cfg).expect("client builds");
         let alert = make_alert(AlertSeverity::High, 0.8);
-        let body = dispatcher.format_email_body(&alert);
+        let body = format_email_body(&alert);
         assert!(body.contains("Test Corp"));
         assert!(body.contains("HIGH"));
     }
 
-    #[tokio::test]
-    async fn dispatch_batch_empty_returns_empty() {
-        let dispatcher =
-            NotificationDispatcher::new(NotificationConfig::default()).expect("client builds");
-        let records = dispatcher.dispatch_batch(vec![]).await;
-        assert!(records.is_empty());
+    #[test]
+    fn slack_body_escapes_crawled_text_and_clips_blocks() {
+        let mut alert = make_alert(AlertSeverity::Critical, 0.95);
+        alert.title = "<!channel> breach".to_string();
+        alert.body = "<https://evil.example|Click here> & more".to_string();
+        alert.category = "<!here> cyber".to_string();
+
+        let msg = format_slack_message(&alert);
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+
+        // Top-level fallback text is mrkdwn: escaped.
+        let fallback = parsed["text"].as_str().unwrap();
+        assert!(fallback.contains("&lt;!channel&gt;"));
+        assert!(!fallback.contains("<!channel>"));
+
+        // Body section is mrkdwn: escaped.
+        let body_text = parsed["blocks"][2]["text"]["text"].as_str().unwrap();
+        assert_eq!(
+            body_text,
+            "&lt;https://evil.example|Click here&gt; &amp; more"
+        );
+
+        // Field values are mrkdwn: escaped.
+        let fields = parsed["blocks"][1]["fields"].as_array().unwrap();
+        let category = fields[2]["text"].as_str().unwrap();
+        assert!(category.contains("&lt;!here&gt;"));
+        assert!(!category.contains("<!here>"));
+
+        // Header is plain_text and short; clipped to 150 chars.
+        let header = parsed["blocks"][0]["text"]["text"].as_str().unwrap();
+        assert!(header.chars().count() <= 150);
+
+        // Long crawled values never exceed their block limits.
+        alert.title = "T".repeat(10_000);
+        alert.body = "B".repeat(10_000);
+        let msg = format_slack_message(&alert);
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert!(parsed["text"].as_str().unwrap().chars().count() <= 4000);
+        assert!(
+            parsed["blocks"][0]["text"]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 150
+        );
+        assert!(
+            parsed["blocks"][2]["text"]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 3000
+        );
     }
 
-    #[tokio::test]
-    async fn dispatch_batch_below_threshold_skips_webhook() {
-        let mut cfg = NotificationConfig::default();
-        cfg.webhooks.push(WebhookConfig {
-            name: "test".into(),
-            url: "https://httpbin.org/post".into(),
-            bearer_token: None,
-            min_severity: AlertSeverity::Critical,
-            min_priority: 0.9,
-        });
+    #[test]
+    fn slack_body_escapes_entity_region_text_and_fallback() {
+        let mut alert = make_alert(AlertSeverity::Critical, 0.95);
+        alert.scope = AlertScope::entity(
+            "entity-1",
+            Some("<!channel> Acme & Sons <https://evil.example|Co>"),
+        );
+        alert.region = Some("<https://evil.example|Region> & <!here>".to_string());
+        alert.title = "<!channel> *pwn* & <https://evil.example|t>".to_string();
 
-        let dispatcher = NotificationDispatcher::new(cfg).expect("client builds");
-        // Send low severity alert — should be filtered
-        let alert = make_alert(AlertSeverity::Low, 0.1);
-        let records = dispatcher.dispatch_batch(vec![alert]).await;
-        // No webhook dispatch attempted (but no email config either)
-        assert!(records.is_empty());
+        let msg = format_slack_message(&alert);
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+
+        // The top-level fallback text is mrkdwn: the hostile title is escaped.
+        let fallback = parsed["text"].as_str().unwrap();
+        assert!(fallback.contains("&lt;!channel&gt;"), "{fallback}");
+        assert!(
+            fallback.contains("&lt;https://evil.example|t&gt;"),
+            "{fallback}"
+        );
+        assert!(fallback.contains("&amp;"), "{fallback}");
+        assert!(!fallback.contains("<!channel>"), "{fallback}");
+
+        // Entity and region fields are mrkdwn and must be escaped too.
+        let fields = parsed["blocks"][1]["fields"].as_array().unwrap();
+        let entity = fields[0]["text"].as_str().unwrap();
+        assert_eq!(
+            entity,
+            "*Entity:*\n&lt;!channel&gt; Acme &amp; Sons &lt;https://evil.example|Co&gt;"
+        );
+        let region = fields[1]["text"].as_str().unwrap();
+        assert_eq!(
+            region,
+            "*Region:*\n&lt;https://evil.example|Region&gt; &amp; &lt;!here&gt;"
+        );
+
+        // The body section and every field stay inside their Slack limits even
+        // when the crawled text is huge (audit #68).
+        alert.scope = AlertScope::entity("entity-1", Some(&"E".repeat(10_000)));
+        alert.region = Some("R".repeat(10_000));
+        let msg = format_slack_message(&alert);
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert!(parsed["text"].as_str().unwrap().chars().count() <= 4000);
+        assert!(
+            parsed["blocks"][0]["text"]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 150
+        );
+        for field in parsed["blocks"][1]["fields"].as_array().unwrap() {
+            assert!(
+                field["text"].as_str().unwrap().chars().count() <= 2000,
+                "every field is clipped to Slack's 2000-char field limit"
+            );
+        }
+        assert!(
+            parsed["blocks"][2]["text"]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 3000
+        );
+    }
+
+    #[test]
+    fn webhook_format_env_override_parses_known_values() {
+        let key = "APEX_TEST_WEBHOOK_FORMAT";
+        std::env::set_var(key, "teams");
+        assert_eq!(
+            WebhookConfig::format_from_env(key),
+            Some(WebhookFormat::Teams)
+        );
+        std::env::set_var(key, "JSON");
+        assert_eq!(
+            WebhookConfig::format_from_env(key),
+            Some(WebhookFormat::Json)
+        );
+        std::env::set_var(key, " Slack ");
+        assert_eq!(
+            WebhookConfig::format_from_env(key),
+            Some(WebhookFormat::Slack)
+        );
+        std::env::set_var(key, "pager");
+        assert_eq!(WebhookConfig::format_from_env(key), None);
+        std::env::remove_var(key);
+        assert_eq!(WebhookConfig::format_from_env(key), None);
+    }
+
+    #[test]
+    fn webhook_format_defaults_and_env_parsing() {
+        assert_eq!(WebhookFormat::default(), WebhookFormat::Json);
+        assert_eq!(WebhookConfig::slack("u").format, WebhookFormat::Slack);
+        assert_eq!(
+            WebhookConfig::critical_only("u", "critical-hook").format,
+            WebhookFormat::Json
+        );
+    }
+
+    #[test]
+    fn redact_url_hides_the_credential_path() {
+        let redacted = redact_url("https://hooks.slack.com/services/T00/B00/supersecret1234");
+        assert_eq!(redacted, "https://hooks.slack.com/…1234");
+        assert!(!redacted.contains("supersecret"));
+        assert_eq!(redact_url(""), "");
+    }
+
+    #[test]
+    fn webhook_config_debug_never_prints_secrets() {
+        let mut webhook =
+            WebhookConfig::slack("https://hooks.slack.com/services/T00/B00/supersecret1234");
+        webhook.bearer_token = Some("bearer-secret-token".to_string());
+        let rendered = format!("{webhook:?}");
+        assert!(!rendered.contains("supersecret1234"));
+        assert!(!rendered.contains("bearer-secret-token"));
+        assert!(rendered.contains("<redacted>"));
     }
 
     // ── SlaEnforcer tests ─────────────────────────────────────────────────────

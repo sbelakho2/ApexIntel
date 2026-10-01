@@ -2,10 +2,13 @@
 # Local cron jobs for ApexIntel development environment
 # Usage: source this from crontab, or run individual functions
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 HEALTH_URL="http://localhost:9095/api/health"
-BACKUP_DIR="/Users/sabelakhoua/IdeaProjects/ApexIntel/backups"
+BACKUP_DIR="${REPO_ROOT}/backups"
 DB_NAME="apexintel"
-LOG_FILE="/Users/sabelakhoua/IdeaProjects/ApexIntel/backups/cron.log"
+LOG_FILE="${BACKUP_DIR}/cron.log"
 
 # 1. Health check (every 6 hours)
 health_check() {
@@ -32,7 +35,7 @@ backup_cleanup() {
 worker_check() {
     if ! pgrep -f "apex-worker" > /dev/null; then
         echo "[$(date)] WARNING: Worker not running! Restarting..." >> "$LOG_FILE"
-        cd /Users/sabelakhoua/IdeaProjects/ApexIntel
+        cd "${REPO_ROOT}"
         nohup ./target/release/apex-worker > /tmp/apex-worker.log 2>&1 &
         echo "[$(date)] Worker restarted (PID: $!)" >> "$LOG_FILE"
     fi
@@ -42,7 +45,7 @@ worker_check() {
 api_check() {
     if ! pgrep -f "apex-api" > /dev/null; then
         echo "[$(date)] WARNING: API not running! Restarting..." >> "$LOG_FILE"
-        cd /Users/sabelakhoua/IdeaProjects/ApexIntel
+        cd "${REPO_ROOT}"
         nohup ./target/release/apex-api > /tmp/apex-api.log 2>&1 &
         echo "[$(date)] API restarted (PID: $!)" >> "$LOG_FILE"
     fi

@@ -41,6 +41,20 @@ impl ExportFormat {
     }
 }
 
+/// Parse a stored severity/impact string; unknown values fall back to Medium.
+///
+/// Shared by the API and web PDF exports so both map stored data the same way
+/// (a hard-coded Medium was the audit finding).
+pub fn insight_severity_from_stored(value: &str) -> apex_insights::InsightSeverity {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "critical" => apex_insights::InsightSeverity::Critical,
+        "high" => apex_insights::InsightSeverity::High,
+        "low" => apex_insights::InsightSeverity::Low,
+        "info" => apex_insights::InsightSeverity::Info,
+        _ => apex_insights::InsightSeverity::Medium,
+    }
+}
+
 // ─── CSV writer ─────────────────────────────────────────────────────────
 
 /// Generate a CSV string from headers and rows.
@@ -53,20 +67,35 @@ pub fn to_csv(headers: &[&str], rows: &[Vec<String>]) -> String {
 
     // Data rows
     for row in rows {
-        let escaped: Vec<String> = row
-            .iter()
-            .map(|cell| {
-                if cell.contains(',') || cell.contains('"') || cell.contains('\n') {
-                    format!("\"{}\"", cell.replace('"', "\"\""))
-                } else {
-                    cell.clone()
-                }
-            })
-            .collect();
+        let escaped: Vec<String> = row.iter().map(|cell| csv_cell(cell)).collect();
         output.push_str(&escaped.join(","));
         output.push('\n');
     }
     output
+}
+
+/// Quote a CSV cell and neutralize spreadsheet formula injection.
+///
+/// A crawled company name or title starting with `=`, `+`, `-`, `@`, or with
+/// tab/CR or padding spaces before one of those executes as a formula when the
+/// export is opened in Excel/Sheets.
+fn csv_cell(cell: &str) -> String {
+    let lead = cell
+        .trim_start_matches([' ', '\u{a0}', '\t', '\r'])
+        .chars()
+        .next();
+    let needs_guard = matches!(cell.chars().next(), Some('\t' | '\r'))
+        || matches!(lead, Some('=' | '+' | '-' | '@'));
+    let guarded = if needs_guard {
+        format!("'{cell}")
+    } else {
+        cell.to_string()
+    };
+    if guarded.contains(',') || guarded.contains('"') || guarded.contains('\n') {
+        format!("\"{}\"", guarded.replace('"', "\"\""))
+    } else {
+        guarded
+    }
 }
 
 // ─── Typed exporters ────────────────────────────────────────────────────
@@ -378,5 +407,20 @@ mod tests {
         assert_eq!(ExportFormat::Csv.content_type(), "text/csv; charset=utf-8");
         assert_eq!(ExportFormat::Json.content_type(), "application/json");
         assert_eq!(ExportFormat::Csv.file_extension(), "csv");
+    }
+
+    #[test]
+    fn to_csv_guards_formula_injection_and_quotes() {
+        let rows = vec![
+            vec!["=cmd|' /C calc'!A0".to_string(), "Acme, Inc".to_string()],
+            vec!["\t=cmd".to_string(), "  @SUM(1)".to_string()],
+            vec!["plain".to_string(), "say \"hi\"".to_string()],
+        ];
+        let csv = to_csv(&["name", "org"], &rows);
+        assert!(csv.contains("'=cmd|' /C calc'!A0"), "= prefix guarded");
+        assert!(csv.contains("'\t=cmd"), "leading tab guarded");
+        assert!(csv.contains("'  @SUM(1)"), "padded @ guarded");
+        assert!(csv.contains("\"Acme, Inc\""), "comma still quoted");
+        assert!(csv.contains("\"say \"\"hi\"\"\""), "quotes still doubled");
     }
 }

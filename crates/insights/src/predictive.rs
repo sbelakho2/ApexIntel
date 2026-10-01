@@ -40,6 +40,13 @@ pub struct PredictivePattern {
 impl PredictivePattern {
     /// Generate a prediction for an entity based on this pattern.
     pub fn predict(&self, entity_id: Uuid, entity_name: &str) -> Prediction {
+        let now = chrono::Utc::now();
+        // A hostile or mistyped window (u32::MAX days) overflows DateTime
+        // arithmetic; clamp to the latest representable instant instead of
+        // panicking.
+        let expires_at = chrono::Duration::try_days(self.prediction_window_days as i64)
+            .and_then(|window| now.checked_add_signed(window))
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC);
         Prediction {
             id: Uuid::new_v4(),
             entity_id,
@@ -50,9 +57,8 @@ impl PredictivePattern {
             probability: self.precision,
             probability_ci_lower: self.precision_ci_lower,
             probability_ci_upper: self.precision_ci_upper,
-            created_at: chrono::Utc::now(),
-            expires_at: chrono::Utc::now()
-                + chrono::Duration::days(self.prediction_window_days as i64),
+            created_at: now,
+            expires_at,
             status: PredictionStatus::Active,
             actual_outcome: None,
         }
@@ -1229,6 +1235,26 @@ mod tests {
         assert_eq!(prediction.probability, 0.75);
         assert_eq!(prediction.predicted_outcome, "outcome_b");
         assert!(prediction.is_active());
+    }
+
+    #[test]
+    fn extreme_prediction_window_does_not_overflow() {
+        let pattern = PredictivePattern {
+            id: "extreme".to_string(),
+            description: "Extreme window".to_string(),
+            triggers: vec!["trigger_a".to_string()],
+            predicted_outcome: "outcome_b".to_string(),
+            prediction_window_days: u32::MAX,
+            precision: 0.75,
+            precision_ci_lower: 0.68,
+            precision_ci_upper: 0.82,
+            recall: 0.60,
+            observation_count: 0,
+        };
+
+        // `now + u32::MAX days` overflows DateTime and used to panic.
+        let prediction = pattern.predict(Uuid::new_v4(), "Test Corp");
+        assert!(prediction.expires_at >= prediction.created_at);
     }
 
     #[test]

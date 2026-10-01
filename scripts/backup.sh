@@ -26,9 +26,14 @@ echo "[$(date)] Dumping schema..."
 pg_dump --schema-only -f "${BACKUP_DIR}/schema.sql" \
     "${DATABASE_URL}" 2>&1
 
-# 3. Config files
+# 3. Config files (never the raw env file: a backup must not carry live
+# credentials; step 5 writes a keys-only redacted view instead)
 echo "[$(date)] Backing up config..."
-cp -r /opt/apexintel/config/ "${BACKUP_DIR}/config/" 2>/dev/null || true
+if [[ -d /opt/apexintel/config ]]; then
+    mkdir -p "${BACKUP_DIR}/config"
+    (cd /opt/apexintel/config && tar -cf - --exclude='.env' --exclude='*.env' .) \
+        | (cd "${BACKUP_DIR}/config" && tar -xf -) 2>/dev/null || true
+fi
 
 # 4. Recipe seed (in case of local modifications)
 cp /opt/apexintel/config/recipes_seed.yaml "${BACKUP_DIR}/" 2>/dev/null || true

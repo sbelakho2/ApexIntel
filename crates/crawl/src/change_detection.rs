@@ -58,7 +58,12 @@ impl ChangeDetector {
     /// Returns `true` if new or changed, `false` if unchanged.
     #[instrument(skip(self, content), fields(url))]
     pub fn has_changed(&mut self, url: &str, content: &[u8]) -> bool {
-        let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+        // An unnormalizable URL (hostile scheme, malformed) is treated as
+        // changed without being stored: echoing the raw value as a key would
+        // collide distinct invalid URLs, and it must never be fetched.
+        let Some(normalized_url) = normalize_url(url) else {
+            return true;
+        };
         let normalized = normalize_content(content);
         let new_hash = Self::content_hash_with_source(&normalized_url, normalized.as_bytes());
         let changed = match self.fingerprints.get(&normalized_url) {
@@ -86,7 +91,7 @@ impl ChangeDetector {
 
     /// Get the stored hash for a URL, if any.
     pub fn get_hash(&self, url: &str) -> Option<&str> {
-        let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+        let normalized_url = normalize_url(url)?;
         self.fingerprints.get(&normalized_url).map(|s| s.as_str())
     }
 

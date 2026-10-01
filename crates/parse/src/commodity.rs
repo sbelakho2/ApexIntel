@@ -129,7 +129,9 @@ impl CommodityType {
 
 /// Extract commodity prices from page text (price feeds, commodity trackers).
 pub fn extract_commodity_prices(body_text: &str, source: &str, url: &str) -> Vec<CommodityPrice> {
-    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(url).unwrap_or_default();
     let mut prices = Vec::new();
     let mut seen = std::collections::HashSet::new();
 

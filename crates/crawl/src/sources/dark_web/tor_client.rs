@@ -156,7 +156,7 @@ impl TorClient {
     /// Uses DuckDuckGo's Tor hidden service as a canary.
     pub async fn test_connectivity(&self) -> Result<()> {
         let resp = self
-            .get("https://duckduckgogg42xjoc72x3sjasqxarfg3crbnuqfpcvfie上月.org/")
+            .get("https://duckduckgogg42xjoc72x3sjasqxarfg3crbnuqfpcvfieyjzuaoqd.onion/")
             .await;
 
         match resp {
@@ -210,7 +210,14 @@ mod tests {
         // May fail if Tor is not running; that's OK in tests.
         if result.is_ok() {
             let client = result.unwrap();
-            assert!(client.inner().is_email_created());
+            assert!(
+                client
+                    .inner()
+                    .get("https://example.com/")
+                    .build()
+                    .is_ok(),
+                "constructed Tor client must be usable"
+            );
         }
     }
 }

@@ -101,7 +101,8 @@ use apex_worker::nightly::{
 use apex_worker::nightly::{process_hypothesis_generation_stage, HypothesisGenerationStageResult};
 use apex_worker::notifications::{SlaEnforcer, SlaWarningRecord};
 use apex_worker::scheduler::{
-    default_scheduler, validate_custom_command, JobKind, JobRun, JobStatus, Scheduler,
+    default_scheduler, parse_custom_command_argv, validate_custom_command, JobKind, JobRun,
+    JobStatus, Scheduler,
 };
 use apex_worker::storage::{
     build_memo_inputs, load_production_recipes, load_staged_recipes, StorageContext,
@@ -272,6 +273,30 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Stable per-process instance id used for job ownership (`worker_job_state`
+/// / `worker_job_history` `instance_id`) and the shutdown reconciliation.
+///
+/// Shares the heartbeat identity resolver so the process that beats, claims
+/// jobs and reconciles interrupted rows is always the same instance.
+fn process_instance_id() -> String {
+    apex_worker::healthcheck::resolve_instance_id()
+}
+
+/// Default worker database pool size (audit #65). The previous hard-coded 5
+/// starved the pool whenever several jobs ran concurrently, because every job
+/// holds a connection for its whole run.
+pub(crate) const DEFAULT_WORKER_DB_MAX_CONNECTIONS: u32 = 20;
+
+/// Resolve `WORKER_DB_MAX_CONNECTIONS` (default 20, clamped to 5..=100).
+///
+/// Clamping is deliberate: a typo (`0`, `100000`) must neither starve the
+/// worker's own jobs nor exhaust PostgreSQL's connection slots.
+pub(crate) fn resolve_worker_db_max_connections(raw: Option<&str>) -> u32 {
+    raw.and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(DEFAULT_WORKER_DB_MAX_CONNECTIONS)
+        .clamp(5, 100)
+}
+
 fn build_paid_proxy_url_from_env() -> Option<String> {
     let host = std::env::var("PROXY_HOST")
         .ok()
@@ -295,7 +320,13 @@ fn build_paid_proxy_url_from_env() -> Option<String> {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
         })?;
-    Some(format!("http://{username}:{password}@{host}:{port}"))
+    // Build the URL through `url::Url` so credentials are percent-encoded;
+    // a password containing `@`, `:`, `/` or `#` previously broke proxy auth
+    // or changed the host.
+    let mut url = url::Url::parse(&format!("http://{host}:{port}")).ok()?;
+    url.set_username(&username).ok()?;
+    url.set_password(Some(&password)).ok()?;
+    Some(url.to_string())
 }
 
 fn build_proxy_rotator_from_env() -> Option<ProxyRotator> {
@@ -466,8 +497,15 @@ async fn main() -> Result<()> {
     // `app.current_user_role` matches neither the owner nor the service
     // policy, so worker reads would silently return zero rows and writes would
     // be rejected.
+    //
+    // Pool size: every in-flight job holds a connection for its whole run, so
+    // the old hard-coded 5 starved jobs behind the pool (audit #65).
+    let db_max_connections = resolve_worker_db_max_connections(
+        std::env::var("WORKER_DB_MAX_CONNECTIONS").ok().as_deref(),
+    );
+    tracing::info!(db_max_connections, "worker database pool configured");
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(db_max_connections)
         .acquire_timeout(std::time::Duration::from_secs(5))
         .idle_timeout(std::time::Duration::from_secs(600))
         .max_lifetime(std::time::Duration::from_secs(1800))
@@ -481,10 +519,6 @@ async fn main() -> Result<()> {
         .await?;
     tracing::info!("connected to database");
 
-    // Load seed recipes from config/recipes_seed.yaml and insert them into the
-    // database. Recipe seeding is bootstrap work, not service wiring.
-    bootstrap::seed_recipes_from_yaml(&pool).await;
-
     // Wrap pool in a shared PgStore so every job handler can query the DB
     // without creating its own connection pool.  Using from_pool() avoids
     // opening a second connection when the pool was already created above.
@@ -497,6 +531,15 @@ async fn main() -> Result<()> {
     // between the applied and embedded latest migration — aborts startup.
     ensure_database_schema(store.as_ref()).await?;
     tracing::info!("worker startup: database schema is current");
+
+    // Load seed recipes from config/recipes_seed.yaml and insert them into the
+    // database. This MUST run after `ensure_database_schema`: on a fresh
+    // database the recipes/observations schema does not exist yet, so seeding
+    // before migrations failed and recipes stayed missing until the next
+    // restart (audit #63). Recipe seeding is bootstrap work, not service
+    // wiring; the per-connection `assume_service_identity` hook above is
+    // installed before the first query either way.
+    bootstrap::seed_recipes_from_yaml(&pool).await;
 
     // ─── Shared warning ingress ───────────────────────────────────────────
     // Every warning-producing job submits through this ONE ingress so
@@ -589,6 +632,11 @@ async fn main() -> Result<()> {
         });
     let scheduler_progress = Arc::new(SchedulerProgressClock::new());
 
+    // Stable process identity: job claims, job history rows and the shutdown
+    // reconciliation all name this instance, so stopping one replica never
+    // touches another replica's live jobs.
+    let instance_id = process_instance_id();
+
     // ─── Liveness heartbeat (migration 049) ───────────────────────────────
     // Health checks read `service_heartbeats.last_seen_at` to distinguish a
     // live worker from one that silently stopped; write every ~30s so
@@ -599,11 +647,11 @@ async fn main() -> Result<()> {
     {
         let heartbeat_store = Arc::clone(&store);
         let progress = Arc::clone(&scheduler_progress);
+        let instance_id = instance_id.clone();
         tokio::spawn(async move {
             // Same identity the healthcheck subprocess resolves, so a
             // container verifies its own heartbeat row rather than whichever
             // worker replica beat most recently.
-            let instance_id = apex_worker::healthcheck::resolve_instance_id();
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 ticker.tick().await;
@@ -687,6 +735,7 @@ async fn main() -> Result<()> {
                 let tick_guard = Arc::clone(&tick_guard);
                 let progress = Arc::clone(&scheduler_progress);
                 let job_context = job_context.clone();
+                let instance_id = instance_id.clone();
                 tokio::spawn(async move {
                     let Ok(_guard) = tick_guard.try_lock() else {
                         tracing::warn!("tick_scheduler: previous run still active; skipping tick");
@@ -698,7 +747,7 @@ async fn main() -> Result<()> {
                     // Job-level panics are contained inside tick_scheduler
                     // (each job runs in an observed spawn, B325), so the tick
                     // body itself only does bookkeeping.
-                    runtime::tick_scheduler(&mut scheduler, &store, &job_context, &progress).await;
+                    runtime::tick_scheduler(&mut scheduler, &store, &job_context, &progress, &instance_id).await;
                     progress.record_progress();
                 });
             }
@@ -707,6 +756,7 @@ async fn main() -> Result<()> {
                 let trigger_guard = Arc::clone(&trigger_guard);
                 let manual_trigger_semaphore = Arc::clone(&manual_trigger_semaphore);
                 let job_context = job_context.clone();
+                let instance_id = instance_id.clone();
                 tokio::spawn(async move {
                     let Ok(_guard) = trigger_guard.try_lock() else {
                         tracing::debug!("poll_trigger_queue: previous poll still active; skipping tick");
@@ -719,6 +769,7 @@ async fn main() -> Result<()> {
                         manual_max_claims_per_poll,
                         manual_trigger_timeout_secs,
                         &job_context,
+                        &instance_id,
                     )
                     .await;
                 });
@@ -732,6 +783,48 @@ async fn main() -> Result<()> {
                 break;
             }
         }
+    }
+    // ─── Graceful drain (audit #64, B324) ─────────────────────────────────
+    // The SIGTERM/SIGINT branch above stopped the select loop, so no new tick
+    // or trigger poll can start. Each spawned tick/poll task holds its guard
+    // for the whole run, and `tick_scheduler` awaits every job handle it
+    // spawned, so acquiring BOTH guards proves the in-flight scheduled jobs
+    // finished and can still persist their `worker_job_state` /
+    // `worker_job_history` rows before the pool closes.
+    //
+    // The wait is bounded: jobs may legitimately run for hours (their own
+    // enforced timeouts), and a container stop must not hang for that long.
+    // On timeout the pool would otherwise close with rows still marked
+    // 'running', so this instance's rows are reconciled to 'interrupted' first
+    // (migrations 096/098); other replicas' live rows are never touched.
+    const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+    // Let any tick/trigger task spawned just before the signal run first:
+    // acquiring an uncontended guard completes without yielding, and without
+    // this a not-yet-polled task could take the guard after the drain already
+    // released it (its `try_lock` would then succeed against a closing pool).
+    tokio::task::yield_now().await;
+    let drain_outcome = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, async {
+        let _tick = tick_guard.lock().await;
+        let _trigger = trigger_guard.lock().await;
+    })
+    .await;
+    if drain_outcome.is_err() {
+        tracing::warn!(
+            timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
+            "shutdown drain timed out waiting for in-flight jobs; marking their rows interrupted"
+        );
+        match store.mark_running_jobs_interrupted(&instance_id).await {
+            Ok(updated) => tracing::warn!(
+                updated,
+                "worker shutdown: running job rows marked interrupted"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                "failed to mark running job rows interrupted; they may remain 'running'"
+            ),
+        }
+    } else {
+        tracing::info!("shutdown drain complete: no scheduler work in flight");
     }
     pool.close().await;
     tracing::info!("database pool closed");
@@ -821,6 +914,138 @@ fn format_status(run: &JobRun) -> &'static str {
         JobStatus::Skipped { .. } => "skipped",
         JobStatus::Running => "running",
         JobStatus::Pending => "pending",
+    }
+}
+
+#[cfg(test)]
+mod db_pool_config_tests {
+    use super::{resolve_worker_db_max_connections, DEFAULT_WORKER_DB_MAX_CONNECTIONS};
+
+    #[test]
+    fn worker_db_pool_size_defaults_clamps_and_parses() {
+        assert_eq!(
+            resolve_worker_db_max_connections(None),
+            DEFAULT_WORKER_DB_MAX_CONNECTIONS
+        );
+        assert_eq!(resolve_worker_db_max_connections(Some("")), 20);
+        assert_eq!(resolve_worker_db_max_connections(Some("not-a-number")), 20);
+        assert_eq!(resolve_worker_db_max_connections(Some(" 80 ")), 80);
+        assert_eq!(resolve_worker_db_max_connections(Some("1")), 5);
+        assert_eq!(resolve_worker_db_max_connections(Some("1000")), 100);
+    }
+}
+
+#[cfg(test)]
+mod worker_state_restore_tests {
+    use super::*;
+
+    /// Audit #64: the shutdown drain records `interrupted` rows; the next
+    /// startup restore must understand that status (and the sibling
+    /// `running`-after-restart status) instead of discarding it.
+    #[test]
+    fn interrupted_status_is_mapped_on_startup_restore() {
+        let mut scheduler = default_scheduler();
+        let kind = scheduler
+            .jobs
+            .keys()
+            .next()
+            .cloned()
+            .expect("default scheduler has jobs");
+
+        let state = apex_store::postgres::WorkerJobStateRecord {
+            job_kind: kind.clone(),
+            last_run: None,
+            last_status: Some("interrupted".to_string()),
+            last_error: Some("worker shut down while the job was running".to_string()),
+            last_duration_ms: None,
+            consecutive_failures: 0,
+            max_consecutive_failures: 3,
+            circuit_open: false,
+            updated_at: Utc::now(),
+        };
+        runtime::restore_scheduler_state(&mut scheduler, &[state]);
+
+        match scheduler.jobs[&kind].last_status.as_ref() {
+            Some(JobStatus::Skipped { reason }) => assert!(
+                reason.contains("interrupted"),
+                "interrupted must restore as a skipped-with-reason status, got: {reason}"
+            ),
+            other => panic!("interrupted must restore as Skipped, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod proxy_url_tests {
+    use super::build_paid_proxy_url_from_env;
+
+    const PROXY_KEYS: [&str; 6] = [
+        "PROXY_HOST",
+        "PROXY_PORT",
+        "PROXY_USERNAME",
+        "PROXY_USER",
+        "PROXY_PASSWORD",
+        "PROXY_PASS",
+    ];
+
+    fn restore(saved: Vec<(String, Option<String>)>) {
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    /// Audit #57: credentials must be percent-encoded through `url::Url`, so a
+    /// password containing `@`, `:`, `/` or `#` cannot break proxy auth or
+    /// silently change the host. The old `format!("http://u:p@host:port")`
+    /// interpolated the raw secret into the authority.
+    #[test]
+    fn proxy_url_percent_encodes_credentials() {
+        let saved: Vec<(String, Option<String>)> = PROXY_KEYS
+            .iter()
+            .map(|key| (key.to_string(), std::env::var(key).ok()))
+            .collect();
+        for key in PROXY_KEYS {
+            std::env::remove_var(key);
+        }
+
+        std::env::set_var("PROXY_HOST", "proxy.example.test");
+        std::env::set_var("PROXY_PORT", "8080");
+        std::env::set_var("PROXY_USERNAME", "user@corp");
+        std::env::set_var("PROXY_PASSWORD", "p@ss:w/rd#1");
+
+        let url = build_paid_proxy_url_from_env().expect("complete proxy config");
+        assert_eq!(
+            url,
+            "http://user%40corp:p%40ss%3Aw%2Frd%231@proxy.example.test:8080/"
+        );
+        // The raw credentials must never appear verbatim in the authority.
+        assert!(!url.contains("user@corp"));
+        assert!(!url.contains("p@ss:w/rd#1"));
+        // The host must be intact and unambiguous.
+        let parsed = url::Url::parse(&url).expect("built URL parses");
+        assert_eq!(parsed.host_str(), Some("proxy.example.test"));
+        assert_eq!(parsed.port(), Some(8080));
+        assert_eq!(parsed.to_string(), url);
+
+        // The documented `PROXY_USER` / `PROXY_PASS` fallbacks still work.
+        std::env::remove_var("PROXY_USERNAME");
+        std::env::remove_var("PROXY_PASSWORD");
+        std::env::set_var("PROXY_USER", "fallback-user");
+        std::env::set_var("PROXY_PASS", "fallback-pass");
+        let url = build_paid_proxy_url_from_env().expect("fallback names accepted");
+        assert_eq!(
+            url,
+            "http://fallback-user:fallback-pass@proxy.example.test:8080/"
+        );
+
+        // Incomplete configuration is None, never a half-built URL.
+        std::env::remove_var("PROXY_HOST");
+        assert!(build_paid_proxy_url_from_env().is_none());
+
+        restore(saved);
     }
 }
 

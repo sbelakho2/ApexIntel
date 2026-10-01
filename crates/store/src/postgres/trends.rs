@@ -148,6 +148,33 @@ impl BucketType {
     }
 }
 
+/// Inclusive UTC bounds `[since, until]` covered by one trend bucket.
+///
+/// The bucket starts at its own midnight and ends at `23:59:59` of the last
+/// day *inside* the bucket (`next_bucket_start - 1s`), so consecutive buckets
+/// tile the calendar without overlapping. Previously the upper bound was the
+/// next bucket's **23:59:59**, which pulled a full extra day into every
+/// bucket (a "daily" row covered two days and adjacent buckets double-counted
+/// the boundary day).
+fn trend_bucket_window(
+    bucket_type: &str,
+    bucket_date: NaiveDate,
+) -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
+    let bucket_end = match BucketType::from_str(bucket_type) {
+        Some(bt) => bt.next_bucket_start(bucket_date),
+        // Unknown bucket type defaults to a 1-day window.
+        None => bucket_date + chrono::Duration::days(1),
+    };
+    let to_utc = |date: NaiveDate, hour: u32, minute: u32, second: u32| {
+        date.and_hms_opt(hour, minute, second)
+            .map(|d| chrono::DateTime::from_naive_utc_and_offset(d, chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now)
+    };
+    let since = to_utc(bucket_date, 0, 0, 0);
+    let until = to_utc(bucket_end, 0, 0, 0) - chrono::Duration::seconds(1);
+    (since, until)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Query parameter types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,22 +253,7 @@ impl PgStore {
         bucket_type: &str,
         bucket_date: NaiveDate,
     ) -> anyhow::Result<AggregationResult> {
-        let bucket_end = match BucketType::from_str(bucket_type) {
-            Some(bt) => bt.next_bucket_start(bucket_date),
-            None => {
-                // Default to 1-day bucket
-                bucket_date + chrono::Duration::days(1)
-            }
-        };
-
-        let since = bucket_date
-            .and_hms_opt(0, 0, 0)
-            .map(|d| chrono::DateTime::from_naive_utc_and_offset(d, chrono::Utc))
-            .unwrap_or_else(chrono::Utc::now);
-        let until = bucket_end
-            .and_hms_opt(23, 59, 59)
-            .map(|d| chrono::DateTime::from_naive_utc_and_offset(d, chrono::Utc))
-            .unwrap_or_else(chrono::Utc::now);
+        let (since, until) = trend_bucket_window(bucket_type, bucket_date);
 
         let mut metrics_computed = 0u64;
 
@@ -879,6 +891,61 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
         let next = BucketType::Yearly.next_bucket_start(date);
         assert_eq!(next, NaiveDate::from_ymd_opt(2027, 1, 1).unwrap());
+    }
+
+    #[test]
+    fn test_trend_bucket_window_daily_covers_one_day_only() {
+        let date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let (since, until) = trend_bucket_window("daily", date);
+
+        assert_eq!(since.date_naive(), date);
+        assert_eq!(
+            since.time(),
+            chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+        );
+        // The window closes on the same day: it must never include the next
+        // day, otherwise adjacent daily buckets double-count it.
+        assert_eq!(until.date_naive(), date);
+        assert_eq!(
+            until.time(),
+            chrono::NaiveTime::from_hms_opt(23, 59, 59).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_trend_bucket_window_weekly_ends_on_sunday() {
+        // 2026-06-15 is a Monday.
+        let monday = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let (since, until) = trend_bucket_window("weekly", monday);
+
+        assert_eq!(since.date_naive(), monday);
+        assert_eq!(
+            until.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 6, 21).unwrap(),
+            "a weekly bucket must end on its own Sunday, not the next Monday"
+        );
+        assert_eq!(
+            until.time(),
+            chrono::NaiveTime::from_hms_opt(23, 59, 59).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_trend_bucket_window_monthly_tiles_without_overlap() {
+        let june = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let (june_start, june_end) = trend_bucket_window("monthly", june);
+        let (july_start, _) =
+            trend_bucket_window("monthly", NaiveDate::from_ymd_opt(2026, 7, 1).unwrap());
+
+        assert_eq!(june_start.date_naive(), june);
+        assert_eq!(
+            june_end.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()
+        );
+        assert!(
+            june_end < july_start,
+            "June must end before July starts so buckets do not overlap"
+        );
     }
 
     #[test]

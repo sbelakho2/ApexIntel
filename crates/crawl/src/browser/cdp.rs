@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Upper bound for a single CDP command round-trip.
 pub(crate) const CDP_CALL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -29,13 +29,30 @@ type PendingResponses = Arc<AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value
 /// Network trackers for flattened sessions, keyed by session id.
 type SessionTrackers = Arc<AsyncMutex<HashMap<String, Arc<NetworkTracker>>>>;
 
-/// Counts network requests that Chrome reported but has not finished.
-#[derive(Debug, Default)]
+/// Counts network requests that Chrome reported but has not finished, and
+/// carries the request-allowance policy for its session tree.
+#[derive(Debug)]
 pub(crate) struct NetworkTracker {
     in_flight: Mutex<HashSet<String>>,
+    /// Mirrors `BrowserConfig::allow_private_hosts`: the test-only escape hatch
+    /// that permits loopback/private fixture targets.
+    allow_private_hosts: bool,
+}
+
+impl Default for NetworkTracker {
+    fn default() -> Self {
+        Self::new(false)
+    }
 }
 
 impl NetworkTracker {
+    fn new(allow_private_hosts: bool) -> Self {
+        Self {
+            in_flight: Mutex::new(HashSet::new()),
+            allow_private_hosts,
+        }
+    }
+
     fn record(&self, method: &str, params: &Value) {
         let request_id = params
             .get("requestId")
@@ -73,7 +90,38 @@ pub(crate) struct CdpClient {
     commands: mpsc::UnboundedSender<Message>,
     pending: PendingResponses,
     sessions: SessionTrackers,
-    next_id: AtomicU64,
+    next_id: Arc<AtomicU64>,
+}
+
+/// CDP `Fetch.enable` parameters: pause every request at the request stage so
+/// each one can be checked against the SSRF policy before Chrome sends it.
+pub(crate) fn fetch_enable_params() -> Value {
+    json!({
+        "patterns": [{ "urlPattern": "*", "requestStage": "Request" }],
+    })
+}
+
+/// Fire-and-forget CDP command. Responses are intentionally not awaited: the
+/// only callers are event handlers that must keep the protocol stream moving,
+/// and a failed continue/fail leaves the request paused (fail closed) until
+/// the render budget expires.
+fn send_command(
+    commands: &mpsc::UnboundedSender<Message>,
+    next_id: &AtomicU64,
+    session_id: Option<&str>,
+    method: &str,
+    params: Value,
+) {
+    let id = next_id.fetch_add(1, Ordering::SeqCst);
+    let mut message = json!({
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    if let Some(session_id) = session_id {
+        message["sessionId"] = Value::String(session_id.to_string());
+    }
+    let _ = commands.send(Message::Text(message.to_string()));
 }
 
 impl CdpClient {
@@ -90,8 +138,11 @@ impl CdpClient {
 
         tokio::spawn(writer_loop(sink, command_rx));
 
+        let next_id = Arc::new(AtomicU64::new(1));
         let reader_pending = pending.clone();
         let reader_sessions = sessions.clone();
+        let reader_commands = commands.clone();
+        let reader_next_id = next_id.clone();
         tokio::spawn(async move {
             while let Some(incoming) = source.next().await {
                 let message = match incoming {
@@ -106,7 +157,14 @@ impl CdpClient {
                         let Ok(value) = serde_json::from_str::<Value>(&text) else {
                             continue;
                         };
-                        dispatch(&value, &reader_pending, &reader_sessions).await;
+                        dispatch(
+                            &value,
+                            &reader_pending,
+                            &reader_sessions,
+                            &reader_commands,
+                            &reader_next_id,
+                        )
+                        .await;
                     }
                     Message::Close(_) => break,
                     _ => {}
@@ -119,7 +177,7 @@ impl CdpClient {
             commands,
             pending,
             sessions,
-            next_id: AtomicU64::new(1),
+            next_id,
         })
     }
 
@@ -170,8 +228,16 @@ impl CdpClient {
     }
 
     /// Register a flattened session and return its network tracker.
-    pub(crate) async fn register_session(&self, session_id: &str) -> Arc<NetworkTracker> {
-        let tracker = Arc::new(NetworkTracker::default());
+    ///
+    /// `allow_private_hosts` is the test-only escape hatch; it is propagated to
+    /// child sessions through their shared tracker so the request policy is
+    /// identical for out-of-process iframes and workers.
+    pub(crate) async fn register_session(
+        &self,
+        session_id: &str,
+        allow_private_hosts: bool,
+    ) -> Arc<NetworkTracker> {
+        let tracker = Arc::new(NetworkTracker::new(allow_private_hosts));
         self.sessions
             .lock()
             .await
@@ -197,7 +263,13 @@ async fn writer_loop(
     let _ = sink.close().await;
 }
 
-async fn dispatch(value: &Value, pending: &PendingResponses, sessions: &SessionTrackers) {
+async fn dispatch(
+    value: &Value,
+    pending: &PendingResponses,
+    sessions: &SessionTrackers,
+    commands: &mpsc::UnboundedSender<Message>,
+    next_id: &Arc<AtomicU64>,
+) {
     if let Some(id) = value.get("id").and_then(Value::as_u64) {
         if let Some(sender) = pending.lock().await.remove(&id) {
             let _ = sender.send(Ok(value.clone()));
@@ -210,9 +282,116 @@ async fn dispatch(value: &Value, pending: &PendingResponses, sessions: &SessionT
     let Some(session_id) = value.get("sessionId").and_then(Value::as_str) else {
         return;
     };
-    let tracker = sessions.lock().await.get(session_id).cloned();
-    if let Some(tracker) = tracker {
-        tracker.record(method, value.get("params").unwrap_or(&Value::Null));
+    let params = value.get("params").unwrap_or(&Value::Null);
+
+    match method {
+        // A child target (out-of-process iframe, worker) was auto-attached.
+        // It must get the same request interception as the page session,
+        // otherwise its network traffic bypasses the SSRF guard. Auto-attach
+        // is configured with `waitForDebuggerOnStart`, so no child request can
+        // be issued before `Fetch.enable` lands.
+        "Target.attachedToTarget" => {
+            let parent = sessions.lock().await.get(session_id).cloned();
+            let (Some(parent), Some(child_session)) =
+                (parent, params.get("sessionId").and_then(Value::as_str))
+            else {
+                return;
+            };
+            sessions
+                .lock()
+                .await
+                .insert(child_session.to_string(), parent);
+            send_command(
+                commands,
+                next_id,
+                Some(child_session),
+                "Network.enable",
+                json!({}),
+            );
+            send_command(
+                commands,
+                next_id,
+                Some(child_session),
+                "Fetch.enable",
+                fetch_enable_params(),
+            );
+            // Propagate auto-attach so nested out-of-process frames/workers
+            // (grandchildren of the page) are intercepted as well.
+            send_command(
+                commands,
+                next_id,
+                Some(child_session),
+                "Target.setAutoAttach",
+                json!({
+                    "autoAttach": true,
+                    "waitForDebuggerOnStart": true,
+                    "flatten": true,
+                }),
+            );
+            if params
+                .get("waitingForDebugger")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                send_command(
+                    commands,
+                    next_id,
+                    Some(child_session),
+                    "Runtime.runIfWaitingForDebugger",
+                    json!({}),
+                );
+            }
+        }
+        "Target.detachedFromTarget" => {
+            if let Some(child_session) = params.get("sessionId").and_then(Value::as_str) {
+                sessions.lock().await.remove(child_session);
+            }
+        }
+        // A request was paused before Chrome sent it. Validate it against the
+        // SSRF policy and only then continue; otherwise fail it closed.
+        "Fetch.requestPaused" => {
+            let tracker = sessions.lock().await.get(session_id).cloned();
+            let Some(tracker) = tracker else {
+                debug!(session_id, "cdp: fetch pause on unregistered session");
+                return;
+            };
+            let Some(request_id) = params
+                .get("requestId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                return;
+            };
+            let url = params
+                .pointer("/request/url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let allow_private_hosts = tracker.allow_private_hosts;
+            trace!(url = %url, allow_private_hosts, "cdp: fetch request paused");
+            let commands = commands.clone();
+            let next_id = next_id.clone();
+            let session_id = session_id.to_string();
+            tokio::spawn(async move {
+                let allowed =
+                    crate::browser::validation::browser_request_allowed(&url, allow_private_hosts)
+                        .await;
+                let (method, params) = if allowed {
+                    ("Fetch.continueRequest", json!({ "requestId": request_id }))
+                } else {
+                    (
+                        "Fetch.failRequest",
+                        json!({ "requestId": request_id, "errorReason": "BlockedByClient" }),
+                    )
+                };
+                send_command(&commands, &next_id, Some(&session_id), method, params);
+            });
+        }
+        other => {
+            if let Some(tracker) = sessions.lock().await.get(session_id).cloned() {
+                tracker.record(other, params);
+            }
+        }
     }
 }
 

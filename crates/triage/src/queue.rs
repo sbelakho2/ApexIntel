@@ -21,6 +21,27 @@ use apex_core::triage::{
 
 const MAX_PEEK: usize = 200;
 
+/// Band distribution query for [`TriageQueue::band_counts`].
+///
+/// `$1..$4` are the configured critical/high/medium/low thresholds in that
+/// order. The five band labels (including `info` below `low`) match
+/// [`apex_core::triage::score_to_band`].
+const BAND_COUNTS_SQL: &str = r#"
+    SELECT
+        CASE
+            WHEN composite_score >= $1 THEN 'critical'
+            WHEN composite_score >= $2 THEN 'high'
+            WHEN composite_score >= $3 THEN 'medium'
+            WHEN composite_score >= $4 THEN 'low'
+            ELSE 'info'
+        END AS band,
+        COUNT(*)::bigint AS cnt
+    FROM triage_queue
+    WHERE status = 'pending'
+    GROUP BY band
+    ORDER BY band DESC
+"#;
+
 // ─── TriageQueue ──────────────────────────────────────────────────────────────
 
 /// Manages the triage queue with DB-backed persistence.
@@ -121,10 +142,10 @@ impl TriageQueue {
                 entity_name       = COALESCE(EXCLUDED.entity_name, triage_queue.entity_name),
                 static_severity   = (
                     CASE GREATEST(
-                        CASE lower(coalesce(triage_queue.static_severity, ''))
+                        CASE lower(btrim(coalesce(triage_queue.static_severity, '')))
                             WHEN 'critical' THEN 3 WHEN 'high' THEN 2
                             WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
-                        CASE lower(coalesce(EXCLUDED.static_severity, ''))
+                        CASE lower(btrim(coalesce(EXCLUDED.static_severity, '')))
                             WHEN 'critical' THEN 3 WHEN 'high' THEN 2
                             WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
                         CASE WHEN triage_queue.occurrence_count + 1 >= $16 THEN 3
@@ -284,26 +305,19 @@ impl TriageQueue {
         Ok(row.into_stats())
     }
 
-    /// Get the count of items per score band (critical, high, medium, low).
+    /// Get the count of items per score band.
+    ///
+    /// Uses this queue's configured [`TriageThresholds`] and the same five
+    /// bands as [`apex_core::triage::score_to_band`] (critical, high, medium,
+    /// low, info) so counts cannot disagree with `TriageQueueItem::score_band`.
     pub async fn band_counts(&self) -> Result<HashMap<String, i64>> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            r#"
-            SELECT
-                CASE
-                    WHEN composite_score >= 0.80 THEN 'critical'
-                    WHEN composite_score >= 0.60 THEN 'high'
-                    WHEN composite_score >= 0.40 THEN 'medium'
-                    ELSE 'low'
-                END AS band,
-                COUNT(*)::bigint AS cnt
-            FROM triage_queue
-            WHERE status = 'pending'
-            GROUP BY band
-            ORDER BY band DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(String, i64)> = sqlx::query_as(BAND_COUNTS_SQL)
+            .bind(self.thresholds.critical)
+            .bind(self.thresholds.high)
+            .bind(self.thresholds.medium)
+            .bind(self.thresholds.low)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut map: HashMap<String, i64> = HashMap::new();
         for (band, cnt) in rows {
@@ -683,10 +697,10 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
                 ),
                 static_severity = (
                     CASE GREATEST(
-                        CASE lower(coalesce(triage_queue.static_severity, ''))
+                        CASE lower(btrim(coalesce(triage_queue.static_severity, '')))
                             WHEN 'critical' THEN 3 WHEN 'high' THEN 2
                             WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
-                        CASE lower(coalesce($4, ''))
+                        CASE lower(btrim(coalesce($4, '')))
                             WHEN 'critical' THEN 3 WHEN 'high' THEN 2
                             WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
                         CASE WHEN triage_queue.occurrence_count + 1 >= $5 THEN 3
@@ -968,6 +982,35 @@ impl TriageStatsRow {
 mod tests {
     use super::*;
     use apex_core::triage::TriageThresholds;
+
+    #[test]
+    fn test_band_counts_sql_uses_all_five_bands_and_threshold_binds() {
+        for band in ["'critical'", "'high'", "'medium'", "'low'", "'info'"] {
+            assert!(BAND_COUNTS_SQL.contains(band), "band {band} missing");
+        }
+        for bind in ["$1", "$2", "$3", "$4"] {
+            assert!(BAND_COUNTS_SQL.contains(bind), "bind {bind} missing");
+        }
+        // Thresholds must come from the queue config, not hardcoded literals.
+        assert!(!BAND_COUNTS_SQL.contains("0.80"));
+        assert!(!BAND_COUNTS_SQL.contains("0.60"));
+        assert!(!BAND_COUNTS_SQL.contains("0.40"));
+    }
+
+    #[test]
+    fn test_severity_ranking_is_whitespace_insensitive_in_rust_and_sql() {
+        // Rust trims before ranking ...
+        assert_eq!(crate::semantic_dedup::severity_rank(" high "), 2);
+        assert_eq!(crate::semantic_dedup::severity_rank("\tCritical\n"), 3);
+        // ... so the SQL CASE expressions must trim too (btrim), otherwise
+        // `" high"` would under-rank compared to the Rust path.
+        let source = include_str!("queue.rs");
+        assert!(
+            !source.contains(concat!("CASE lower(", "coalesce(")),
+            "severity CASE must btrim before lower()"
+        );
+        assert!(source.contains("lower(btrim(coalesce("));
+    }
 
     #[test]
     fn test_triage_item_type_from_str() {

@@ -334,7 +334,21 @@ pub struct ConfidencePropagation {
 
 impl ConfidencePropagation {
     /// Compute final confidence after propagation through reasoning steps.
+    ///
+    /// Non-finite inputs cannot produce a meaningful posterior; an unmeasured
+    /// initial confidence propagates as 0.0 and a non-finite decay is treated
+    /// as no decay, so the result is always finite and within `[0, 1]`.
     pub fn propagate(initial: f64, num_steps: usize, decay_rate: f64) -> Self {
+        let initial = if initial.is_finite() {
+            initial.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let decay_rate = if decay_rate.is_finite() {
+            decay_rate
+        } else {
+            0.0
+        };
         let mut evidence_weights = Vec::new();
         let mut current_weight = 1.0f64;
 
@@ -342,6 +356,9 @@ impl ConfidencePropagation {
             evidence_weights.push(current_weight);
             // Decay weight based on position in chain
             current_weight *= (1.0 - decay_rate).powi((i + 1) as i32);
+            if !current_weight.is_finite() {
+                current_weight = 0.0;
+            }
         }
 
         // Normalize weights
@@ -862,6 +879,21 @@ mod tests {
         assert!(prop.final_confidence > 0.0);
         assert!(prop.final_confidence >= 0.0);
         assert!(prop.final_confidence <= 1.0);
+    }
+
+    #[test]
+    fn test_confidence_propagation_is_finite_for_hostile_inputs() {
+        let nan_initial = ConfidencePropagation::propagate(f64::NAN, 3, 0.1);
+        assert!(nan_initial.final_confidence.is_finite());
+        assert_eq!(nan_initial.final_confidence, 0.0);
+
+        let nan_decay = ConfidencePropagation::propagate(0.9, 3, f64::NAN);
+        assert!(nan_decay.final_confidence.is_finite());
+        assert!((0.0..=1.0).contains(&nan_decay.final_confidence));
+
+        let extreme = ConfidencePropagation::propagate(2.0, 4, 1.0e300);
+        assert!(extreme.final_confidence.is_finite());
+        assert!((0.0..=1.0).contains(&extreme.final_confidence));
     }
 
     #[test]

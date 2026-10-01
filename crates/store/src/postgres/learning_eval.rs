@@ -476,7 +476,7 @@ impl PgStore {
             "promote" => "promoted",
             _ => "rejected",
         };
-        sqlx::query(
+        let result = sqlx::query(
             r#"UPDATE learning_eval_runs
                SET status = $2, decision = $3, decision_reason = $4, decided_at = now()
                WHERE id = $1"#,
@@ -487,6 +487,9 @@ impl PgStore {
         .bind(reason)
         .execute(&self.pool)
         .await?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("learning evaluation run {run_id} not found");
+        }
         Ok(())
     }
 

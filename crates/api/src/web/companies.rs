@@ -16,7 +16,7 @@ use serde::Deserialize;
 use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
 
-use super::{dashboard, is_htmx_request, PageContext};
+use super::{dashboard, is_htmx_request, safe_href, PageContext};
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{CompanyListFilters, CompanyOrderBy, PgStore, WarningListFilters};
@@ -770,10 +770,19 @@ fn normalize_website_url(website: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    let lower = trimmed.to_ascii_lowercase();
+    let candidate = if lower.starts_with("http://") || lower.starts_with("https://") {
         trimmed.to_string()
     } else {
         format!("https://{}", trimmed)
+    };
+    // Never emit a stored URL into `href` unfiltered (audit #52): a hostile
+    // domain value becomes an empty string, which hides the link.
+    let safe = safe_href(&candidate);
+    if safe == "#" {
+        String::new()
+    } else {
+        safe
     }
 }
 
@@ -1076,7 +1085,7 @@ pub async fn get_company(
                 .or_else(|| e.source_domain.clone())
                 .unwrap_or_else(|| "Evidence".to_string()),
             source: e.source_domain.clone().unwrap_or_default(),
-            url: e.source_url.clone(),
+            url: safe_href(&e.source_url),
             at: e.created_at.format("%Y-%m-%d %H:%M").to_string(),
             detail: e.excerpt.clone().unwrap_or_default(),
         })
@@ -1087,7 +1096,7 @@ pub async fn get_company(
                 kind: format!("signal:{}", warning.warning_type),
                 title: warning.title.clone(),
                 source: url.split('/').nth(2).unwrap_or("unknown").to_string(),
-                url: url.clone(),
+                url: safe_href(url),
                 at: warning.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
                 detail: warning
                     .description
@@ -1503,6 +1512,32 @@ mod tests {
 
         assert!(html.contains("No companies found"));
         assert!(!html.contains("data-degraded=\"true\""));
+    }
+
+    #[test]
+    fn normalize_website_url_drops_hostile_values_and_prefixes_bare_domains() {
+        assert_eq!(
+            normalize_website_url("northwind-power.test"),
+            "https://northwind-power.test/"
+        );
+        assert_eq!(
+            normalize_website_url("HTTPS://northwind-power.test"),
+            "https://northwind-power.test/"
+        );
+        for hostile in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            " javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "",
+        ] {
+            assert_eq!(
+                normalize_website_url(hostile),
+                "",
+                "hostile website value must not survive: {hostile:?}"
+            );
+        }
     }
 
     fn detail_page() -> CompanyDetailPage {

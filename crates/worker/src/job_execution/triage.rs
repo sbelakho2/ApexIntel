@@ -26,7 +26,13 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
     // TriageConfig::from_env() returns Self, not Result
     let config = TriageConfig::from_env();
 
-    let queue = TriageQueue::new(store.pool.clone());
+    // Configured weights/thresholds must reach the scoring queue: `new`
+    // silently used the defaults regardless of TRIAGE_* configuration.
+    let queue = TriageQueue::with_config(
+        store.pool.clone(),
+        config.weights.clone(),
+        config.thresholds.clone(),
+    );
 
     // Get unscored items (up to 50 per batch)
     let unscored = match queue.unscored_items(50).await {

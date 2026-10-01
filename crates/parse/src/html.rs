@@ -3,6 +3,7 @@ use encoding_rs::Encoding;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
+use url::Url;
 
 use crate::normalizer;
 use apex_core::validation::normalize_url;
@@ -42,6 +43,19 @@ pub struct ExtractedLink {
 /// Extract structured content from raw HTML.
 #[instrument(skip(html_content))]
 pub fn extract_page(html_content: &str) -> Result<PageContent> {
+    extract_page_with_base(html_content, None)
+}
+
+/// Extract structured content from raw HTML, resolving relative hrefs against
+/// the page URL when it is known.
+///
+/// Link extraction keeps only absolute `http(s)` results. Relative hrefs are
+/// resolved with `Url::join` when `page_url` is supplied and dropped when it
+/// is not; non-http(s) schemes are discarded. There is deliberately no
+/// raw-href fallback: whitespace/control-obfuscated `javascript:`, `data:`,
+/// `vbscript:` or similar payloads never survive extraction.
+#[instrument(skip(html_content))]
+pub fn extract_page_with_base(html_content: &str, page_url: Option<&str>) -> Result<PageContent> {
     let doc = Html::parse_document(html_content);
 
     let title = extract_title(&doc);
@@ -55,7 +69,7 @@ pub fn extract_page(html_content: &str) -> Result<PageContent> {
         body_text
     };
 
-    let links = extract_links(&doc);
+    let links = extract_links(&doc, page_url);
     // B105: Deduplicate emails and phones
     let emails = normalizer::dedup_preserving_order(normalizer::extract_emails(&effective_body));
     let phones = normalizer::dedup_preserving_order(normalizer::extract_phones(&effective_body));
@@ -248,21 +262,41 @@ fn extract_body_text(doc: &Html) -> String {
     }
 }
 
-fn extract_links(doc: &Html) -> Vec<ExtractedLink> {
+/// Resolve one raw `href` to an absolute `http(s)` URL, or `None` when the
+/// value is hostile, opaque, or unresolvable.
+///
+/// `Url::parse` strips leading/trailing C0-control/space characters and
+/// removes ASCII tab/newline anywhere in the input, so ` javascript:`,
+/// `\tjavascript:` and `java\nscript:` all collapse to the hostile
+/// `javascript:` scheme before the scheme gate; they are rejected together
+/// with `data:`, `vbscript:`, `file:` and friends. Relative values are
+/// joined against `base` when one is available.
+fn sanitize_extracted_href(raw: &str, base: Option<&Url>) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let resolved = match Url::parse(trimmed) {
+        Ok(url) => url,
+        Err(url::ParseError::RelativeUrlWithoutBase) => base?.join(trimmed).ok()?,
+        Err(_) => return None,
+    };
+    normalize_url(resolved.as_str())
+}
+
+fn extract_links(doc: &Html, page_url: Option<&str>) -> Vec<ExtractedLink> {
     let sel = Selector::parse("a[href]")
         .unwrap_or_else(|error| panic!("invalid link selector: {error:?}"));
+    let base = page_url
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .and_then(|raw| Url::parse(raw).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https"));
     doc.select(&sel)
         .filter_map(|el| {
-            let href = el.value().attr("href")?.to_string();
             let text = normalizer::normalize_whitespace(&el.text().collect::<String>());
-            if href.is_empty() || href.starts_with('#') || href.starts_with("javascript:") {
-                return None;
-            }
-            let normalized = normalize_url(&href).unwrap_or(href);
-            Some(ExtractedLink {
-                text,
-                href: normalized,
-            })
+            let href = sanitize_extracted_href(el.value().attr("href")?, base.as_ref())?;
+            Some(ExtractedLink { text, href })
         })
         .collect()
 }
@@ -377,6 +411,94 @@ mod tests {
         assert!(hrefs.contains(&"https://starz-electronics.com/about"));
         assert!(hrefs.contains(&"https://starz-electronics.com/capabilities"));
         assert!(!hrefs.iter().any(|h| h.starts_with('#')));
+    }
+
+    // Audit #52: link extraction must resolve relative hrefs and keep only
+    // absolute http(s) results — no raw-href fallback.
+    #[test]
+    fn test_extract_links_resolves_relative_against_page_url() {
+        let html = r#"<html><body>
+            <a href="/about">About</a>
+            <a href="capabilities">Capabilities</a>
+            <a href="//cdn.example.com/lib.js">CDN</a>
+        </body></html>"#;
+        let page = extract_page_with_base(
+            html,
+            Some("https://starz-electronics.com/company/index.html"),
+        )
+        .unwrap_or_else(|error| panic!("relative-link HTML should parse: {error}"));
+        let hrefs: Vec<&str> = page.links.iter().map(|l| l.href.as_str()).collect();
+        assert!(hrefs.contains(&"https://starz-electronics.com/about"));
+        assert!(hrefs.contains(&"https://starz-electronics.com/company/capabilities"));
+        assert!(hrefs.contains(&"https://cdn.example.com/lib.js"));
+    }
+
+    #[test]
+    fn test_extract_links_keeps_absolute_http_s_only() {
+        let html = r#"<html><body>
+            <a href="https://example.com/a">A</a>
+            <a href="http://example.com/b">B</a>
+            <a href="ftp://example.com/c">C</a>
+            <a href="file:///etc/passwd">D</a>
+        </body></html>"#;
+        let page = sample_page(html);
+        let hrefs: Vec<&str> = page.links.iter().map(|l| l.href.as_str()).collect();
+        assert!(hrefs.contains(&"https://example.com/a"));
+        assert!(hrefs.contains(&"http://example.com/b"));
+        assert_eq!(hrefs.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_links_drops_javascript_mixed_case() {
+        let html = r#"<html><body>
+            <a href="javascript:alert(1)">lower</a>
+            <a href="JavaScript:alert(1)">mixed</a>
+            <a href="JAVASCRIPT:alert(1)">upper</a>
+        </body></html>"#;
+        let page = extract_page_with_base(html, Some("https://example.com/"))
+            .unwrap_or_else(|error| panic!("hostile-link HTML should parse: {error}"));
+        assert!(page.links.is_empty(), "javascript: hrefs must be dropped");
+    }
+
+    #[test]
+    fn test_extract_links_drops_data_and_vbscript() {
+        let html = r#"<html><body>
+            <a href="data:text/html,<script>alert(1)</script>">data</a>
+            <a href="vbscript:msgbox(1)">vb</a>
+        </body></html>"#;
+        let page = extract_page_with_base(html, Some("https://example.com/"))
+            .unwrap_or_else(|error| panic!("hostile-link HTML should parse: {error}"));
+        assert!(
+            page.links.is_empty(),
+            "data:/vbscript: hrefs must be dropped"
+        );
+    }
+
+    #[test]
+    fn test_extract_links_drops_whitespace_obfuscated_javascript() {
+        let html = "<html><body>\
+            <a href=\" javascript:alert(1)\">space</a>\
+            <a href=\"\tjavascript:alert(1)\">tab</a>\
+            <a href=\"java\nscript:alert(1)\">newline</a>\
+            <a href=\" \tjavascript:alert(1)\">space-tab</a>\
+            </body></html>";
+        let page = extract_page_with_base(html, Some("https://example.com/"))
+            .unwrap_or_else(|error| panic!("obfuscated-link HTML should parse: {error}"));
+        assert!(
+            page.links.is_empty(),
+            "whitespace/control-obfuscated javascript hrefs must be dropped: {:?}",
+            page.links
+        );
+    }
+
+    #[test]
+    fn test_extract_links_without_base_drops_relative_hrefs() {
+        let html = r#"<html><body>
+            <a href="/about">About</a>
+            <a href="capabilities">Capabilities</a>
+        </body></html>"#;
+        let page = sample_page(html);
+        assert!(page.links.is_empty());
     }
 
     #[test]

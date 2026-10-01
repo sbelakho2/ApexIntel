@@ -69,6 +69,12 @@ pub fn normalize_url(raw: &str) -> Option<String> {
     }
     let mut url = Url::parse(trimmed).ok()?;
 
+    // Only web URLs. Schemes like `javascript:`, `data:`, `file:`, `vbscript:`
+    // must never become a clickable `href` (stored XSS).
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+
     // Normalize scheme + host casing
     let scheme = url.scheme().to_lowercase();
     let host = url.host_str().map(|h| h.to_lowercase());
@@ -861,9 +867,13 @@ mod tests {
             normalize_url("HTTPS://Example.COM:443/path?b=2&a=1#frag").as_deref(),
             Some("https://example.com/path?a=1&b=2")
         );
-        // Parsed-but-unusual schemes must not panic.
-        let js = normalize_url("javascript:alert(1)");
-        assert!(js.is_none() || js.as_deref().unwrap().starts_with("javascript"));
+        // Non-web schemes are rejected outright: this value can be rendered
+        // into an href.
+        assert!(normalize_url("javascript:alert(1)").is_none());
+        assert!(normalize_url("JAVASCRIPT:alert(1)").is_none());
+        assert!(normalize_url("data:text/html,<script>alert(1)</script>").is_none());
+        assert!(normalize_url("file:///etc/passwd").is_none());
+        assert!(normalize_url("vbscript:msgbox(1)").is_none());
         assert!(normalize_url("").is_none());
         assert!(normalize_url("   ").is_none());
         assert!(normalize_url("not a url").is_none());
@@ -923,5 +933,85 @@ mod tests {
         );
         // Unicode secrets.
         assert_eq!(redact_secrets("clé=αβγ", &["αβγ"]), "clé=[REDACTED]");
+    }
+
+    // ── Audit #52: normalize_url must reject non-http(s) schemes even when
+    // case-, whitespace-, control- or unicode-obfuscated. A stored href must
+    // never survive as `javascript:`/`data:`/`vbscript:`/`file:`.
+
+    #[test]
+    fn normalize_url_rejects_obfuscated_non_http_schemes() {
+        for hostile in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "JAVASCRIPT:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            " javascript:alert(1)",
+            "\tjavascript:alert(1)",
+            "\njavascript:alert(1)",
+            "\rjavascript:alert(1)",
+            " \t\njavascript:alert(1)",
+            "java\tscript:alert(1)",
+            "java\nscript:alert(1)",
+            "jav\ta\nscript:alert(1)",
+            "\u{0000}javascript:alert(1)",
+            "\u{000B}javascript:alert(1)",
+            "javascript\u{FF1A}alert(1)",
+            "ｊavascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "DATA:text/html,x",
+            "vbscript:msgbox(1)",
+            "VBScript:msgbox(1)",
+            "file:///etc/passwd",
+            "FILE:///etc/passwd",
+            "ftp://example.com/x",
+            "blob:https://example.com/9f1e",
+            "about:blank",
+            "chrome://settings",
+            "gopher://example.com/",
+            "javascript%3Aalert(1)",
+            "not a url",
+            "//example.com/no-scheme",
+            "",
+            "   ",
+        ] {
+            assert!(
+                normalize_url(hostile).is_none(),
+                "hostile URL survived normalize_url: {hostile:?} -> {:?}",
+                normalize_url(hostile)
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_url_accepts_only_http_https_after_normalization() {
+        assert_eq!(
+            normalize_url("HTTPS://EXAMPLE.COM").as_deref(),
+            Some("https://example.com/")
+        );
+        assert_eq!(
+            normalize_url("  http://example.com/a  ").as_deref(),
+            Some("http://example.com/a")
+        );
+        assert_eq!(
+            normalize_url("https://example.com:443/a").as_deref(),
+            Some("https://example.com/a")
+        );
+        assert_eq!(
+            normalize_url("http://example.com:80/a").as_deref(),
+            Some("http://example.com/a")
+        );
+        // `http://` / `https://` with no host are not usable URLs.
+        assert!(normalize_url("http://").is_none());
+        assert!(normalize_url("https://").is_none());
+        // WHATWG special-scheme parsing treats extra slashes as separators:
+        // `http:///path` becomes `http://path/`. The result is still an
+        // explicit http URL (never protocol-relative or scheme-less), which
+        // is the #52 contract; the open-redirect semantics are out of scope.
+        assert_eq!(
+            normalize_url("http:///path").as_deref(),
+            Some("http://path/")
+        );
+        assert!(normalize_url("https:////evil.com").is_some_and(|u| u.starts_with("https://")));
     }
 }

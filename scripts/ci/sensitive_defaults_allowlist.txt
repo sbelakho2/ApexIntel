@@ -22,5 +22,5 @@ crates/worker/src/slack.rs:597  # HTTP response body read for a Slack post; send
 # candidates or the analyst recipient list means the notification is not sent;
 # no learning input is defaulted (calibration samples, source reliability
 # aggregation and warning counts are all tracked as degraded inputs instead).
-crates/worker/src/job_execution/recipes.rs:1129  # pending source-promotion candidates: audit/notification fan-out only
-crates/worker/src/job_execution/recipes.rs:1135  # analyst recipient list: notification fan-out only
+crates/worker/src/job_execution/recipes.rs:1224  # pending source-promotion candidates: audit/notification fan-out only
+crates/worker/src/job_execution/recipes.rs:1230  # analyst recipient list: notification fan-out only

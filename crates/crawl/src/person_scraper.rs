@@ -21,12 +21,14 @@
 //! into `PoiArtifact` entries for downstream feature extraction.
 
 use anyhow::{Context, Result};
+use apex_core::text::truncate_utf8;
 use chrono::Utc;
-use reqwest::{Client, ClientBuilder};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
 
+use crate::client::{read_body_capped, secure_crawl_builder, url_allowed};
 use crate::social::reddit::RedditScraper;
 use crate::social::twitter::TwitterScraper;
 
@@ -145,11 +147,14 @@ impl PersonOsintScraper {
     const DEFAULT_TIMEOUT_SECS: u64 = 25;
 
     pub fn new(proxy_url: Option<&str>) -> Result<Self> {
-        let mut builder = ClientBuilder::new()
-            .timeout(Duration::from_secs(Self::DEFAULT_TIMEOUT_SECS))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-            .cookie_store(true)
-            .redirect(reqwest::redirect::Policy::limited(5));
+        // Shared hardened builder: public-only DNS plus a redirect policy that
+        // refuses private IP literals on every hop. Bodies must be read with
+        // `read_body_capped` and entry URLs checked with `url_allowed`.
+        let mut builder = secure_crawl_builder(
+            Duration::from_secs(Self::DEFAULT_TIMEOUT_SECS),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
+        .cookie_store(true);
 
         if let Some(proxy) = proxy_url {
             builder = builder.proxy(reqwest::Proxy::all(proxy).context("Bad proxy URL")?);
@@ -708,7 +713,7 @@ LIMIT 25
                 let mut a = RawPersonArtifact::new(
                     source,
                     "quote",
-                    format!("Quote: \"{}\"", &quote_text[..quote_text.len().min(80)]),
+                    format!("Quote: \"{}\"", truncate_utf8(&quote_text, 80)),
                     quote_text.clone(),
                 )
                 .with_url(source_url)
@@ -752,9 +757,23 @@ LIMIT 25
     pub async fn scrape_company_bio(&self, person_name: &str, url: &str) -> Vec<RawPersonArtifact> {
         debug!(person=%person_name, url=%url, "Scraping company bio page");
 
+        let parsed = match reqwest::Url::parse(url) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                debug!(url=%url, error=%error, "Company bio URL invalid");
+                return vec![];
+            }
+        };
+        // IP-literal hosts skip DNS, so the entry URL is checked explicitly;
+        // the client's redirect policy covers every hop after that.
+        if !url_allowed(&parsed) {
+            debug!(url=%url, "Company bio target rejected by SSRF guard");
+            return vec![];
+        }
+
         let html = match self
             .client
-            .get(url)
+            .get(parsed)
             .header(
                 "Accept",
                 "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -763,7 +782,13 @@ LIMIT 25
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
+            Ok(r) if r.status().is_success() => match read_body_capped(r, url).await {
+                Ok(body) => body,
+                Err(error) => {
+                    warn!(url=%url, error=%error, "Company bio body read failed");
+                    return vec![];
+                }
+            },
             Ok(r) => {
                 debug!(url=%url, status=%r.status(), "Company bio non-200");
                 return vec![];
@@ -782,7 +807,7 @@ LIMIT 25
             let text = strip_html_tags(para);
             let text_lower = text.to_lowercase();
             if text_lower.contains(&name_lower) && text.len() > 60 {
-                let excerpt = &text[..text.len().min(500)];
+                let excerpt = truncate_utf8(&text, 500);
                 let a = RawPersonArtifact::new(
                     "company_page",
                     "bio",
@@ -818,28 +843,45 @@ LIMIT 25
     ) -> Vec<RawPersonArtifact> {
         debug!(person=%person_name, url=%url, "Scraping speaker page");
 
+        let parsed = match reqwest::Url::parse(url) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                debug!(url=%url, error=%error, "Speaker page URL invalid");
+                return vec![];
+            }
+        };
+        // IP-literal hosts skip DNS, so the entry URL is checked explicitly;
+        // the client's redirect policy covers every hop after that.
+        if !url_allowed(&parsed) {
+            debug!(url=%url, "Speaker page target rejected by SSRF guard");
+            return vec![];
+        }
+
         let html = match self
             .client
-            .get(url)
+            .get(parsed)
             .header("Accept-Language", "en-US,en;q=0.9")
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
+            Ok(r) if r.status().is_success() => match read_body_capped(r, url).await {
+                Ok(body) => body,
+                Err(error) => {
+                    warn!(url=%url, error=%error, "Speaker page body read failed");
+                    return vec![];
+                }
+            },
             _ => return vec![],
         };
 
-        let name_lower = person_name.to_lowercase();
-        let html_lower = html.to_lowercase();
         let mut artifacts = Vec::new();
 
-        // Find name positions and extract nearby headings
-        let mut search_from = 0usize;
-        while let Some(pos) = html_lower[search_from..].find(&name_lower) {
-            let abs_pos = search_from + pos;
-            // Look backward for a heading within 1500 chars
-            let window_start = abs_pos.saturating_sub(1500);
-            let window = &html[window_start..abs_pos];
+        // Find name occurrences and extract nearby headings. Windows are
+        // computed on the original HTML via a case-insensitive regex: deriving
+        // offsets from `html.to_lowercase()` and slicing `html` with them
+        // panics whenever lowercasing changes a preceding character's length
+        // (e.g. `İ`), and a byte slice can split a multi-byte char.
+        for window in name_windows(&html, person_name) {
             for heading_tag in &["<h2", "<h3", "<h4", "<title"] {
                 if let Some(h_start) = window.rfind(heading_tag) {
                     if let Some(close) = window[h_start..].find('>') {
@@ -869,7 +911,6 @@ LIMIT 25
                     }
                 }
             }
-            search_from = abs_pos + name_lower.len();
             if artifacts.len() >= 8 {
                 break;
             }
@@ -1031,6 +1072,41 @@ LIMIT 25
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Floor a byte index onto a char boundary of `s` (clamped to its length).
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let mut boundary = index.min(s.len());
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+/// Windows immediately preceding each case-insensitive occurrence of
+/// `person_name` in `html`, matching the historical
+/// `html.to_lowercase().find(name.to_lowercase())` semantics without ever
+/// slicing the original HTML at a lowercased byte offset (which panics when
+/// case folding changes a preceding character's encoded length). Bounded so a
+/// page repeating the name cannot force unbounded work.
+fn name_windows<'a>(html: &'a str, person_name: &str) -> Vec<&'a str> {
+    const MAX_WINDOWS: usize = 64;
+    if person_name.trim().is_empty() {
+        return Vec::new();
+    }
+    let pattern = format!("(?i){}", regex::escape(person_name));
+    let Ok(regex) = regex::Regex::new(&pattern) else {
+        return Vec::new();
+    };
+    let mut windows = Vec::new();
+    for occurrence in regex.find_iter(html) {
+        let window_start = floor_char_boundary(html, occurrence.start().saturating_sub(1500));
+        windows.push(&html[window_start..occurrence.start()]);
+        if windows.len() >= MAX_WINDOWS {
+            break;
+        }
+    }
+    windows
+}
+
 /// Strip HTML tags from a string, collapsing whitespace.
 fn strip_html_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
@@ -1091,13 +1167,14 @@ fn decode_html_entity(entity: &str) -> String {
 
 /// Parse a GDELT date string like `"20240315T123045Z"` into a Unix timestamp.
 fn parse_gdelt_date(s: &str) -> Option<i64> {
-    // GDELT format: YYYYMMDDTHHMMSSZ
+    // GDELT format: YYYYMMDDTHHMMSSZ. Use `get` so malformed/non-ASCII input
+    // from the remote feed cannot panic on a byte-slice boundary.
     if s.len() < 8 {
         return None;
     }
-    let year: i32 = s[0..4].parse().ok()?;
-    let month: u32 = s[4..6].parse().ok()?;
-    let day: u32 = s[6..8].parse().ok()?;
+    let year: i32 = s.get(0..4)?.parse().ok()?;
+    let month: u32 = s.get(4..6)?.parse().ok()?;
+    let day: u32 = s.get(6..8)?.parse().ok()?;
     chrono::NaiveDate::from_ymd_opt(year, month, day)
         .and_then(|d| d.and_hms_opt(0, 0, 0))
         .map(|dt| dt.and_utc().timestamp())
@@ -1202,6 +1279,9 @@ impl PersonOsintScraper {
         }
 
         // Try common patterns in decreasing probability order.
+        // `[..1]` would panic on a non-ASCII initial (e.g. `Ünal`), so take
+        // the first char instead of the first byte.
+        let first_initial: String = first_clean.chars().take(1).collect();
         let candidates = [
             (
                 format!("{}.{}@{}", first_clean, last_clean, domain),
@@ -1212,7 +1292,7 @@ impl PersonOsintScraper {
                 0.55_f32,
             ),
             (
-                format!("{}.{}@{}", &first_clean[..1], last_clean, domain),
+                format!("{}.{}@{}", first_initial, last_clean, domain),
                 0.50_f32,
             ),
             (format!("{}@{}", last_clean, domain), 0.35_f32),
@@ -1323,6 +1403,55 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_gdelt_date_rejects_non_ascii_without_panicking() {
+        // `s[0..4]` used to panic when a multi-byte char straddles the split.
+        assert!(parse_gdelt_date("202é15T000000Z").is_none());
+        assert!(parse_gdelt_date("😀😀😀😀😀").is_none());
+    }
+
+    #[test]
+    fn test_extract_quotes_handles_multibyte_truncation() {
+        // The 80th byte falls inside the two-byte `é`; slicing used to panic.
+        let text = format!("\"{}é{}\" said John Smith", "a".repeat(79), "b".repeat(20));
+        let quotes =
+            PersonOsintScraper::extract_quotes("John Smith", "test", "http://example.com", &text);
+        assert_eq!(quotes.len(), 1, "the quote should still be extracted");
+        assert!(
+            quotes[0].title.starts_with("Quote: \"aaaa"),
+            "unexpected title: {}",
+            quotes[0].title
+        );
+    }
+
+    #[tokio::test]
+    async fn test_guess_email_handles_multibyte_initial() {
+        let scraper = PersonOsintScraper::new(None).expect("build scraper without network");
+        // `&first_clean[..1]` used to panic on a multi-byte initial.
+        let (email, confidence) = scraper
+            .guess_email_by_hunter_pattern("Ünal Yilmaz", "example.com")
+            .await;
+        assert_eq!(email.as_deref(), Some("ünal.yilmaz@example.com"));
+        assert!(confidence > 0.0);
+    }
+
+    #[test]
+    fn name_windows_survive_case_folding_length_changes() {
+        // `İ` lowercases to `i` + combining dot (one byte longer), so offsets
+        // taken from `html.to_lowercase()` used to slice `html` mid-character.
+        let html = "<h2>İ</h2>Émile Smith<h3>Procurement Lead at Acme Corp</h3>";
+        let windows = name_windows(html, "Émile Smith");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0], "<h2>İ</h2>");
+    }
+
+    #[test]
+    fn name_windows_is_bounded_and_ignores_empty_names() {
+        let html = "Jane Smith ".repeat(500);
+        assert!(name_windows(&html, "Jane Smith").len() <= 64);
+        assert!(name_windows(&html, "").is_empty());
+    }
+
+    #[test]
     fn test_extract_quotes_finds_attribution() {
         let text = r#"The CEO spoke at the conference. "We are committed to innovation," said John Smith. Other people attended."#;
         let quotes =
@@ -1350,5 +1479,25 @@ mod tests {
         assert_eq!(a.confidence, 0.9);
         assert!(a.url.is_some());
         assert_eq!(a.meta.get("k").map(String::as_str), Some("v"));
+    }
+
+    #[tokio::test]
+    async fn secondary_fetches_reject_private_ip_literals() {
+        let scraper = PersonOsintScraper::new(None)
+            .unwrap_or_else(|error| panic!("test: build person scraper: {error}"));
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8222/",
+            "http://[::1]/",
+            "http://[::169.254.169.254]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "file:///etc/passwd",
+        ] {
+            let bio = scraper.scrape_company_bio("Jane Smith", url).await;
+            assert!(bio.is_empty(), "company bio must not fetch {url}");
+            let talk = scraper.scrape_speaker_page("Jane Smith", url).await;
+            assert!(talk.is_empty(), "speaker page must not fetch {url}");
+        }
     }
 }

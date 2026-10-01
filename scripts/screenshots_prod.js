@@ -2,7 +2,19 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 
-const BASE = 'https://starzerp.fi';
+// Target and credentials come from the environment: this script runs against
+// a live deployment and must never carry a production hostname or password in
+// the repository.
+const BASE = process.env.APEX_SCREENSHOT_BASE_URL;
+const USERNAME = process.env.APEX_SCREENSHOT_USERNAME;
+const PASSWORD = process.env.APEX_SCREENSHOT_PASSWORD;
+if (!BASE || !USERNAME || !PASSWORD) {
+  console.error(
+    'Set APEX_SCREENSHOT_BASE_URL, APEX_SCREENSHOT_USERNAME and ' +
+      'APEX_SCREENSHOT_PASSWORD before running scripts/screenshots_prod.js'
+  );
+  process.exit(1);
+}
 const OUT_DIR = path.join(__dirname, '..', 'screenshots');
 
 const pages = [
@@ -39,8 +51,8 @@ const pages = [
   // Login
   console.log('Logging in...');
   await desktopPage.goto(`${BASE}/login`, { waitUntil: 'networkidle', timeout: 15000 });
-  await desktopPage.fill('input[name="username"]', 'aaron');
-  await desktopPage.fill('input[name="password"]', 'adminpassword');
+  await desktopPage.fill('input[name="username"]', USERNAME);
+  await desktopPage.fill('input[name="password"]', PASSWORD);
   await desktopPage.click('button[type="submit"]');
   await desktopPage.waitForTimeout(3000);
   console.log('Login attempted');
@@ -92,8 +104,8 @@ const pages = [
   // Login
   console.log('Mobile login...');
   await mobilePage.goto(`${BASE}/login`, { waitUntil: 'networkidle', timeout: 15000 });
-  await mobilePage.fill('input[name="username"]', 'aaron');
-  await mobilePage.fill('input[name="password"]', 'adminpassword');
+  await mobilePage.fill('input[name="username"]', USERNAME);
+  await mobilePage.fill('input[name="password"]', PASSWORD);
   await mobilePage.click('button[type="submit"]');
   await mobilePage.waitForTimeout(3000);
 

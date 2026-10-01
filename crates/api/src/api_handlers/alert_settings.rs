@@ -39,6 +39,13 @@ pub(crate) struct UpsertGlobalDefaultsRequest {
     pub config: GlobalAlertDefaults,
 }
 
+/// Log the store failure server-side and return a generic client error:
+/// SQLx errors can carry constraint names, table names and connection details.
+fn alert_settings_store_error(context: &'static str, error: impl std::fmt::Display) -> ApiError {
+    tracing::error!(error = %error, "alert settings store error: {context}");
+    ApiError::internal(context)
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 /// GET /api/settings/alerts
@@ -47,16 +54,17 @@ pub(crate) struct UpsertGlobalDefaultsRequest {
 pub(crate) async fn list_alert_settings(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<AlertSettingsListResponse>>, ApiError> {
-    let entities =
-        state.store.list_entity_alert_configs().await.map_err(|e| {
-            ApiError::internal(format!("Failed to list entity alert configs: {}", e))
-        })?;
+    let entities = state
+        .store
+        .list_entity_alert_configs()
+        .await
+        .map_err(|e| alert_settings_store_error("Failed to list entity alert configs", e))?;
 
     let global_defaults = state
         .store
         .get_global_alert_defaults()
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to get global defaults: {}", e)))?;
+        .map_err(|e| alert_settings_store_error("Failed to get global defaults", e))?;
 
     Ok(Json(success(AlertSettingsListResponse {
         entities,
@@ -73,7 +81,7 @@ pub(crate) async fn get_entity_alert_config(
         .store
         .get_entity_alert_config(&entity_id)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to get alert config: {}", e)))?;
+        .map_err(|e| alert_settings_store_error("Failed to get alert config", e))?;
 
     match config {
         Some(cfg) => Ok(Json(success(AlertConfigResponse { config: cfg }))),
@@ -99,7 +107,7 @@ pub(crate) async fn upsert_entity_alert_config(
         .store
         .upsert_entity_alert_config(&entity_id, &body.config)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to save alert config: {}", e)))?;
+        .map_err(|e| alert_settings_store_error("Failed to save alert config", e))?;
 
     Ok(Json(success(AlertConfigResponse {
         config: body.config,
@@ -115,7 +123,7 @@ pub(crate) async fn delete_entity_alert_config(
         .store
         .delete_entity_alert_config(&entity_id)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to delete alert config: {}", e)))?;
+        .map_err(|e| alert_settings_store_error("Failed to delete alert config", e))?;
 
     if !deleted {
         return Err(ApiError::not_found("entity alert config", &entity_id));
@@ -133,9 +141,26 @@ pub(crate) async fn upsert_global_alert_defaults(
         .store
         .upsert_global_alert_defaults(&body.config)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to save global defaults: {}", e)))?;
+        .map_err(|e| alert_settings_store_error("Failed to save global defaults", e))?;
 
     Ok(Json(success(GlobalDefaultsResponse {
         config: body.config,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::alert_settings_store_error;
+
+    #[test]
+    fn store_errors_do_not_leak_internal_details() {
+        let err = alert_settings_store_error(
+            "Failed to list entity alert configs",
+            "error returned from database: relation \"alert_secret_table\" does not exist",
+        );
+
+        assert_eq!(err.message, "Failed to list entity alert configs");
+        assert!(!err.message.contains("alert_secret_table"));
+        assert_eq!(err.http_status(), 500);
+    }
 }

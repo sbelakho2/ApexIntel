@@ -18,7 +18,7 @@ use serde::Deserialize;
 use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
 
-use super::{is_htmx_request, PageContext};
+use super::{is_htmx_request, safe_href, PageContext};
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{InsightListFilters, PgStore, WarningListFilters};
@@ -1055,7 +1055,7 @@ pub async fn get_insight(
             InsightEvidence {
                 index: idx + 1,
                 source: url.split('/').nth(2).unwrap_or("unknown").to_string(),
-                url: url.clone(),
+                url: safe_href(url),
                 snippet: format!("Source [{}]", idx + 1),
                 relevance,
             }
@@ -1080,7 +1080,7 @@ pub async fn get_insight(
                                     .position(|(id, _)| id == evidence_id)
                                     .map(|position| InsightCitation {
                                         index: position + 1,
-                                        url: persisted_refs[position].1.clone(),
+                                        url: safe_href(&persisted_refs[position].1),
                                     })
                             })
                             .collect();
@@ -1435,9 +1435,13 @@ pub async fn analyze_insight_html(
 pub async fn create_insight_note(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
-    Path(id): Path<String>,
+    // Typed path extraction: a malformed id is rejected before the annotation
+    // is written and before the id can reach `Redirect::to`, which panics on
+    // non-header values (e.g. a percent-encoded newline).
+    Path(id): Path<Uuid>,
     Form(form): Form<InsightNoteForm>,
 ) -> impl IntoResponse {
+    let id = id.to_string();
     let body = form.body.trim();
     if body.len() < 3 {
         return Redirect::to(&format!("/insights/{id}")).into_response();
@@ -1514,16 +1518,43 @@ pub async fn export_insight_pdf_html(
         }
     };
 
+    // Severity and provenance come from the stored row; a failed lookup fails
+    // the export instead of fabricating Medium with no sources (the same
+    // contract as the API export).
+    let stored_severity = match store.get_insight_severity(uid).await {
+        Ok(severity) => severity,
+        Err(error) => {
+            tracing::error!(%error, insight_id = %uid, "pdf export: severity lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    };
+    let severity = stored_severity
+        .as_deref()
+        .map(crate::routes::export::insight_severity_from_stored)
+        .unwrap_or(apex_insights::InsightSeverity::Medium);
+    let evidence_urls = insight.evidence_urls.clone().unwrap_or_default();
     let report_row = apex_insights::pdf_report::InsightReportRow {
         id: insight.id.to_string(),
         title: insight.title,
         summary: insight.summary,
         insight_type: insight.insight_type.unwrap_or_default(),
-        severity: apex_insights::InsightSeverity::Medium,
+        severity,
         confidence: insight.confidence,
         region: insight.region,
-        evidence: Vec::new(),
-        sources: Vec::new(),
+        evidence: evidence_urls
+            .iter()
+            .map(|url| {
+                apex_insights::pdf_report::EvidenceItem::new("Source", url)
+                    .with_confidence_opt(insight.confidence)
+            })
+            .collect(),
+        sources: evidence_urls
+            .iter()
+            .map(|url| apex_insights::pdf_report::ReportSourceRef {
+                title: url.clone(),
+                url: url.clone(),
+            })
+            .collect(),
         tags: insight.tags.unwrap_or_default(),
         generated_at: None,
     };

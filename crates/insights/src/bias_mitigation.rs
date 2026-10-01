@@ -325,11 +325,9 @@ fn calculate_confidence_reduction(counter_evidence: &[CounterEvidence]) -> f64 {
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        s
-    } else {
-        &s[..max_len]
-    }
+    // Truncate on a UTF-8 char boundary: untrusted crawled text can contain
+    // multi-byte characters, and a raw byte slice panics at max_len otherwise.
+    apex_core::text::truncate_utf8(s, max_len)
 }
 
 // ============================================================================
@@ -832,6 +830,20 @@ mod tests {
         assert!(upper < 1.0);
         assert!(lower < 0.03);
         assert!(upper > 0.03);
+    }
+
+    #[test]
+    fn truncate_str_does_not_panic_on_multibyte_boundary() {
+        // 'é' and '☕' are multi-byte: a naive byte slice at these limits would
+        // panic. The helper must cut on the previous char boundary.
+        let claim = "café ☕ supplier disrupted";
+        let truncated = truncate_str(claim, 5);
+        assert_eq!(truncated, "café");
+        let truncated = truncate_str(claim, 8);
+        assert_eq!(truncated, "café ");
+        assert!(truncated.is_char_boundary(truncated.len()));
+        assert_eq!(truncate_str(claim, 0), "");
+        assert_eq!(truncate_str(claim, claim.len() + 1), claim);
     }
 
     #[test]

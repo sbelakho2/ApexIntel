@@ -24,9 +24,10 @@ per-channel rows  ────┘
 
 SLA breach and reminder alerts use exactly this pipeline: `run_sla_enforcement`
 only enqueues (`notification_events` + `event_outbox` + per-channel rows) and
-never publishes or sends directly. There is no private NATS branch in
-`NotificationDispatcher`; `NatsPublisher::publish_alert` is reachable only
-through `crates/worker/src/alert_transport.rs` (enforced by
+never publishes or sends directly. There is no direct-send path (the legacy
+`NotificationDispatcher`/`send_slack_alert` were deleted);
+`NatsPublisher::publish_alert` is reachable only through
+`crates/worker/src/alert_transport.rs` (enforced by
 `scripts/ci/check_alert_publish.sh`).
 
 ## Delivery guarantees

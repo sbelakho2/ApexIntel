@@ -297,7 +297,7 @@ impl PgStore {
                    reviewed_by = CASE WHEN $4 IS NULL THEN reviewed_by ELSE $2 END,
                    reviewed_at = CASE WHEN $4 IS NULL THEN reviewed_at ELSE now() END,
                    updated_at = now()
-             WHERE id = $1 AND acknowledged = FALSE AND deleted_at IS NULL"#,
+             WHERE id = $1 AND deleted_at IS NULL AND acknowledged IS NOT TRUE"#,
         )
         .bind(id)
         .bind(user_id)
@@ -309,17 +309,24 @@ impl PgStore {
             return Ok(AcknowledgeWarningResult::Acknowledged);
         }
 
+        // `fetch_optional` (not `fetch_one`): a missing/deleted warning must
+        // resolve to NotFound instead of a RowNotFound storage error, and a
+        // legacy row with NULL `acknowledged` must not be misreported either.
         let ack_state = sqlx::query_scalar::<_, Option<bool>>(
             "SELECT acknowledged FROM warnings WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(id)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
         match ack_state {
             None => Ok(AcknowledgeWarningResult::NotFound),
-            Some(false) => Ok(AcknowledgeWarningResult::AlreadyAcknowledged),
-            Some(true) => {
+            // Only `acknowledged IS TRUE` can block the UPDATE above, so these
+            // arms are only reachable through a concurrent revert (which no
+            // code path performs); report them as already acknowledged rather
+            // than claiming this call acknowledged the row.
+            Some(Some(false) | None) => Ok(AcknowledgeWarningResult::AlreadyAcknowledged),
+            Some(Some(true)) => {
                 if let Some(review_outcome) = review_outcome {
                     sqlx::query(
                         r#"UPDATE warnings

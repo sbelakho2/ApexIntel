@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::{is_htmx_request, PageContext};
+use super::{is_htmx_request, safe_href, PageContext};
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
@@ -426,7 +426,9 @@ pub async fn security_page(
                 detail_href: format!("/warnings/{}", w.id),
                 source_href: w
                     .source_urls
-                    .and_then(|urls| urls.into_iter().find(|u| !u.is_empty())),
+                    .and_then(|urls| urls.into_iter().find(|u| !u.is_empty()))
+                    .map(|url| safe_href(&url))
+                    .filter(|url| url != "#"),
             }
         })
         .collect();

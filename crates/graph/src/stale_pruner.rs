@@ -222,9 +222,25 @@ impl StalePruner {
     }
 
     /// SQL to flag stale entities.
+    ///
+    /// Flags both `companies` and `persons`: `stale_entities_sql` and the
+    /// report include `person` entities, so flagging only companies would
+    /// silently drop exactly the entity types the report surfaces. The leading
+    /// data-modifying CTE updates companies; PostgreSQL executes
+    /// data-modifying CTEs to completion even though the primary statement
+    /// does not read their output, so both updates run from one statement.
     pub fn flag_stale_sql() -> &'static str {
         r#"
-        UPDATE companies SET metadata = jsonb_set(
+        WITH flagged_companies AS (
+            UPDATE companies SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'),
+                '{stale}',
+                'true'
+            )
+            WHERE id = ANY($1)
+            RETURNING id
+        )
+        UPDATE persons SET metadata = jsonb_set(
             COALESCE(metadata, '{}'),
             '{stale}',
             'true'
@@ -334,5 +350,17 @@ mod tests {
         assert!(sql.contains("$1"), "SQL must use parameterized $1 bind");
         assert!(sql.contains("companies"));
         assert!(sql.contains("persons"));
+    }
+
+    #[test]
+    fn test_flag_stale_sql_covers_companies_and_persons() {
+        let sql = StalePruner::flag_stale_sql();
+        // The report includes person entities, so flagging must not silently
+        // skip them.
+        assert!(sql.contains("UPDATE companies"), "companies not flagged");
+        assert!(sql.contains("UPDATE persons"), "persons not flagged");
+        assert!(sql.contains("$1"), "SQL must use parameterized $1 bind");
+        assert!(sql.contains("'{stale}'"));
+        assert!(sql.contains("'true'"));
     }
 }

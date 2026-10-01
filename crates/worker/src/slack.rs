@@ -22,13 +22,53 @@
 //! ```
 
 use anyhow::{Context, Result};
+use apex_core::text::truncate_utf8;
 use reqwest::Client;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+
+use crate::notification_delivery::{classify_http_status, DeliveryDisposition};
+use crate::notifications::redact_url;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mrkdwn safety helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Escape the characters Slack's mrkdwn parser interprets as control syntax.
+///
+/// Crawled text is attacker-influenced: `<` enables special mentions
+/// (`<!channel>` pages everyone) and disguised links (`<https://evil|text>`),
+/// while bare `&` can corrupt surrounding entities. Slack renders the escaped
+/// entities back to the literal characters, so this is lossless for readers.
+pub(crate) fn slack_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Clip `s` to at most `max_chars` **characters**, appending a single-character
+/// ellipsis when truncation happens.
+///
+/// Slack block limits are character-based (header 150, section text 3000,
+/// field text 2000) and a 400 `invalid_blocks` response is classified as a
+/// permanent delivery failure, so oversized crawled text must be clipped
+/// instead of dead-lettering the alert. Byte slicing is never used, so
+/// multibyte input cannot panic or split a character.
+pub(crate) fn clip(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Severity
@@ -269,9 +309,16 @@ impl SlackMessage {
     pub fn to_blocks(&self) -> serde_json::Value {
         let emoji = self.severity.emoji();
         let severity_upper = self.severity.as_str().to_uppercase();
+        let escaped_description = slack_escape(&self.description);
+        let escaped_title = slack_escape(&self.title);
 
         // ── Header block ──────────────────────────────────────────────
-        let header_text = format!("{} {} — {}", emoji, severity_upper, self.title);
+        // Header text is `plain_text` (never parsed as mrkdwn) and capped at
+        // 150 characters; a long crawled title must be clipped, not rejected.
+        let header_text = clip(
+            &format!("{} {} — {}", emoji, severity_upper, self.title),
+            150,
+        );
         let mut blocks: Vec<serde_json::Value> = vec![serde_json::json!({
             "type": "header",
             "text": {
@@ -286,19 +333,19 @@ impl SlackMessage {
         if let Some(ref entity) = self.entity {
             context_fields.push(serde_json::json!({
                 "type": "mrkdwn",
-                "text": format!("*Entity:*\n{}", entity)
+                "text": clip(&format!("*Entity:*\n{}", slack_escape(entity)), 2000)
             }));
         }
         if let Some(ref region) = self.region {
             context_fields.push(serde_json::json!({
                 "type": "mrkdwn",
-                "text": format!("*Region:*\n{}", region)
+                "text": clip(&format!("*Region:*\n{}", slack_escape(region)), 2000)
             }));
         }
         if let Some(ref ts) = self.timestamp {
             context_fields.push(serde_json::json!({
                 "type": "mrkdwn",
-                "text": format!("*Timestamp:*\n{}", ts)
+                "text": clip(&format!("*Timestamp:*\n{}", ts), 2000)
             }));
         }
 
@@ -310,12 +357,14 @@ impl SlackMessage {
         }
 
         // ── Description section ────────────────────────────────────────
-        // Slack Block Kit has a 3000 character limit on mrkdwn text blocks,
-        // so truncate if necessary.
-        let desc = if self.description.len() > 2900 {
-            format!("{}…", &self.description[..2900])
+        // Slack Block Kit has a 3000 character limit on mrkdwn text blocks, so
+        // truncate at a 2900-character budget (leaving room for the ellipsis).
+        // The cut must land on a UTF-8 boundary: byte slicing a multibyte
+        // description previously panicked (audit #67).
+        let desc = if escaped_description.chars().count() > 2900 {
+            format!("{}…", truncate_utf8(&escaped_description, 2900))
         } else {
-            self.description.clone()
+            escaped_description.clone()
         };
         blocks.push(serde_json::json!({
             "type": "section",
@@ -333,7 +382,10 @@ impl SlackMessage {
                 .map(|(k, v)| {
                     serde_json::json!({
                         "type": "mrkdwn",
-                        "text": format!("*{}:*\n{}", k, v)
+                        "text": clip(
+                            &format!("*{}:*\n{}", slack_escape(k), slack_escape(v)),
+                            2000
+                        )
                     })
                 })
                 .collect();
@@ -348,50 +400,26 @@ impl SlackMessage {
         }
 
         // ── Action buttons ─────────────────────────────────────────────
+        // Only the link button survives: Acknowledge/Dismiss had no Slack
+        // interaction handler and did nothing when clicked (audit #80). The
+        // block is omitted entirely when there is no URL button, because an
+        // actions block with zero elements is rejected by Slack.
         if self.include_actions {
-            let mut elements: Vec<serde_json::Value> = Vec::new();
-
             if let Some(ref url) = self.source_url {
-                elements.push(serde_json::json!({
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "🔍 View in ApexIntel",
-                        "emoji": true
-                    },
-                    "url": url,
-                    "action_id": "view_apexintel"
+                blocks.push(serde_json::json!({
+                    "type": "actions",
+                    "elements": [{
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "🔍 View in ApexIntel",
+                            "emoji": true
+                        },
+                        "url": url,
+                        "action_id": "view_apexintel"
+                    }]
                 }));
             }
-
-            elements.push(serde_json::json!({
-                "type": "button",
-                "text": {
-                    "type": "plain_text",
-                    "text": "✅ Acknowledge",
-                    "emoji": true
-                },
-                "style": "primary",
-                "action_id": "acknowledge_alert",
-                "value": "acknowledged"
-            }));
-
-            elements.push(serde_json::json!({
-                "type": "button",
-                "text": {
-                    "type": "plain_text",
-                    "text": "❌ Dismiss",
-                    "emoji": true
-                },
-                "style": "danger",
-                "action_id": "dismiss_alert",
-                "value": "dismissed"
-            }));
-
-            blocks.push(serde_json::json!({
-                "type": "actions",
-                "elements": elements
-            }));
         }
 
         // ── Context / footer ──────────────────────────────────────────
@@ -400,14 +428,28 @@ impl SlackMessage {
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": format!("ApexIntel • {} • `{}`", self.alert_type.as_str(), chrono::Utc::now().format("%Y-%m-%d %H:%M UTC"))
+                    "text": clip(
+                        &format!(
+                            "ApexIntel • {} • `{}`",
+                            self.alert_type.as_str(),
+                            chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+                        ),
+                        3000
+                    )
                 }
             ]
         }));
 
         // ── Build the full payload with attachment color ───────────────
+        let fallback = format!(
+            "{} *[{}]* {} — {}",
+            emoji,
+            severity_upper,
+            escaped_title,
+            escaped_description.chars().take(120).collect::<String>()
+        );
         serde_json::json!({
-            "text": format!("{} *[{}]* {} — {}", emoji, severity_upper, self.title, self.description.chars().take(120).collect::<String>()),
+            "text": clip(&fallback, 4000),
             "attachments": [
                 {
                     "color": self.severity.color(),
@@ -447,22 +489,24 @@ impl PerUrlRateLimiter {
         }
     }
 
-    /// Wait if necessary to respect the rate limit for the given URL.
+    /// Reserve the next send slot for `url` and wait until that slot is due.
+    ///
+    /// The slot (`max(last + 2s, now)`) is computed and stored **inside the
+    /// lock**, so two concurrent senders for the same URL can never be handed
+    /// overlapping slots; each waits on its own reserved instant (audit #77).
     async fn wait_if_needed(&self, url: &str) {
-        let mut last_send = self.last_send.lock().await;
-        if let Some(last) = last_send.get(url) {
-            let elapsed = last.elapsed();
-            let min_interval = Duration::from_secs(2);
-            if elapsed < min_interval {
-                let wait = min_interval - elapsed;
-                drop(last_send);
-                tokio::time::sleep(wait).await;
-                let mut last_send = self.last_send.lock().await;
-                last_send.insert(url.to_string(), tokio::time::Instant::now());
-                return;
-            }
-        }
-        last_send.insert(url.to_string(), tokio::time::Instant::now());
+        let min_interval = Duration::from_secs(2);
+        let slot = {
+            let mut last_send = self.last_send.lock().await;
+            let now = tokio::time::Instant::now();
+            let slot = match last_send.get(url) {
+                Some(last) => (*last + min_interval).max(now),
+                None => now,
+            };
+            last_send.insert(url.to_string(), slot);
+            slot
+        };
+        tokio::time::sleep_until(slot).await;
     }
 }
 
@@ -511,9 +555,7 @@ impl SlackWebhook {
         let channel_name = message.alert_type.as_str();
         let payload = message.to_json_string()?;
 
-        // Collect all target URLs: channel-specific first, then defaults.
-        let mut targets = self.urls.get(channel_name).cloned().unwrap_or_default();
-        targets.extend(self.default_urls.clone());
+        let targets = self.targets_for_channel(channel_name);
 
         if targets.is_empty() {
             warn!(
@@ -526,15 +568,16 @@ impl SlackWebhook {
         let mut errors = Vec::new();
         for url in &targets {
             if let Err(e) = self.send_to_url(url, &payload).await {
-                errors.push(format!("{}: {}", url, e));
+                // Redacted: the webhook path is the credential.
+                errors.push(format!("{}: {}", redact_url(url), e));
                 error!(
-                    url = %url,
+                    url = %redact_url(url),
                     error = %e,
                     "Failed to send Slack message"
                 );
             } else {
                 info!(
-                    url = %url,
+                    url = %redact_url(url),
                     alert_type = %channel_name,
                     severity = %message.severity.as_str(),
                     "Slack message delivered"
@@ -552,7 +595,30 @@ impl SlackWebhook {
         }
     }
 
+    /// Resolve the target URLs for an alert type.
+    ///
+    /// Channel-specific targets win outright: the default URLs are consulted
+    /// only when the channel has none configured, and duplicates are removed,
+    /// so a URL listed in both sets is never posted to twice (audit #77).
+    fn targets_for_channel(&self, channel_name: &str) -> Vec<String> {
+        let specific = self.urls.get(channel_name).cloned().unwrap_or_default();
+        let targets = if specific.is_empty() {
+            self.default_urls.clone()
+        } else {
+            specific
+        };
+        let mut seen = HashSet::new();
+        targets
+            .into_iter()
+            .filter(|url| seen.insert(url.clone()))
+            .collect()
+    }
+
     /// Send a raw JSON payload to a single webhook URL with retry logic.
+    ///
+    /// Permanent failures (e.g. a revoked webhook returning 404) are **not**
+    /// retried; retryable failures honor `Retry-After` when Slack sends one
+    /// (429 rate limiting) and otherwise use exponential backoff.
     async fn send_to_url(&self, url: &str, payload: &str) -> Result<()> {
         // Enforce rate limit: max 1 message per 2 seconds per URL.
         self.rate_limiter.wait_if_needed(url).await;
@@ -561,17 +627,29 @@ impl SlackWebhook {
         for attempt in 1..=3 {
             match self.send_attempt(url, payload).await {
                 Ok(()) => return Ok(()),
-                Err(e) => {
+                Err(failure) => {
+                    let retryable = matches!(failure, SendFailure::Retryable { .. });
+                    let retry_after = failure.retry_after();
+                    let error = failure.into_error();
                     warn!(
-                        url = %url,
+                        url = %redact_url(url),
                         attempt,
-                        error = %e,
+                        error = %error,
+                        retryable,
                         "Slack webhook attempt failed"
                     );
-                    last_error = Some(e);
+                    if !retryable {
+                        // A 4xx other than 408/425/429 means retrying cannot
+                        // succeed; return immediately instead of burning
+                        // three attempts (and three rate-limit slots).
+                        return Err(error);
+                    }
+                    last_error = Some(error);
                     if attempt < 3 {
-                        // Exponential backoff: 1s, 2s
-                        let backoff = Duration::from_secs(attempt as u64);
+                        // Honor Retry-After on 429; otherwise exponential
+                        // backoff: 1s, 2s.
+                        let backoff =
+                            retry_after.unwrap_or_else(|| Duration::from_secs(1 << (attempt - 1)));
                         tokio::time::sleep(backoff).await;
                     }
                 }
@@ -583,7 +661,7 @@ impl SlackWebhook {
     }
 
     /// Single HTTP POST attempt to a Slack webhook URL.
-    async fn send_attempt(&self, url: &str, payload: &str) -> Result<()> {
+    async fn send_attempt(&self, url: &str, payload: &str) -> std::result::Result<(), SendFailure> {
         let resp = self
             .client
             .post(url)
@@ -591,26 +669,93 @@ impl SlackWebhook {
             .body(payload.to_string())
             .send()
             .await
-            .context("Slack webhook HTTP request failed")?;
+            .map_err(|error| SendFailure::Retryable {
+                // reqwest's Display embeds the webhook URL, so strip it:
+                // the URL is the credential and must never reach logs.
+                error: anyhow::anyhow!(
+                    "Slack webhook HTTP request failed: {}",
+                    error.without_url()
+                ),
+                retry_after: None,
+            })?;
 
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let retry_after = parse_retry_after(resp.headers());
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                // Transport read failure: report the status without a body
+                // rather than silently substituting empty text.
+                tracing::debug!(
+                    error = %error.without_url(),
+                    "Slack webhook response body unreadable"
+                );
+                String::new()
+            }
+        };
 
         if !status.is_success() {
-            anyhow::bail!(
+            let message = format!(
                 "Slack webhook returned HTTP {}: {}",
                 status.as_u16(),
                 body.chars().take(200).collect::<String>()
             );
+            return match classify_http_status(status.as_u16()) {
+                DeliveryDisposition::Retryable => Err(SendFailure::Retryable {
+                    error: anyhow::anyhow!(message),
+                    retry_after,
+                }),
+                DeliveryDisposition::Permanent => {
+                    Err(SendFailure::Permanent(anyhow::anyhow!(message)))
+                }
+            };
         }
 
         // Slack returns `ok` in the body for successful deliveries.
         if body.contains("\"ok\":false") || body == "false" {
-            anyhow::bail!("Slack webhook returned error: {body}");
+            return Err(SendFailure::Retryable {
+                error: anyhow::anyhow!("Slack webhook returned error: {body}"),
+                retry_after,
+            });
         }
 
         Ok(())
     }
+}
+
+/// Outcome of one Slack webhook POST attempt.
+enum SendFailure {
+    /// Transient (network error, 408/425/429, 5xx): retry with backoff.
+    Retryable {
+        error: anyhow::Error,
+        retry_after: Option<Duration>,
+    },
+    /// Permanent (any other 4xx, e.g. a revoked webhook): do not retry.
+    Permanent(anyhow::Error),
+}
+
+impl SendFailure {
+    fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Retryable { retry_after, .. } => *retry_after,
+            Self::Permanent(_) => None,
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Self::Retryable { error, .. } | Self::Permanent(error) => error,
+        }
+    }
+}
+
+/// Parse a `Retry-After` header in delta-seconds form.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -619,11 +764,14 @@ impl SlackWebhook {
 
 /// Slack webhook configuration.
 ///
-/// Supports multiple webhook URLs for different channels, loaded from:
-/// - Environment variable `SLACK_WEBHOOK_URLS` (comma-separated, default channel)
-/// - Environment variable `SLACK_WEBHOOK_CHANNEL_<NAME>` (channel-specific URLs)
+/// The environment path reads the single consolidated variable set shared
+/// with the durable notification router ([`crate::notifications::WebhookConfig`]);
+/// per-channel routing is still available from the YAML file.
+///
+/// Loaded from:
+/// - Environment variable `SLACK_WEBHOOK_URL` (the consolidated Slack webhook)
 /// - YAML config file at `config/runtime/slack_webhooks.yaml`
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub struct SlackConfig {
     /// Channel-specific webhook URLs: map of channel name -> list of URLs.
     pub webhooks: HashMap<String, Vec<String>>,
@@ -633,58 +781,57 @@ pub struct SlackConfig {
     pub timeout_secs: u64,
 }
 
+/// `Debug` must never print webhook URLs: the last path segment is the
+/// credential. URLs are shown redacted instead (audit #73).
+impl std::fmt::Debug for SlackConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted: HashMap<&str, Vec<String>> = self
+            .webhooks
+            .iter()
+            .map(|(channel, urls)| {
+                (
+                    channel.as_str(),
+                    urls.iter().map(|url| redact_url(url)).collect(),
+                )
+            })
+            .collect();
+        f.debug_struct("SlackConfig")
+            .field("webhooks", &redacted)
+            .field(
+                "default_urls",
+                &self
+                    .default_urls
+                    .iter()
+                    .map(|url| redact_url(url))
+                    .collect::<Vec<_>>(),
+            )
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
+}
+
 impl SlackConfig {
     /// Build configuration from environment variables.
     ///
-    /// Reads:
-    /// - `SLACK_WEBHOOK_URLS` — comma-separated default webhook URLs
+    /// Reads the durable pipeline's variable set:
+    /// - `SLACK_WEBHOOK_URL` — the Slack incoming webhook
     /// - `SLACK_WEBHOOK_TIMEOUT_SECS` — timeout (default: 10)
-    /// - `SLACK_WEBHOOK_CHANNEL_<NAME>` — channel-specific URLs (comma-separated)
     ///
-    /// Channel names are lowercased; valid names: `security`, `insight`,
-    /// `recipe_match`, `poi_update`, `warning`, `general`.
+    /// The legacy `SLACK_WEBHOOK_URLS`, `SLACK_WEBHOOK_CHANNEL_<NAME>` and
+    /// `SLACK_WEBHOOK_<CHANNEL>_URL` variables were a second, conflicting
+    /// pipeline and are no longer read (audit #81).
     pub fn from_env() -> Self {
         let timeout_secs = std::env::var("SLACK_WEBHOOK_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(10);
 
-        let default_urls = std::env::var("SLACK_WEBHOOK_URLS")
+        let default_urls = std::env::var("SLACK_WEBHOOK_URL")
             .map(|s| parse_comma_separated(&s))
             .unwrap_or_default();
 
-        let mut webhooks: HashMap<String, Vec<String>> = HashMap::new();
-
-        // Scan for SLACK_WEBHOOK_CHANNEL_* variables.
-        for (key, value) in std::env::vars() {
-            if let Some(channel) = key
-                .strip_prefix("SLACK_WEBHOOK_CHANNEL_")
-                .map(|s| s.to_ascii_lowercase())
-            {
-                let urls = parse_comma_separated(&value);
-                if !urls.is_empty() {
-                    webhooks.insert(channel, urls);
-                }
-            }
-        }
-
-        // Also support SLACK_WEBHOOK_SECURITY_URL, SLACK_WEBHOOK_INSIGHT_URL, etc.
-        for channel in &[
-            "security",
-            "insight",
-            "recipe_match",
-            "poi_update",
-            "warning",
-            "general",
-        ] {
-            let env_key = format!("SLACK_WEBHOOK_{}_URL", channel.to_uppercase());
-            if let Ok(url) = std::env::var(&env_key) {
-                webhooks.entry(channel.to_string()).or_default().push(url);
-            }
-        }
-
         Self {
-            webhooks,
+            webhooks: HashMap::new(),
             default_urls,
             timeout_secs,
         }
@@ -1041,6 +1188,274 @@ mod tests {
         );
     }
 
+    #[test]
+    fn slack_message_multibyte_description_does_not_panic() {
+        // 3000 four-byte chars: a byte slice at 2900 panicked before audit #67.
+        let msg = SlackMessage::new(
+            SlackMessageSeverity::Low,
+            AlertType::General,
+            "Unicode description",
+            "😀".repeat(3000),
+        );
+        let blocks = msg.to_blocks();
+        let inner = blocks["attachments"][0]["blocks"].as_array().unwrap();
+        let desc = inner
+            .iter()
+            .find(|b| {
+                b.get("type").and_then(|t| t.as_str()) == Some("section")
+                    && b.get("text")
+                        .and_then(|t| t.get("type"))
+                        .and_then(|t| t.as_str())
+                        == Some("mrkdwn")
+            })
+            .expect("description section");
+        let text = desc["text"]["text"].as_str().unwrap();
+        assert!(text.chars().count() <= 2901);
+        assert!(text.ends_with('…'));
+        assert!(
+            std::str::from_utf8(text.as_bytes()).is_ok(),
+            "truncation must land on a UTF-8 boundary"
+        );
+    }
+
+    #[test]
+    fn slack_escape_neutralizes_mrkdwn_control_syntax() {
+        assert_eq!(
+            slack_escape("a & b <https://evil|Click> <!channel>"),
+            "a &amp; b &lt;https://evil|Click&gt; &lt;!channel&gt;"
+        );
+    }
+
+    #[test]
+    fn clip_is_char_safe_and_appends_ellipsis() {
+        assert_eq!(clip("abc", 5), "abc");
+        assert_eq!(clip("abcdef", 4), "abc…");
+        assert_eq!(clip("😀😀😀", 2), "😀…");
+        assert_eq!(clip("anything", 0), "");
+        assert_eq!(clip("", 10), "");
+    }
+
+    #[test]
+    fn slack_mrkdwn_fields_are_escaped() {
+        let msg = SlackMessage::new(
+            SlackMessageSeverity::High,
+            AlertType::Warning,
+            "<!channel> breach",
+            "<https://evil.example|Click here> & more",
+        )
+        .with_entity("<https://evil.example|Acme>")
+        .with_region("<!here>")
+        .with_field("Detail", "<!channel> go");
+
+        let blocks = msg.to_blocks();
+        let inner = blocks["attachments"][0]["blocks"].as_array().unwrap();
+
+        let mut mrkdwn = String::new();
+        for block in inner {
+            if block.get("type").and_then(|t| t.as_str()) == Some("header") {
+                // Header is plain_text: no mrkdwn parsing, intentionally raw.
+                continue;
+            }
+            if let Some(text) = block
+                .get("text")
+                .and_then(|t| t.get("text"))
+                .and_then(|t| t.as_str())
+            {
+                mrkdwn.push_str(text);
+            }
+            if let Some(fields) = block.get("fields").and_then(|f| f.as_array()) {
+                for field in fields {
+                    if let Some(text) = field.get("text").and_then(|t| t.as_str()) {
+                        mrkdwn.push_str(text);
+                    }
+                }
+            }
+        }
+
+        assert!(!mrkdwn.contains("<!channel>"), "mention must not survive");
+        assert!(
+            !mrkdwn.contains("<https://evil.example"),
+            "disguised link must not survive"
+        );
+        assert!(mrkdwn.contains("&lt;!channel&gt;"));
+        assert!(mrkdwn.contains("&lt;https://evil.example|Acme&gt;"));
+        assert!(mrkdwn.contains("&amp; more"));
+
+        let fallback = blocks["text"].as_str().unwrap();
+        assert!(fallback.contains("&lt;!channel&gt;"));
+        assert!(!fallback.contains("<!channel>"));
+    }
+
+    #[test]
+    fn slack_actions_only_contain_the_view_link_button() {
+        let msg = SlackMessage::new(
+            SlackMessageSeverity::Critical,
+            AlertType::Security,
+            "Breach",
+            "Details",
+        )
+        .with_source_url("https://apexintel.io/warnings/123");
+        let blocks = msg.to_blocks();
+        let inner = blocks["attachments"][0]["blocks"].as_array().unwrap();
+        let actions: Vec<&serde_json::Value> = inner
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("actions"))
+            .collect();
+        assert_eq!(actions.len(), 1, "exactly one actions block");
+        let elements = actions[0]["elements"].as_array().unwrap();
+        assert_eq!(elements.len(), 1, "only the URL button survives");
+        assert_eq!(elements[0]["action_id"].as_str(), Some("view_apexintel"));
+
+        let rendered = serde_json::to_string(&blocks).unwrap();
+        assert!(!rendered.contains("acknowledge_alert"));
+        assert!(!rendered.contains("dismiss_alert"));
+    }
+
+    #[test]
+    fn slack_actions_block_is_omitted_without_a_url_button() {
+        // include_actions defaults to true, but an actions block with zero
+        // elements is rejected by Slack (400 invalid_blocks).
+        let msg = SlackMessage::new(
+            SlackMessageSeverity::Info,
+            AlertType::General,
+            "No link",
+            "Nothing to click",
+        );
+        let blocks = msg.to_blocks();
+        let inner = blocks["attachments"][0]["blocks"].as_array().unwrap();
+        assert!(!inner
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("actions")));
+    }
+
+    #[test]
+    fn slack_webhook_targets_prefer_channel_specific_and_dedup() {
+        let mut webhooks = HashMap::new();
+        webhooks.insert(
+            "security".to_string(),
+            vec![
+                "https://hooks.slack.com/services/sec".to_string(),
+                "https://hooks.slack.com/services/default".to_string(),
+            ],
+        );
+        let config = SlackConfig {
+            webhooks,
+            default_urls: vec![
+                "https://hooks.slack.com/services/default".to_string(),
+                "https://hooks.slack.com/services/other".to_string(),
+            ],
+            timeout_secs: 10,
+        };
+        let webhook = SlackWebhook::new(&config).unwrap();
+
+        // Channel-specific targets win outright: defaults are not added.
+        assert_eq!(
+            webhook.targets_for_channel("security"),
+            vec![
+                "https://hooks.slack.com/services/sec",
+                "https://hooks.slack.com/services/default"
+            ]
+        );
+        // Unknown channel falls back to the defaults, deduplicated.
+        assert_eq!(
+            webhook.targets_for_channel("general"),
+            vec![
+                "https://hooks.slack.com/services/default",
+                "https://hooks.slack.com/services/other"
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_after_header_is_parsed_in_seconds() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "7".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(7)));
+
+        let mut http_date = reqwest::header::HeaderMap::new();
+        http_date.insert(
+            "retry-after",
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&http_date), None);
+    }
+
+    #[test]
+    fn slack_config_debug_redacts_every_webhook_url() {
+        let mut config = SlackConfig {
+            webhooks: HashMap::new(),
+            default_urls: vec![
+                "https://hooks.slack.com/services/T00/B00/defaultsecret7788".to_string()
+            ],
+            timeout_secs: 10,
+        };
+        config.webhooks.insert(
+            "security".to_string(),
+            vec!["https://hooks.slack.com/services/T00/B00/channelsecret1234".to_string()],
+        );
+
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("channelsecret1234"),
+            "Debug leaked the channel webhook path: {rendered}"
+        );
+        assert!(
+            !rendered.contains("defaultsecret7788"),
+            "Debug leaked the default webhook path: {rendered}"
+        );
+        assert!(
+            rendered.contains("hooks.slack.com"),
+            "the host is still useful for operators: {rendered}"
+        );
+        assert!(rendered.contains("security"), "{rendered}");
+        assert!(rendered.contains("timeout_secs"), "{rendered}");
+    }
+
+    /// A slot reservation must happen while the map lock is held: two
+    /// concurrent senders for the same URL must be handed slots two seconds
+    /// apart, never the same instant (audit #77). If the slot were computed
+    /// outside the lock both senders would reserve `now` and return together.
+    #[tokio::test]
+    async fn rate_limiter_hands_out_non_overlapping_slots() {
+        let limiter = Arc::new(PerUrlRateLimiter::new());
+        let url = "https://hooks.slack.com/services/T00/B00/ratelimited";
+
+        let started = tokio::time::Instant::now();
+        let first = {
+            let limiter = Arc::clone(&limiter);
+            tokio::spawn(async move {
+                limiter.wait_if_needed(url).await;
+                tokio::time::Instant::now()
+            })
+        };
+        let second = {
+            let limiter = Arc::clone(&limiter);
+            tokio::spawn(async move {
+                limiter.wait_if_needed(url).await;
+                tokio::time::Instant::now()
+            })
+        };
+        let first_done = first.await.unwrap();
+        let second_done = second.await.unwrap();
+
+        let gap = if first_done >= second_done {
+            first_done - second_done
+        } else {
+            second_done - first_done
+        };
+        assert!(
+            gap >= Duration::from_millis(1_800),
+            "concurrent senders must get slots 2s apart, gap was {gap:?}"
+        );
+
+        let stored = limiter.last_send.lock().await;
+        let last = stored.get(url).copied().expect("slot recorded");
+        assert!(
+            last - started >= Duration::from_millis(1_800),
+            "the reserved slot must be in the future, not a stale instant"
+        );
+    }
+
     // ── Config tests ──────────────────────────────────────────────────
 
     #[test]
@@ -1085,23 +1500,23 @@ mod tests {
     }
 
     #[test]
-    fn slack_config_from_env_with_urls() {
+    fn slack_config_from_env_with_url() {
         let _guard = SLACK_ENV_TEST_LOCK.lock().unwrap();
         // Temporarily set env vars
         unsafe {
             std::env::set_var(
-                "SLACK_WEBHOOK_URLS",
-                "https://hooks.slack.com/services/T00/B00/xxx,https://hooks.slack.com/services/T00/B01/yyy",
+                "SLACK_WEBHOOK_URL",
+                "https://hooks.slack.com/services/T00/B00/xxx",
             );
         }
 
         let config = SlackConfig::from_env();
-        assert_eq!(config.default_urls.len(), 2);
+        assert_eq!(config.default_urls.len(), 1);
         assert!(config.default_urls[0].contains("hooks.slack.com"));
 
         // Clean up
         unsafe {
-            std::env::remove_var("SLACK_WEBHOOK_URLS");
+            std::env::remove_var("SLACK_WEBHOOK_URL");
         }
     }
 
@@ -1126,32 +1541,42 @@ mod tests {
     static SLACK_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn slack_config_from_env_with_channel_urls() {
+    fn slack_config_from_env_ignores_the_deleted_variable_set() {
         let _guard = SLACK_ENV_TEST_LOCK.lock().unwrap();
         unsafe {
+            std::env::set_var(
+                "SLACK_WEBHOOK_URL",
+                "https://hooks.slack.com/services/T00/B00/consolidated",
+            );
             std::env::set_var(
                 "SLACK_WEBHOOK_SECURITY_URL",
                 "https://hooks.slack.com/services/T00/B02/zzz",
             );
             std::env::set_var(
                 "SLACK_WEBHOOK_CHANNEL_INSIGHT",
-                "https://hooks.slack.com/services/T00/B03/aaa,https://hooks.slack.com/services/T00/B04/bbb",
+                "https://hooks.slack.com/services/T00/B03/aaa",
+            );
+            std::env::set_var(
+                "SLACK_WEBHOOK_URLS",
+                "https://hooks.slack.com/services/T00/B04/legacy",
             );
         }
 
         let config = SlackConfig::from_env();
 
-        let security = config.webhooks.get("security");
-        assert!(security.is_some(), "should have security channel");
-        assert_eq!(security.unwrap().len(), 1);
-
-        let insight = config.webhooks.get("insight");
-        assert!(insight.is_some(), "should have insight channel");
-        assert_eq!(insight.unwrap().len(), 2);
+        // Exactly one variable set survives: the legacy per-channel / plural
+        // variables must not create channels or defaults (audit #81).
+        assert!(config.webhooks.is_empty());
+        assert_eq!(
+            config.default_urls,
+            vec!["https://hooks.slack.com/services/T00/B00/consolidated"]
+        );
 
         unsafe {
+            std::env::remove_var("SLACK_WEBHOOK_URL");
             std::env::remove_var("SLACK_WEBHOOK_SECURITY_URL");
             std::env::remove_var("SLACK_WEBHOOK_CHANNEL_INSIGHT");
+            std::env::remove_var("SLACK_WEBHOOK_URLS");
         }
     }
 

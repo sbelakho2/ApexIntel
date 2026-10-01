@@ -199,38 +199,54 @@ impl PgStore {
     }
 
     /// Update a single JSONB section by name (PATCH-style).
+    ///
+    /// Records the acting principal in `updated_by`. Returns `false` when no
+    /// battlecard with `id` exists (nothing was updated).
     pub async fn update_battlecard_section(
         &self,
         id: Uuid,
         section: &str,
         data: &serde_json::Value,
-    ) -> Result<()> {
+        updated_by: &str,
+    ) -> Result<bool> {
         validate_section(section)?;
 
         let sql = format!(
-            "UPDATE battlecards SET {} = $1, updated_at = NOW() WHERE id = $2",
+            "UPDATE battlecards SET {} = $1, updated_at = NOW(), updated_by = $2 WHERE id = $3",
             section
         );
-        sqlx::query(&sql)
+        let result = sqlx::query(&sql)
             .bind(data)
+            .bind(updated_by)
             .bind(id)
             .execute(&self.pool)
             .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Update the battlecard status (draft → published → archived).
-    pub async fn update_battlecard_status(&self, id: Uuid, status: &str) -> Result<()> {
+    ///
+    /// Records the acting principal in `updated_by`. Returns `false` when no
+    /// battlecard with `id` exists (nothing was updated).
+    pub async fn update_battlecard_status(
+        &self,
+        id: Uuid,
+        status: &str,
+        updated_by: &str,
+    ) -> Result<bool> {
         let valid = ["draft", "published", "archived"];
         if !valid.contains(&status) {
             return Err(anyhow::anyhow!("invalid status: {}", status));
         }
-        sqlx::query("UPDATE battlecards SET status = $1, updated_at = NOW() WHERE id = $2")
-            .bind(status)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        let result = sqlx::query(
+            "UPDATE battlecards SET status = $1, updated_at = NOW(), updated_by = $2 WHERE id = $3",
+        )
+        .bind(status)
+        .bind(updated_by)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Touch updated_at + regenerated_at timestamps.
@@ -244,13 +260,13 @@ impl PgStore {
         Ok(())
     }
 
-    /// Delete a battlecard by id.
-    pub async fn delete_battlecard(&self, id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM battlecards WHERE id = $1")
+    /// Delete a battlecard by id. Returns `false` when no row was deleted.
+    pub async fn delete_battlecard(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM battlecards WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 }
 

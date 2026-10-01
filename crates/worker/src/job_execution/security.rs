@@ -472,9 +472,8 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
         // `notification_delivery_state` row per configured channel BEFORE any
         // attempt. The retry-processor job owns the channel sends, backoff and
         // dead-lettering — this job never publishes or sends directly.
-        let channels = match apex_worker::notification_delivery::ConfiguredChannelRouter::from_env()
-        {
-            Ok(router) => router.channels(),
+        let router = match apex_worker::notification_delivery::ConfiguredChannelRouter::from_env() {
+            Ok(router) => router,
             Err(error) => {
                 run.fail(&format!(
                     "sla_enforcement: failed to build the channel router: {error}"
@@ -482,30 +481,40 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
                 return run;
             }
         };
-        match apex_worker::notification_delivery::enqueue_sla_alerts(
-            store.as_ref(),
-            pending_alerts,
-            &channels,
-        )
-        .await
-        {
-            Ok(summary) => {
-                channel_deliveries = summary.channel_deliveries;
-                tracing::warn!(
-                    violations = violation_count,
-                    alerts_enqueued = summary.alerts_enqueued,
-                    already_enqueued = summary.alerts_already_enqueued,
-                    channel_deliveries = summary.channel_deliveries,
-                    "sla_enforcement: SLA alerts queued into the durable notification pipeline"
-                );
-            }
-            Err(error) => {
-                run.fail(&format!(
-                    "sla_enforcement: failed to enqueue SLA alerts into the outbox: {error}"
-                ));
-                return run;
+        // Thresholds are per-alert (a critical-only paging hook must not
+        // receive High reminders), so channels are resolved for each alert
+        // instead of once for the whole batch (audit #71).
+        let mut alerts_enqueued = 0usize;
+        let mut already_enqueued = 0usize;
+        for alert in pending_alerts {
+            let channels = router.channels_for(&alert);
+            match apex_worker::notification_delivery::enqueue_sla_alerts(
+                store.as_ref(),
+                vec![alert],
+                &channels,
+            )
+            .await
+            {
+                Ok(summary) => {
+                    channel_deliveries += summary.channel_deliveries;
+                    alerts_enqueued += summary.alerts_enqueued;
+                    already_enqueued += summary.alerts_already_enqueued;
+                }
+                Err(error) => {
+                    run.fail(&format!(
+                        "sla_enforcement: failed to enqueue SLA alerts into the outbox: {error}"
+                    ));
+                    return run;
+                }
             }
         }
+        tracing::warn!(
+            violations = violation_count,
+            alerts_enqueued,
+            already_enqueued,
+            channel_deliveries,
+            "sla_enforcement: SLA alerts queued into the durable notification pipeline"
+        );
     }
 
     run.succeed(

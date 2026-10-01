@@ -25,11 +25,13 @@
 //!   redelivery after the lease expires and the row is reclaimed. Exactly-once
 //!   is not claimed.
 
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use lettre::message::{header::ContentType, Mailbox, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -42,7 +44,22 @@ use apex_store::postgres::{
     PgStore,
 };
 
-use crate::notifications::{EmailConfig, NotificationConfig, PendingAlert, WebhookConfig};
+use crate::notifications::{
+    redact_url, EmailConfig, NotificationConfig, PendingAlert, WebhookConfig, WebhookFormat,
+};
+
+/// Maximum number of deliveries attempted concurrently in one cycle.
+///
+/// A batch of 40 rows at 8-way concurrency is 5 waves; with the 20s SMTP
+/// timeout that is a 100s worst case, inside the 120s claim lease, so a slow
+/// destination cannot outlive its lease and trigger a duplicate send from
+/// another worker (audit #76). The unit test
+/// `delivery_batch_worst_case_fits_inside_the_claim_lease` pins this invariant.
+const DELIVERY_CONCURRENCY: usize = 8;
+
+/// Per-request SMTP timeout; together with the concurrency cap this bounds a
+/// delivery cycle (audit #74).
+const SMTP_TIMEOUT_SECS: u64 = 20;
 
 /// Maximum attempts for webhook/generic channels.
 pub const MAX_DELIVERY_ATTEMPTS: i32 = 8;
@@ -60,7 +77,12 @@ pub const MAX_RETRY_DELAY_SECS: i64 = 3600;
 pub const DELIVERY_LEASE_SECS: f64 = 120.0;
 
 /// Default rows claimed per cycle.
-pub const DEFAULT_DELIVERY_BATCH: i64 = 50;
+///
+/// Bounded by the lease invariant: `ceil(batch / DELIVERY_CONCURRENCY) *
+/// SMTP_TIMEOUT_SECS <= DELIVERY_LEASE_SECS` (audit #76). The previous value
+/// of 50 produced a 140s worst case against a 120s lease, so late rows could
+/// be reclaimed and re-sent while still in flight.
+pub const DEFAULT_DELIVERY_BATCH: i64 = 40;
 
 /// How a failed attempt must be treated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +347,201 @@ fn build_notification_http_client() -> Result<reqwest::Client> {
         .context("failed to build notification HTTP client")
 }
 
+/// Endpoint link for an external payload, when a deployment base URL is set.
+///
+/// `PendingAlert` carries no URL, so the link is derived from the documented
+/// `EMAIL_DIGEST_BASE_URL`; when unset the JSON field is `null` and the Teams
+/// action is omitted.
+fn alert_link(alert: &PendingAlert) -> Option<String> {
+    let base = std::env::var("EMAIL_DIGEST_BASE_URL").ok()?;
+    let base = base.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{base}/warnings/{}", alert.source_id))
+}
+
+/// Teams theme colour per severity.
+fn severity_theme_color(severity: crate::notifications::AlertSeverity) -> &'static str {
+    use crate::notifications::AlertSeverity;
+    match severity {
+        AlertSeverity::Critical => "FF0000",
+        AlertSeverity::High => "FF8C00",
+        AlertSeverity::Medium => "FFD700",
+        AlertSeverity::Low => "36A64F",
+        AlertSeverity::Info => "808080",
+    }
+}
+
+/// Render the Microsoft Teams `MessageCard` payload for an alert.
+fn teams_message_card(alert: &PendingAlert) -> String {
+    let mut card = serde_json::json!({
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": severity_theme_color(alert.severity),
+        "summary": alert.title,
+        "title": format!("[{}] {}", alert.severity.as_str().to_uppercase(), alert.title),
+        "text": alert.llm_narrative.as_deref().unwrap_or(&alert.body),
+        "sections": [{
+            "facts": [
+                { "name": "Entity", "value": alert.display_name() },
+                { "name": "Category", "value": alert.category },
+                { "name": "Region", "value": alert.region.as_deref().unwrap_or("Global") },
+                { "name": "Severity", "value": alert.severity.as_str() },
+                { "name": "Priority", "value": format!("{:.2}", alert.priority_score) },
+            ]
+        }]
+    });
+    if let Some(link) = alert_link(alert) {
+        card["potentialAction"] = serde_json::json!([{
+            "@type": "OpenUri",
+            "name": "View in ApexIntel",
+            "targets": [{ "os": "default", "uri": link }]
+        }]);
+    }
+    card.to_string()
+}
+
+/// Render the generic JSON payload: `{title, severity, description, entity, link}`.
+fn generic_json_body(alert: &PendingAlert) -> String {
+    serde_json::json!({
+        "title": alert.title,
+        "severity": alert.severity.as_str(),
+        "description": alert.llm_narrative.as_deref().unwrap_or(&alert.body),
+        "entity": alert.display_name(),
+        "link": alert_link(alert),
+    })
+    .to_string()
+}
+
+/// Render an alert body for one webhook format (audit #72).
+fn render_webhook_body(format: WebhookFormat, alert: &PendingAlert) -> String {
+    match format {
+        WebhookFormat::Slack => crate::notifications::format_slack_message(alert),
+        WebhookFormat::Teams => teams_message_card(alert),
+        WebhookFormat::Json => generic_json_body(alert),
+    }
+}
+
+/// SMTP transport settings, validated and built once per process.
+///
+/// Parsed from the same `ALERT_SMTP_*` variables the legacy dispatcher read,
+/// so existing deployments keep working (audit #74). A non-loopback host
+/// requires TLS; plaintext is allowed only with an explicit
+/// `ALERT_SMTP_ALLOW_PLAINTEXT=1` **and** no credentials, because basic-auth
+/// credentials over an unencrypted connection leak.
+#[derive(Clone)]
+struct SmtpSettings {
+    host: String,
+    port: u16,
+    user: String,
+    pass: String,
+    starttls: bool,
+}
+
+/// `Debug` must never print the SMTP password.
+impl std::fmt::Debug for SmtpSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpSettings")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field(
+                "pass",
+                &if self.pass.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("starttls", &self.starttls)
+            .finish()
+    }
+}
+
+/// Built once per process; the `Result` is cached so a misconfiguration is not
+/// re-parsed (or worse, silently changed) per delivery.
+static SMTP: OnceLock<Result<SmtpSettings, String>> = OnceLock::new();
+
+fn smtp_settings() -> Result<&'static SmtpSettings, DeliveryFailure> {
+    match SMTP.get_or_init(SmtpSettings::from_env) {
+        Ok(settings) => Ok(settings),
+        Err(error) => Err(DeliveryFailure::Retryable(format!(
+            "SMTP configuration error: {error}"
+        ))),
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim().trim_matches(|c| c == '[' || c == ']');
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+impl SmtpSettings {
+    fn from_env() -> Result<Self, String> {
+        let host = std::env::var("ALERT_SMTP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port = std::env::var("ALERT_SMTP_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(25);
+        let user = std::env::var("ALERT_SMTP_USER").unwrap_or_default();
+        let pass = std::env::var("ALERT_SMTP_PASS").unwrap_or_default();
+        let starttls = env_flag("ALERT_SMTP_STARTTLS");
+        let allow_plaintext = env_flag("ALERT_SMTP_ALLOW_PLAINTEXT");
+        let has_credentials = !user.trim().is_empty();
+
+        if allow_plaintext && !starttls && has_credentials {
+            return Err(
+                "ALERT_SMTP_ALLOW_PLAINTEXT=1 cannot be combined with SMTP credentials; \
+                 remove ALERT_SMTP_USER or enable ALERT_SMTP_STARTTLS"
+                    .to_string(),
+            );
+        }
+        if !is_loopback_host(&host) && !starttls && !allow_plaintext {
+            return Err(format!(
+                "refusing plaintext SMTP to non-loopback host '{host}': set \
+                 ALERT_SMTP_STARTTLS=1, or ALERT_SMTP_ALLOW_PLAINTEXT=1 with no credentials"
+            ));
+        }
+
+        Ok(Self {
+            host,
+            port,
+            user,
+            pass,
+            starttls,
+        })
+    }
+
+    fn mailer(&self) -> Result<AsyncSmtpTransport<Tokio1Executor>, String> {
+        let builder = if self.starttls {
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.host)
+                .map_err(|error| format!("SMTP relay error: {error}"))?
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&self.host)
+        };
+        let mut builder = builder
+            .port(self.port)
+            .timeout(Some(Duration::from_secs(SMTP_TIMEOUT_SECS)));
+        if !self.user.trim().is_empty() {
+            builder = builder.credentials(Credentials::new(self.user.clone(), self.pass.clone()));
+        }
+        Ok(builder.build())
+    }
+}
+
 /// Production transport: dispatches to webhook and email channels from the
 /// environment-derived [`NotificationConfig`].
 #[derive(Debug)]
@@ -355,22 +572,47 @@ impl ConfiguredChannelRouter {
         Self::new(NotificationConfig::from_env())
     }
 
-    /// The channel destinations configured for this deployment.
-    pub fn channels(&self) -> Vec<DeliveryChannel> {
-        let mut channels = Vec::new();
-        for webhook in &self.config.webhooks {
-            channels.push(DeliveryChannel {
-                channel: webhook.name.clone(),
-                destination: webhook.url.clone(),
-            });
+    /// The channel destinations that may receive **this** alert.
+    ///
+    /// Per-channel `min_severity` / `min_priority` thresholds are applied here
+    /// (audit #71): the previous `channels()` enqueued every configured
+    /// endpoint for every alert, which paged the critical-only hook with High
+    /// reminders and bypassed the email threshold.
+    ///
+    /// The stored `destination` is the channel **name** (or the recipient
+    /// address for email), never the secret URL: the delivery worker resolves
+    /// the current webhook by name and posts to its freshly looked-up URL
+    /// (audit #70/#73). Email rows are one per recipient, so a single bad
+    /// address cannot fail the others (audit #74).
+    pub fn channels_for(&self, alert: &PendingAlert) -> Vec<DeliveryChannel> {
+        let mut out: Vec<_> = self
+            .config
+            .webhooks
+            .iter()
+            .filter(|w| alert.severity >= w.min_severity && alert.priority_score >= w.min_priority)
+            .map(|w| DeliveryChannel {
+                channel: w.name.clone(),
+                destination: w.name.clone(),
+            })
+            .collect();
+        if let Some(email) =
+            self.config.email.as_ref().filter(|e| {
+                alert.severity >= e.min_severity && alert.priority_score >= e.min_priority
+            })
+        {
+            out.extend(
+                email
+                    .to_addresses
+                    .iter()
+                    .map(|to| to.trim())
+                    .filter(|to| !to.is_empty())
+                    .map(|to| DeliveryChannel {
+                        channel: "email".to_string(),
+                        destination: to.to_string(),
+                    }),
+            );
         }
-        if let Some(email) = &self.config.email {
-            channels.push(DeliveryChannel {
-                channel: "email".to_string(),
-                destination: email.to_addresses.join(","),
-            });
-        }
-        channels
+        out
     }
 
     /// The transport body for a delivery: the pre-rendered body when present,
@@ -387,6 +629,15 @@ impl ConfiguredChannelRouter {
         }
     }
 
+    /// The transport body for a specific webhook, honoring its configured
+    /// wire format (Slack Block Kit, Teams MessageCard, generic JSON).
+    fn webhook_body(&self, webhook: &WebhookConfig, delivery: &NotificationDelivery) -> String {
+        if !delivery.payload.body.trim().is_empty() {
+            return delivery.payload.body.clone();
+        }
+        render_webhook_body(webhook.format, &delivery.payload.alert)
+    }
+
     async fn deliver_webhook(
         &self,
         webhook: &WebhookConfig,
@@ -394,7 +645,11 @@ impl ConfiguredChannelRouter {
     ) -> Result<(), DeliveryFailure> {
         let mut request = self
             .http
-            .post(&delivery.destination)
+            // Post to the freshly resolved configuration URL, not the URL
+            // captured at enqueue time: a rotated/revoked webhook must take
+            // effect on the next attempt (audit #70). New rows store the
+            // channel name in `destination`, so no secret lives in the DB.
+            .post(&webhook.url)
             .header("Content-Type", "application/json")
             // Stable delivery identity: identical across every attempt for the
             // same event/channel/destination/payload, so a redelivery after a
@@ -404,19 +659,32 @@ impl ConfiguredChannelRouter {
             // The attempt number is observability metadata, never identity.
             .header("X-Apex-Attempt", delivery.attempts.max(1).to_string())
             .header("X-Apex-Notification-Event", delivery.delivery_key.as_str())
-            .body(self.delivery_body(delivery));
+            .body(self.webhook_body(webhook, delivery));
         if let Some(ref token) = webhook.bearer_token {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
 
         let response = request.send().await.map_err(|error| {
-            DeliveryFailure::Retryable(format!("webhook transport error: {error}"))
+            // reqwest's Display embeds the request URL, which is the webhook
+            // credential; `without_url()` keeps it out of `last_error`.
+            DeliveryFailure::Retryable(format!("webhook transport error: {}", error.without_url()))
         })?;
         if response.status().is_success() {
             return Ok(());
         }
         let status = response.status().as_u16();
-        let text = response.text().await.unwrap_or_default();
+        let text = match response.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                // Transport read failure: report the status, not a silent
+                // empty body.
+                tracing::debug!(
+                    error = %error.without_url(),
+                    "webhook error response body unreadable"
+                );
+                String::new()
+            }
+        };
         let message = format!("webhook returned {status}: {text}");
         match classify_http_status(status) {
             DeliveryDisposition::Retryable => Err(DeliveryFailure::Retryable(message)),
@@ -429,6 +697,22 @@ impl ConfiguredChannelRouter {
         config: &EmailConfig,
         delivery: &NotificationDelivery,
     ) -> Result<(), DeliveryFailure> {
+        // One row carries one recipient (new rows) or a legacy comma-joined
+        // list. Empty/whitespace entries are dropped, and each recipient gets
+        // its own message so no recipient sees the others' addresses and one
+        // bad mailbox cannot fail the whole group (audit #74).
+        let recipients: Vec<String> = delivery
+            .destination
+            .split(',')
+            .map(|to| to.trim().to_string())
+            .filter(|to| !to.is_empty())
+            .collect();
+        if recipients.is_empty() {
+            return Err(DeliveryFailure::Permanent(
+                "email delivery has no recipient".to_string(),
+            ));
+        }
+
         let subject = delivery.payload.subject.clone().unwrap_or_else(|| {
             format!(
                 "{} [{}] {}",
@@ -437,70 +721,41 @@ impl ConfiguredChannelRouter {
                 delivery.payload.alert.title
             )
         });
-        let builder = Message::builder()
-            .from(config.from_address.parse::<Mailbox>().map_err(|error| {
-                DeliveryFailure::Permanent(format!("invalid from address: {error}"))
-            })?)
-            .subject(subject);
-        let mut builder = builder;
-        for to in &config.to_addresses {
-            builder = builder.to(to.parse::<Mailbox>().map_err(|error| {
-                DeliveryFailure::Permanent(format!("invalid to address: {error}"))
-            })?);
-        }
-        let message = builder
-            .singlepart(
-                SinglePart::builder()
-                    .header(ContentType::TEXT_PLAIN)
-                    .body(self.delivery_body(delivery)),
-            )
-            .map_err(|error| DeliveryFailure::Permanent(format!("invalid email: {error}")))?;
+        let from = config.from_address.parse::<Mailbox>().map_err(|error| {
+            DeliveryFailure::Permanent(format!("invalid from address: {error}"))
+        })?;
+        let body = self.delivery_body(delivery);
 
-        let smtp_host =
-            std::env::var("ALERT_SMTP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let smtp_port = std::env::var("ALERT_SMTP_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(25);
-        let smtp_user = std::env::var("ALERT_SMTP_USER").unwrap_or_default();
-        let smtp_pass = std::env::var("ALERT_SMTP_PASS").unwrap_or_default();
-        let smtp_starttls = std::env::var("ALERT_SMTP_STARTTLS")
-            .ok()
-            .map(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
+        // Settings are validated and cached once per process; a misconfigured
+        // relay is retryable so a fix + restart can still deliver the backlog.
+        let settings = smtp_settings()?;
+        let mailer = settings.mailer().map_err(|error| {
+            DeliveryFailure::Retryable(format!("SMTP configuration error: {error}"))
+        })?;
+
+        for to in &recipients {
+            let message = Message::builder()
+                .from(from.clone())
+                .subject(subject.clone())
+                .to(to.parse::<Mailbox>().map_err(|error| {
+                    DeliveryFailure::Permanent(format!("invalid to address: {error}"))
+                })?)
+                .singlepart(
+                    SinglePart::builder()
+                        .header(ContentType::TEXT_PLAIN)
+                        .body(body.clone()),
                 )
-            })
-            .unwrap_or(false);
+                .map_err(|error| DeliveryFailure::Permanent(format!("invalid email: {error}")))?;
 
-        let mailer = if smtp_starttls {
-            let mut transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)
-                .map_err(|error| DeliveryFailure::Retryable(format!("SMTP relay error: {error}")))?
-                .port(smtp_port);
-            if !smtp_user.trim().is_empty() {
-                transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
-            }
-            transport.build()
-        } else {
-            let mut transport =
-                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_host).port(smtp_port);
-            if !smtp_user.trim().is_empty() {
-                transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
-            }
-            transport.build()
-        };
-
-        match mailer.send(message).await {
-            Ok(_) => Ok(()),
-            Err(error) => {
+            if let Err(error) = mailer.send(message).await {
                 let message = format!("SMTP delivery failed: {error}");
-                match classify_smtp_permanent(error.is_permanent()) {
+                return match classify_smtp_permanent(error.is_permanent()) {
                     DeliveryDisposition::Retryable => Err(DeliveryFailure::Retryable(message)),
                     DeliveryDisposition::Permanent => Err(DeliveryFailure::Permanent(message)),
-                }
+                };
             }
         }
+        Ok(())
     }
 }
 
@@ -531,9 +786,12 @@ impl ChannelTransport for ConfiguredChannelRouter {
             });
         match webhook {
             Some(webhook) => self.deliver_webhook(webhook, delivery).await,
+            // Legacy rows stored the secret URL as the destination; redact it
+            // so it never lands in `last_error` (audit #73).
             None => Err(DeliveryFailure::Permanent(format!(
                 "channel '{}' is no longer configured for destination {}",
-                delivery.channel, delivery.destination
+                delivery.channel,
+                redact_url(&delivery.destination)
             ))),
         }
     }
@@ -652,6 +910,11 @@ pub async fn enqueue_sla_alerts(
 
 /// Run one retry-processor cycle: claim due rows, attempt outside any
 /// transaction, settle.
+///
+/// Rows are processed up to [`DELIVERY_CONCURRENCY`] at a time. Sequential
+/// processing let a slow destination outlive the 120s claim lease, after which
+/// another worker re-sent the same delivery (audit #76). Per-row error
+/// handling and state updates are unchanged; only the counters are shared.
 pub async fn process_due_notifications(
     store: &dyn DeliveryClaimStore,
     transport: &dyn ChannelTransport,
@@ -660,113 +923,138 @@ pub async fn process_due_notifications(
     now: DateTime<Utc>,
 ) -> Result<DeliveryCycleOutcome> {
     let claimed = store.claim_due_deliveries(owner, limit).await?;
-    let mut outcome = DeliveryCycleOutcome {
+    let outcome = std::sync::Mutex::new(DeliveryCycleOutcome {
         claimed: claimed.len(),
         ..DeliveryCycleOutcome::default()
-    };
+    });
+    let outcome = &outcome;
 
-    for row in claimed {
-        let delivery = match NotificationDelivery::from_row(&row) {
-            Ok(delivery) => delivery,
-            Err(failure) => {
-                settle_dead_letter(store, owner, &row.delivery_key, &failure, &mut outcome).await;
-                continue;
-            }
-        };
+    futures::stream::iter(claimed)
+        .for_each_concurrent(DELIVERY_CONCURRENCY, |row| async move {
+            let delivery = match NotificationDelivery::from_row(&row) {
+                Ok(delivery) => delivery,
+                Err(failure) => {
+                    if settle_dead_letter(store, owner, &row.delivery_key, &failure).await {
+                        record(outcome, |counts| counts.dead_lettered += 1);
+                    }
+                    return;
+                }
+            };
 
-        let result = transport.deliver(&delivery).await;
-        match result {
-            Ok(()) => match store.mark_delivered(owner, &delivery.delivery_key).await {
-                Ok(true) => outcome.delivered += 1,
-                Ok(false) => warn!(
-                    delivery_key = %delivery.delivery_key,
-                    "notification delivery: lease lost before settlement; another worker owns it"
-                ),
-                Err(error) => warn!(
-                    delivery_key = %delivery.delivery_key,
-                    error = %error,
-                    "notification delivery: failed to record delivery; lease will expire and retry"
-                ),
-            },
-            Err(failure) => {
-                let max_attempts = max_attempts_for_channel(&delivery.channel);
-                if !failure.is_retryable() || delivery.attempts >= max_attempts {
-                    settle_dead_letter(
-                        store,
-                        owner,
-                        &delivery.delivery_key,
-                        &failure,
-                        &mut outcome,
-                    )
-                    .await;
-                } else {
-                    let delay = retry_delay_secs(delivery.attempts, clock_jitter_fraction());
-                    let next_retry_at = now + chrono::Duration::seconds(delay);
-                    match store
-                        .mark_retry(
-                            owner,
-                            &delivery.delivery_key,
-                            next_retry_at,
-                            failure.message(),
-                        )
-                        .await
-                    {
-                        Ok(true) => {
-                            outcome.retried += 1;
-                            debug!(
-                                delivery_key = %delivery.delivery_key,
-                                attempt = delivery.attempts,
-                                retry_in_secs = delay,
-                                error = %failure,
-                                "notification delivery: retry scheduled"
-                            );
+            let result = transport.deliver(&delivery).await;
+            match result {
+                Ok(()) => match store.mark_delivered(owner, &delivery.delivery_key).await {
+                    Ok(true) => record(outcome, |counts| counts.delivered += 1),
+                    Ok(false) => warn!(
+                        delivery_key = %delivery.delivery_key,
+                        "notification delivery: lease lost before settlement; another worker owns it"
+                    ),
+                    Err(error) => warn!(
+                        delivery_key = %delivery.delivery_key,
+                        error = %error,
+                        "notification delivery: failed to record delivery; lease will expire and retry"
+                    ),
+                },
+                Err(failure) => {
+                    let max_attempts = max_attempts_for_channel(&delivery.channel);
+                    if !failure.is_retryable() || delivery.attempts >= max_attempts {
+                        if settle_dead_letter(store, owner, &delivery.delivery_key, &failure).await
+                        {
+                            record(outcome, |counts| counts.dead_lettered += 1);
                         }
-                        Ok(false) => warn!(
-                            delivery_key = %delivery.delivery_key,
-                            "notification delivery: lease lost before retry settlement"
-                        ),
-                        Err(error) => warn!(
-                            delivery_key = %delivery.delivery_key,
-                            error = %error,
-                            "notification delivery: failed to schedule retry"
-                        ),
+                    } else {
+                        let delay = retry_delay_secs(delivery.attempts, clock_jitter_fraction());
+                        let next_retry_at = now + chrono::Duration::seconds(delay);
+                        match store
+                            .mark_retry(
+                                owner,
+                                &delivery.delivery_key,
+                                next_retry_at,
+                                failure.message(),
+                            )
+                            .await
+                        {
+                            Ok(true) => {
+                                record(outcome, |counts| counts.retried += 1);
+                                debug!(
+                                    delivery_key = %delivery.delivery_key,
+                                    attempt = delivery.attempts,
+                                    retry_in_secs = delay,
+                                    error = %failure,
+                                    "notification delivery: retry scheduled"
+                                );
+                            }
+                            Ok(false) => warn!(
+                                delivery_key = %delivery.delivery_key,
+                                "notification delivery: lease lost before retry settlement"
+                            ),
+                            Err(error) => warn!(
+                                delivery_key = %delivery.delivery_key,
+                                error = %error,
+                                "notification delivery: failed to schedule retry"
+                            ),
+                        }
                     }
                 }
             }
-        }
-    }
+        })
+        .await;
 
+    let outcome = *outcome
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     Ok(outcome)
 }
 
+/// Apply a counter update, recovering from a poisoned lock.
+fn record(
+    outcome: &std::sync::Mutex<DeliveryCycleOutcome>,
+    update: impl FnOnce(&mut DeliveryCycleOutcome),
+) {
+    let mut counts = outcome
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    update(&mut counts);
+}
+
+/// Settle a permanent failure as a dead letter.
+///
+/// Returns `true` when the dead-letter state was recorded (the caller then
+/// increments the cycle counter); a lost lease or a write error returns
+/// `false` after logging, exactly as before the concurrent refactor.
 async fn settle_dead_letter(
     store: &dyn DeliveryClaimStore,
     owner: &str,
     delivery_key: &str,
     failure: &DeliveryFailure,
-    outcome: &mut DeliveryCycleOutcome,
-) {
+) -> bool {
     match store
         .mark_dead_lettered(owner, delivery_key, failure.message())
         .await
     {
         Ok(true) => {
-            outcome.dead_lettered += 1;
             warn!(
                 delivery_key = %delivery_key,
                 error = %failure,
                 "notification delivery: dead-lettered; operator replay required"
             );
+            true
         }
-        Ok(false) => warn!(
-            delivery_key = %delivery_key,
-            "notification delivery: lease lost before dead-letter settlement"
-        ),
-        Err(error) => warn!(
-            delivery_key = %delivery_key,
-            error = %error,
-            "notification delivery: failed to record dead-letter state"
-        ),
+        Ok(false) => {
+            warn!(
+                delivery_key = %delivery_key,
+                "notification delivery: lease lost before dead-letter settlement"
+            );
+            false
+        }
+        Err(error) => {
+            warn!(
+                delivery_key = %delivery_key,
+                error = %error,
+                "notification delivery: failed to record dead-letter state"
+            );
+            false
+        }
     }
 }
 
@@ -1061,6 +1349,43 @@ mod tests {
         assert_eq!(router.delivery_body(&pre_rendered), "{\"custom\":true}");
     }
 
+    #[tokio::test]
+    async fn email_delivery_without_a_recipient_is_permanently_rejected() {
+        // Audit #74: empty/whitespace recipients are dropped before any SMTP
+        // work; a row with no usable recipient can never succeed, so it must
+        // dead-letter instead of retrying forever.
+        let router =
+            ConfiguredChannelRouter::new(NotificationConfig::default()).expect("client builds");
+        let email = EmailConfig {
+            to_addresses: Vec::new(),
+            from_address: "alerts@apexintel.io".to_string(),
+            subject_prefix: "[ApexIntel Alert]".to_string(),
+            min_severity: crate::notifications::AlertSeverity::Low,
+            min_priority: 0.0,
+        };
+        let delivery = NotificationDelivery {
+            delivery_key: "key-email".to_string(),
+            notification_event_id: Some(Uuid::new_v4()),
+            channel: "email".to_string(),
+            destination: " ,  ".to_string(),
+            attempts: 1,
+            idempotency_key: "stable".to_string(),
+            payload: NotificationDeliveryPayload {
+                alert: alert("sla-breach:w1", "sla_breach"),
+                subject: None,
+                body: String::new(),
+            },
+        };
+
+        match router.deliver_email(&email, &delivery).await {
+            Err(DeliveryFailure::Permanent(message)) => assert!(
+                message.contains("no recipient"),
+                "the failure must name the missing recipient, got: {message}"
+            ),
+            other => panic!("empty recipients must be a permanent failure, got {other:?}"),
+        }
+    }
+
     #[test]
     fn constructor_failure_is_an_err_not_a_panic() {
         let config = NotificationConfig::default();
@@ -1075,7 +1400,226 @@ mod tests {
         );
 
         let router = ConfiguredChannelRouter::new(config).expect("client builds");
-        assert!(router.channels().is_empty());
+        assert!(router.channels_for(&alert("src", "warning")).is_empty());
+    }
+
+    fn alert_with(severity: crate::notifications::AlertSeverity, priority: f64) -> PendingAlert {
+        let mut alert = alert("src-1", "warning");
+        alert.severity = severity;
+        alert.priority_score = priority;
+        alert
+    }
+
+    #[test]
+    fn channels_for_applies_per_channel_thresholds() {
+        use crate::notifications::{AlertSeverity, EmailConfig, WebhookFormat};
+
+        let config = NotificationConfig {
+            webhooks: vec![
+                WebhookConfig::slack("https://hooks.slack.com/services/T00/B00/secret"),
+                WebhookConfig::critical_only("https://pager.example.test/hook", "critical-hook"),
+            ],
+            email: Some(EmailConfig {
+                to_addresses: vec![
+                    "oncall@example.test".to_string(),
+                    "  ".to_string(),
+                    "lead@example.test".to_string(),
+                ],
+                from_address: "alerts@apexintel.io".to_string(),
+                subject_prefix: "[ApexIntel Alert]".to_string(),
+                min_severity: AlertSeverity::High,
+                min_priority: 0.65,
+            }),
+            log_min_severity: AlertSeverity::Low,
+        };
+        let router = ConfiguredChannelRouter::new(config).expect("client builds");
+
+        // Below every threshold: nobody is paged.
+        assert!(router
+            .channels_for(&alert_with(AlertSeverity::Low, 0.1))
+            .is_empty());
+
+        // High/0.7: the Slack hook and email pass; the critical-only paging
+        // hook must NOT receive a High reminder (audit #71).
+        let channels = router.channels_for(&alert_with(AlertSeverity::High, 0.7));
+        assert_eq!(
+            channels
+                .iter()
+                .map(|c| c.channel.as_str())
+                .collect::<Vec<_>>(),
+            vec!["slack", "email", "email"]
+        );
+        assert!(!channels.iter().any(|c| c.channel == "critical-hook"));
+
+        // Critical/0.95: the paging hook is included.
+        let channels = router.channels_for(&alert_with(AlertSeverity::Critical, 0.95));
+        assert!(channels.iter().any(|c| c.channel == "critical-hook"));
+
+        // Destinations are channel names / recipient addresses, never URLs.
+        for channel in &channels {
+            assert!(
+                !channel.destination.contains("https://"),
+                "a secret URL must never be stored as a destination: {}",
+                channel.destination
+            );
+        }
+        // ...and empty recipients never become delivery rows.
+        assert_eq!(channels.iter().filter(|c| c.channel == "email").count(), 2);
+
+        // The webhook's format survives configuration construction.
+        assert_eq!(router.config.webhooks[0].format, WebhookFormat::Slack);
+        assert_eq!(router.config.webhooks[1].format, WebhookFormat::Json);
+    }
+
+    #[test]
+    fn webhook_formats_render_the_expected_bodies() {
+        use crate::notifications::WebhookFormat;
+
+        let alert = alert("sla-breach:w1", "sla_breach");
+
+        let slack = render_webhook_body(WebhookFormat::Slack, &alert);
+        let slack: serde_json::Value = serde_json::from_str(&slack).unwrap();
+        assert!(slack.get("text").is_some(), "Slack body has fallback text");
+
+        let json = render_webhook_body(WebhookFormat::Json, &alert);
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json["title"], serde_json::json!(alert.title));
+        assert_eq!(json["severity"], serde_json::json!("critical"));
+        assert_eq!(json["entity"], serde_json::json!(alert.display_name()));
+        assert!(json.get("text").is_none());
+
+        let teams = render_webhook_body(WebhookFormat::Teams, &alert);
+        let teams: serde_json::Value = serde_json::from_str(&teams).unwrap();
+        assert_eq!(teams["@type"], serde_json::json!("MessageCard"));
+        assert!(teams["sections"].is_array());
+    }
+
+    /// The claim lease must outlive the batch's worst case, otherwise another
+    /// worker can reclaim a row while the original owner is still sending it
+    /// and the channel receives a duplicate (audit #76).
+    ///
+    /// Every claimed row carries the same `lease_until = now + lease`, so the
+    /// last wave of `ceil(batch / concurrency)` sequential waves each taking
+    /// the full SMTP timeout must finish inside the lease.
+    #[test]
+    fn delivery_batch_worst_case_fits_inside_the_claim_lease() {
+        let waves = (DEFAULT_DELIVERY_BATCH as usize).div_ceil(DELIVERY_CONCURRENCY);
+        let worst_case_secs = waves as u64 * SMTP_TIMEOUT_SECS;
+        assert!(
+            worst_case_secs as f64 <= DELIVERY_LEASE_SECS,
+            "worst-case batch duration {worst_case_secs}s exceeds the {DELIVERY_LEASE_SECS}s \
+             claim lease: a slow destination outlives its lease and the delivery is re-sent \
+             by another worker (waves={waves}, concurrency={DELIVERY_CONCURRENCY}, \
+             batch={DEFAULT_DELIVERY_BATCH}, smtp_timeout={SMTP_TIMEOUT_SECS}s)"
+        );
+    }
+
+    #[tokio::test]
+    async fn claimed_rows_are_processed_concurrently_within_the_cap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct SlowTransport {
+            active: AtomicUsize,
+            max_active: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl ChannelTransport for SlowTransport {
+            async fn deliver(
+                &self,
+                _delivery: &NotificationDelivery,
+            ) -> Result<(), DeliveryFailure> {
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_active.fetch_max(active, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let rows: Vec<_> = (0..16)
+            .map(|index| {
+                delivery_row(
+                    &format!("key-{index}"),
+                    1,
+                    &alert(&format!("sla-breach:{index}"), "sla_breach"),
+                )
+            })
+            .collect();
+        let store = FakeStore::with_rows(rows);
+        let transport = SlowTransport {
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+        };
+
+        let outcome = process_due_notifications(&store, &transport, "owner-1", 50, Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(outcome.claimed, 16);
+        assert_eq!(outcome.delivered, 16);
+        let max_active = transport.max_active.load(Ordering::SeqCst);
+        assert!(
+            max_active > 1,
+            "rows must be attempted concurrently, saw max {max_active}"
+        );
+        assert!(
+            max_active <= DELIVERY_CONCURRENCY,
+            "concurrency must stay within the cap, saw {max_active}"
+        );
+    }
+
+    #[test]
+    fn smtp_settings_require_tls_for_non_loopback_hosts() {
+        let lock = std::sync::Mutex::new(());
+        let _guard = lock.lock().unwrap();
+        let keys = [
+            "ALERT_SMTP_HOST",
+            "ALERT_SMTP_USER",
+            "ALERT_SMTP_PASS",
+            "ALERT_SMTP_STARTTLS",
+            "ALERT_SMTP_ALLOW_PLAINTEXT",
+        ];
+        let saved: Vec<(String, Option<String>)> = keys
+            .iter()
+            .map(|key| (key.to_string(), std::env::var(key).ok()))
+            .collect();
+        for key in keys {
+            std::env::remove_var(key);
+        }
+
+        // Loopback plaintext is the existing local-relay default.
+        assert!(SmtpSettings::from_env().is_ok());
+
+        std::env::set_var("ALERT_SMTP_HOST", "smtp.example.test");
+        let error = SmtpSettings::from_env().expect_err("non-loopback plaintext must fail");
+        assert!(
+            error.contains("STARTTLS"),
+            "clear error expected, got: {error}"
+        );
+
+        // Explicit plaintext is allowed only without credentials.
+        std::env::set_var("ALERT_SMTP_ALLOW_PLAINTEXT", "1");
+        assert!(SmtpSettings::from_env().is_ok());
+        std::env::set_var("ALERT_SMTP_USER", "relay-user");
+        std::env::set_var("ALERT_SMTP_PASS", "relay-pass");
+        let error = SmtpSettings::from_env().expect_err("plaintext + credentials must fail");
+        assert!(
+            error.contains("credentials"),
+            "clear error expected, got: {error}"
+        );
+
+        // STARTTLS permits credentials on a remote relay.
+        std::env::set_var("ALERT_SMTP_STARTTLS", "1");
+        let settings = SmtpSettings::from_env().expect("TLS with credentials is valid");
+        assert!(settings.starttls);
+        assert!(!format!("{settings:?}").contains("relay-pass"));
+
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     /// A serializer that always fails, standing in for a payload type that

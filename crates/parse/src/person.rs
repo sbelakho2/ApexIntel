@@ -441,7 +441,9 @@ pub struct PersonExtract {
 /// Extract person information from a page (about pages, team pages, LinkedIn-like).
 pub fn extract_person(body_text: &str, url: &str) -> Vec<PersonExtract> {
     let normalized_body = normalizer::normalize_whitespace(body_text);
-    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(url).unwrap_or_default();
     let mut persons = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -490,8 +492,11 @@ fn find_title_near_name(
     _source_url: &str,
 ) -> Option<(String, (usize, usize))> {
     if let Some(name_pos) = text.find(name) {
-        let start = name_pos.saturating_sub(300);
-        let end = (name_pos + name.len() + 300).min(text.len());
+        // Clamp the context window to UTF-8 char boundaries: a raw byte offset
+        // here can land inside a multi-byte character and panic on hostile,
+        // non-ASCII page text.
+        let start = text.floor_char_boundary(name_pos.saturating_sub(300));
+        let end = text.ceil_char_boundary((name_pos + name.len() + 300).min(text.len()));
         let context = &text[start..end];
 
         for m in KNOWN_TITLE_RE.find_iter(context) {
@@ -643,8 +648,12 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
             continue;
         };
         let slug = slug_match.as_str();
-        let raw_url = raw_url_match.as_str().to_string();
-        let linkedin_url = normalize_url(&raw_url).unwrap_or(raw_url);
+        let raw_url = raw_url_match.as_str();
+        // No raw-URL fallback: an over-long/hostile profile URL must never
+        // survive extraction (same contract as `html::sanitize_extracted_href`).
+        let Some(linkedin_url) = normalize_url(raw_url) else {
+            continue;
+        };
         let parts: Vec<String> = slug
             .split('-')
             .filter(|p| p.len() > 1 && !p.chars().all(|c| c.is_ascii_digit()))
@@ -1174,6 +1183,18 @@ mod tests {
         assert!(
             found || persons.is_empty(),
             "Extraction should not panic on prose"
+        );
+    }
+
+    // Audit: the ±300-byte context window must be clamped to UTF-8 char
+    // boundaries; hostile non-ASCII text previously panicked the extractor.
+    #[test]
+    fn test_context_scan_multibyte_prefix_no_panic() {
+        let text = format!("{}aAnn Smith ann.smith@example.com", "é".repeat(150));
+        let persons = extract_person(&text, "https://example.com/team");
+        assert!(
+            persons.iter().any(|p| p.name == "Ann Smith"),
+            "expected the email-derived person to survive context scanning: {persons:?}"
         );
     }
 }

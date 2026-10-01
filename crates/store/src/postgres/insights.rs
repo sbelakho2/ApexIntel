@@ -193,7 +193,8 @@ impl PgStore {
             filters.bookmarked_by.as_deref()
         {
             let mut q = QueryBuilder::new(
-                "SELECT i.id, i.title, i.summary, i.insight_type, i.region, i.confidence,
+                "SELECT i.id, COALESCE(i.title, '') AS title, COALESCE(i.summary, '') AS summary,
+                        i.insight_type, i.region, i.confidence,
                         i.evidence_urls, i.entity_ids, i.tags, i.metadata, i.created_at, i.updated_at
                  FROM insights i
                  INNER JOIN insight_bookmarks bk ON bk.insight_id = i.id AND bk.user_id = ",
@@ -202,7 +203,8 @@ impl PgStore {
             q
         } else {
             QueryBuilder::new(
-                "SELECT id, title, summary, insight_type, region, confidence,
+                "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
+                        insight_type, region, confidence,
                         evidence_urls, entity_ids, tags, metadata, created_at, updated_at
                  FROM insights",
             )
@@ -566,8 +568,10 @@ impl PgStore {
 
         // Increment the recipe's fire_count so the precision/recall lifecycle
         // can function. Without this, every recipe stays at fire_count=0
-        // forever and the engine's precision prior is frozen at 0.5.
-        let _ = sqlx::query(
+        // forever and the engine's precision prior is frozen at 0.5. The
+        // firing row is already persisted, so a failure here is logged as a
+        // degraded secondary write instead of being discarded silently.
+        if let Err(error) = sqlx::query(
             r#"UPDATE recipes
                   SET fire_count = COALESCE(fire_count, 0) + 1,
                       last_fired = NOW(),
@@ -576,7 +580,14 @@ impl PgStore {
         )
         .bind(recipe_code.trim())
         .execute(&self.pool)
-        .await;
+        .await
+        {
+            tracing::warn!(
+                recipe_code = recipe_code.trim(),
+                error = %error,
+                "failed to increment recipe fire_count after insight firing"
+            );
+        }
 
         Ok(())
     }
@@ -607,7 +618,8 @@ impl PgStore {
         }
         let (limit, _) = normalize_insight_window(limit, 0);
         let rows = sqlx::query_as::<_, InsightRow>(
-            r#"SELECT id, title, summary, insight_type, region, confidence,
+            r#"SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
+                      insight_type, region, confidence,
                       evidence_urls, entity_ids, tags, metadata, created_at, updated_at
                FROM insights
                WHERE entity_ids && $1
@@ -771,7 +783,8 @@ impl PgStore {
 
     pub async fn get_insight(&self, id: Uuid) -> Result<Option<InsightRow>> {
         let row = sqlx::query_as::<_, InsightRow>(
-            "SELECT id, title, summary, insight_type, region, confidence,
+            "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
+                    insight_type, region, confidence,
                     evidence_urls, entity_ids, tags, metadata, created_at, updated_at
              FROM insights WHERE id = $1",
         )
@@ -793,7 +806,8 @@ impl PgStore {
         }
         let (limit, _) = normalize_insight_window(limit, 0);
         let rows = sqlx::query_as::<_, InsightRow>(
-            "SELECT id, title, summary, insight_type, region, confidence,
+            "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
+                    insight_type, region, confidence,
                     evidence_urls, entity_ids, tags, metadata, created_at, updated_at
              FROM insights WHERE entity_ids && $1 AND id != $2 ORDER BY created_at DESC LIMIT $3",
         )
@@ -816,7 +830,8 @@ impl PgStore {
         }
         let (limit, _) = normalize_insight_window(limit, 0);
         let rows = sqlx::query_as::<_, InsightRow>(
-            "SELECT id, title, summary, insight_type, region, confidence,
+            "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
+                    insight_type, region, confidence,
                     evidence_urls, entity_ids, tags, metadata, created_at, updated_at
              FROM insights WHERE entity_ids && $1 ORDER BY created_at DESC LIMIT $2",
         )

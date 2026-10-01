@@ -1140,8 +1140,10 @@ fn truncate_string(s: &str, max_len: usize) -> String {
         return s.to_string();
     }
 
+    // Cut on a UTF-8 char boundary first: narratives come from crawled/LLM
+    // text and a raw byte slice would panic on multi-byte characters.
+    let truncated = apex_core::text::truncate_utf8(s, max_len);
     // Find a good break point (space or punctuation)
-    let truncated = &s[..max_len];
     if let Some(last_space) = truncated.rfind(|c: char| c.is_whitespace() || c == '.' || c == ',') {
         format!("{}...", &truncated[..last_space])
     } else {
@@ -1434,5 +1436,15 @@ mod tests {
         let truncated = truncate_string(long_text, 50);
         assert!(truncated.len() <= 53); // 50 + "..."
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_string_multibyte_boundary_does_not_panic() {
+        // A raw byte slice at 21 would split the multi-byte '☕' and panic.
+        let text = "Café ☕ supplier disrupted in Tunisia";
+        let truncated = truncate_string(text, 8);
+        assert!(truncated.ends_with("..."));
+        assert!(truncated.starts_with("Café"));
+        assert!(!truncated.contains('\u{FFFD}'));
     }
 }

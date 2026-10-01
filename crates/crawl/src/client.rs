@@ -47,7 +47,11 @@ fn is_public(ip: IpAddr) -> bool {
                 || v4.octets()[0] == 0
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64))
         }
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+        // `to_ipv4` covers IPv4-mapped (`::ffff:a.b.c.d`) *and* the deprecated
+        // IPv4-compatible (`::a.b.c.d`) forms, so `http://[::169.254.169.254]/`
+        // is classified through the IPv4 rules — matching
+        // `browser/validation.rs`.
+        IpAddr::V6(v6) => match v6.to_ipv4() {
             Some(v4) => is_public(IpAddr::V4(v4)),
             None => {
                 !(v6.is_loopback()
@@ -80,8 +84,10 @@ impl reqwest::dns::Resolve for PublicOnlyResolver {
     }
 }
 
-/// http(s) only, and any IP-literal host must be public.
-fn url_allowed(url: &Url) -> bool {
+/// http(s) only, and any IP-literal host must be public. Shared with the
+/// crawler-adjacent fetchers ([`crate::poi_expansion`],
+/// [`crate::person_scraper`]) through [`secure_crawl_builder`].
+pub(crate) fn url_allowed(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https")
         && match url.host() {
             Some(url::Host::Ipv4(ip)) => is_public(IpAddr::V4(ip)),
@@ -91,10 +97,17 @@ fn url_allowed(url: &Url) -> bool {
         }
 }
 
+/// Whether a redirect hop may be followed. `allow_private_targets` mirrors the
+/// [`secure_client_builder`] escape hatch; without it the hop must satisfy
+/// [`url_allowed`].
+pub(crate) fn redirect_allowed(url: &Url, allow_private_targets: bool) -> bool {
+    allow_private_targets || url_allowed(url)
+}
+
 /// Client builder with the SSRF protections applied to the request URL, DNS
 /// resolution and every redirect hop. `allow_private_targets` is the explicit
 /// test/dev escape hatch.
-fn secure_client_builder(
+pub(crate) fn secure_client_builder(
     timeout: Duration,
     user_agent: &str,
     allow_private_targets: bool,
@@ -105,7 +118,7 @@ fn secure_client_builder(
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= MAX_REDIRECTS {
                 attempt.error("too many redirects")
-            } else if !allow_private_targets && !url_allowed(attempt.url()) {
+            } else if !redirect_allowed(attempt.url(), allow_private_targets) {
                 attempt.stop()
             } else {
                 attempt.follow()
@@ -116,6 +129,18 @@ fn secure_client_builder(
     } else {
         builder.dns_resolver(Arc::new(PublicOnlyResolver))
     }
+}
+
+/// Hardened builder for crawler-adjacent fetchers that do not go through
+/// [`CrawlClient`] (POI expansion, person scraper). It carries the same SSRF
+/// posture as a production crawl: DNS resolution is restricted to public
+/// addresses and every redirect hop is checked by [`redirect_allowed`].
+///
+/// Callers must additionally check the entry URL with [`url_allowed`] (IP
+/// literals skip DNS) and read bodies with [`read_body_capped`], mirroring
+/// [`CrawlClient::fetch_text`].
+pub(crate) fn secure_crawl_builder(timeout: Duration, user_agent: &str) -> reqwest::ClientBuilder {
+    secure_client_builder(timeout, user_agent, false)
 }
 
 #[derive(Clone)]
@@ -514,7 +539,11 @@ impl CrawlClient {
                     .get(CACHE_CONTROL)
                     .and_then(|value| value.to_str().ok())
                     .and_then(parse_cache_control_max_age);
-                match resp.text().await {
+                // Same 10 MiB cap as ordinary fetches: a hostile or broken
+                // robots.txt must not be buffered unbounded. Oversized files
+                // are truncated (and warned about), not turned into a crawl
+                // failure.
+                match read_body_capped(resp, &robots_url).await {
                     Ok(text) => {
                         let parsed_rules = RobotsRules::parse(&text, user_agent);
                         match max_age {
@@ -633,8 +662,9 @@ impl CrawlClient {
 }
 
 /// Read a response body with a hard byte cap so a hostile or broken server
-/// cannot exhaust memory with an unbounded body.
-async fn read_body_capped(
+/// cannot exhaust memory with an unbounded body. Also used by the secondary
+/// fetchers in [`crate::poi_expansion`] and [`crate::person_scraper`].
+pub(crate) async fn read_body_capped(
     resp: reqwest::Response,
     request_url: &str,
 ) -> Result<String, CrawlError> {
@@ -723,6 +753,39 @@ mod tests {
                         .write_all(response.as_bytes())
                         .await
                         .unwrap_or_else(|error| panic!("test: write response: {error}"));
+                }
+            }
+        });
+        addr
+    }
+
+    /// Test server that tolerates the client closing the connection early:
+    /// the capped body reader stops mid-body and drops the response, so
+    /// `write_all` can fail with a broken pipe on oversized responses.
+    async fn start_lenient_test_server(responses: Vec<String>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("test: bind ephemeral port: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("test: get local addr: {error}"));
+        let queue = StdArc::new(TokioMutex::new(
+            responses.into_iter().collect::<VecDeque<_>>(),
+        ));
+        tokio::spawn({
+            let queue = queue.clone();
+            async move {
+                loop {
+                    let next_response = { queue.lock().await.pop_front() };
+                    let Some(response) = next_response else {
+                        break;
+                    };
+                    let Ok((mut stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let mut buf = [0_u8; 2048];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(response.as_bytes()).await;
                 }
             }
         });
@@ -859,6 +922,8 @@ mod tests {
             "::1",
             "fc00::1",
             "fe80::1",
+            "::169.254.169.254", // IPv4-compatible IPv6 -> metadata
+            "::ffff:10.0.0.1",   // IPv4-mapped IPv6 -> private
             "::ffff:127.0.0.1",
         ] {
             let ip: IpAddr = blocked.parse().expect("test IP parses");
@@ -889,10 +954,169 @@ mod tests {
             &Url::parse("http://[::1]:8222/").expect("url parses")
         ));
         assert!(!url_allowed(
+            &Url::parse("http://[::169.254.169.254]/").expect("url parses")
+        ));
+        assert!(!url_allowed(
+            &Url::parse("http://[::ffff:10.0.0.1]/").expect("url parses")
+        ));
+        assert!(!url_allowed(
             &Url::parse("file:///etc/passwd").expect("url parses")
         ));
         assert!(!url_allowed(
             &Url::parse("ftp://example.com/x").expect("url parses")
         ));
+    }
+
+    #[test]
+    fn redirect_guard_rejects_private_ip_literals() {
+        for blocked in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8222/",
+            "http://[::1]/",
+            "http://[::169.254.169.254]/",
+            "http://[::ffff:10.0.0.1]/",
+            "file:///etc/passwd",
+            "ftp://example.com/x",
+        ] {
+            let url = Url::parse(blocked).expect("url parses");
+            assert!(
+                !redirect_allowed(&url, false),
+                "redirect hop must be blocked: {blocked}"
+            );
+        }
+        let public = Url::parse("https://example.com/").expect("url parses");
+        assert!(redirect_allowed(&public, false));
+        // The explicit test escape hatch keeps its semantics.
+        let loopback = Url::parse("http://127.0.0.1:8222/").expect("url parses");
+        assert!(redirect_allowed(&loopback, true));
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[tokio::test]
+    async fn secure_crawl_builder_blocks_redirect_to_private_ip_literal() {
+        // The entry URL is a loopback IP literal (reqwest skips DNS for IP
+        // literals, so the public-only resolver does not block it); the
+        // redirect hop points at the metadata service and must be stopped.
+        let addr = start_lenient_test_server(vec![
+            "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
+        ])
+        .await;
+        let client = secure_crawl_builder(Duration::from_secs(5), "test-agent")
+            .build()
+            .expect("build hardened client");
+        let response = client
+            .get(format!("http://{addr}/start"))
+            .send()
+            .await
+            .expect("entry request should reach the loopback test server");
+
+        assert_eq!(
+            response.status().as_u16(),
+            302,
+            "redirect to a private IP literal must be stopped, not followed"
+        );
+        assert_eq!(
+            response.url().host_str(),
+            Some("127.0.0.1"),
+            "the response must be the original redirect, not the metadata page"
+        );
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[tokio::test]
+    async fn allow_private_targets_escape_hatch_still_follows_redirects() {
+        let target = start_test_server(vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+        ])
+        .await;
+        let redirect = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://{target}/ok\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        );
+        let redirect: &'static str = Box::leak(redirect.into_boxed_str());
+        let start = start_test_server(vec![redirect]).await;
+
+        let client = secure_client_builder(Duration::from_secs(5), "test-agent", true)
+            .build()
+            .expect("build escape-hatch client");
+        let body = client
+            .get(format!("http://{start}/start"))
+            .send()
+            .await
+            .expect("send")
+            .text()
+            .await
+            .expect("read body");
+
+        assert_eq!(body, "ok");
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[tokio::test]
+    async fn read_body_capped_truncates_oversized_bodies() {
+        let body = "a".repeat(MAX_BODY_BYTES + 4096);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let addr = start_lenient_test_server(vec![response]).await;
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/big"))
+            .send()
+            .await
+            .expect("send");
+        let text = read_body_capped(resp, "http://test/big")
+            .await
+            .expect("capped read should succeed");
+
+        assert_eq!(text.len(), MAX_BODY_BYTES);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[tokio::test]
+    async fn robots_body_is_truncated_at_the_cap_without_failing_the_crawl() {
+        // The Disallow rule sits *after* the 10 MiB cap, so a capped read
+        // cannot see it: the crawl must proceed (truncate) instead of failing
+        // or buffering the whole file.
+        const ALLOW_PREFIX: &str = "User-agent: *\nAllow: /\n";
+        const DISALLOW_SUFFIX: &str = "Disallow: /target\n";
+        let filler = "x".repeat(MAX_BODY_BYTES + 64 - ALLOW_PREFIX.len());
+        let robots = format!("{ALLOW_PREFIX}{filler}\n{DISALLOW_SUFFIX}");
+        assert!(robots.len() > MAX_BODY_BYTES);
+        assert!(
+            robots
+                .find(DISALLOW_SUFFIX)
+                .is_some_and(|index| index > MAX_BODY_BYTES),
+            "fixture rule must sit beyond the cap"
+        );
+
+        let robots_response = format!(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{robots}",
+            robots.len()
+        );
+        let addr = start_lenient_test_server(vec![
+            robots_response,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok"
+                .to_string(),
+        ])
+        .await;
+
+        let config = CrawlClientConfig {
+            enforce_robots_txt: true,
+            max_retries: 0,
+            // Loopback test server; production keeps the SSRF guard enabled.
+            allow_private_targets: true,
+            ..CrawlClientConfig::default()
+        };
+        let client = CrawlClient::new(config)
+            .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
+        let response = client
+            .fetch_text(&CrawlRequest::new(&format!("http://{addr}/target")))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("test: oversized robots.txt must be truncated, not fail the crawl: {error}")
+            });
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "ok");
     }
 }

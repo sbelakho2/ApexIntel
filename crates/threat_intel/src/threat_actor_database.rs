@@ -540,6 +540,15 @@ impl ThreatActorDatabase {
                 actor.alias
             )));
         }
+        // An actor with the same id but a different alias would overwrite the
+        // stored record while leaving the old alias mapping in place, and would
+        // append duplicate ids to `actors_by_sector` on every call.
+        if self.actors.contains_key(&actor.id) {
+            return Err(ThreatIntelError::data_integrity(format!(
+                "Threat actor with id '{}' already exists",
+                actor.id
+            )));
+        }
         let id = actor.id;
         self.actors.insert(id, actor.clone());
         self.actors_by_alias.insert(actor.alias.clone(), id);
@@ -1122,6 +1131,30 @@ mod tests {
             ActorStatus::Active,
         ));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_duplicate_id_rejected_without_duplicating_sector_index() {
+        let mut db = ThreatActorDatabase::new();
+        let first = ThreatActor::new("DUP-A", ActorMotivation::Financial, ActorStatus::Active)
+            .with_target_sectors(vec![IndustrySector::Technology]);
+        let id = db.add_actor(first).unwrap();
+
+        // Same id, different alias: must be rejected, not silently overwrite
+        // the actor and append the id to the sector index a second time.
+        let second = ThreatActor::new("DUP-B", ActorMotivation::Financial, ActorStatus::Active)
+            .with_target_sectors(vec![IndustrySector::Technology]);
+        let mut second = second;
+        second.id = id;
+        assert!(db.add_actor(second).is_err());
+
+        let sector_actors = db.get_actors_by_sector(&IndustrySector::Technology);
+        assert_eq!(
+            sector_actors.len(),
+            1,
+            "sector index must not accumulate duplicate ids"
+        );
+        assert_eq!(db.get_actor_by_alias("DUP-A").map(|a| a.id), Some(id));
     }
 
     #[test]

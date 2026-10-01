@@ -270,7 +270,10 @@ struct MessageContent {
 /// HTTP client for the local llama-server.
 #[derive(Clone)]
 pub struct LlmClient {
-    http: reqwest::Client,
+    /// `None` when the HTTP client could not be constructed (e.g. TLS backend
+    /// initialisation failure). The client is then degraded and fails calls
+    /// explicitly instead of panicking at construction time.
+    http: Option<reqwest::Client>,
     base_url: String,
     api_key: Option<String>,
     pub default_config: InferenceConfig,
@@ -286,13 +289,26 @@ impl LlmClient {
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .unwrap_or_else(|error| panic!("failed to build reqwest client: {error}"));
+            .map_err(|error| {
+                tracing::error!(
+                    %error,
+                    "failed to build HTTP client; LLM calls will fail explicitly"
+                );
+                error
+            })
+            .ok();
         Self {
             http,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
             default_config: config,
         }
+    }
+
+    /// True when the HTTP client could not be constructed. Callers may surface
+    /// this so an operator sees the LLM path is degraded.
+    pub fn is_degraded(&self) -> bool {
+        self.http.is_none()
     }
 
     /// Load client from environment variables:
@@ -364,6 +380,12 @@ impl LlmClient {
         };
 
         let url = format!("{}/v1/chat/completions", self.base_url);
+        let Some(http) = self.http.as_ref() else {
+            bail!(
+                "LLM HTTP client is unavailable (construction failed at startup); \
+                 refusing to report a successful call"
+            );
+        };
         let mut last_err = anyhow!("No retries attempted");
 
         for attempt in 0..=config.max_retries {
@@ -375,7 +397,7 @@ impl LlmClient {
             }
 
             let t0 = Instant::now();
-            let mut req = self.http.post(&url).json(&body);
+            let mut req = http.post(&url).json(&body);
             if let Some(key) = &self.api_key {
                 req = req.bearer_auth(key);
             }
@@ -394,7 +416,9 @@ impl LlmClient {
                         continue;
                     }
                     if !status.is_success() {
-                        let body_text = resp.text().await.unwrap_or_default();
+                        let body_bytes =
+                            crate::read_body_limited(resp, crate::MAX_RESPONSE_SIZE).await?;
+                        let body_text = String::from_utf8_lossy(&body_bytes);
                         bail!(
                             "HTTP {} (non-retryable): {}",
                             status,
@@ -403,9 +427,9 @@ impl LlmClient {
                     }
 
                     let latency = t0.elapsed();
-                    let chat_resp: ChatResponse = resp
-                        .json()
-                        .await
+                    let body_bytes =
+                        crate::read_body_limited(resp, crate::MAX_RESPONSE_SIZE).await?;
+                    let chat_resp: ChatResponse = serde_json::from_slice(&body_bytes)
                         .with_context(|| "Failed to deserialize OpenAI response")?;
 
                     let raw_text = chat_resp
@@ -477,9 +501,11 @@ impl LlmClient {
 
     /// Health check — returns true if the LLM server is reachable and responding.
     pub async fn health_check(&self) -> bool {
+        let Some(http) = self.http.as_ref() else {
+            return false;
+        };
         let url = format!("{}/health", self.base_url);
-        self.http
-            .get(&url)
+        http.get(&url)
             .timeout(Duration::from_secs(5))
             .send()
             .await
@@ -721,6 +747,20 @@ mod tests {
             .unwrap_or_else(|error| panic!("client should load default env config: {error}"));
         assert_eq!(client.base_url, "http://localhost:8080");
         assert!(client.api_key.is_none());
+    }
+
+    // Audit: client construction must not panic when the HTTP builder fails;
+    // it degrades and reports that state instead.
+    #[test]
+    fn new_client_constructs_without_panic() {
+        let cfg = InferenceConfig {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let client = LlmClient::new("http://localhost:8080/", Some("key".into()), cfg);
+        assert!(!client.is_degraded());
+        assert_eq!(client.base_url, "http://localhost:8080");
+        assert_eq!(client.api_key.as_deref(), Some("key"));
     }
 
     #[test]

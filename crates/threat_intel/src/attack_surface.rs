@@ -657,9 +657,21 @@ impl AttackSurfaceAssessment {
             return 0.0;
         }
 
-        let total: f64 = self.shadow_it.iter().map(|s| s.risk_score).sum();
+        // A non-finite asset risk is unmeasured. Summing it produces NaN and
+        // `NaN.min(1.0)` returns 1.0, silently reporting maximum risk.
+        let total: f64 = self
+            .shadow_it
+            .iter()
+            .map(|s| {
+                if s.risk_score.is_finite() {
+                    s.risk_score.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            })
+            .sum();
 
-        (total / self.shadow_it.len() as f64).min(1.0)
+        (total / self.shadow_it.len() as f64).clamp(0.0, 1.0)
     }
 
     fn update_risk_distribution(&mut self) {
@@ -1129,6 +1141,22 @@ mod tests {
 
         let score = asset.calculate_risk_score();
         assert!(score > 0.4); // High risk due to confidential data
+    }
+
+    #[test]
+    fn test_shadow_it_non_finite_risk_is_not_max_score() {
+        let org_id = Uuid::new_v4();
+        let mut assessment = AttackSurfaceAssessment::new(org_id);
+        let mut asset = ShadowITAsset::new(ShadowITType::CloudStorage, "Dropbox");
+        asset.risk_score = f64::NAN;
+        assessment.shadow_it.push(asset);
+
+        let score = assessment.calculate_shadow_it_score();
+        assert!(score.is_finite(), "NaN risk must not become max risk");
+        assert_eq!(score, 0.0);
+
+        assessment.shadow_it[0].risk_score = 2.5;
+        assert!((0.0..=1.0).contains(&assessment.calculate_shadow_it_score()));
     }
 
     #[test]

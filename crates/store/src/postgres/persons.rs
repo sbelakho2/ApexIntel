@@ -651,6 +651,10 @@ impl PgStore {
 
     /// Update a person's company affiliation and role.
     /// Creates a role_history entry if the company changes.
+    ///
+    /// The read, the person update and the role-history insert commit in one
+    /// transaction: a failed history insert must not leave the person pointing
+    /// at the new org with no recorded transition (and vice versa).
     pub async fn update_person_company_and_role(
         &self,
         person_id: Uuid,
@@ -659,11 +663,13 @@ impl PgStore {
         role_family: Option<&str>,
         confidence: f64,
     ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
         // Check current org to detect changes
         let current_org: Option<Uuid> =
             sqlx::query_scalar("SELECT primary_org_id FROM persons WHERE id = $1")
                 .bind(person_id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await?
                 .flatten();
 
@@ -681,7 +687,7 @@ impl PgStore {
         .bind(company_id)
         .bind(current_role)
         .bind(role_family)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         // If organization changed, create a role_history entry
@@ -690,7 +696,7 @@ impl PgStore {
                 let org_name: Option<String> =
                     sqlx::query_scalar("SELECT name FROM companies WHERE id = $1")
                         .bind(company_id)
-                        .fetch_optional(&self.pool)
+                        .fetch_optional(&mut *tx)
                         .await?
                         .flatten();
 
@@ -702,7 +708,8 @@ impl PgStore {
                     .unwrap_or_else(|| "Unknown".to_string());
                 let org_name_text = org_name.unwrap_or_else(|| "Unknown".to_string());
 
-                self.insert_role_history(
+                super::history::insert_role_history_row(
+                    &mut *tx,
                     person_id,
                     Some(company_id),
                     &org_name_text,
@@ -716,6 +723,8 @@ impl PgStore {
                 .await?;
             }
         }
+
+        tx.commit().await?;
         Ok(())
     }
 

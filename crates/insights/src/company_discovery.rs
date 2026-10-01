@@ -429,11 +429,37 @@ pub fn extract_metadata(text: &str, _candidate_name: &str) -> HashMap<String, St
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Snap a byte offset to the nearest valid UTF-8 boundary at or before it.
+///
+/// Crawled text is arbitrary Unicode; `pos ± radius` can land inside a
+/// multi-byte character and a raw slice would panic.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// Snap a byte offset to the nearest valid UTF-8 boundary at or after it.
+fn ceil_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
 /// Extract surrounding context around a mention.
 fn extract_surrounding_context(text: &str, mention: &str, radius: usize) -> String {
     if let Some(pos) = text.find(mention) {
-        let start = pos.saturating_sub(radius);
-        let end = (pos + mention.len() + radius).min(text.len());
+        let start = floor_char_boundary(text, pos.saturating_sub(radius));
+        let end = ceil_char_boundary(
+            text,
+            pos.saturating_add(mention.len())
+                .saturating_add(radius)
+                .min(text.len()),
+        );
         let ctx = &text[start..end];
         // Add ellipsis if truncated
         let prefix = if start > 0 { "…" } else { "" };
@@ -448,8 +474,13 @@ fn extract_surrounding_context(text: &str, mention: &str, radius: usize) -> Stri
 fn extract_ticker_from_context(text: &str, name: &str) -> HashMap<String, String> {
     let mut metadata = HashMap::new();
     if let Some(pos) = text.find(name) {
-        let start = pos.saturating_sub(100);
-        let end = (pos + name.len() + 100).min(text.len());
+        let start = floor_char_boundary(text, pos.saturating_sub(100));
+        let end = ceil_char_boundary(
+            text,
+            pos.saturating_add(name.len())
+                .saturating_add(100)
+                .min(text.len()),
+        );
         let context = &text[start..end];
 
         // Look for ticker patterns near the name
@@ -681,6 +712,22 @@ mod tests {
         let snippet = extract_surrounding_context(text, "NVIDIA Corporation", 20);
         assert!(snippet.contains("NVIDIA Corporation"));
         assert!(snippet.len() <= text.len() + 2); // +2 for ellipsis chars
+    }
+
+    #[test]
+    fn test_context_slicing_does_not_panic_on_multibyte_boundaries() {
+        // 3-byte padding places both pos-radius and pos+len+radius inside
+        // multi-byte characters: a raw byte slice would panic.
+        let prefix = "☕".repeat(40); // 120 bytes
+        let suffix = "☕".repeat(40);
+        let text = format!("{prefix}ACME{suffix}");
+        let radius = 10;
+        let snippet = extract_surrounding_context(&text, "ACME", radius);
+        assert!(snippet.contains("ACME"));
+        assert!(!snippet.contains('\u{FFFD}'));
+
+        let ticker = extract_ticker_from_context(&text, "ACME");
+        let _ = ticker; // must not panic on the same boundary pressure
     }
 
     #[test]

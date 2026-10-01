@@ -13,7 +13,7 @@ use std::time::Duration;
 use tracing::debug;
 
 /// Tor proxy configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TorConfig {
     /// SOCKS proxy host (default: 127.0.0.1).
     pub socks_host: String,
@@ -28,6 +28,25 @@ pub struct TorConfig {
     pub max_circuit_hops: u32,
     /// Connection timeout.
     pub timeout_secs: u64,
+}
+
+/// Manual `Debug` so the Tor control password cannot leak through
+/// `{:?}` logging, `TorProxy`'s derived `Debug`, or future struct wrapping.
+impl std::fmt::Debug for TorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TorConfig")
+            .field("socks_host", &self.socks_host)
+            .field("socks_port", &self.socks_port)
+            .field("control_host", &self.control_host)
+            .field("control_port", &self.control_port)
+            .field(
+                "control_password",
+                &self.control_password.as_ref().map(|_| "[redacted]"),
+            )
+            .field("max_circuit_hops", &self.max_circuit_hops)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
 }
 
 impl Default for TorConfig {
@@ -187,6 +206,25 @@ mod tests {
         let cfg = TorConfig::default();
         assert!(cfg.socks_url().contains("socks5"));
         assert!(cfg.control_url().contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn tor_config_debug_redacts_control_password() {
+        let cfg = TorConfig {
+            control_password: Some("hunter2".to_string()),
+            ..TorConfig::default()
+        };
+        let rendered = format!("{cfg:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "control password leaked through Debug: {rendered}"
+        );
+        assert!(rendered.contains("[redacted]"), "{rendered}");
+
+        // `TorProxy` embeds the config, so its derived Debug must redact too.
+        let proxy = TorProxy::new(cfg);
+        let rendered = format!("{proxy:?}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
     }
 
     #[test]

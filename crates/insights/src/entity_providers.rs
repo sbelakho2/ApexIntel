@@ -206,9 +206,58 @@ pub fn names_match(candidate: &str, found: &str) -> bool {
     short.len() >= 4 && format!(" {long} ").contains(&format!(" {short} "))
 }
 
+/// True when `host` looks like a public DNS hostname that is safe to build an
+/// outbound request for.
+///
+/// Candidate metadata is derived from crawled, attacker-influenced pages, so a
+/// `domain` value must never become a request to an IP literal (cloud metadata
+/// endpoints), a local/internal name, or a string smuggling userinfo/port
+/// syntax (`evil.example@127.0.0.1:8443`).
+fn is_public_hostname(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    // IP literals (IPv4/IPv6, including `127.0.0.1` and `169.254.169.254`).
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 {
+        return false;
+    }
+    // A real public name ends in an alphabetic TLD; this also rejects numeric
+    // pseudo-TLDs and anything left carrying `:port` or `user@` fragments.
+    let tld = labels[labels.len() - 1];
+    if tld.len() < 2 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    const INTERNAL_TLDS: &[&str] = &[
+        "localhost",
+        "local",
+        "internal",
+        "intranet",
+        "lan",
+        "home",
+        "corp",
+    ];
+    if INTERNAL_TLDS.contains(&tld) {
+        return false;
+    }
+    labels.iter().all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
+}
+
 /// Normalize a bare domain or URL to a lowercase host without `www.`.
+///
+/// Returns `None` for anything that is not a plausible public hostname — see
+/// [`is_public_hostname`].
 pub fn normalize_domain(value: &str) -> Option<String> {
-    domain_of(value).filter(|domain| domain.contains('.'))
+    domain_of(value).filter(|domain| is_public_hostname(domain))
 }
 
 /// Candidate domains taken from `metadata["domain"]` / `metadata["website"]`.
@@ -240,13 +289,33 @@ fn split_metadata_list(candidate: &CompanyCandidate, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Hard cap on a single provider response body (2 MiB). A hostile or broken
+/// third-party host must not be able to exhaust worker memory by streaming an
+/// unbounded body.
+const MAX_PROVIDER_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Read a response body with a hard byte cap, failing instead of buffering.
+async fn read_body_capped(mut response: reqwest::Response, url: &str) -> Result<Vec<u8>> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > MAX_PROVIDER_BODY_BYTES {
+            anyhow::bail!(
+                "response body from {url} exceeds {MAX_PROVIDER_BODY_BYTES} bytes; refusing to buffer"
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 async fn fetch_json(http: &reqwest::Client, url: &str) -> Result<serde_json::Value> {
     let response = http.get(url).send().await?;
     let status = response.status();
     if !status.is_success() {
         anyhow::bail!("HTTP {status} from {url}");
     }
-    Ok(response.json::<serde_json::Value>().await?)
+    let body = read_body_capped(response, url).await?;
+    Ok(serde_json::from_slice(&body)?)
 }
 
 async fn fetch_text(http: &reqwest::Client, url: &str) -> Result<String> {
@@ -255,7 +324,8 @@ async fn fetch_text(http: &reqwest::Client, url: &str) -> Result<String> {
     if !status.is_success() {
         anyhow::bail!("HTTP {status} from {url}");
     }
-    Ok(response.text().await?)
+    let body = read_body_capped(response, url).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 fn host_of(url: &str) -> String {
@@ -1006,6 +1076,33 @@ mod tests {
         assert_eq!(
             candidate_domains(&with_metadata),
             vec!["acme.example".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_domain_rejects_ssrf_shaped_hosts() {
+        // IP literals (cloud metadata, loopback) must never become a request.
+        assert_eq!(normalize_domain("169.254.169.254"), None);
+        assert_eq!(normalize_domain("https://127.0.0.1/"), None);
+        assert_eq!(normalize_domain("127.0.0.1:8443"), None);
+        assert_eq!(normalize_domain("[::1]"), None);
+        // Userinfo/port smuggling.
+        assert_eq!(normalize_domain("https://evil.example@127.0.0.1/"), None);
+        assert_eq!(normalize_domain("internal.corp:8080"), None);
+        // Internal-only names.
+        assert_eq!(normalize_domain("router.local"), None);
+        assert_eq!(normalize_domain("metadata.internal"), None);
+        // Single-label names have no public TLD.
+        assert_eq!(normalize_domain("localhost"), None);
+        assert_eq!(normalize_domain("intranet"), None);
+        // Ordinary public domains still pass.
+        assert_eq!(
+            normalize_domain("news.example"),
+            Some("news.example".into())
+        );
+        assert_eq!(
+            normalize_domain("https://sub.acme.co.uk/x"),
+            Some("sub.acme.co.uk".into())
         );
     }
 

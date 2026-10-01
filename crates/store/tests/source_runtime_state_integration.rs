@@ -138,6 +138,61 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
     pool.close().await;
 }
 
+/// Two workers recording concurrent attempts must merge inside the database:
+/// the previous read-then-upsert pair could both read "no row" and overwrite
+/// each other's increment, losing a failure and an EWMA step.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn concurrent_failure_updates_do_not_lose_counters() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = PgStore::from_pool(pool.clone());
+    let slug = format!("integration_concurrent_{}", uuid::Uuid::new_v4());
+    // PostgreSQL timestamps are microsecond-precision; truncate the test clock
+    // so the round-tripped `next_due_at` compares equal.
+    let now = {
+        let captured = Utc::now();
+        captured - Duration::nanoseconds(i64::from(captured.timestamp_subsec_nanos() % 1_000))
+    };
+    let interval = Duration::hours(24);
+
+    let (first, second) = tokio::join!(
+        store.record_source_attempt_failure(&slug, "boom-1", Some(500), interval, now),
+        store.record_source_attempt_failure(&slug, "boom-2", Some(503), interval, now),
+    );
+    first.unwrap();
+    second.unwrap();
+
+    let (failures, next_due_at): (i32, chrono::DateTime<Utc>) = sqlx::query_as(
+        "SELECT consecutive_failures, next_due_at FROM source_runtime_state WHERE source_slug = $1",
+    )
+    .bind(&slug)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(failures, 2, "both concurrent failures must be counted");
+    // The 24h interval floors the capped ladder on the second failure too.
+    assert_eq!(next_due_at, now + interval);
+
+    // Failure EWMA seeds at 0.0 and stays 0.0 under failure decay: the second
+    // merge must decay the stored estimate, not re-seed from a stale read.
+    let rate: Option<f64> = sqlx::query_scalar(
+        "SELECT rolling_success_rate FROM source_runtime_state WHERE source_slug = $1",
+    )
+    .bind(&slug)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rate, Some(0.0));
+
+    sqlx::query("DELETE FROM source_runtime_state WHERE source_slug = $1")
+        .bind(&slug)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
 /// Parser failures (fetch succeeded, deserialization did not) must degrade the
 /// source and preserve `last_success_at`: a schema change is not a successful
 /// empty parse, and the last known-good validation timestamp stays intact.

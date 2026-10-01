@@ -119,14 +119,27 @@ impl SupplierRiskScore {
     }
 
     /// Calculate weighted overall score.
+    ///
+    /// Component scores are measurements; a non-finite component (NaN/±∞)
+    /// carries no information and previously slipped through `.min(1.0)` —
+    /// `f64::min(NaN, 1.0)` returns `1.0`, silently turning unknown risk into
+    /// maximum risk. Non-finite components are treated as unmeasured (0.0) and
+    /// finite ones are clamped so out-of-range inputs cannot distort the total.
     pub fn calculate_overall(&mut self) {
-        self.overall_score = (self.financial_risk * 0.20
-            + self.operational_risk * 0.20
-            + self.geopolitical_risk * 0.25
-            + self.cyber_risk * 0.15
-            + self.concentration_risk * 0.10
-            + self.dependency_score * 0.10)
-            .min(1.0);
+        let component = |value: f64| {
+            if value.is_finite() {
+                value.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        self.overall_score = (component(self.financial_risk) * 0.20
+            + component(self.operational_risk) * 0.20
+            + component(self.geopolitical_risk) * 0.25
+            + component(self.cyber_risk) * 0.15
+            + component(self.concentration_risk) * 0.10
+            + component(self.dependency_score) * 0.10)
+            .clamp(0.0, 1.0);
     }
 }
 
@@ -1338,6 +1351,34 @@ mod tests {
         // Check weighted calculation
         let expected = 0.6 * 0.20 + 0.7 * 0.20 + 0.5 * 0.25 + 0.3 * 0.15 + 0.4 * 0.10 + 0.6 * 0.10;
         assert!((risk.overall_score - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_supplier_risk_score_non_finite_components_are_not_max_risk() {
+        // `NaN.min(1.0)` returns 1.0, so a single unmeasured component used to
+        // report the maximum possible supplier risk.
+        let mut risk = SupplierRiskScore::new(Uuid::new_v4());
+        risk.financial_risk = f64::NAN;
+        risk.operational_risk = 0.0;
+        risk.geopolitical_risk = 0.0;
+        risk.cyber_risk = 0.0;
+        risk.concentration_risk = 0.0;
+        risk.dependency_score = 0.0;
+        risk.calculate_overall();
+        assert!(risk.overall_score.is_finite());
+        assert_eq!(risk.overall_score, 0.0);
+
+        // Out-of-range negative components must not deflate the total below 0.
+        risk.financial_risk = -10.0;
+        risk.calculate_overall();
+        assert!(risk.overall_score >= 0.0 && risk.overall_score <= 1.0);
+
+        // Over-large components saturate at maximum rather than exceeding 1.
+        risk.financial_risk = f64::INFINITY;
+        risk.operational_risk = 1.0e300;
+        risk.calculate_overall();
+        assert!(risk.overall_score.is_finite());
+        assert!((0.0..=1.0).contains(&risk.overall_score));
     }
 
     #[test]

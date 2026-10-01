@@ -124,7 +124,9 @@ pub fn extract_press(body_text: &str, title: &str, url: &str) -> PressExtract {
     if lang.trim().is_empty() {
         lang = "en".to_string();
     }
-    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(url).unwrap_or_default();
 
     // Extract entities using per-language NER pipeline (Phase 2.4)
     let mut entities = crate::ner::extract_entities(&normalized_body, &lang);

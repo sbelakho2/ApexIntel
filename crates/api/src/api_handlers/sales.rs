@@ -88,7 +88,6 @@ pub struct RecordEngagementRequest {
     pub subject: Option<String>,
     pub opportunity_id: Option<String>,
     pub cadence_step: Option<i32>,
-    pub owner_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,6 +112,7 @@ pub struct EngagementSummary {
 
 pub(crate) async fn record_engagement(
     State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Path(id): Path<String>,
     Json(payload): Json<RecordEngagementRequest>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
@@ -166,7 +166,7 @@ pub(crate) async fn record_engagement(
         message_ref: None,
         cadence_step: payload.cadence_step,
         occurred_at: chrono::Utc::now(),
-        owner_id: payload.owner_id,
+        owner_id: Some(auth_ctx.user_id.to_string()),
         metadata: serde_json::json!({}),
     };
 

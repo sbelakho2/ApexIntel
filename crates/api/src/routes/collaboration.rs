@@ -6,6 +6,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use apex_store::postgres::{InvestigationWorkspaceRecord, PgStore};
+
+use crate::responses::ApiError;
+
 // ────────────────────────────────────────────
 // Investigation Workspace Types
 // ────────────────────────────────────────────
@@ -663,54 +667,255 @@ pub struct CreateThreatRequest {
     pub sla_deadline: Option<DateTime<Utc>>,
 }
 
+/// PATCH payload for a strategic opportunity. Every field is optional; absent
+/// fields are left untouched by the store (`COALESCE`), and only the fields
+/// that are present are validated.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateOpportunityRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub opportunity_type: Option<String>,
+    #[serde(default)]
+    pub priority_score: Option<f64>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    #[serde(default)]
+    pub entity_type: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub estimated_value: Option<String>,
+    #[serde(default)]
+    pub recommended_actions: Option<Value>,
+    #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub due_date: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// PATCH payload for a critical threat. `status` accepts the full status set
+/// including `resolved`; `severity` is validated only when present.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateThreatRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub threat_type: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub impact_score: Option<f64>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    #[serde(default)]
+    pub entity_type: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub mitigation_steps: Option<Value>,
+    #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub sla_deadline: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
 // ────────────────────────────────────────────
 // Validation Functions
+//
+// Canonical value sets shared by the JSON API and the server-rendered web
+// forms. The API is the reference: the database check constraints mirror
+// these exact strings.
 // ────────────────────────────────────────────
 
-pub fn validate_workspace_request(req: &CreateWorkspaceRequest) -> Result<(), String> {
-    if req.name.trim().len() < 2 {
-        return Err("name must be at least 2 characters".to_string());
-    }
-    let workspace_type = req.workspace_type.trim().to_ascii_lowercase();
-    if !workspace_type.is_empty()
-        && !matches!(workspace_type.as_str(), "ad-hoc" | "structured" | "review")
-    {
-        return Err("workspace_type must be ad-hoc, structured, or review".to_string());
+pub const WORKSPACE_TYPES: [&str; 4] = ["ad-hoc", "structured", "incident", "ongoing"];
+pub const WORKSPACE_VISIBILITIES: [&str; 4] = ["private", "team", "organization", "public"];
+pub const EVIDENCE_TYPES: [&str; 10] = [
+    "web_content",
+    "document",
+    "financial_report",
+    "news_article",
+    "social_media",
+    "regulatory_filing",
+    "patent",
+    "court_record",
+    "public_record",
+    "analyst_report",
+];
+pub const RISK_CATEGORIES: [&str; 8] = [
+    "financial",
+    "operational",
+    "compliance",
+    "geopolitical",
+    "environmental",
+    "technological",
+    "reputational",
+    "strategic",
+];
+pub const WORKSPACE_ASSIGNMENT_ROLES: [&str; 5] =
+    ["owner", "lead", "contributor", "viewer", "reviewer"];
+pub const TEAM_ASSIGNMENT_ROLES: [&str; 4] = ["lead", "contributor", "reviewer", "observer"];
+pub const SHARE_TYPES: [&str; 3] = ["view", "collaborate", "embed"];
+pub const ACCESS_LEVELS: [&str; 3] = ["read", "read_write", "admin"];
+pub const PIPELINE_STAGES: [&str; 6] = [
+    "discovery",
+    "qualification",
+    "proposal",
+    "negotiation",
+    "closed_won",
+    "closed_lost",
+];
+pub const THREAT_STATUSES: [&str; 4] = ["active", "monitoring", "resolved", "escalated"];
+/// The statuses accepted by the `strategic_opportunities` check constraint.
+pub const OPPORTUNITY_STATUSES: [&str; 4] = ["active", "pursued", "completed", "abandoned"];
+
+/// Unit-interval check that also rejects `NaN`/`inf`, which
+/// `serde_urlencoded` happily parses from web form values.
+fn validate_unit_interval(field: &str, value: f64) -> Result<(), ApiError> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(ApiError::validation(
+            field,
+            "must be a finite number between 0.0 and 1.0",
+        ));
     }
     Ok(())
 }
 
-pub fn validate_priority(priority: i32) -> Result<(), String> {
-    if !(1..=100).contains(&priority) {
-        return Err("priority must be between 1 and 100".to_string());
+fn validate_member(field: &str, value: &str, allowed: &[&str]) -> Result<(), ApiError> {
+    if !allowed.contains(&value) {
+        return Err(ApiError::validation(
+            field,
+            format!("must be one of: {}", allowed.join(", ")),
+        ));
     }
     Ok(())
 }
 
-pub fn validate_confidence(confidence: f64) -> Result<(), String> {
-    if !(0.0..=1.0).contains(&confidence) {
-        return Err("confidence must be between 0.0 and 1.0".to_string());
+/// Canonical workspace-name rule, shared by the API and the web forms:
+/// 3–255 characters after trimming.
+pub fn validate_workspace_name(name: &str) -> Result<(), ApiError> {
+    let trimmed = name.trim();
+    if trimmed.len() < 3 {
+        return Err(ApiError::validation(
+            "name",
+            "must be at least 3 characters",
+        ));
+    }
+    if trimmed.len() > 255 {
+        return Err(ApiError::validation(
+            "name",
+            "must not exceed 255 characters",
+        ));
     }
     Ok(())
 }
 
-pub fn validate_severity(severity: &str) -> Result<(), String> {
-    let severity = severity.trim().to_ascii_lowercase();
-    if !matches!(severity.as_str(), "low" | "medium" | "high" | "critical") {
-        return Err("severity must be low, medium, high, or critical".to_string());
+pub fn validate_workspace_type(value: &str) -> Result<(), ApiError> {
+    validate_member("workspace_type", value.trim(), &WORKSPACE_TYPES)
+}
+
+pub fn validate_visibility(value: &str) -> Result<(), ApiError> {
+    validate_member("visibility", value.trim(), &WORKSPACE_VISIBILITIES)
+}
+
+pub fn validate_workspace_request(req: &CreateWorkspaceRequest) -> Result<(), ApiError> {
+    validate_workspace_name(&req.name)?;
+    validate_workspace_type(&req.workspace_type)?;
+    validate_visibility(&req.visibility)?;
+    Ok(())
+}
+
+pub fn validate_priority(value: i32) -> Result<(), ApiError> {
+    if !(1..=100).contains(&value) {
+        return Err(ApiError::validation(
+            "priority",
+            "must be between 1 and 100",
+        ));
     }
     Ok(())
 }
 
-pub fn validate_stage(stage: &str) -> Result<(), String> {
-    let stage = stage.trim().to_ascii_lowercase();
-    if !matches!(
-        stage.as_str(),
-        "discovery" | "qualification" | "proposal" | "negotiation" | "closed_won" | "closed_lost"
-    ) {
-        return Err("stage must be discovery, qualification, proposal, negotiation, closed_won, or closed_lost".to_string());
-    }
-    Ok(())
+pub fn validate_confidence(value: f64) -> Result<(), ApiError> {
+    validate_unit_interval("confidence", value)
+}
+
+pub fn validate_priority_score(value: f64) -> Result<(), ApiError> {
+    validate_unit_interval("priority_score", value)
+}
+
+pub fn validate_impact_score(value: f64) -> Result<(), ApiError> {
+    validate_unit_interval("impact_score", value)
+}
+
+pub fn validate_risk_score(value: f64) -> Result<(), ApiError> {
+    validate_unit_interval("risk_score", value)
+}
+
+pub fn validate_reliability_score(value: f64) -> Result<(), ApiError> {
+    validate_unit_interval("reliability_score", value)
+}
+
+pub fn validate_probability(value: f64) -> Result<(), ApiError> {
+    validate_unit_interval("probability", value)
+}
+
+pub fn validate_severity(value: &str) -> Result<(), ApiError> {
+    let normalized = value.trim().to_ascii_lowercase();
+    validate_member(
+        "severity",
+        &normalized,
+        &["low", "medium", "high", "critical"],
+    )
+}
+
+pub fn validate_stage(value: &str) -> Result<(), ApiError> {
+    validate_member("stage", value.trim(), &PIPELINE_STAGES)
+}
+
+pub fn validate_evidence_type(value: &str) -> Result<(), ApiError> {
+    validate_member("evidence_type", value.trim(), &EVIDENCE_TYPES)
+}
+
+pub fn validate_risk_category(value: &str) -> Result<(), ApiError> {
+    validate_member("risk_category", value.trim(), &RISK_CATEGORIES)
+}
+
+pub fn validate_workspace_assignment_role(value: &str) -> Result<(), ApiError> {
+    validate_member("role", value.trim(), &WORKSPACE_ASSIGNMENT_ROLES)
+}
+
+pub fn validate_team_assignment_role(value: &str) -> Result<(), ApiError> {
+    validate_member("role", value.trim(), &TEAM_ASSIGNMENT_ROLES)
+}
+
+pub fn validate_share_type(value: &str) -> Result<(), ApiError> {
+    validate_member("share_type", value.trim(), &SHARE_TYPES)
+}
+
+pub fn validate_access_level(value: &str) -> Result<(), ApiError> {
+    validate_member("access_level", value.trim(), &ACCESS_LEVELS)
+}
+
+pub fn validate_threat_status(value: &str) -> Result<(), ApiError> {
+    validate_member("status", value.trim(), &THREAT_STATUSES)
+}
+
+pub fn validate_opportunity_status(value: &str) -> Result<(), ApiError> {
+    validate_member("status", value.trim(), &OPPORTUNITY_STATUSES)
 }
 
 /// Trims surrounding whitespace from an optional string, returning `None` when
@@ -725,6 +930,101 @@ pub fn normalize_optional_text(text: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+// ────────────────────────────────────────────
+// Store error mapping
+// ────────────────────────────────────────────
+
+/// Map a store failure to a client-visible error without leaking database
+/// detail (table/column/constraint names). The full error is logged with an
+/// incident id the client can quote.
+pub fn store_error(error: anyhow::Error) -> ApiError {
+    let incident = uuid::Uuid::new_v4();
+    tracing::error!(error = %error, %incident, "collaboration store error");
+    ApiError::internal(format!("internal error · incident {incident}"))
+}
+
+// ────────────────────────────────────────────
+// Workspace authorization
+// ────────────────────────────────────────────
+
+/// Access level a caller needs on an investigation workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsAccess {
+    Read,
+    Write,
+    Manage,
+}
+
+/// Shared authorization guard for every workspace surface (API handlers and
+/// web pages). Denials are reported as `404 not found` so the existence of a
+/// private workspace is not leaked.
+///
+/// Rules:
+///   * owner or platform admin: full access;
+///   * an unexpired share grants read, `read_write` write, `admin` manage;
+///   * a workspace assignment grants read, owner/lead/contributor write,
+///     owner/lead manage;
+///   * `organization`/`public` visibility grants read to everyone.
+///     (`team` visibility cannot be enforced until a team-membership model
+///     exists; it is documented as organization-wide in the UI.)
+pub async fn authorize_workspace(
+    store: &PgStore,
+    id: uuid::Uuid,
+    user: &str,
+    is_admin: bool,
+    need: WsAccess,
+) -> Result<InvestigationWorkspaceRecord, ApiError> {
+    let workspace = store
+        .get_investigation_workspace(id)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| ApiError::not_found("workspace", &id.to_string()))?;
+
+    if is_admin || workspace.owner_id == user {
+        return Ok(workspace);
+    }
+
+    let now = Utc::now();
+    let share = store
+        .list_investigation_shares(id)
+        .await
+        .map_err(store_error)?
+        .into_iter()
+        .filter(|s| s.shared_with == user && s.expires_at.is_none_or(|expires| expires > now))
+        .map(|s| s.access_level)
+        .max_by_key(|level| match level.as_str() {
+            "admin" => 3,
+            "read_write" => 2,
+            _ => 1,
+        });
+    let role = store
+        .list_workspace_assignments(id)
+        .await
+        .map_err(store_error)?
+        .into_iter()
+        .find(|assignment| assignment.user_id == user)
+        .map(|assignment| assignment.role);
+
+    let read = matches!(workspace.visibility.as_str(), "organization" | "public")
+        || share.is_some()
+        || role.is_some();
+    let write = matches!(share.as_deref(), Some("read_write" | "admin"))
+        || matches!(role.as_deref(), Some("owner" | "lead" | "contributor"));
+    let manage =
+        share.as_deref() == Some("admin") || matches!(role.as_deref(), Some("owner" | "lead"));
+
+    let allowed = match need {
+        WsAccess::Read => read,
+        WsAccess::Write => write,
+        WsAccess::Manage => manage,
+    };
+    if allowed {
+        Ok(workspace)
+    } else {
+        Err(ApiError::not_found("workspace", &id.to_string()))
+    }
 }
 
 // ────────────────────────────────────────────
@@ -816,6 +1116,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_confidence_rejects_nan_and_infinity() {
+        assert!(validate_confidence(f64::NAN).is_err());
+        assert!(validate_confidence(f64::INFINITY).is_err());
+        assert!(validate_confidence(f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn validate_evidence_types_match_the_database_constraint() {
+        assert!(validate_evidence_type("news_article").is_ok());
+        assert!(validate_evidence_type("web_content").is_ok());
+        assert!(validate_evidence_type("news").is_err());
+    }
+
+    #[test]
+    fn validate_roles_match_the_database_constraints() {
+        assert!(validate_workspace_assignment_role("contributor").is_ok());
+        assert!(validate_workspace_assignment_role("observer").is_err());
+        assert!(validate_team_assignment_role("observer").is_ok());
+        assert!(validate_team_assignment_role("owner").is_err());
+    }
+
+    #[test]
     fn validate_severity_accepts_valid_values() {
         assert!(validate_severity("critical").is_ok());
         assert!(validate_severity("HIGH").is_ok());
@@ -831,7 +1153,7 @@ mod tests {
     #[test]
     fn validate_stage_accepts_valid_values() {
         assert!(validate_stage("discovery").is_ok());
-        assert!(validate_stage("PROPOSAL").is_ok());
+        assert!(validate_stage("proposal").is_ok());
         assert!(validate_stage("closed_won").is_ok());
     }
 

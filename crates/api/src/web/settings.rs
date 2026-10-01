@@ -378,9 +378,22 @@ pub fn system_config_sections() -> Vec<SystemConfigSection> {
                     "EMAIL_DIGEST_SMTP_STARTTLS",
                     None,
                 ),
-                value_item("Alert SMTP host", "ALERT_SMTP_HOST", None),
-                value_item("Alert sender address", "ALERT_FROM_ADDRESS", None),
-                value_item("Alert recipients", "ALERT_EMAIL_RECIPIENTS", None),
+                value_item("Alert SMTP host", "ALERT_SMTP_HOST", Some("127.0.0.1")),
+                value_item("Alert SMTP port", "ALERT_SMTP_PORT", Some("25")),
+                secret_item("Alert SMTP username", "ALERT_SMTP_USER"),
+                secret_item("Alert SMTP password", "ALERT_SMTP_PASS"),
+                value_item("Alert SMTP STARTTLS", "ALERT_SMTP_STARTTLS", Some("false")),
+                value_item(
+                    "Allow plaintext alert SMTP",
+                    "ALERT_SMTP_ALLOW_PLAINTEXT",
+                    Some("false"),
+                ),
+                value_item(
+                    "Alert sender address",
+                    "ALERT_EMAIL_FROM",
+                    Some("alerts@apexintel.io"),
+                ),
+                value_item("Alert recipients", "ALERT_EMAIL_TO", None),
             ],
         ),
         section(
@@ -398,9 +411,19 @@ pub fn system_config_sections() -> Vec<SystemConfigSection> {
             "Delivery policy for real-time warnings and SLA reminders.",
             vec![
                 value_item("Realtime alerts", "REALTIME_ALERTS_ENABLED", None),
-                secret_item("Critical webhook", "CRITICAL_WEBHOOK_URL"),
                 secret_item("Slack webhook", "SLACK_WEBHOOK_URL"),
-                secret_item("Generic webhooks", "GENERIC_WEBHOOK_URLS"),
+                value_item("Slack webhook format", "SLACK_WEBHOOK_FORMAT", Some("slack")),
+                value_item(
+                    "Slack webhook timeout (seconds)",
+                    "SLACK_WEBHOOK_TIMEOUT_SECS",
+                    Some("10"),
+                ),
+                secret_item("Critical webhook", "CRITICAL_WEBHOOK_URL"),
+                value_item(
+                    "Critical webhook format",
+                    "CRITICAL_WEBHOOK_FORMAT",
+                    Some("json"),
+                ),
                 value_item(
                     "SLA reminder lead (seconds)",
                     "SLA_REMINDER_AHEAD_SECONDS",

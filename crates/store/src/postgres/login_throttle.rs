@@ -95,6 +95,14 @@ impl PgStore {
     ) -> Result<LoginThrottleStatus> {
         let mut tx = self.pool.begin().await?;
 
+        // Serialize on the attempt key (see `login_throttle_reserve`): the
+        // insert-then-select path has the same lost-update window for a key
+        // that does not exist yet.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(attempt_key)
+            .execute(&mut *tx)
+            .await?;
+
         // Lazy GC: drop rows whose windows and locks are long over. Admin
         // locks have NULL expires_at and are never swept.
         sqlx::query(
@@ -160,6 +168,17 @@ impl PgStore {
         now: DateTime<Utc>,
     ) -> Result<LoginThrottleStatus> {
         let mut tx = self.pool.begin().await?;
+
+        // Serialize on the attempt key for the transaction. `SELECT ... FOR
+        // UPDATE` locks no row for a key that does not exist yet, so two
+        // concurrent first attempts would both read the default state and the
+        // loser would overwrite the winner's counter. The transaction-scoped
+        // advisory lock closes that window (released automatically on
+        // commit/rollback).
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(attempt_key)
+            .execute(&mut *tx)
+            .await?;
 
         sqlx::query(
             "DELETE FROM login_attempt_throttle WHERE expires_at IS NOT NULL AND expires_at < $1",

@@ -52,6 +52,9 @@ pub struct EmbeddingClient {
     base_url: String,
     /// Model name reported to the API
     model_name: String,
+    /// Optional bearer credential (OpenAI/Azure-compatible endpoints). Kept in
+    /// a redacting wrapper so `Debug` can never print it.
+    api_key: Option<crate::ApiKeySecret>,
     /// HTTP client with sensible defaults
     client: reqwest::Client,
 }
@@ -76,6 +79,9 @@ impl EmbeddingClient {
         Self {
             base_url,
             model_name,
+            // Previously dropped, so cloud embedding calls were unauthenticated
+            // and failed with 401 even with a configured key.
+            api_key: config.api_key.clone(),
             client,
         }
     }
@@ -93,23 +99,24 @@ impl EmbeddingClient {
             model: self.model_name.clone(),
         };
 
-        let raw = self
-            .client
-            .post(&url)
-            .json(&body)
+        let mut request = self.client.post(&url).json(&body);
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key.expose_secret());
+        }
+        let raw = request
             .send()
             .await
             .context("embedding HTTP request failed")?;
 
         let status = raw.status();
         if !status.is_success() {
-            let response_text = raw.text().await.unwrap_or_default();
+            let response_bytes = crate::read_body_limited(raw, crate::MAX_RESPONSE_SIZE).await?;
+            let response_text = String::from_utf8_lossy(&response_bytes);
             anyhow::bail!("embedding API returned HTTP {status}: {response_text}");
         }
 
-        let resp: EmbeddingResponse = raw
-            .json()
-            .await
+        let response_bytes = crate::read_body_limited(raw, crate::MAX_RESPONSE_SIZE).await?;
+        let resp: EmbeddingResponse = serde_json::from_slice(&response_bytes)
             .context("failed to parse embedding response JSON")?;
 
         let vector = resp
@@ -151,13 +158,13 @@ impl EmbeddingClient {
 
         let status = raw.status();
         if !status.is_success() {
-            let response_text = raw.text().await.unwrap_or_default();
+            let response_bytes = crate::read_body_limited(raw, crate::MAX_RESPONSE_SIZE).await?;
+            let response_text = String::from_utf8_lossy(&response_bytes);
             anyhow::bail!("batch embedding API returned HTTP {status}: {response_text}");
         }
 
-        let resp: EmbeddingResponse = raw
-            .json()
-            .await
+        let response_bytes = crate::read_body_limited(raw, crate::MAX_RESPONSE_SIZE).await?;
+        let resp: EmbeddingResponse = serde_json::from_slice(&response_bytes)
             .context("failed to parse batch embedding response JSON")?;
 
         // Sort by index to maintain input order
@@ -203,12 +210,15 @@ pub fn chunk_text(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<S
     let mut start = 0usize;
 
     while start < text.len() {
-        let end = if start + max_chars >= text.len() {
+        let end = if start.saturating_add(max_chars) >= text.len() {
             text.len()
         } else {
-            // Try to find a sentence boundary near the chunk limit
-            let search_end = (start + max_chars).min(text.len());
-            let search_start = start.max(search_end.saturating_sub(200)); // look back up to 200 chars
+            // Try to find a sentence boundary near the chunk limit. All byte
+            // offsets are clamped to UTF-8 char boundaries so multi-byte input
+            // cannot panic the slicer.
+            let search_end =
+                text.ceil_char_boundary(start.saturating_add(max_chars).min(text.len()));
+            let search_start = text.floor_char_boundary(start.max(search_end.saturating_sub(200))); // look back up to 200 bytes
 
             // Find the last sentence-ending punctuation within the search window
             let slice = &text[search_start..search_end];
@@ -234,7 +244,7 @@ pub fn chunk_text(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<S
 
         // Advance by (chunk_size - overlap), ensuring we always make progress
         let advance = max_chars.saturating_sub(overlap_chars).max(1);
-        start = start.saturating_add(advance);
+        start = text.ceil_char_boundary(start.saturating_add(advance).min(text.len()));
     }
 
     chunks
@@ -337,5 +347,31 @@ mod tests {
     fn test_batch_empty_texts() {
         let result = chunk_text("", 512, 64);
         assert!(result.is_empty());
+    }
+
+    // Audit: all chunk offsets must be clamped to UTF-8 char boundaries so
+    // multi-byte content cannot panic the slicer.
+    #[test]
+    fn test_chunk_text_multibyte_no_panic() {
+        let text = "日".repeat(1000);
+        let chunks = chunk_text(&text, 10, 2);
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|chunk| chunk.chars().all(|c| c == '日')));
+    }
+
+    #[test]
+    fn from_config_keeps_the_api_key_and_debug_redacts_it() {
+        let mut config = ModelConfig::default();
+        config.api_key = Some("embed-key".into());
+        let client = EmbeddingClient::from_config(&config);
+        assert!(
+            client.api_key.is_some(),
+            "the configured embedding key must be attached to requests"
+        );
+        let debug = format!("{client:?}");
+        assert!(
+            !debug.contains("embed-key"),
+            "Debug output must never print the credential: {debug}"
+        );
     }
 }

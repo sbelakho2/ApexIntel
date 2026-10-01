@@ -231,8 +231,12 @@ pub struct Hypothesis {
 
 impl Hypothesis {
     /// Create a default hypothesis for a given type.
+    ///
+    /// `num_competitors` is the number of mutually exclusive hypotheses the
+    /// prior is spread across; zero is nonsensical and previously produced an
+    /// infinite prior, so it is treated as one competitor.
     pub fn new(hypothesis_type: HypothesisType, num_competitors: usize) -> Self {
-        let prior = 1.0 / (num_competitors as f64);
+        let prior = 1.0 / (num_competitors.max(1) as f64);
         let supporting_evidence = hypothesis_type.supporting_evidence();
         let now = Utc::now();
 
@@ -911,6 +915,17 @@ mod tests {
 
         // Should generate Expanding hypothesis given job postings and patents
         assert!(!hypotheses.is_empty());
+    }
+
+    #[test]
+    fn test_zero_competitors_does_not_produce_infinite_prior() {
+        let hypothesis = Hypothesis::new(HypothesisType::Expanding, 0);
+        assert!(
+            hypothesis.prior.is_finite(),
+            "1/0 must not become an infinite prior"
+        );
+        assert_eq!(hypothesis.prior, 1.0);
+        assert_eq!(hypothesis.posterior, 1.0);
     }
 
     #[test]

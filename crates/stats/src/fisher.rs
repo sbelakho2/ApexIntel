@@ -129,15 +129,18 @@ pub fn minimum_detectable_odds_ratio(
     alpha: f64,
     power: f64,
 ) -> f64 {
-    let total = (a + b + c + d) as f64;
-    if total <= 0.0 {
+    // Sum in u128: adversarial counts can overflow u64 marginals before the
+    // f64 conversion (e.g. a = b = c = d = u64::MAX).
+    let total = a as u128 + b as u128 + c as u128 + d as u128;
+    if total == 0 {
         return f64::INFINITY;
     }
+    let total = total as f64;
 
-    let row1 = (a + b) as f64;
-    let row2 = (c + d) as f64;
-    let col1 = (a + c) as f64;
-    let col2 = (b + d) as f64;
+    let row1 = (a as u128 + b as u128) as f64;
+    let row2 = (c as u128 + d as u128) as f64;
+    let col1 = (a as u128 + c as u128) as f64;
+    let col2 = (b as u128 + d as u128) as f64;
     if row1 <= 0.0 || row2 <= 0.0 || col1 <= 0.0 || col2 <= 0.0 {
         return f64::INFINITY;
     }
@@ -327,6 +330,16 @@ mod tests {
         let large = minimum_detectable_odds_ratio(50, 50, 50, 50, 0.01, 0.80);
         assert!(small > large);
         assert!(large > 1.0);
+    }
+
+    #[test]
+    fn minimum_detectable_odds_ratio_does_not_overflow_marginals() {
+        let mde = minimum_detectable_odds_ratio(u64::MAX, u64::MAX, u64::MAX, u64::MAX, 0.05, 0.80);
+        assert!(mde.is_finite(), "must not overflow into NaN/inf: {mde}");
+        assert!(
+            mde >= 1.0,
+            "MDE for huge balanced samples should be ~1: {mde}"
+        );
     }
 
     #[test]

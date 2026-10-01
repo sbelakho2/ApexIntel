@@ -224,7 +224,14 @@ pub struct RiskScore {
 impl RiskScore {
     pub fn new(score: f64, confidence: ConfidenceLevel) -> Self {
         Self {
-            score: score.clamp(0.0, 1.0),
+            // `f64::clamp` propagates NaN, so an unmeasured score must be
+            // normalized explicitly rather than stored as NaN (which later
+            // serializes to `null` / poisons comparisons).
+            score: if score.is_finite() {
+                score.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
             confidence,
             factors: Vec::new(),
             last_updated: Utc::now(),
@@ -282,7 +289,12 @@ impl TimeWindow {
 
     pub fn days_back(days: u32) -> Self {
         let now = Utc::now();
-        let start = now - chrono::Duration::days(days as i64);
+        // `DateTime - Duration` panics on out-of-range results; a hostile or
+        // mistyped lookback (e.g. u32::MAX days) must clamp to the earliest
+        // supported instant instead of crashing the caller.
+        let start = chrono::Duration::try_days(days as i64)
+            .and_then(|delta| now.checked_sub_signed(delta))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
         Self { start, end: now }
     }
 
@@ -291,13 +303,17 @@ impl TimeWindow {
         // Use chrono::Months for calendar-month-aware arithmetic instead of
         // approximating with days*30. This correctly handles varying month lengths
         // (28–31 days) and avoids date drift over multi-month windows.
-        let start = now - chrono::Months::new(months);
+        let start = now
+            .checked_sub_months(chrono::Months::new(months))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
         Self { start, end: now }
     }
 
     pub fn years_back(years: u32) -> Self {
         let now = Utc::now();
-        let start = now - chrono::Duration::days((years as i64) * 365);
+        let start = chrono::Duration::try_days((years as i64) * 365)
+            .and_then(|delta| now.checked_sub_signed(delta))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
         Self { start, end: now }
     }
 }
@@ -334,7 +350,10 @@ pub struct PaginatedResponse<T> {
 
 impl<T> PaginatedResponse<T> {
     pub fn new(items: Vec<T>, total: u64, offset: u32, limit: u32) -> Self {
-        let has_more = (offset + items.len() as u32) < total as u32;
+        // Compare in u64: previously `total as u32` truncated totals above
+        // u32::MAX and `offset + len` could overflow, reporting has_more wrong.
+        let consumed = offset as u64 + items.len() as u64;
+        let has_more = consumed < total;
         Self {
             items,
             total,
@@ -444,6 +463,14 @@ mod tests {
 
         let rs = RiskScore::new(-0.5, ConfidenceLevel::High);
         assert_eq!(rs.score, 0.0);
+
+        // NaN survived `clamp` and poisoned every downstream comparison.
+        let rs = RiskScore::new(f64::NAN, ConfidenceLevel::High);
+        assert!(rs.score.is_finite(), "NaN must not be stored as a score");
+        assert_eq!(rs.score, 0.0);
+        // Unmeasured extremes must not be reported as maximum risk.
+        let rs = RiskScore::new(f64::INFINITY, ConfidenceLevel::High);
+        assert_eq!(rs.score, 0.0);
     }
 
     #[test]
@@ -454,6 +481,19 @@ mod tests {
     }
 
     #[test]
+    fn test_time_window_extreme_lookbacks_do_not_panic() {
+        // `now - Duration::days(u32::MAX)` overflows chrono's date range and
+        // panics; the constructors must clamp instead.
+        for window in [
+            TimeWindow::days_back(u32::MAX),
+            TimeWindow::months_back(u32::MAX),
+            TimeWindow::years_back(u32::MAX),
+        ] {
+            assert!(window.start < window.end);
+        }
+    }
+
+    #[test]
     fn test_pagination_defaults() {
         let params = PaginationParams::default_page();
         assert_eq!(params.offset, 0);
@@ -461,5 +501,23 @@ mod tests {
 
         let params = PaginationParams::new(0, 2000);
         assert_eq!(params.limit, 1000); // Capped at 1000
+    }
+
+    #[test]
+    fn test_paginated_response_handles_totals_above_u32() {
+        // u32::MAX + 1 truncated to 0 used to report has_more = false for the
+        // first page even though billions of rows remain.
+        let response = PaginatedResponse::new(vec![1u8], (u32::MAX as u64) + 1, 0, 1);
+        assert!(
+            response.has_more,
+            "first page of a large table must report more"
+        );
+
+        let response = PaginatedResponse::new(vec![1u8], (u32::MAX as u64) + 1, u32::MAX - 1, 1);
+        assert!(response.has_more);
+
+        // The very last page of that table has no more rows.
+        let response = PaginatedResponse::new(vec![1u8], (u32::MAX as u64) + 1, u32::MAX, 1);
+        assert!(!response.has_more);
     }
 }

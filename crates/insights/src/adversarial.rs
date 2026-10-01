@@ -68,7 +68,19 @@ pub fn detect_coordinated_placement(
     for (entity_id, mut entity_signals) in grouped {
         entity_signals.sort_by_key(|signal| signal.observed_at);
         for start in 0..entity_signals.len() {
-            let window_end = entity_signals[start].observed_at + Duration::hours(max_window_hours);
+            // `DateTime + Duration` panics on out-of-range results; a hostile
+            // or mistyped window (e.g. i64::MAX hours) must clamp to a
+            // representable instant instead of crashing the caller. A
+            // negative/underflowing window degenerates to the single anchor
+            // event rather than silently widening to all of history.
+            let anchor = entity_signals[start].observed_at;
+            let window_end = Duration::try_hours(max_window_hours)
+                .and_then(|window| anchor.checked_add_signed(window))
+                .unwrap_or(if max_window_hours < 0 {
+                    anchor
+                } else {
+                    DateTime::<Utc>::MAX_UTC
+                });
             let window = entity_signals[start..]
                 .iter()
                 .copied()
@@ -151,7 +163,9 @@ pub fn quarantine_observation(
     first_seen_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> ObservationQuarantineDecision {
-    let quarantine_until = first_seen_at + Duration::hours(24);
+    let quarantine_until = first_seen_at
+        .checked_add_signed(Duration::hours(24))
+        .unwrap_or(DateTime::<Utc>::MAX_UTC);
     ObservationQuarantineDecision {
         quarantined: !source_previously_seen && now < quarantine_until,
         quarantine_until,
@@ -320,6 +334,30 @@ mod tests {
         let decision = quarantine_observation(false, now - Duration::hours(6), now);
         assert!(decision.quarantined);
         assert_eq!(decision.quarantine_until, now + Duration::hours(18));
+    }
+
+    #[test]
+    fn extreme_windows_do_not_panic() {
+        let now = Utc::now();
+        let signals = vec![
+            signal("s1", "source-a", "news", now, "factory outage output"),
+            signal(
+                "s2",
+                "source-b",
+                "news",
+                now + Duration::minutes(1),
+                "factory outage output",
+            ),
+        ];
+
+        // i64::MAX hours overflows both TimeDelta and DateTime arithmetic.
+        let alerts = detect_coordinated_placement(&signals, i64::MAX, 2, 0.5);
+        assert_eq!(alerts.len(), 1);
+        let alerts = detect_coordinated_placement(&signals, i64::MIN, 2, 0.5);
+        assert!(alerts.is_empty());
+
+        let decision = quarantine_observation(false, DateTime::<Utc>::MAX_UTC, now);
+        assert_eq!(decision.quarantine_until, DateTime::<Utc>::MAX_UTC);
     }
 
     #[test]

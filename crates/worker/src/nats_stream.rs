@@ -1,16 +1,23 @@
 //! NATS JetStream publisher for alert events.
 //!
 //! Provides a [`NatsPublisher`] that connects to NATS, ensures the `alerts`
-//! JetStream stream exists, and publishes [`AlertEvent`]s to subjects
-//! `alerts.events.{event_type}`.
+//! JetStream stream exists via the shared
+//! [`apex_shared::ensure_alerts_stream`] helper, and publishes
+//! [`AlertEvent`]s to subjects `alerts.events.{event_type}`.
 //!
 //! # Stream configuration
-//! - Name: `alerts`
-//! - Subjects: `alerts.>`
-//! - Max age: 7 days
-//! - Storage: file
-//! - Retention: interest-based (auto-cleanup when consumers acknowledge)
-//! - Duplicate window: 2 hours (declared via the `Nats-Msg-Id` header)
+//! The canonical stream definition lives in `apex-shared` so the API SSE
+//! bridge and the worker cannot race each other into different configs
+//! (audit #78): name `alerts`, subjects `alerts.>`, file storage,
+//! [`async_nats::jetstream::stream::RetentionPolicy::Limits`] with a 2-hour
+//! max age, and a 2-hour duplicate window.
+//!
+//! # Reconnect behaviour
+//! If NATS is unavailable when the publisher is constructed, a background
+//! task retries connecting with exponential backoff (1s → 60s cap) and
+//! swaps a fresh transport into the live publisher once the broker is back
+//! (audit #79), so a NATS outage during startup no longer disables alert
+//! publishing until the next worker restart. The publisher API is unchanged.
 //!
 //! # Delivery guarantee
 //! Publishing is **at-least-once**: the outbox publisher retries a row until
@@ -20,14 +27,18 @@
 //! duplicate window; consumers must still be idempotent. This is not
 //! exactly-once delivery.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use apex_core::alert_config::AlertAudience;
+use apex_shared::ensure_alerts_stream;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -258,6 +269,19 @@ impl JetStreamTransport for NatsJetStreamTransport {
     }
 }
 
+/// State shared by every clone of a [`NatsPublisher`].
+///
+/// The transport sits behind an async lock so the background reconnect task
+/// can swap in a fresh JetStream context at runtime; `connected` mirrors that
+/// slot lock-free for the synchronous [`NatsPublisher::is_connected`] probe
+/// used by the outbox drain loop.
+struct PublisherState {
+    transport: RwLock<Option<Arc<dyn JetStreamTransport>>>,
+    connected: AtomicBool,
+    nats_url: String,
+    required: bool,
+}
+
 /// Publishes alert events to NATS JetStream.
 ///
 /// By default an unavailable NATS degrades gracefully: `publish_alert` logs a
@@ -267,9 +291,7 @@ impl JetStreamTransport for NatsJetStreamTransport {
 /// reports a degraded outcome instead of a false success.
 #[derive(Clone)]
 pub struct NatsPublisher {
-    transport: Option<Arc<dyn JetStreamTransport>>,
-    nats_url: String,
-    required: bool,
+    state: Arc<PublisherState>,
 }
 
 impl NatsPublisher {
@@ -280,11 +302,32 @@ impl NatsPublisher {
 
     /// A disabled publisher that reports unavailable NATS as an error.
     pub fn disabled_with_requirement(required: bool) -> Self {
-        Self {
-            transport: None,
+        Self::from_state(PublisherState {
+            transport: RwLock::new(None),
+            connected: AtomicBool::new(false),
             nats_url: String::new(),
             required,
+        })
+    }
+
+    fn from_state(state: PublisherState) -> Self {
+        Self {
+            state: Arc::new(state),
         }
+    }
+
+    /// A fully connected publisher around an established JetStream context.
+    fn connected(
+        jetstream: async_nats::jetstream::Context,
+        nats_url: &str,
+        required: bool,
+    ) -> Self {
+        Self::from_state(PublisherState {
+            transport: RwLock::new(Some(Arc::new(NatsJetStreamTransport::new(jetstream)))),
+            connected: AtomicBool::new(true),
+            nats_url: nats_url.to_string(),
+            required,
+        })
     }
 
     /// Connect to NATS and ensure the JetStream stream exists, resolving the
@@ -297,29 +340,31 @@ impl NatsPublisher {
     ///
     /// If the connection fails, the publisher operates in degraded mode: a
     /// no-op when NATS is optional, or an error on every publish when NATS is
-    /// required.
+    /// required. Either way a background task keeps retrying with exponential
+    /// backoff (1s → 60s cap) and swaps the transport in once NATS is
+    /// reachable, so a broker that is down at startup no longer disables
+    /// alert publishing until the worker restarts (audit #79).
     pub async fn connect_with_requirement(nats_url: &str, required: bool) -> Self {
         match Self::try_connect(nats_url).await {
             Ok(jetstream) => {
                 info!(nats_url = %nats_url, "NATS JetStream publisher connected");
-                Self {
-                    transport: Some(Arc::new(NatsJetStreamTransport::new(jetstream))),
-                    nats_url: nats_url.to_string(),
-                    required,
-                }
+                Self::connected(jetstream, nats_url, required)
             }
             Err(e) => {
                 warn!(
                     nats_url = %nats_url,
                     required,
                     error = %e,
-                    "NATS unavailable — alert publishing degraded"
+                    "NATS unavailable — alert publishing degraded; reconnecting in the background"
                 );
-                Self {
-                    transport: None,
+                let publisher = Self::from_state(PublisherState {
+                    transport: RwLock::new(None),
+                    connected: AtomicBool::new(false),
                     nats_url: nats_url.to_string(),
                     required,
-                }
+                });
+                Self::spawn_reconnect_loop(Arc::downgrade(&publisher.state));
+                publisher
             }
         }
     }
@@ -330,11 +375,57 @@ impl NatsPublisher {
     /// transport) so the ACK-ordering contract can be verified without a live
     /// NATS server.
     pub fn with_transport(transport: Arc<dyn JetStreamTransport>, required: bool) -> Self {
-        Self {
-            transport: Some(transport),
+        Self::from_state(PublisherState {
+            transport: RwLock::new(Some(transport)),
+            connected: AtomicBool::new(true),
             nats_url: "test://transport".to_string(),
             required,
-        }
+        })
+    }
+
+    /// Retry `try_connect` forever with exponential backoff until it succeeds
+    /// or every publisher clone has been dropped.
+    ///
+    /// Holds only a [`Weak`] reference so an unused publisher cannot leak a
+    /// task; the strong `Arc` is upgraded for each attempt.
+    fn spawn_reconnect_loop(state: Weak<PublisherState>) {
+        tokio::spawn(async move {
+            let mut backoff = Duration::from_secs(1);
+            loop {
+                let Some(state) = state.upgrade() else {
+                    return; // publisher dropped
+                };
+                if state.nats_url.is_empty() || state.connected.load(Ordering::SeqCst) {
+                    return; // disabled publisher, or another path connected first
+                }
+                tokio::time::sleep(backoff).await;
+                if state.connected.load(Ordering::SeqCst) {
+                    return;
+                }
+                match Self::try_connect(&state.nats_url).await {
+                    Ok(jetstream) => {
+                        let transport: Arc<dyn JetStreamTransport> =
+                            Arc::new(NatsJetStreamTransport::new(jetstream));
+                        *state.transport.write().await = Some(transport);
+                        state.connected.store(true, Ordering::SeqCst);
+                        info!(
+                            nats_url = %state.nats_url,
+                            "NATS JetStream publisher reconnected after outage"
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(
+                            nats_url = %state.nats_url,
+                            error = %e,
+                            retry_in_secs = backoff.as_secs(),
+                            "NATS reconnect attempt failed; will retry"
+                        );
+                        backoff = (backoff * 2).min(Duration::from_secs(60));
+                    }
+                }
+            }
+        });
     }
 
     async fn try_connect(nats_url: &str) -> Result<async_nats::jetstream::Context> {
@@ -343,46 +434,11 @@ impl NatsPublisher {
             .context("failed to connect to NATS")?;
         let jetstream = async_nats::jetstream::new(client);
 
-        // Ensure the stream exists (idempotent)
-        Self::ensure_stream(&jetstream).await?;
+        // Ensure the stream exists with the ONE canonical config shared by
+        // this publisher and the API SSE bridge (audit #78).
+        ensure_alerts_stream(&jetstream).await?;
 
         Ok(jetstream)
-    }
-
-    /// Ensure the `alerts` JetStream stream exists, creating it if necessary.
-    async fn ensure_stream(jetstream: &async_nats::jetstream::Context) -> Result<()> {
-        use async_nats::jetstream::stream::Config;
-
-        let cfg = Config {
-            name: "alerts".to_string(),
-            subjects: vec!["alerts.>".to_string()],
-            max_age: chrono::Duration::days(7)
-                .to_std()
-                .unwrap_or(std::time::Duration::from_secs(604800)),
-            storage: async_nats::jetstream::stream::StorageType::File,
-            retention: async_nats::jetstream::stream::RetentionPolicy::Interest,
-            // A crashed publisher republishes its last claimed outbox rows on
-            // restart; the stable `Nats-Msg-Id` (outbox row id) is suppressed
-            // for this window, which must comfortably exceed any realistic
-            // retry cadence (drain polls every 5s, backoff spans hours).
-            duplicate_window: std::time::Duration::from_secs(2 * 60 * 60),
-            ..Config::default()
-        };
-
-        match jetstream.get_stream("alerts").await {
-            Ok(_) => {
-                info!("NATS JetStream stream 'alerts' already exists");
-                Ok(())
-            }
-            Err(_) => {
-                jetstream
-                    .create_stream(cfg)
-                    .await
-                    .context("failed to create JetStream stream 'alerts'")?;
-                info!("NATS JetStream stream 'alerts' created");
-                Ok(())
-            }
-        }
     }
 
     /// Publish an alert event to NATS JetStream and await the broker ACK.
@@ -412,8 +468,9 @@ impl NatsPublisher {
         alert: &AlertEvent,
         msg_id: Option<&str>,
     ) -> Result<()> {
-        let Some(ref transport) = self.transport else {
-            if self.required {
+        let transport = self.state.transport.read().await.clone();
+        let Some(transport) = transport else {
+            if self.state.required {
                 anyhow::bail!(
                     "NATS JetStream is required ({REQUIRE_NATS_ENV}/APEX_ENV=production) \
                      but the publisher is not connected; alert {} not delivered",
@@ -453,17 +510,17 @@ impl NatsPublisher {
 
     /// Whether NATS is a required capability for this process.
     pub fn required(&self) -> bool {
-        self.required
+        self.state.required
     }
 
     /// Returns `true` if NATS is connected and operational.
     pub fn is_connected(&self) -> bool {
-        self.transport.is_some()
+        self.state.connected.load(Ordering::SeqCst)
     }
 
     /// Returns the NATS URL this publisher was configured with.
     pub fn nats_url(&self) -> &str {
-        &self.nats_url
+        &self.state.nats_url
     }
 }
 
@@ -697,6 +754,33 @@ mod tests {
     fn disabled_publisher_is_not_connected() {
         let publisher = NatsPublisher::disabled();
         assert!(!publisher.is_connected());
+    }
+
+    /// Audit #79: a broker that is down at startup must not disable publishing
+    /// until the next worker restart. `connect_with_requirement` returns a
+    /// degraded publisher immediately and spawns the background reconnect loop
+    /// (1s -> 60s backoff); while disconnected a required publisher errors so
+    /// the outbox drain keeps the event instead of dropping it.
+    #[tokio::test]
+    async fn failed_startup_connect_degrades_and_reconnects_in_background() {
+        let publisher = tokio::time::timeout(
+            Duration::from_secs(10),
+            NatsPublisher::connect_with_requirement("nats://127.0.0.1:1", true),
+        )
+        .await
+        .expect("a refused startup connect must fail fast, not hang");
+
+        assert!(
+            !publisher.is_connected(),
+            "no broker: the publisher starts degraded instead of panicking"
+        );
+        assert!(publisher.required());
+        assert_eq!(publisher.nats_url(), "nats://127.0.0.1:1");
+        let result = publisher.publish_alert(&test_alert()).await;
+        assert!(
+            result.is_err(),
+            "a required publisher must error while the broker is unreachable"
+        );
     }
 
     #[test]

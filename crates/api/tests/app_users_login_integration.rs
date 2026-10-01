@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use apex_api::auth::ApiRole;
 use apex_api::login_throttle::{LoginThrottle, LoginThrottleBackend};
-use apex_api::web::auth::{hash_password, resolve_login};
+use apex_api::web::auth::{bootstrap_app_users_from_env, hash_password, resolve_login};
 use apex_store::postgres::PgStore;
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
@@ -56,6 +56,13 @@ async fn bootstrap_admin_then_database_authoritative_login() {
         "role": "admin",
     }]);
     std::env::set_var("WEB_USERS_JSON", bootstrap_users.to_string());
+    // Bootstrap is a STARTUP step (main.rs), never a per-login side effect
+    // (audit item 10): the test performs it explicitly, mirroring startup.
+    let bootstrapped = bootstrap_app_users_from_env(&store).await;
+    assert!(
+        bootstrapped >= 1,
+        "startup bootstrap must provision the admin"
+    );
 
     // The environment bootstraps the row: the caller is provisioned as admin
     // and can log in with the bootstrap password.

@@ -185,7 +185,10 @@ fn path_matches(path: &str, pattern: &str) -> bool {
         }
         // If anchored, the match must consume the entire path
         if must_end {
-            pos == path.len()
+            // A trailing `*` consumes whatever remains (including nothing), so
+            // the `$` anchor is already satisfied once the earlier segments
+            // matched. `/foo*$` must match `/fooXXX`, not just `/foo`.
+            pos == path.len() || pat.ends_with('*')
         } else {
             true
         }
@@ -335,6 +338,20 @@ Sitemap: https://example.com/sitemap.xml
     fn test_path_matches_exact() {
         assert!(path_matches("/exact", "/exact$"));
         assert!(!path_matches("/exact/more", "/exact$"));
+    }
+
+    #[test]
+    fn test_path_matches_trailing_wildcard_anchor() {
+        // RFC 9309: `*` matches any sequence, so a trailing `*` before `$`
+        // consumes the rest of the path instead of requiring an empty match.
+        assert!(path_matches("/private/secret", "/private*$"));
+        assert!(path_matches("/anything", "/*$"));
+        assert!(!path_matches("/public/x", "/private*$"));
+        assert!(!path_matches("/fooXbarY", "/foo*bar$"));
+
+        let rules = RobotsRules::parse("User-agent: *\nDisallow: /private*$\n", "MyBot");
+        assert!(!rules.is_allowed("/private/report"));
+        assert!(rules.is_allowed("/public/report"));
     }
 
     #[test]

@@ -120,7 +120,9 @@ pub fn extract_trade_show(body_text: &str, title: &str, url: &str) -> TradeShowE
     let date_range = extract_date_range(&normalized_body);
     let exhibitors = extract_exhibitors(body_text);
     let speakers = extract_speakers(body_text);
-    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(url).unwrap_or_default();
 
     TradeShowExtract {
         event_name: normalizer::normalize_whitespace(title),
@@ -240,9 +242,11 @@ pub fn extract_speakers(text: &str) -> Vec<SpeakerExtract> {
 /// Look for a session topic within the same paragraph or nearby lines as the
 /// speaker's name.  Returns the trimmed topic string if found.
 fn extract_speaker_topic(text: &str, name: &str) -> Option<String> {
-    // Grab up to 300 chars of context after the name's first occurrence.
+    // Grab up to 300 bytes of context after the name's first occurrence,
+    // clamped to a char boundary so a multi-byte character at the window edge
+    // cannot panic the parser on hostile page text.
     let start = text.find(name)?;
-    let context_end = (start + 300).min(text.len());
+    let context_end = text.ceil_char_boundary((start + 300).min(text.len()));
     let context = &text[start..context_end];
 
     RE_TOPIC
@@ -383,5 +387,18 @@ mod tests {
         assert!(is_ems_trade_show("ELETEC Tunis 2025"));
         assert!(is_ems_trade_show("Elec Expo Casablanca"));
         assert!(is_ems_trade_show("SIANE Toulouse 2025"));
+    }
+
+    // Audit: the 300-byte topic window must be clamped to a UTF-8 char
+    // boundary; a multi-byte character at the window edge previously panicked.
+    #[test]
+    fn test_speaker_topic_multibyte_window_no_panic() {
+        let body = format!("Speaker: John Smith.xy{}", "é".repeat(200));
+        let show = extract_trade_show(&body, "Expo", "https://example.com");
+        assert!(
+            show.speakers.iter().any(|s| s.name == "John Smith"),
+            "expected the speaker to be extracted: {:?}",
+            show.speakers
+        );
     }
 }

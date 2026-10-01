@@ -57,66 +57,85 @@ impl From<SharedActivityEvent> for ActivityEvent {
 /// `GET /api/activity` — returns paginated activity feed.
 pub(crate) async fn get_activity_feed(
     State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Query(params): Query<ActivityQuery>,
 ) -> (StatusCode, Json<ApiResponse<Vec<ActivityEvent>>>) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
     let limit = params.limit.unwrap_or(50).min(200) as i64;
     let offset = params.offset.unwrap_or(0) as i64;
+    let wanted_action = params.action_type.as_deref();
 
-    let rows = match sqlx::query(
-        r#"
-        SELECT
-            id::text,
-            action_type,
-            COALESCE(entity_name, 'System Event') AS title,
-            details->>'description' AS description,
-            CASE
-                WHEN action_type IN ('insight_generated', 'threat_detected') THEN 'high'
-                WHEN action_type IN ('poi_discovered', 'company_detected', 'crawl_completed') THEN 'medium'
-                WHEN action_type IN ('job_failed') THEN 'high'
-                ELSE 'low'
-            END AS severity,
-            created_at::text AS timestamp,
-            entity_name,
-            entity_id,
-            details->>'source' AS source,
-            details->>'source_url' AS source_url
-        FROM activity_feed
-        WHERE ($3::text IS NULL OR action_type = $3)
-        ORDER BY created_at DESC
-        LIMIT $1 OFFSET $2
-        "#,
-    )
-    .bind(limit)
-    .bind(offset)
-    .bind(&params.action_type)
-    .fetch_all(&state.store.pool)
-    .await
+    // Read through the visibility-scoped store query: a raw `SELECT` here
+    // returned other actors' private rows and rows attached to workspaces the
+    // caller cannot see (the feed defaults new rows to `private`). Type
+    // filtering stays in-process because the scoped query has no action_type
+    // predicate.
+    let fetch = offset.saturating_add(limit);
+    let records = match state
+        .store
+        .list_activity_feed(
+            auth_ctx.user_id.as_str(),
+            auth_ctx.role.can_admin(),
+            None,
+            None,
+            None,
+            fetch,
+        )
+        .await
     {
-        Ok(rows) => rows,
+        Ok(records) => records,
         Err(err) => {
             tracing::error!(request_id = %request_id, "get_activity_feed query failed: {err:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to fetch activity feed"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch activity feed",
+                ))),
             );
         }
     };
 
-    let events: Vec<ActivityEvent> = rows
-        .iter()
-        .map(|row| ActivityEvent {
-            id: row.get::<String, _>("id"),
-            event_type: row.get::<String, _>("action_type"),
-            title: row.get::<String, _>("title"),
-            description: row.try_get::<String, _>("description").ok(),
-            severity: row.get::<String, _>("severity"),
-            timestamp: row.get::<String, _>("timestamp"),
-            entity_name: row.try_get::<String, _>("entity_name").ok(),
-            entity_id: row.try_get::<String, _>("entity_id").ok(),
-            source: row.try_get::<String, _>("source").ok(),
-            source_url: row.try_get::<String, _>("source_url").ok(),
+    let events: Vec<ActivityEvent> = records
+        .into_iter()
+        .filter(|record| wanted_action.is_none_or(|action| record.action_type == action))
+        .skip(offset.max(0) as usize)
+        .take(limit.max(0) as usize)
+        .map(|record| {
+            let details = if record.details.is_object() {
+                record.details
+            } else {
+                serde_json::json!({})
+            };
+            let entity_name = record.entity_name;
+            let severity = match record.action_type.as_str() {
+                "insight_generated" | "threat_detected" | "job_failed" => "high",
+                "poi_discovered" | "company_detected" | "crawl_completed" => "medium",
+                _ => "low",
+            };
+            ActivityEvent {
+                id: record.id.to_string(),
+                event_type: record.action_type,
+                title: entity_name
+                    .clone()
+                    .unwrap_or_else(|| "System Event".to_string()),
+                description: details
+                    .get("description")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                severity: severity.to_string(),
+                timestamp: record.created_at.to_rfc3339(),
+                entity_name,
+                entity_id: record.entity_id,
+                source: details
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                source_url: details
+                    .get("source_url")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            }
         })
         .collect();
 
@@ -146,10 +165,24 @@ pub struct CreateActivityRequest {
 
 pub(crate) async fn create_activity_event(
     State(state): State<AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Json(payload): Json<CreateActivityRequest>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let request_id = Uuid::new_v4().to_string();
     let details = payload.details.unwrap_or(serde_json::json!({}));
+
+    // Attribution is the authenticated principal: a request could otherwise
+    // forge `system`-attributed activity visible to the whole organization.
+    // Only admins may record organization-visible activity through the API;
+    // background jobs write the table directly.
+    if !auth.role.can_admin() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(error_response(ApiError::forbidden(
+                "only admins may record activity",
+            ))),
+        );
+    }
 
     let result = sqlx::query(
         r#"
@@ -160,8 +193,8 @@ pub(crate) async fn create_activity_event(
         RETURNING id::text
         "#,
     )
-    .bind("system")
-    .bind("ApexIntel System")
+    .bind(auth.user_id.as_str())
+    .bind(auth.user_id.as_str())
     .bind(&payload.action_type)
     .bind(&payload.entity_type)
     .bind(&payload.entity_id)

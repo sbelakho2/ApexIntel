@@ -128,6 +128,13 @@ impl PgStore {
     /// rolling success-rate EWMA, stores the error/http status, and pushes
     /// `next_due_at`/`circuit_open_until` out by the failure backoff (see
     /// [`failure_backoff`]).
+    ///
+    /// One `INSERT ... ON CONFLICT DO UPDATE` merges the new observation into
+    /// the stored row, so two workers recording concurrent attempts cannot
+    /// lose an increment or an EWMA step the way the previous read-then-upsert
+    /// pair could. The backoff ladder is expressed in SQL because the merged
+    /// `consecutive_failures` value is only known inside the statement; it must
+    /// stay in lockstep with [`FAILURE_BACKOFF_LADDER`] ([`failure_backoff`]).
     pub async fn record_source_attempt_failure(
         &self,
         source_slug: &str,
@@ -136,47 +143,65 @@ impl PgStore {
         min_interval: Duration,
         now: DateTime<Utc>,
     ) -> Result<SourceRuntimeStateRow> {
-        let mut tx = self.pool.begin().await?;
-        let previous: Option<(i32, Option<f64>)> = sqlx::query_as(
-            "SELECT consecutive_failures, rolling_success_rate FROM source_runtime_state \
-             WHERE source_slug = $1 FOR UPDATE",
-        )
-        .bind(source_slug)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let (previous_failures, previous_rate) = previous.unwrap_or((0, None));
-        let consecutive_failures = previous_failures.saturating_add(1);
-        let rolling_success_rate = ewma_success_rate(previous_rate, false);
-        let next_due_at = now + failure_backoff(consecutive_failures, min_interval);
-
+        let min_interval_secs = min_interval.num_seconds().max(0) as f64;
         let row = sqlx::query_as::<_, SourceRuntimeStateRow>(&format!(
             r#"INSERT INTO source_runtime_state (
                    source_slug, last_attempt_at, next_due_at, consecutive_failures,
                    rolling_success_rate, last_http_status, circuit_open_until,
                    last_error, updated_at
-               ) VALUES ($1, $2, $3, $4, $5, $6, $3, $7, $2)
+               ) VALUES (
+                   $1, $2,
+                   $2 + GREATEST(interval '30 minutes', make_interval(secs => $5)),
+                   1, 0.0, $3,
+                   $2 + GREATEST(interval '30 minutes', make_interval(secs => $5)),
+                   $4, $2
+               )
                ON CONFLICT (source_slug) DO UPDATE SET
                    last_attempt_at = EXCLUDED.last_attempt_at,
-                   next_due_at = EXCLUDED.next_due_at,
-                   consecutive_failures = EXCLUDED.consecutive_failures,
-                   rolling_success_rate = EXCLUDED.rolling_success_rate,
+                   consecutive_failures = source_runtime_state.consecutive_failures + 1,
+                   rolling_success_rate = LEAST(
+                       GREATEST(COALESCE(source_runtime_state.rolling_success_rate, 0.0), 0.0),
+                       1.0
+                   ) * (1.0 - $6::DOUBLE PRECISION),
+                   next_due_at = EXCLUDED.last_attempt_at + GREATEST(
+                       CASE
+                           WHEN source_runtime_state.consecutive_failures + 1 <= 1
+                               THEN interval '30 minutes'
+                           WHEN source_runtime_state.consecutive_failures + 1 = 2
+                               THEN interval '1 hour'
+                           WHEN source_runtime_state.consecutive_failures + 1 = 3
+                               THEN interval '2 hours'
+                           WHEN source_runtime_state.consecutive_failures + 1 = 4
+                               THEN interval '4 hours'
+                           ELSE interval '8 hours'
+                       END,
+                       make_interval(secs => $5)),
                    last_http_status = EXCLUDED.last_http_status,
-                   circuit_open_until = EXCLUDED.circuit_open_until,
+                   circuit_open_until = EXCLUDED.last_attempt_at + GREATEST(
+                       CASE
+                           WHEN source_runtime_state.consecutive_failures + 1 <= 1
+                               THEN interval '30 minutes'
+                           WHEN source_runtime_state.consecutive_failures + 1 = 2
+                               THEN interval '1 hour'
+                           WHEN source_runtime_state.consecutive_failures + 1 = 3
+                               THEN interval '2 hours'
+                           WHEN source_runtime_state.consecutive_failures + 1 = 4
+                               THEN interval '4 hours'
+                           ELSE interval '8 hours'
+                       END,
+                       make_interval(secs => $5)),
                    last_error = EXCLUDED.last_error,
                    updated_at = EXCLUDED.updated_at
                RETURNING {SOURCE_RUNTIME_COLUMNS}"#
         ))
         .bind(source_slug)
         .bind(now)
-        .bind(next_due_at)
-        .bind(consecutive_failures)
-        .bind(rolling_success_rate)
         .bind(last_http_status)
         .bind(last_error)
-        .fetch_one(&mut *tx)
+        .bind(min_interval_secs)
+        .bind(EWMA_ALPHA)
+        .fetch_one(&self.pool)
         .await?;
-
-        tx.commit().await?;
         Ok(row)
     }
 
@@ -219,6 +244,11 @@ impl PgStore {
     /// circuit breaker, advances both rolling EWMAs (success rate and latency),
     /// stamps `last_success_at` and schedules the next attempt at
     /// `now + min_interval`.
+    ///
+    /// Like [`Self::record_source_attempt_failure`], this is one
+    /// `INSERT ... ON CONFLICT DO UPDATE`: the stored EWMA values are read and
+    /// blended inside the statement, so concurrent workers cannot overwrite
+    /// each other's counter/EWMA updates with stale values.
     pub async fn record_source_success(
         &self,
         source_slug: &str,
@@ -227,32 +257,31 @@ impl PgStore {
         last_http_status: Option<i32>,
         now: DateTime<Utc>,
     ) -> Result<SourceRuntimeStateRow> {
-        let mut tx = self.pool.begin().await?;
-        let previous: Option<(Option<f64>, Option<f64>)> = sqlx::query_as(
-            "SELECT rolling_success_rate, rolling_latency_ms FROM source_runtime_state \
-             WHERE source_slug = $1 FOR UPDATE",
-        )
-        .bind(source_slug)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let (previous_rate, previous_latency) = previous.unwrap_or((None, None));
-        let rolling_success_rate = ewma_success_rate(previous_rate, true);
-        let rolling_latency_ms = ewma_latency_ms(previous_latency, latency_ms);
         let next_due_at = next_due_after_success(now, min_interval);
-
         let row = sqlx::query_as::<_, SourceRuntimeStateRow>(&format!(
             r#"INSERT INTO source_runtime_state (
                    source_slug, last_attempt_at, last_success_at, next_due_at,
                    consecutive_failures, rolling_success_rate, rolling_latency_ms,
                    last_http_status, circuit_open_until, last_error, updated_at
-               ) VALUES ($1, $2, $2, $3, 0, $4, $5, $6, NULL, NULL, $2)
+               ) VALUES ($1, $2, $2, $3, 0, 1.0, $4, $5, NULL, NULL, $2)
                ON CONFLICT (source_slug) DO UPDATE SET
                    last_attempt_at = EXCLUDED.last_attempt_at,
                    last_success_at = EXCLUDED.last_success_at,
                    next_due_at = EXCLUDED.next_due_at,
                    consecutive_failures = 0,
-                   rolling_success_rate = EXCLUDED.rolling_success_rate,
-                   rolling_latency_ms = EXCLUDED.rolling_latency_ms,
+                   rolling_success_rate = LEAST(
+                       GREATEST(COALESCE(source_runtime_state.rolling_success_rate, 1.0), 0.0),
+                       1.0
+                   ) * (1.0 - $6::DOUBLE PRECISION) + $6::DOUBLE PRECISION,
+                   rolling_latency_ms = CASE
+                       WHEN $4::DOUBLE PRECISION IS NULL
+                           THEN source_runtime_state.rolling_latency_ms
+                       WHEN source_runtime_state.rolling_latency_ms IS NULL
+                           THEN $4::DOUBLE PRECISION
+                       ELSE source_runtime_state.rolling_latency_ms
+                                * (1.0 - $6::DOUBLE PRECISION)
+                            + $4::DOUBLE PRECISION * $6::DOUBLE PRECISION
+                   END,
                    last_http_status = EXCLUDED.last_http_status,
                    circuit_open_until = NULL,
                    last_error = NULL,
@@ -262,13 +291,11 @@ impl PgStore {
         .bind(source_slug)
         .bind(now)
         .bind(next_due_at)
-        .bind(rolling_success_rate)
-        .bind(rolling_latency_ms)
+        .bind(latency_ms)
         .bind(last_http_status)
-        .fetch_one(&mut *tx)
+        .bind(EWMA_ALPHA)
+        .fetch_one(&self.pool)
         .await?;
-
-        tx.commit().await?;
         Ok(row)
     }
 

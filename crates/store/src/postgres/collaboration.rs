@@ -141,13 +141,13 @@ async fn delete_annotation_on(
     user_id: &str,
     id: Uuid,
 ) -> Result<bool> {
-    let result = sqlx::query(
-        "DELETE FROM annotations WHERE id = $1 AND (user_id = $2 OR visibility = 'team')",
-    )
-    .bind(id)
-    .bind(user_id)
-    .execute(&mut *conn)
-    .await?;
+    // Owner-only: a `team`-visible annotation may be read by teammates, but
+    // only its author may delete it.
+    let result = sqlx::query("DELETE FROM annotations WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -159,41 +159,33 @@ async fn update_priority_queue_item_on(
     status: Option<&str>,
     notes: Option<Option<&str>>,
 ) -> Result<Option<PriorityQueueItemRecord>> {
-    let current = match sqlx::query_as::<_, PriorityQueueItemRecord>(
-        "SELECT id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at FROM priority_queue WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&mut *conn)
-    .await?
-    {
-        Some(c) => c,
-        None => return Ok(None),
+    // Single statement: the previous read-then-write lost concurrent updates
+    // and reset `completed_at` every time an already-completed item was saved
+    // again. `COALESCE(completed_at, NOW())` preserves the original completion
+    // time; moving away from `completed` clears it.
+    let (notes_set, notes_value) = match notes {
+        Some(value) => (true, value),
+        None => (false, None),
     };
-
-    let new_status = status.unwrap_or(&current.status).to_string();
-    let completed_at: Option<DateTime<Utc>> = if new_status == "completed" {
-        Some(Utc::now())
-    } else {
-        None
-    };
-
     Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
         r#"UPDATE priority_queue SET
-             priority = $3,
-             status = $4,
-             notes = $5,
-             completed_at = $6,
+             priority = COALESCE($3, priority),
+             status = COALESCE($4, status),
+             notes = CASE WHEN $5 THEN $6 ELSE notes END,
+             completed_at = CASE
+                 WHEN COALESCE($4, status) = 'completed' THEN COALESCE(completed_at, NOW())
+                 ELSE NULL
+             END,
              updated_at = NOW()
            WHERE id = $1 AND user_id = $2
            RETURNING id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at"#,
     )
     .bind(id)
     .bind(user_id)
-    .bind(priority.unwrap_or(current.priority))
-    .bind(&new_status)
-    .bind(notes.unwrap_or(current.notes.as_deref()))
-    .bind(completed_at)
+    .bind(priority)
+    .bind(status)
+    .bind(notes_set)
+    .bind(notes_value)
     .fetch_optional(&mut *conn)
     .await?)
 }
@@ -1101,12 +1093,104 @@ impl PgStore {
         let query = if include_closed {
             "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities ORDER BY priority_score DESC, created_at DESC LIMIT $1"
         } else {
-            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE status != 'closed' ORDER BY priority_score DESC, created_at DESC LIMIT $1"
+            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE status NOT IN ('completed', 'abandoned') ORDER BY priority_score DESC, created_at DESC LIMIT $1"
         };
         Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(query)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?)
+    }
+
+    /// Strategic opportunities filtered in SQL. Threshold and region filters
+    /// used to run in memory on a page of `limit` rows, so a matching row
+    /// ranked below the page vanished and callers saw an empty list.
+    pub async fn list_strategic_opportunities_filtered(
+        &self,
+        include_closed: bool,
+        priority_threshold: Option<f64>,
+        region: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<StrategicOpportunityRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
+            r#"
+            SELECT id, title, description, opportunity_type, priority_score::double precision,
+                   confidence::double precision, entity_id, entity_type, region,
+                   estimated_value::double precision, recommended_actions, owner_id, status,
+                   due_date, metadata, created_at, updated_at
+            FROM strategic_opportunities
+            WHERE ($1::boolean OR status NOT IN ('completed', 'abandoned'))
+              AND ($2::double precision IS NULL OR priority_score::double precision >= $2)
+              AND ($3::text IS NULL OR region = $3)
+            ORDER BY priority_score DESC, created_at DESC
+            LIMIT $4
+            "#,
+        )
+        .bind(include_closed)
+        .bind(priority_threshold)
+        .bind(region)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Dashboard totals and aggregates computed with `COUNT(*)`/`AVG` in SQL.
+    /// The handler used to derive them from a capped page, so totals froze at
+    /// the page size and the average ignored every later row.
+    ///
+    /// Returns `(total_opportunities, total_threats, high_priority_count,
+    /// average_confidence, regions)`.
+    #[allow(clippy::type_complexity)]
+    pub async fn executive_dashboard_aggregates(
+        &self,
+        include_opportunities: bool,
+        include_threats: bool,
+        priority_threshold: f64,
+        region_filter: Option<&str>,
+    ) -> Result<(i64, i64, i64, f64, Vec<String>)> {
+        Ok(sqlx::query_as::<_, (i64, i64, i64, f64, Vec<String>)>(
+            r#"
+            WITH opportunity_rows AS (
+                SELECT priority_score::double precision AS priority_score,
+                       confidence::double precision AS confidence,
+                       region
+                FROM strategic_opportunities
+                WHERE $1::boolean AND status NOT IN ('completed', 'abandoned')
+                  AND ($4::text IS NULL OR region = $4)
+            ),
+            threat_rows AS (
+                SELECT impact_score::double precision AS impact_score,
+                       confidence::double precision AS confidence,
+                       region
+                FROM critical_threats
+                WHERE $2::boolean AND status = 'active'
+                  AND ($4::text IS NULL OR region = $4)
+            ),
+            confidence_rows AS (
+                SELECT confidence FROM opportunity_rows
+                UNION ALL
+                SELECT confidence FROM threat_rows
+            ),
+            region_rows AS (
+                SELECT region FROM opportunity_rows WHERE region IS NOT NULL
+                UNION
+                SELECT region FROM threat_rows WHERE region IS NOT NULL
+            )
+            SELECT
+                (SELECT COUNT(*)::bigint FROM opportunity_rows),
+                (SELECT COUNT(*)::bigint FROM threat_rows),
+                (SELECT COUNT(*)::bigint FROM opportunity_rows WHERE priority_score >= $3)
+                  + (SELECT COUNT(*)::bigint FROM threat_rows WHERE impact_score >= $3),
+                COALESCE((SELECT AVG(confidence) FROM confidence_rows)::double precision, 0.0),
+                COALESCE((SELECT array_agg(region) FROM region_rows), ARRAY[]::text[])
+            "#,
+        )
+        .bind(include_opportunities)
+        .bind(include_threats)
+        .bind(priority_threshold)
+        .bind(region_filter)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     pub async fn create_strategic_opportunity(
@@ -1174,6 +1258,67 @@ impl PgStore {
         .await?)
     }
 
+    /// Full PATCH update: every column is applied only when provided
+    /// (`COALESCE($n, col)`), so a partial payload never erases the other
+    /// fields — the old helper could only flip `status`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_strategic_opportunity(
+        &self,
+        id: Uuid,
+        title: Option<&str>,
+        description: Option<&str>,
+        opportunity_type: Option<&str>,
+        priority_score: Option<f64>,
+        confidence: Option<f64>,
+        entity_id: Option<Uuid>,
+        entity_type: Option<&str>,
+        region: Option<&str>,
+        estimated_value: Option<&str>,
+        recommended_actions: Option<&Value>,
+        owner_id: Option<&str>,
+        due_date: Option<DateTime<Utc>>,
+        status: Option<&str>,
+    ) -> Result<Option<StrategicOpportunityRecord>> {
+        Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
+            r#"UPDATE strategic_opportunities SET
+                 title = COALESCE($2, title),
+                 description = COALESCE($3, description),
+                 opportunity_type = COALESCE($4, opportunity_type),
+                 priority_score = COALESCE($5, priority_score),
+                 confidence = COALESCE($6, confidence),
+                 entity_id = COALESCE($7, entity_id),
+                 entity_type = COALESCE($8, entity_type),
+                 region = COALESCE($9, region),
+                 estimated_value = COALESCE($10, estimated_value),
+                 recommended_actions = COALESCE($11, recommended_actions),
+                 owner_id = COALESCE($12, owner_id),
+                 due_date = COALESCE($13, due_date),
+                 status = COALESCE($14, status),
+                 updated_at = NOW()
+               WHERE id = $1
+               RETURNING id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at"#,
+        )
+        .bind(id)
+        .bind(title)
+        .bind(description)
+        .bind(opportunity_type)
+        .bind(priority_score)
+        .bind(confidence)
+        // `strategic_opportunities.entity_id` is VARCHAR(100): binding a UUID
+        // makes `COALESCE($7, entity_id)` unresolvable (uuid vs varchar) and
+        // fails every PATCH. Send the text form the column stores.
+        .bind(entity_id.map(|value| value.to_string()))
+        .bind(entity_type)
+        .bind(region)
+        .bind(estimated_value)
+        .bind(recommended_actions)
+        .bind(owner_id)
+        .bind(due_date)
+        .bind(status)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     // ─── Critical Threats ─────────────────────────────────────────────────────
 
     pub async fn list_critical_threats(&self, limit: i64) -> Result<Vec<CriticalThreatRecord>> {
@@ -1181,6 +1326,39 @@ impl PgStore {
         Ok(sqlx::query_as::<_, CriticalThreatRecord>(
             "SELECT id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE status = 'active' ORDER BY impact_score DESC, created_at DESC LIMIT $1",
         )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Active threats filtered in SQL (impact threshold, region, severity), so
+    /// in-memory filtering can no longer return short or empty pages.
+    pub async fn list_critical_threats_filtered(
+        &self,
+        impact_threshold: Option<f64>,
+        region: Option<&str>,
+        severity: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<CriticalThreatRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, CriticalThreatRecord>(
+            r#"
+            SELECT id, title, description, threat_type, severity,
+                   impact_score::double precision, confidence::double precision,
+                   entity_id, entity_type, region, mitigation_steps, owner_id, status,
+                   sla_deadline, resolved_at, metadata, created_at, updated_at
+            FROM critical_threats
+            WHERE status = 'active'
+              AND ($1::double precision IS NULL OR impact_score::double precision >= $1)
+              AND ($2::text IS NULL OR region = $2)
+              AND ($3::text IS NULL OR lower(severity) = lower($3))
+            ORDER BY impact_score DESC, created_at DESC
+            LIMIT $4
+            "#,
+        )
+        .bind(impact_threshold)
+        .bind(region)
+        .bind(severity)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)
@@ -1232,23 +1410,96 @@ impl PgStore {
         .await?)
     }
 
+    /// Status transition with `resolved_at` derived from the status itself:
+    /// entering `resolved` stamps (and preserves) the resolution time, any
+    /// other status clears it. The old signature took a separate `resolved`
+    /// flag that could disagree with `status`.
     pub async fn update_critical_threat_status(
         &self,
         id: Uuid,
         status: &str,
-        resolved: bool,
     ) -> Result<Option<CriticalThreatRecord>> {
-        let resolved_at = if resolved { "NOW()" } else { "NULL" };
-        let sql = format!(
-            r#"UPDATE critical_threats SET status = $2, resolved_at = {resolved_at}, updated_at = NOW()
+        self.update_critical_threat(
+            id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(status),
+        )
+        .await
+    }
+
+    /// Full PATCH update: every column is applied only when provided
+    /// (`COALESCE($n, col)`), with `resolved_at` derived from the resulting
+    /// status.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_critical_threat(
+        &self,
+        id: Uuid,
+        title: Option<&str>,
+        description: Option<&str>,
+        threat_type: Option<&str>,
+        severity: Option<&str>,
+        impact_score: Option<f64>,
+        confidence: Option<f64>,
+        entity_id: Option<Uuid>,
+        entity_type: Option<&str>,
+        region: Option<&str>,
+        mitigation_steps: Option<&Value>,
+        owner_id: Option<&str>,
+        sla_deadline: Option<DateTime<Utc>>,
+        status: Option<&str>,
+    ) -> Result<Option<CriticalThreatRecord>> {
+        Ok(sqlx::query_as::<_, CriticalThreatRecord>(
+            r#"UPDATE critical_threats SET
+                 title = COALESCE($2, title),
+                 description = COALESCE($3, description),
+                 threat_type = COALESCE($4, threat_type),
+                 severity = COALESCE($5, severity),
+                 impact_score = COALESCE($6, impact_score),
+                 confidence = COALESCE($7, confidence),
+                 entity_id = COALESCE($8, entity_id),
+                 entity_type = COALESCE($9, entity_type),
+                 region = COALESCE($10, region),
+                 mitigation_steps = COALESCE($11, mitigation_steps),
+                 owner_id = COALESCE($12, owner_id),
+                 sla_deadline = COALESCE($13, sla_deadline),
+                 status = COALESCE($14, status),
+                 resolved_at = CASE
+                     WHEN COALESCE($14, status) = 'resolved' THEN COALESCE(resolved_at, NOW())
+                     ELSE NULL
+                 END,
+                 updated_at = NOW()
                WHERE id = $1
-               RETURNING id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#
-        );
-        Ok(sqlx::query_as::<_, CriticalThreatRecord>(&sql)
-            .bind(id)
-            .bind(status)
-            .fetch_optional(&self.pool)
-            .await?)
+               RETURNING id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#,
+        )
+        .bind(id)
+        .bind(title)
+        .bind(description)
+        .bind(threat_type)
+        .bind(severity)
+        .bind(impact_score)
+        .bind(confidence)
+        // `critical_threats.entity_id` is VARCHAR(100); see the opportunity
+        // update for why the UUID must be sent as text.
+        .bind(entity_id.map(|value| value.to_string()))
+        .bind(entity_type)
+        .bind(region)
+        .bind(mitigation_steps)
+        .bind(owner_id)
+        .bind(sla_deadline)
+        .bind(status)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     // ─── Investigation Workspaces ─────────────────────────────────────────────
@@ -1262,6 +1513,57 @@ impl PgStore {
             "SELECT id, name, description, workspace_type, owner_id, team_id, status, visibility, tags, entity_focus, findings, conclusions, metadata, created_at, updated_at, closed_at FROM investigation_workspaces ORDER BY updated_at DESC LIMIT $1",
         )
         .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Workspaces visible to one principal, filtered in SQL so `LIMIT` cannot
+    /// truncate before the visibility filter (which returned short pages).
+    ///
+    /// Admin sees everything; otherwise a workspace is visible when the user
+    /// owns it, it is organization/public, or the user holds an unexpired
+    /// share or an assignment. `team` visibility is not enforced until a team
+    /// membership model exists, so it grants nothing on its own.
+    pub async fn list_visible_investigation_workspaces(
+        &self,
+        user_id: &str,
+        is_admin: bool,
+        workspace_type: Option<&str>,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<InvestigationWorkspaceRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
+            r#"
+            SELECT w.id, w.name, w.description, w.workspace_type, w.owner_id, w.team_id,
+                   w.status, w.visibility, w.tags, w.entity_focus, w.findings, w.conclusions,
+                   w.metadata, w.created_at, w.updated_at, w.closed_at
+            FROM investigation_workspaces w
+            WHERE (
+                    $2::boolean
+                 OR w.owner_id = $1
+                 OR w.visibility IN ('organization', 'public')
+                 OR EXISTS (
+                       SELECT 1 FROM workspace_assignments a
+                       WHERE a.workspace_id = w.id AND a.user_id = $1
+                 )
+                 OR EXISTS (
+                       SELECT 1 FROM investigation_shares s
+                       WHERE s.workspace_id = w.id AND s.shared_with = $1
+                         AND (s.expires_at IS NULL OR s.expires_at > now())
+                 )
+              )
+              AND ($4::text IS NULL OR w.workspace_type = $4)
+              AND ($5::text IS NULL OR w.status = $5)
+            ORDER BY w.updated_at DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(is_admin)
+        .bind(limit)
+        .bind(workspace_type)
+        .bind(status)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -1342,6 +1644,11 @@ impl PgStore {
         .await?)
     }
 
+    /// Partial update in a single statement. Absent columns keep their stored
+    /// value (`COALESCE`), so a concurrent edit is never overwritten with a
+    /// value read before it. An explicitly-null `description`/`findings`/
+    /// `conclusions` still clears the column via its set-flag.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_investigation_workspace(
         &self,
         id: Uuid,
@@ -1350,35 +1657,52 @@ impl PgStore {
         status: Option<&str>,
         tags: Option<&[String]>,
         entity_focus: Option<&Value>,
+        metadata: Option<&Value>,
         findings: Option<Option<&str>>,
         conclusions: Option<Option<&str>>,
     ) -> Result<Option<InvestigationWorkspaceRecord>> {
-        let current = match self.get_investigation_workspace(id).await? {
-            Some(c) => c,
-            None => return Ok(None),
+        let (description_set, description_value) = match description {
+            Some(value) => (true, value),
+            None => (false, None),
+        };
+        let (findings_set, findings_value) = match findings {
+            Some(value) => (true, value),
+            None => (false, None),
+        };
+        let (conclusions_set, conclusions_value) = match conclusions {
+            Some(value) => (true, value),
+            None => (false, None),
         };
         Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
             r#"UPDATE investigation_workspaces SET
-                 name = $2,
-                 description = $3,
-                 status = $4,
-                 tags = $5,
-                 entity_focus = $6,
-                 findings = $7,
-                 conclusions = $8,
-                 closed_at = CASE WHEN $4 = 'closed' THEN COALESCE(closed_at, NOW()) ELSE closed_at END,
+                 name = COALESCE($2, name),
+                 description = CASE WHEN $3 THEN $4 ELSE description END,
+                 status = COALESCE($5, status),
+                 tags = COALESCE($6, tags),
+                 entity_focus = COALESCE($7, entity_focus),
+                 metadata = COALESCE($8, metadata),
+                 findings = CASE WHEN $9 THEN $10 ELSE findings END,
+                 conclusions = CASE WHEN $11 THEN $12 ELSE conclusions END,
+                 closed_at = CASE
+                     WHEN COALESCE($5, status) = 'closed' THEN COALESCE(closed_at, NOW())
+                     ELSE closed_at
+                 END,
                  updated_at = NOW()
                WHERE id = $1
                RETURNING id, name, description, workspace_type, owner_id, team_id, status, visibility, tags, entity_focus, findings, conclusions, metadata, created_at, updated_at, closed_at"#,
         )
         .bind(id)
-        .bind(name.unwrap_or(&current.name))
-        .bind(description.unwrap_or(current.description.as_deref()))
-        .bind(status.unwrap_or(&current.status))
-        .bind(tags.unwrap_or(&current.tags))
-        .bind(entity_focus.unwrap_or(&current.entity_focus))
-        .bind(findings.unwrap_or(current.findings.as_deref()))
-        .bind(conclusions.unwrap_or(current.conclusions.as_deref()))
+        .bind(name)
+        .bind(description_set)
+        .bind(description_value)
+        .bind(status)
+        .bind(tags.map(|values| values.to_vec()))
+        .bind(entity_focus.cloned())
+        .bind(metadata.cloned())
+        .bind(findings_set)
+        .bind(findings_value)
+        .bind(conclusions_set)
+        .bind(conclusions_value)
         .fetch_optional(&self.pool)
         .await?)
     }
@@ -1405,6 +1729,8 @@ impl PgStore {
         .await?)
     }
 
+    /// Idempotent assignment: re-assigning an existing member updates their
+    /// role instead of failing on the `(workspace_id, user_id)` unique index.
     pub async fn create_workspace_assignment(
         &self,
         workspace_id: Uuid,
@@ -1415,6 +1741,9 @@ impl PgStore {
         Ok(sqlx::query_as::<_, WorkspaceAssignmentRecord>(
             r#"INSERT INTO workspace_assignments (workspace_id, user_id, role, assigned_by)
                VALUES ($1, $2, $3, $4)
+               ON CONFLICT (workspace_id, user_id) DO UPDATE SET
+                 role = EXCLUDED.role,
+                 updated_at = NOW()
                RETURNING id, workspace_id, user_id, role, assigned_by, assigned_at, updated_at"#,
         )
         .bind(workspace_id)
@@ -1442,8 +1771,18 @@ impl PgStore {
 
     // ─── Activity Feed ────────────────────────────────────────────────────────
 
+    /// Activity visible to one principal.
+    ///
+    /// Rows attached to a workspace are only returned when that workspace is
+    /// visible to the caller (the same predicate as
+    /// [`Self::list_visible_investigation_workspaces`], admin bypass
+    /// included). Independently, an activity row marked `private` is only
+    /// returned to its actor. Rows without a workspace stay visible — they are
+    /// platform/system events — subject to the private-actor rule.
     pub async fn list_activity_feed(
         &self,
+        user_id: &str,
+        is_admin: bool,
         workspace_id: Option<Uuid>,
         team_id: Option<&str>,
         actor_id: Option<&str>,
@@ -1451,8 +1790,41 @@ impl PgStore {
     ) -> Result<Vec<ActivityFeedRecord>> {
         let limit = clamp_limit(limit);
         Ok(sqlx::query_as::<_, ActivityFeedRecord>(
-            "SELECT id, actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, workspace_id, team_id, visibility, created_at FROM activity_feed WHERE ($1::uuid IS NULL OR workspace_id = $1) AND ($2::text IS NULL OR team_id = $2) AND ($3::text IS NULL OR actor_id = $3) ORDER BY created_at DESC LIMIT $4",
+            r#"
+            SELECT a.id, a.actor_id, a.actor_name, a.action_type, a.entity_type, a.entity_id,
+                   a.entity_name, a.details, a.workspace_id, a.team_id, a.visibility, a.created_at
+            FROM activity_feed a
+            WHERE ($3::uuid IS NULL OR a.workspace_id = $3)
+              AND ($4::text IS NULL OR a.team_id = $4)
+              AND ($5::text IS NULL OR a.actor_id = $5)
+              AND (
+                    a.workspace_id IS NULL
+                 OR $2::boolean
+                 OR EXISTS (
+                       SELECT 1 FROM investigation_workspaces w
+                       WHERE w.id = a.workspace_id
+                         AND (
+                               w.owner_id = $1
+                            OR w.visibility IN ('organization', 'public')
+                            OR EXISTS (
+                                  SELECT 1 FROM workspace_assignments wa
+                                  WHERE wa.workspace_id = w.id AND wa.user_id = $1
+                            )
+                            OR EXISTS (
+                                  SELECT 1 FROM investigation_shares s
+                                  WHERE s.workspace_id = w.id AND s.shared_with = $1
+                                    AND (s.expires_at IS NULL OR s.expires_at > now())
+                            )
+                         )
+                 )
+              )
+              AND (a.visibility <> 'private' OR a.actor_id = $1)
+            ORDER BY a.created_at DESC
+            LIMIT $6
+            "#,
         )
+        .bind(user_id)
+        .bind(is_admin)
         .bind(workspace_id)
         .bind(team_id)
         .bind(actor_id)
@@ -1658,37 +2030,36 @@ impl PgStore {
         .await?)
     }
 
+    /// Single-statement update: absent fields keep their current value, so a
+    /// PATCH that only carries `risk_score` cannot erase `mitigation` (and a
+    /// concurrent mitigation edit cannot be lost to a stale read).
     pub async fn update_supplier_risk_entry(
         &self,
         id: Uuid,
         risk_score: Option<f64>,
+        risk_factors: Option<&Value>,
         mitigation: Option<&str>,
+        owner_id: Option<&str>,
         status: Option<&str>,
     ) -> Result<Option<SupplierRiskEntryRecord>> {
-        let current = match sqlx::query_as::<_, SupplierRiskEntryRecord>(
-            "SELECT id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at FROM supplier_risk WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await? {
-            Some(c) => c,
-            None => return Ok(None),
-        };
-
         Ok(sqlx::query_as::<_, SupplierRiskEntryRecord>(
             r#"UPDATE supplier_risk SET
-                 risk_score = $2,
-                 mitigation = $3,
-                 status = $4,
+                 risk_score = COALESCE($2, risk_score),
+                 risk_factors = COALESCE($3, risk_factors),
+                 mitigation = COALESCE($4, mitigation),
+                 owner_id = COALESCE($5, owner_id),
+                 status = COALESCE($6, status),
                  last_reviewed = NOW(),
                  updated_at = NOW()
                WHERE id = $1
                RETURNING id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at"#,
         )
         .bind(id)
-        .bind(risk_score.unwrap_or(current.risk_score))
+        .bind(risk_score)
+        .bind(risk_factors)
         .bind(mitigation)
-        .bind(status.unwrap_or(&current.status))
+        .bind(owner_id)
+        .bind(status)
         .fetch_optional(&self.pool)
         .await?)
     }

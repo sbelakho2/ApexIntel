@@ -62,7 +62,10 @@ fn worker_state_from_job_def(def: &JobDef) -> apex_store::postgres::WorkerJobSta
     }
 }
 
-fn worker_history_from_run(run: &JobRun) -> apex_store::postgres::WorkerJobHistoryRecord {
+fn worker_history_from_run(
+    run: &JobRun,
+    instance_id: &str,
+) -> apex_store::postgres::WorkerJobHistoryRecord {
     let status = match &run.status {
         JobStatus::Pending => "pending",
         JobStatus::Running => "running",
@@ -82,13 +85,14 @@ fn worker_history_from_run(run: &JobRun) -> apex_store::postgres::WorkerJobHisto
         duration_ms: Some(run.duration_ms() as i64),
         items_processed: run.items_processed as i64,
         notes: run.notes.clone(),
+        instance_id: instance_id.to_string(),
         created_at: Utc::now(),
     }
 }
 
-async fn persist_run_history(store: &Arc<PgStore>, run: &JobRun) {
+async fn persist_run_history(store: &Arc<PgStore>, run: &JobRun, instance_id: &str) {
     if let Err(error) = store
-        .insert_worker_job_history(&worker_history_from_run(run))
+        .insert_worker_job_history(&worker_history_from_run(run, instance_id))
         .await
     {
         tracing::warn!(job = run.kind.as_str(), run_id = %run.run_id, error = %error, "failed to persist worker job history");
@@ -143,6 +147,9 @@ pub(crate) fn restore_scheduler_state(
                 Some("running") => Some(JobStatus::Skipped {
                     reason: "previous run recovered after worker restart".to_string(),
                 }),
+                Some("interrupted") => Some(JobStatus::Skipped {
+                    reason: "previous run was interrupted by worker shutdown".to_string(),
+                }),
                 Some("pending") => Some(JobStatus::Pending),
                 _ => None,
             };
@@ -156,6 +163,7 @@ pub(crate) async fn tick_scheduler(
     store: &Arc<PgStore>,
     ctx: &JobExecutionContext,
     progress: &SchedulerProgressClock,
+    instance_id: &str,
 ) {
     tracing::trace!("scheduler_tick_start");
     let now = Utc::now();
@@ -189,7 +197,7 @@ pub(crate) async fn tick_scheduler(
             .unwrap_or(1800);
         let lease_secs = (declared_timeout as i64 * 2 + 60).max(120);
         match store
-            .try_claim_scheduled_job(kind.as_str(), lease_secs)
+            .try_claim_scheduled_job(kind.as_str(), instance_id, lease_secs)
             .await
         {
             Ok(true) => {}
@@ -281,7 +289,7 @@ pub(crate) async fn tick_scheduler(
             duration_ms = run.duration_ms(),
             "job completed"
         );
-        persist_run_history(store, &run).await;
+        persist_run_history(store, &run, instance_id).await;
         scheduler.record_run(run);
         persist_scheduler_state(store, scheduler, &kind).await;
     }
@@ -293,6 +301,7 @@ pub(crate) async fn poll_trigger_queue(
     max_claims_per_poll: usize,
     manual_trigger_timeout_secs: i64,
     ctx: &JobExecutionContext,
+    instance_id: &str,
 ) {
     match store
         .timeout_stale_job_triggers(manual_trigger_timeout_secs)
@@ -329,10 +338,11 @@ pub(crate) async fn poll_trigger_queue(
 
                 let store = Arc::clone(store);
                 let job_context = ctx.clone();
+                let instance_id = instance_id.to_string();
                 tokio::spawn(async move {
                     let _permit = permit;
                     let run = execute_job(&kind, &store, &job_context).await;
-                    persist_run_history(&store, &run).await;
+                    persist_run_history(&store, &run, &instance_id).await;
                     let error = if matches!(run.status, JobStatus::Failed { .. }) {
                         Some(run.notes.as_str())
                     } else {

@@ -70,7 +70,9 @@ static RE_WEBSITE: LazyLock<Regex> = LazyLock::new(|| {
 /// Extract directory information from page text.
 pub fn extract_directory(body_text: &str, title: &str, url: &str) -> DirectoryExtract {
     let normalized_body = normalizer::normalize_whitespace(body_text);
-    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
+    // No raw-URL fallback: a hostile or over-long page URL must never survive
+    // extraction (same contract as `html::sanitize_extracted_href`).
+    let normalized_url = normalize_url(url).unwrap_or_default();
 
     // Determine directory type based on content
     let directory_type = if title.to_lowercase().contains("chamber of commerce") {

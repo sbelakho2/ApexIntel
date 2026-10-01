@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # scripts/restore.sh — Restore ApexIntel from backup
 # Usage: ./scripts/restore.sh /path/to/backup/directory
+#
+# The destructive steps below run under `set -e`: a failed terminate/drop/
+# create/restore aborts the script with a non-zero exit instead of falling
+# through to an unconditional "Restore complete."
 
 set -euo pipefail
 
@@ -25,24 +29,37 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Terminate existing connections
-psql "${DB_URL}" -c \
-    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'apexintel' AND pid <> pg_backend_pid();" \
-    2>/dev/null || true
+# Derive the database name and a maintenance URL: DROP/CREATE DATABASE cannot
+# run through a connection to the database being replaced.
+DB_URL_NO_QUERY="${DB_URL%%\?*}"
+DB_QUERY=""
+if [[ "${DB_URL}" == *\?* ]]; then
+    DB_QUERY="?${DB_URL#*\?}"
+fi
+DB_NAME="${DB_URL_NO_QUERY##*/}"
+if [[ -z "${DB_NAME}" || "${DB_NAME}" == "${DB_URL_NO_QUERY}" ]]; then
+    echo "ERROR: cannot derive a database name from DATABASE_URL"
+    exit 1
+fi
+MAINT_URL="${DB_URL_NO_QUERY%/*}/postgres${DB_QUERY}"
 
-# Drop and recreate using the full DATABASE_URL for host/port awareness
-psql "${DB_URL}" -c "DROP DATABASE IF EXISTS apexintel" 2>/dev/null || true
-psql "${DB_URL}" -c "CREATE DATABASE apexintel" 2>/dev/null || true
+# Terminate existing connections; DROP DATABASE fails while any remain.
+psql "${MAINT_URL}" -v ON_ERROR_STOP=1 -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}' AND pid <> pg_backend_pid();"
 
-# Restore
+# Drop and recreate. No `|| true`: a failure here must abort the restore.
+psql "${MAINT_URL}" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${DB_NAME}\""
+psql "${MAINT_URL}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${DB_NAME}\""
+
+# Restore database (non-zero exit propagates; success is only printed after).
 echo "[$(date)] Restoring database..."
 pg_restore -d "${DB_URL}" --no-owner --no-acl --clean --if-exists \
-    "${BACKUP_DIR}/apexintel.pgdump" 2>&1 || true
+    "${BACKUP_DIR}/apexintel.pgdump"
 
 # Restore config
 if [[ -d "${BACKUP_DIR}/config" ]]; then
     echo "[$(date)] Restoring config..."
-    cp -r "${BACKUP_DIR}/config/"* /opt/apexintel/config/ 2>/dev/null || true
+    cp -r "${BACKUP_DIR}/config/"* /opt/apexintel/config/
 fi
 
 echo "[$(date)] Restore complete."

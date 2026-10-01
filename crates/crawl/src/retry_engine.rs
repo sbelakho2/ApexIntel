@@ -453,9 +453,12 @@ impl RetryEngine {
             );
         }
 
-        // Calculate delay
+        // Calculate delay. `Retry-After` is attacker-controlled, so it is
+        // capped by the configured maximum just like every other delay; an
+        // uncapped value let a hostile server pin the task for years.
         let delay = error
             .retry_after()
+            .map(|retry_after| retry_after.min(self.config.max_delay))
             .unwrap_or_else(|| self.calculate_delay(attempt));
 
         RetryDecision::retry_now(attempt + 1, delay)
@@ -997,6 +1000,26 @@ mod tests {
         // to attempt 0; the exponential base dominates the +/-30% jitter.
         let max_attempt = engine.calculate_delay(10);
         assert!(max_attempt >= engine.config.base_delay);
+    }
+
+    #[test]
+    fn retry_after_is_capped_by_max_delay() {
+        let engine = RetryEngine::with_default_config();
+        let error = CrawlError::from_status(
+            "https://hostile.example/",
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            // One year: a hostile Retry-After must not become the sleep time.
+            Some(31_536_000),
+            None,
+        );
+        let decision = engine.should_retry(&error, 0, "hostile.example");
+        assert!(decision.should_retry, "429 is retryable");
+        assert!(
+            decision.delay <= engine.config.max_delay,
+            "delay {:?} must be capped at {:?}",
+            decision.delay,
+            engine.config.max_delay
+        );
     }
 
     #[tokio::test]

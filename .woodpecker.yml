@@ -134,7 +134,7 @@ steps:
 
   # Fails if a migration header or body comment describes a different revision
   # than its filename (audit #40 + stale body numbering). Production-applied
-  # migrations (000..065, 068) are frozen and explicitly allowlisted in
+  # migrations (000..078) are frozen and explicitly allowlisted in
   # scripts/ci/frozen_migrations.txt.
   - name: migration-headers
     image: alpine:3.20
@@ -219,9 +219,6 @@ steps:
     commands:
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
       - bash scripts/ci/run_pg_integration_suites.sh
-      - cargo test -p apex-store --test migrations_integration --test alert_subscriptions_integration --test alert_subscription_crud_integration --test rls_scoped_integration --test event_outbox_integration --test notification_delivery_integration --locked -- --ignored --test-threads=1
-      # Canonical `app_users` login contract against the same migrated database.
-      - cargo test -p apex-api --test app_users_login_integration --locked -- --ignored --test-threads=1
 
   # SMOKE STAGE — server-rendered UI route sweep only. Builds the API (rust
   # image also has Node), starts it against the database service, and drives a

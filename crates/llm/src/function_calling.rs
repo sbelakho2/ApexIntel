@@ -42,6 +42,7 @@
 //! assert!(spec.validate().is_empty());
 //! ```
 
+use crate::inference::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;
@@ -404,6 +405,31 @@ pub struct ToolTraceEntry {
     pub ok: bool,
 }
 
+/// Hard cap on the serialized bytes of one tool result fed back to the model.
+const MAX_TOOL_RESULT_BYTES: usize = 16_384;
+
+/// Hard cap on the accumulated conversation bytes kept across iterations.
+/// Tool results are attacker-influenced (the model may echo untrusted values),
+/// so the loop must not grow the request without bound.
+const MAX_CONVERSATION_BYTES: usize = 262_144;
+
+/// Hard cap on tool calls executed from a single model response. A crafted or
+/// injected response can contain a large `tool_calls` array; only the first
+/// [`MAX_TOOL_CALLS_PER_ITERATION`] calls are executed.
+const MAX_TOOL_CALLS_PER_ITERATION: usize = 16;
+
+/// Serialize a tool result for the conversation, truncating to
+/// [`MAX_TOOL_RESULT_BYTES`] on a UTF-8 boundary.
+fn bounded_tool_result_text(value: &serde_json::Value) -> String {
+    let text = serde_json::to_string(value)
+        .unwrap_or_else(|_| "{\"error\":\"tool result is not serializable\"}".to_string());
+    crate::truncate_utf8(&text, MAX_TOOL_RESULT_BYTES).to_string()
+}
+
+fn conversation_bytes(messages: &[ChatMessage]) -> usize {
+    messages.iter().map(|message| message.content.len()).sum()
+}
+
 /// Run a multi-turn agent loop with the given LLM client, tool registry, and
 /// task prompt.
 ///
@@ -412,8 +438,9 @@ pub struct ToolTraceEntry {
 /// and append the results as `tool` messages; if the model emits a plain
 /// completion (no tool calls), that's the final answer.
 ///
-/// Stops when the model produces a final answer or `max_iterations` is reached
-/// (defaults to 6). This closes the previously-open function-calling loop.
+/// Stops when the model produces a final answer, `max_iterations` is reached
+/// (defaults to 6), or the conversation byte cap is hit. This closes the
+/// previously-open function-calling loop.
 pub async fn run_agent_loop(
     client: &crate::inference::LlmClient,
     registry: &ToolRegistry,
@@ -438,11 +465,20 @@ pub async fn run_agent_loop(
     let tools = registry.tool_specs_json();
     let mut trace: Vec<ToolTraceEntry> = Vec::new();
     let mut iterations = 0u32;
+    let mut conversation_len = conversation_bytes(&messages);
 
     loop {
         if iterations >= max_iterations {
             return Ok(AgentResult {
                 final_answer: "(reached max tool-call iterations without a final answer)".into(),
+                iterations,
+                tool_trace: trace,
+            });
+        }
+        if conversation_len > MAX_CONVERSATION_BYTES {
+            return Ok(AgentResult {
+                final_answer:
+                    "(conversation byte cap reached; return this partial answer for review)".into(),
                 iterations,
                 tool_trace: trace,
             });
@@ -468,10 +504,13 @@ pub async fn run_agent_loop(
         }
 
         // Append the assistant turn (the raw text including the tool-call block).
+        conversation_len += text.len();
         messages.push(ChatMessage::assistant(text));
 
-        // Execute each requested tool and feed the result back.
-        for call in &calls {
+        // Execute each requested tool and feed the result back. Per-iteration
+        // and per-result caps keep an injected `tool_calls` payload from
+        // fanning out into unbounded work or conversation growth.
+        for call in calls.iter().take(MAX_TOOL_CALLS_PER_ITERATION) {
             let outcome = registry.execute_call(call).await;
             let (result_json, ok) = match outcome {
                 Ok(v) => (v, true),
@@ -490,10 +529,12 @@ pub async fn run_agent_loop(
                 "tool": call.name,
                 "result": result_json,
             });
-            messages.push(ChatMessage::user(format!(
-                "[tool_result] {}\n\nContinue. You may call another tool or give your final answer.",
-                tool_msg
-            )));
+            let tool_text = bounded_tool_result_text(&tool_msg);
+            let tool_message = format!(
+                "[tool_result] {tool_text}\n\nContinue. You may call another tool or give your final answer."
+            );
+            conversation_len += tool_message.len();
+            messages.push(ChatMessage::user(tool_message));
         }
         let _ = tools; // tools are declared to the model via the system prompt
     }
@@ -758,6 +799,33 @@ mod tests {
     #[test]
     fn extract_first_json_returns_none_without_brace() {
         assert!(extract_first_json("no json here").is_none());
+    }
+
+    // Audit: tool results fed back into the conversation must be bounded so a
+    // huge tool payload cannot grow the request without limit.
+    #[test]
+    fn bounded_tool_result_text_truncates_oversized_payload() {
+        let huge = serde_json::json!({"blob": "x".repeat(100_000)});
+        let text = bounded_tool_result_text(&huge);
+        assert!(
+            text.len() <= MAX_TOOL_RESULT_BYTES,
+            "tool result text must respect the byte cap: {}",
+            text.len()
+        );
+
+        let small = serde_json::json!({"ok": true});
+        assert_eq!(
+            bounded_tool_result_text(&small),
+            r#"{"ok":true}"#.to_string()
+        );
+    }
+
+    #[test]
+    fn conversation_bytes_sums_message_content() {
+        use crate::inference::ChatMessage;
+        let messages = vec![ChatMessage::system("abc"), ChatMessage::user("de")];
+        assert_eq!(conversation_bytes(&messages), 5);
+        assert!(conversation_bytes(&[]) == 0);
     }
 
     #[test]

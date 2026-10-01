@@ -193,6 +193,9 @@ impl BattlecardDistributor {
     }
 
     /// Render the battlecard as an HTML fragment suitable for PDF generation.
+    ///
+    /// Every text field is HTML-escaped: battlecard content is LLM-generated
+    /// from crawled sources and must not be able to inject markup or script.
     pub fn pdf_html(card: &BattlecardData) -> String {
         let mut html = String::new();
         html.push_str("<div class=\"battlecard\">");
@@ -201,16 +204,16 @@ impl BattlecardDistributor {
         html.push_str("<section><h2>Positioning</h2>");
         html.push_str(&format!(
             "<p><strong>Market Position:</strong> {}</p>",
-            card.positioning.market_position
+            escape_html(&card.positioning.market_position)
         ));
         html.push_str(&format!(
             "<p><strong>Value Proposition:</strong> {}</p>",
-            card.positioning.value_proposition
+            escape_html(&card.positioning.value_proposition)
         ));
         if !card.positioning.differentiators.is_empty() {
             html.push_str("<ul>");
             for d in &card.positioning.differentiators {
-                html.push_str(&format!("<li>{}</li>", d));
+                html.push_str(&format!("<li>{}</li>", escape_html(d)));
             }
             html.push_str("</ul>");
         }
@@ -218,7 +221,10 @@ impl BattlecardDistributor {
 
         // Feature Matrix
         html.push_str("<section><h2>Feature Comparison</h2>");
-        html.push_str(&format!("<p>{}</p>", card.feature_matrix.summary));
+        html.push_str(&format!(
+            "<p>{}</p>",
+            escape_html(&card.feature_matrix.summary)
+        ));
         html.push_str("</section>");
 
         // Strengths
@@ -227,7 +233,8 @@ impl BattlecardDistributor {
             for s in &card.strengths {
                 html.push_str(&format!(
                     "<li><strong>{}</strong>: {}</li>",
-                    s.title, s.description
+                    escape_html(&s.title),
+                    escape_html(&s.description)
                 ));
             }
             html.push_str("</ul></section>");
@@ -239,7 +246,9 @@ impl BattlecardDistributor {
             for ks in &card.kill_shots {
                 html.push_str(&format!(
                     "<li><strong>{}</strong>: {} (Priority: {:.2})</li>",
-                    ks.title, ks.description, ks.priority_score
+                    escape_html(&ks.title),
+                    escape_html(&ks.description),
+                    ks.priority_score
                 ));
             }
             html.push_str("</ul></section>");
@@ -248,6 +257,15 @@ impl BattlecardDistributor {
         html.push_str("</div>");
         html
     }
+}
+
+/// Escape HTML special characters for safe interpolation into markup.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]
@@ -379,5 +397,28 @@ mod tests {
         assert!(html.contains("Feature Comparison"));
         assert!(html.contains("Our Strengths"));
         assert!(html.contains("Kill Shots"));
+    }
+
+    #[test]
+    fn test_pdf_html_escapes_untrusted_content() {
+        let mut card = sample_battlecard();
+        card.positioning.market_position =
+            "<script>alert('xss')</script><img src=x onerror=steal()>".to_string();
+        card.positioning.value_proposition = "\" onmouseover=\"evil()".to_string();
+        card.feature_matrix.summary = "<iframe src=\"https://evil.example\"></iframe>".to_string();
+        card.positioning.differentiators = vec!["</li><script>pwn()</script>".to_string()];
+        card.strengths[0].title = "<b>bold</b>".to_string();
+        card.strengths[0].description = "<svg onload=alert(1)>".to_string();
+        card.kill_shots[0].title = "<script>kill()</script>".to_string();
+        card.kill_shots[0].description = "a & b < c > d".to_string();
+
+        let html = BattlecardDistributor::pdf_html(&card);
+
+        assert!(!html.contains("<script"), "script tag must be escaped");
+        assert!(!html.contains("<img"), "img tag must be escaped");
+        assert!(!html.contains("<iframe"), "iframe tag must be escaped");
+        assert!(!html.contains("<svg"), "svg tag must be escaped");
+        assert!(html.contains("&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;"));
+        assert!(html.contains("&amp;"));
     }
 }

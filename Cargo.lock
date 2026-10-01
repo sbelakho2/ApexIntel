@@ -355,9 +355,12 @@ dependencies = [
 name = "apex-shared"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-nats",
  "chrono",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -450,6 +453,7 @@ dependencies = [
  "apex-parse",
  "apex-poi",
  "apex-recipes",
+ "apex-shared",
  "apex-store",
  "apex-threat-intel",
  "apex-triage",
@@ -470,6 +474,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "shlex",
  "sqlx",
  "tempfile",
  "thiserror 1.0.69",
@@ -477,6 +482,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 

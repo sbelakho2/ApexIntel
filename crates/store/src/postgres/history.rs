@@ -4,6 +4,49 @@ fn normalize_history_limit(limit: i64) -> i64 {
     clamp_limit(limit)
 }
 
+/// Insert one `role_history` row through any executor.
+///
+/// Shared by the standalone [`PgStore::insert_role_history`] call and the
+/// transactional person org/role update, so the statement cannot drift between
+/// the two paths.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn insert_role_history_row<'e, E>(
+    executor: E,
+    person_id: Uuid,
+    org_id: Option<Uuid>,
+    org_name: &str,
+    title: &str,
+    role_family: Option<&str>,
+    start_date: Option<DateTime<Utc>>,
+    end_date: Option<DateTime<Utc>>,
+    source_url: Option<&str>,
+    confidence: f64,
+) -> Result<Uuid>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
+    let id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO role_history
+           (id, person_id, org_id, org_name, title, role_family,
+            start_date, end_date, source_url, confidence)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#,
+    )
+    .bind(id)
+    .bind(person_id)
+    .bind(org_id)
+    .bind(org_name)
+    .bind(title)
+    .bind(role_family)
+    .bind(start_date)
+    .bind(end_date)
+    .bind(source_url)
+    .bind(confidence)
+    .execute(executor)
+    .await?;
+    Ok(id)
+}
+
 impl PgStore {
     pub async fn get_role_history_for_person(
         &self,
@@ -35,26 +78,19 @@ impl PgStore {
         source_url: Option<&str>,
         confidence: f64,
     ) -> Result<Uuid> {
-        let id = Uuid::new_v4();
-        sqlx::query(
-            r#"INSERT INTO role_history
-               (id, person_id, org_id, org_name, title, role_family,
-                start_date, end_date, source_url, confidence)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#,
+        insert_role_history_row(
+            &self.pool,
+            person_id,
+            org_id,
+            org_name,
+            title,
+            role_family,
+            start_date,
+            end_date,
+            source_url,
+            confidence,
         )
-        .bind(id)
-        .bind(person_id)
-        .bind(org_id)
-        .bind(org_name)
-        .bind(title)
-        .bind(role_family)
-        .bind(start_date)
-        .bind(end_date)
-        .bind(source_url)
-        .bind(confidence)
-        .execute(&self.pool)
-        .await?;
-        Ok(id)
+        .await
     }
 
     pub async fn get_role_history(
@@ -110,12 +146,17 @@ impl PgStore {
         supersedes_id: Option<Uuid>,
     ) -> Result<Uuid> {
         let id = Uuid::new_v4();
+        // Superseding is two writes: close the old entry and insert the new
+        // one. They must commit together, otherwise a failed insert leaves the
+        // superseded entry permanently closed with no replacement (an
+        // authoritative dossier fact silently disappears).
+        let mut tx = self.pool.begin().await?;
         if let Some(old_id) = supersedes_id {
             sqlx::query(
                 "UPDATE dossier_entries SET valid_until = now() WHERE id = $1 AND valid_until IS NULL"
             )
             .bind(old_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
         sqlx::query(
@@ -134,8 +175,9 @@ impl PgStore {
         .bind(confidence)
         .bind(author)
         .bind(supersedes_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(id)
     }
 

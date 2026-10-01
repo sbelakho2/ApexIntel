@@ -166,25 +166,17 @@ impl PgStore {
     ) -> Result<NotificationEnqueueOutcome> {
         let mut tx = self.pool.begin().await?;
 
-        let existing: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM notification_events WHERE dedupe_key = $1")
-                .bind(&event.dedupe_key)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if let Some((notification_event_id,)) = existing {
-            tx.commit().await?;
-            return Ok(NotificationEnqueueOutcome {
-                notification_event_id,
-                outbox_id: None,
-                deliveries_enqueued: 0,
-                already_enqueued: true,
-            });
-        }
-
-        let (notification_event_id,) = sqlx::query_as::<_, (Uuid,)>(
+        // Single conflict-safe insert instead of SELECT-then-INSERT: two
+        // concurrent scheduler runs for the same dedupe key must not both pass
+        // an existence check and then collide on the unique constraint (which
+        // surfaced as a storage error rather than the documented
+        // `already_enqueued` outcome).
+        let inserted: Option<(Uuid,)> = sqlx::query_as(
             "INSERT INTO notification_events \
                  (dedupe_key, source_type, source_id, severity, category, title, body, payload) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+             ON CONFLICT (dedupe_key) DO NOTHING \
+             RETURNING id",
         )
         .bind(&event.dedupe_key)
         .bind(&event.source_type)
@@ -194,8 +186,26 @@ impl PgStore {
         .bind(&event.title)
         .bind(&event.body)
         .bind(&event.payload)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
+
+        let Some((notification_event_id,)) = inserted else {
+            // The row already existed (this call, or a concurrent run, lost
+            // the race): resolve the canonical id and write nothing else.
+            let (notification_event_id,) = sqlx::query_as::<_, (Uuid,)>(
+                "SELECT id FROM notification_events WHERE dedupe_key = $1",
+            )
+            .bind(&event.dedupe_key)
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(NotificationEnqueueOutcome {
+                notification_event_id,
+                outbox_id: None,
+                deliveries_enqueued: 0,
+                already_enqueued: true,
+            });
+        };
 
         let (outbox_id,) = sqlx::query_as::<_, (Uuid,)>(
             "INSERT INTO event_outbox (aggregate_type, aggregate_id, event_type, payload) \

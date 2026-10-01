@@ -8,7 +8,9 @@ pub(crate) struct ListMemosQuery {
 
 fn normalize_memo_pagination(page: Option<u64>, per_page: Option<u64>) -> (i64, i64) {
     let per_page = per_page.unwrap_or(20).min(100) as i64;
-    let page = page.unwrap_or(1).max(1) as i64;
+    // Clamp before the i64 cast: `u64::MAX as i64` is negative, which turned
+    // the offset negative and produced a 500.
+    let page = page.unwrap_or(1).clamp(1, 1_000_000) as i64;
     (page, per_page)
 }
 

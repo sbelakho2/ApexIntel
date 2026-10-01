@@ -1786,6 +1786,9 @@ pub struct WorkerJobHistoryRecord {
     pub duration_ms: Option<i64>,
     pub items_processed: i64,
     pub notes: String,
+    /// Process instance that ran the job; the shutdown reconciliation only
+    /// interrupts `running` rows owned by its own instance.
+    pub instance_id: String,
     pub created_at: DateTime<Utc>,
 }
 

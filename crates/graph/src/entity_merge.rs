@@ -184,7 +184,9 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)
 
     // 5. Soft-delete source entities (mark as merged)
     for source_id in &event.source_ids {
-        let metadata_val = format!("{{\"merged_into\": \"{}\"}}", event.target_id);
+        // Serialize with serde_json so a hostile target id cannot inject
+        // JSON keys into the metadata object.
+        let metadata_val = serde_json::json!({ "merged_into": &event.target_id }).to_string();
         stmts.push((
             format!("UPDATE {table} SET metadata = metadata || $1::jsonb WHERE id = $2"),
             vec![metadata_val, source_id.clone()],
@@ -260,5 +262,32 @@ mod tests {
     fn entity_type_equality() {
         assert_eq!(EntityType::Company, EntityType::Company);
         assert_ne!(EntityType::Company, EntityType::Person);
+    }
+
+    #[test]
+    fn metadata_json_escapes_hostile_target_id() {
+        let hostile = "t\"; \"admin\": true, \"x\": \"";
+        let event = build_merge_event(
+            EntityType::Company,
+            vec!["src-1".into()],
+            hostile.into(),
+            MergeReason::ManualMerge {
+                operator_notes: "test".into(),
+            },
+            1.0,
+            "tester",
+        );
+        let stmts = generate_merge_sql(&event);
+        let (_, params) = stmts
+            .iter()
+            .find(|(sql, _)| sql.contains("metadata = metadata ||"))
+            .unwrap_or_else(|| panic!("soft-delete statement should be present"));
+        let value: serde_json::Value = serde_json::from_str(&params[0])
+            .unwrap_or_else(|error| panic!("metadata must be valid JSON: {error}"));
+        assert_eq!(
+            value.get("merged_into").and_then(|v| v.as_str()),
+            Some(hostile),
+            "target id must round-trip without injecting JSON keys"
+        );
     }
 }

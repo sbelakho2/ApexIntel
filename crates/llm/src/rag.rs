@@ -269,6 +269,9 @@ impl KnowledgeBase {
                     combined_score: relevance * 0.4 + weight * 0.6,
                 })
             })
+            // `min_credibility` is part of the public query contract; without
+            // this filter low-credibility sources were returned regardless.
+            .filter(|entry| entry.credibility_score >= query.min_credibility)
             .collect();
 
         ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
@@ -441,7 +444,12 @@ pub struct OptimizedContext {
 impl OptimizedContext {
     /// Convert ranked entries to a context string.
     pub fn from_entries(entries: &[RankedEntry], config: &ContextWindowConfig) -> Self {
-        let available_tokens = config.max_tokens - config.response_token_reserve;
+        // A reserve larger than the budget must yield zero available tokens
+        // (no context) rather than panicking on underflow in debug builds or
+        // wrapping to a huge budget in release builds.
+        let available_tokens = config
+            .max_tokens
+            .saturating_sub(config.response_token_reserve);
         let mut context_parts = Vec::new();
         let mut total_tokens = 0usize;
         let mut entries_included = 0;
@@ -663,23 +671,16 @@ impl RagEngine {
             "RAG context retrieved"
         );
 
-        // Build enhanced user prompt with context
-        let enhanced_user = if context.context.is_empty() {
-            user.to_string()
-        } else {
-            format!(
-                "{}\n\nRelevant context from knowledge base:\n{}\n\n---\n\nUser query:\n{}",
-                system, context.context, user
-            )
-        };
+        // Build the system prompt (caller instructions + grounding contract) and
+        // the user prompt (retrieved context + query). The caller's system
+        // instructions must stay in the system role; appending them to the user
+        // message downgraded them to untrusted input.
+        let (system_prompt, enhanced_user) =
+            compose_grounded_prompt(system, user, &context.context);
 
         // Generate response using LlmClient trait
-        let system_prompt = "You are an intelligence analyst. Use the provided context to ground \
-                your analysis in verified information. Cite specific sources when making claims. \
-                If information is uncertain, explicitly state your confidence level.";
-
         let resp = llm
-            .generate_text(system_prompt, &enhanced_user)
+            .generate_text(&system_prompt, &enhanced_user)
             .await
             .context("Grounded response generation failed")?;
 
@@ -759,8 +760,37 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         s
     } else {
-        &s[..max_len]
+        // Clamp to a char boundary: knowledge text and citations can contain
+        // multi-byte characters, and slicing at a raw byte offset panics.
+        &s[..s.floor_char_boundary(max_len)]
     }
+}
+
+/// Grounding contract appended to the caller's system prompt.
+const GROUNDING_INSTRUCTION: &str = "You are an intelligence analyst. Use the provided context to \
+    ground your analysis in verified information. Cite specific sources when making claims. \
+    If information is uncertain, explicitly state your confidence level.";
+
+/// Compose the `(system, user)` prompts for a grounded response.
+///
+/// The caller's system instructions stay in the system role and the retrieved
+/// knowledge-base context goes into the user role, where it cannot override the
+/// grounding contract.
+fn compose_grounded_prompt(system: &str, user: &str, context: &str) -> (String, String) {
+    let system_prompt = if system.trim().is_empty() {
+        GROUNDING_INSTRUCTION.to_string()
+    } else {
+        format!("{}\n\n{}", system.trim_end(), GROUNDING_INSTRUCTION)
+    };
+    let user_prompt = if context.is_empty() {
+        user.to_string()
+    } else {
+        format!(
+            "Relevant context from knowledge base:\n{}\n\n---\n\nUser query:\n{}",
+            context, user
+        )
+    };
+    (system_prompt, user_prompt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -846,6 +876,74 @@ mod tests {
 
         let context = OptimizedContext::from_entries(&entries, &config);
         assert!(context.token_count <= 800);
+    }
+
+    // Audit: a response-token reserve larger than the context budget must not
+    // underflow; it yields zero available tokens.
+    #[test]
+    fn context_optimization_reserve_above_budget_does_not_panic() {
+        let entries = vec![RankedEntry {
+            entry: KnowledgeEntry {
+                id: "1".to_string(),
+                content: "payload ".repeat(100),
+                source: KnowledgeSource::new(KnowledgeSourceType::News, "Test"),
+                credibility_weight: 0.8,
+                topics: vec![],
+                timestamp: chrono::Utc::now(),
+                expires_at: None,
+            },
+            relevance_score: 0.7,
+            credibility_score: 0.8,
+            combined_score: 0.75,
+        }];
+        let config = ContextWindowConfig {
+            max_tokens: 100,
+            response_token_reserve: 500,
+            ..Default::default()
+        };
+        let context = OptimizedContext::from_entries(&entries, &config);
+        assert_eq!(context.entries_included, 0);
+        assert!(context.context.is_empty());
+    }
+
+    // Audit: `min_credibility` was part of the public query contract but never
+    // applied, so low-credibility sources leaked into results.
+    #[test]
+    fn query_applies_min_credibility_filter() {
+        let mut kb = KnowledgeBase::new();
+        let mk = |id: &str, credibility: f64| KnowledgeEntry {
+            id: id.to_string(),
+            content: "Foxconn expands capacity.".to_string(),
+            source: KnowledgeSource::new(KnowledgeSourceType::News, "Test"),
+            credibility_weight: credibility,
+            topics: vec!["Foxconn".to_string()],
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+        };
+        kb.add_entry(mk("low", 0.2));
+        kb.add_entry(mk("high", 0.9));
+
+        let query = RagQuery::new(vec!["Foxconn".to_string()], vec![]).with_min_credibility(0.5);
+        let results = kb.query(&query);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entry.id, "high");
+    }
+
+    // Audit: caller system instructions must stay in the system role and never
+    // be appended to the user message.
+    #[test]
+    fn compose_grounded_prompt_keeps_system_in_system_role() {
+        let (system, user) =
+            compose_grounded_prompt("Caller instructions", "Summarise X", "context body");
+        assert!(system.contains("Caller instructions"));
+        assert!(system.contains("intelligence analyst"));
+        assert!(!user.contains("Caller instructions"));
+        assert!(user.contains("context body"));
+        assert!(user.contains("Summarise X"));
+
+        let (system, user) = compose_grounded_prompt("", "Ask", "");
+        assert!(system.contains("intelligence analyst"));
+        assert_eq!(user, "Ask");
     }
 
     #[test]
@@ -964,5 +1062,19 @@ mod tests {
         let removed = kb.remove_expired();
         assert_eq!(removed, 1);
         assert_eq!(kb.len(), 1);
+    }
+
+    // Audit: truncating stored knowledge/quote text must not slice inside a
+    // multi-byte character.
+    #[test]
+    fn citation_markdown_truncates_multibyte_quote_safely() {
+        let source = KnowledgeSource::new(KnowledgeSourceType::News, "Test");
+        let quote = format!("a{}", "é".repeat(150)); // 301 bytes
+        let citation = Citation::new(source, quote, "claim");
+        let markdown = citation.to_markdown();
+        assert!(
+            markdown.contains("aé"),
+            "quote should be included: {markdown}"
+        );
     }
 }

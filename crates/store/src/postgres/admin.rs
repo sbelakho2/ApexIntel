@@ -60,23 +60,72 @@ impl PgStore {
     /// crashes mid-run does not block the job forever, and a second replica
     /// computing the same schedule cannot double-fire the job within the
     /// lease window (the previous design used only in-memory `last_run`).
-    pub async fn try_claim_scheduled_job(&self, job_kind: &str, lease_secs: i64) -> Result<bool> {
+    /// The winning `instance_id` is recorded on the row so a later shutdown
+    /// reconciliation can scope itself to this replica's jobs (migration 098).
+    pub async fn try_claim_scheduled_job(
+        &self,
+        job_kind: &str,
+        instance_id: &str,
+        lease_secs: i64,
+    ) -> Result<bool> {
         let row: Option<(String,)> = sqlx::query_as(
-            r#"INSERT INTO worker_job_state (job_kind, last_run, last_status, updated_at)
-               VALUES ($1, now(), 'running', now())
+            r#"INSERT INTO worker_job_state (job_kind, last_run, last_status, instance_id, updated_at)
+               VALUES ($1, now(), 'running', $2, now())
                ON CONFLICT (job_kind) DO UPDATE SET
                    last_run = now(),
                    last_status = 'running',
+                   instance_id = EXCLUDED.instance_id,
                    updated_at = now()
                WHERE worker_job_state.last_status IS DISTINCT FROM 'running'
-                  OR worker_job_state.updated_at <= now() - make_interval(secs => $2)
+                  OR worker_job_state.updated_at <= now() - make_interval(secs => $3)
                RETURNING job_kind"#,
         )
         .bind(job_kind)
+        .bind(instance_id)
         .bind(lease_secs)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.is_some())
+    }
+
+    /// Mark jobs left `'running'` by *this* worker's shutdown as
+    /// `'interrupted'`.
+    ///
+    /// Called from the worker's shutdown drain when in-flight jobs outlive the
+    /// grace period; without it their `worker_job_state` / `worker_job_history`
+    /// rows stay `'running'` forever. Only rows owned by `instance_id` are
+    /// touched, so stopping one replica never interrupts another replica's
+    /// live jobs. Returns the number of rows updated.
+    /// Requires migration 096 (widens the history CHECK constraint) and
+    /// migration 098 (adds the owning `instance_id`).
+    pub async fn mark_running_jobs_interrupted(&self, instance_id: &str) -> Result<u64> {
+        let state_rows = sqlx::query(
+            "UPDATE worker_job_state \
+                SET last_status = 'interrupted', \
+                    last_error = 'worker shut down while the job was running', \
+                    updated_at = now() \
+              WHERE last_status = 'running' \
+                AND instance_id = $1",
+        )
+        .bind(instance_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        let history_rows = sqlx::query(
+            "UPDATE worker_job_history \
+                SET status = 'interrupted', \
+                    finished_at = COALESCE(finished_at, now()), \
+                    notes = 'worker shut down while the job was running' \
+              WHERE status = 'running' \
+                AND instance_id = $1",
+        )
+        .bind(instance_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(state_rows + history_rows)
     }
 
     pub async fn get_admin_crawl_status(&self) -> Result<AdminCrawlStatus> {
@@ -303,9 +352,9 @@ impl PgStore {
         sqlx::query(
             r#"INSERT INTO worker_job_history (
                    run_id, job_kind, status, started_at, finished_at, duration_ms,
-                   items_processed, notes
+                   items_processed, notes, instance_id
                )
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                ON CONFLICT (run_id) DO NOTHING"#,
         )
         .bind(&run.run_id)
@@ -316,6 +365,7 @@ impl PgStore {
         .bind(run.duration_ms)
         .bind(run.items_processed)
         .bind(&run.notes)
+        .bind(&run.instance_id)
         .execute(&self.pool)
         .await?;
         Ok(())

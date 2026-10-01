@@ -14,22 +14,22 @@
 #      historical: plural "Migrations 059/065", bare numbers "054/063", or
 #      filenames "030_port_missing_tables.sql".
 #
-# Production-applied migrations (000..065 and 068 — the revisions recorded in
+# Production-applied migrations (000..078 — the revisions recorded in
 # `_sqlx_migrations`) are FROZEN: their bytes are the sqlx checksums every
 # deployed database has on record, so editing one would make production refuse
 # to start. They are allowlisted explicitly in scripts/ci/frozen_migrations.txt
 # as `<sha256>  <filename>` entries. The gate verifies each frozen file against
 # its recorded digest and requires every allowlisted file to exist, so a
 # frozen revision can neither be edited nor deleted/renumbered silently.
-# Several frozen files still describe an older revision number (054, 055, 063,
-# 064, 065, 068) — that stale text is deliberately left byte-identical, which
-# is exactly why the allowlist is explicit rather than a numeric threshold.
+# Several frozen files still describe an older revision number — that stale
+# text is deliberately left byte-identical, which is exactly why the allowlist
+# is explicit rather than a numeric threshold.
 #
 # Usage: scripts/ci/check_migration_headers.sh [migrations_dir]
 #
 # Environment:
 #   FROZEN_MANIFEST  path to the frozen allowlist (default: the repo file)
-#   FROZEN_MAX       highest production-applied migration number (default 68);
+#   FROZEN_MAX       highest production-applied migration number (default 78);
 #                    every migration at or below it must be allowlisted, and
 #                    nothing above it may be.
 set -euo pipefail

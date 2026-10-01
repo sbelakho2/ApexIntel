@@ -323,6 +323,11 @@ impl SelfImprovementLoop {
 
     /// Record a captured LLM output into the history buffer.
     pub fn record(&mut self, capture: OutputCapture) {
+        // A zero-sized buffer must drop the capture instead of calling
+        // `remove(0)` on an empty Vec (which panics on the first record).
+        if self.config.max_history_size == 0 {
+            return;
+        }
         if self.history.len() >= self.config.max_history_size {
             self.history.remove(0); // FIFO eviction
         }
@@ -866,6 +871,25 @@ mod tests {
             loop_runner.record(sample_capture(0.2));
         }
         loop_runner
+    }
+
+    // Audit: `record` must tolerate `max_history_size == 0` (drop the capture)
+    // instead of panicking on `remove(0)` over an empty buffer.
+    #[tokio::test]
+    async fn record_with_zero_max_history_does_not_panic() {
+        let llm: Arc<dyn LlmClient> = Arc::new(FixedLlm {
+            body: Ok("{}".to_string()),
+        });
+        let mut loop_runner = SelfImprovementLoop::new(
+            llm,
+            SelfImprovementConfig {
+                max_history_size: 0,
+                ..Default::default()
+            },
+        );
+        loop_runner.record(sample_capture(0.9));
+        assert!(loop_runner.history.is_empty());
+        assert!(loop_runner.export_training_examples().is_empty());
     }
 
     #[test]

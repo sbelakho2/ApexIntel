@@ -5,14 +5,21 @@
 use apex_api::destructive_actions::ApiAuthContext;
 use apex_api::responses::{success, ApiError, ApiResponse};
 use apex_api::routes::collaboration::{
+    authorize_workspace, store_error, validate_access_level, validate_confidence,
+    validate_evidence_type, validate_impact_score, validate_opportunity_status, validate_priority,
+    validate_priority_score, validate_probability, validate_reliability_score,
+    validate_risk_category, validate_risk_score, validate_severity, validate_share_type,
+    validate_stage, validate_team_assignment_role, validate_threat_status, validate_visibility,
+    validate_workspace_assignment_role, validate_workspace_name, validate_workspace_request,
     ActivityEntry, ActivityFeedQuery, AddEvidenceRequest, AddSupplierRiskRequest,
     AddToQueueRequest, AssignUserRequest, CreateOpportunityRequest,
     CreatePipelineOpportunityRequest, CreateTeamAssignmentRequest, CreateThreatRequest,
     CreateWorkspaceRequest, CriticalThreat, InvestigationShare, InvestigationWorkspace,
     PipelineOpportunity, PriorityQueueItem, RecordActivityRequest, ShareWorkspaceRequest,
     SourceEvidence, StrategicOpportunity, SupplierRiskEntry, TeamAssignment,
-    UpdatePipelineStageRequest, UpdateQueueItemRequest, UpdateSupplierRiskRequest,
-    UpdateWorkspaceRequest, WorkspaceAssignment,
+    UpdateOpportunityRequest, UpdatePipelineStageRequest, UpdateQueueItemRequest,
+    UpdateSupplierRiskRequest, UpdateThreatRequest, UpdateWorkspaceRequest, WorkspaceAssignment,
+    WsAccess,
 };
 use apex_store::postgres::{
     ActivityFeedRecord, CriticalThreatRecord, InvestigationShareRecord,
@@ -32,82 +39,6 @@ use uuid::Uuid;
 // ──────────────────────────────────────────────────────────────────────────────
 // Validation Helpers
 // ──────────────────────────────────────────────────────────────────────────────
-
-pub fn validate_workspace_request(req: &CreateWorkspaceRequest) -> Result<(), ApiError> {
-    if req.name.trim().len() < 3 {
-        return Err(ApiError::validation(
-            "name",
-            "must be at least 3 characters",
-        ));
-    }
-    if req.name.trim().len() > 255 {
-        return Err(ApiError::validation(
-            "name",
-            "must not exceed 255 characters",
-        ));
-    }
-    if !["ad-hoc", "structured", "incident", "ongoing"].contains(&req.workspace_type.as_str()) {
-        return Err(ApiError::validation(
-            "workspace_type",
-            "must be one of: ad-hoc, structured, incident, ongoing",
-        ));
-    }
-    if !["private", "team", "organization", "public"].contains(&req.visibility.as_str()) {
-        return Err(ApiError::validation(
-            "visibility",
-            "must be one of: private, team, organization, public",
-        ));
-    }
-    Ok(())
-}
-
-pub fn validate_priority(value: i32) -> Result<(), ApiError> {
-    if !(1..=100).contains(&value) {
-        return Err(ApiError::validation(
-            "priority",
-            "must be between 1 and 100",
-        ));
-    }
-    Ok(())
-}
-
-pub fn validate_confidence(value: f64) -> Result<(), ApiError> {
-    if !(0.0..=1.0).contains(&value) {
-        return Err(ApiError::validation(
-            "confidence",
-            "must be between 0.0 and 1.0",
-        ));
-    }
-    Ok(())
-}
-
-pub fn validate_severity(value: &str) -> Result<(), ApiError> {
-    let lower = value.to_lowercase();
-    if !["low", "medium", "high", "critical"].contains(&lower.as_str()) {
-        return Err(ApiError::validation(
-            "severity",
-            "must be one of: low, medium, high, critical",
-        ));
-    }
-    Ok(())
-}
-
-pub fn validate_stage(value: &str) -> Result<(), ApiError> {
-    if ![
-        "discovery",
-        "qualification",
-        "proposal",
-        "negotiation",
-        "closed_won",
-        "closed_lost",
-    ]
-    .contains(&value)
-    {
-        return Err(ApiError::validation("stage",
-            "must be one of: discovery, qualification, proposal, negotiation, closed_won, closed_lost"));
-    }
-    Ok(())
-}
 
 fn normalize_optional_text(text: Option<String>) -> Option<String> {
     text.and_then(|t| {
@@ -141,8 +72,10 @@ fn parse_optional_date(s: &Option<String>) -> Result<Option<NaiveDate>, ApiError
         .transpose()
 }
 
+/// Store errors are logged with an incident id; the client never receives
+/// database messages (table/column/constraint names).
 fn store_err(e: anyhow::Error) -> ApiError {
-    ApiError::internal(e.to_string())
+    store_error(e)
 }
 
 fn opportunity_from_record(r: StrategicOpportunityRecord) -> StrategicOpportunity {
@@ -352,7 +285,6 @@ pub struct ExecutiveQuery {
     pub include_threats: Option<bool>,
     pub include_opportunities: Option<bool>,
     pub priority_threshold: Option<f64>,
-    #[allow(dead_code)]
     pub region_filter: Option<String>,
 }
 
@@ -365,62 +297,62 @@ pub async fn get_executive_summary(
     let include_threats = query.include_threats.unwrap_or(true);
     let include_opportunities = query.include_opportunities.unwrap_or(true);
     let priority_threshold = query.priority_threshold.unwrap_or(0.7);
+    let region_filter = query.region_filter.as_deref();
 
     let limit: i64 = 20;
 
-    let opportunity_records = if include_opportunities {
+    // Totals and aggregates are computed with COUNT(*)/AVG in SQL: deriving
+    // them from a page of 20 capped the totals and ignored every later row.
+    let (
+        total_opportunities,
+        total_threats,
+        high_priority_count,
+        average_confidence,
+        mut regions_affected,
+    ) = state
+        .store
+        .executive_dashboard_aggregates(
+            include_opportunities,
+            include_threats,
+            priority_threshold,
+            region_filter,
+        )
+        .await
+        .map_err(store_err)?;
+
+    // The threshold/region filters run in SQL too, so a qualifying row ranked
+    // below the page limit is still returned.
+    let top_opportunities: Vec<StrategicOpportunity> = if include_opportunities {
         state
             .store
-            .list_strategic_opportunities(false, limit)
+            .list_strategic_opportunities_filtered(
+                false,
+                Some(priority_threshold),
+                region_filter,
+                limit,
+            )
             .await
             .map_err(store_err)?
+            .into_iter()
+            .map(opportunity_from_record)
+            .collect()
     } else {
         Vec::new()
     };
 
-    let threat_records = if include_threats {
+    let critical_threats: Vec<CriticalThreat> = if include_threats {
         state
             .store
-            .list_critical_threats(limit)
+            .list_critical_threats_filtered(Some(priority_threshold), region_filter, None, limit)
             .await
             .map_err(store_err)?
+            .into_iter()
+            .map(threat_from_record)
+            .collect()
     } else {
         Vec::new()
     };
 
-    let top_opportunities: Vec<StrategicOpportunity> = opportunity_records
-        .iter()
-        .filter(|o| o.priority_score >= priority_threshold)
-        .map(|r| opportunity_from_record(r.clone()))
-        .collect();
-
-    let critical_threats: Vec<CriticalThreat> = threat_records
-        .iter()
-        .filter(|t| t.impact_score >= priority_threshold)
-        .map(|r| threat_from_record(r.clone()))
-        .collect();
-
-    let total_opportunities = opportunity_records.len();
-    let total_threats = threat_records.len();
-    let high_priority_count = top_opportunities.len() + critical_threats.len();
-
-    let all_confidences: Vec<f64> = opportunity_records
-        .iter()
-        .map(|o| o.confidence)
-        .chain(threat_records.iter().map(|t| t.confidence))
-        .collect();
-
-    let average_confidence = if all_confidences.is_empty() {
-        0.0
-    } else {
-        all_confidences.iter().sum::<f64>() / all_confidences.len() as f64
-    };
-
-    let mut regions_affected: Vec<String> = opportunity_records
-        .iter()
-        .filter_map(|o| o.region.clone())
-        .chain(threat_records.iter().filter_map(|t| t.region.clone()))
-        .collect();
     regions_affected.sort();
     regions_affected.dedup();
 
@@ -446,30 +378,21 @@ pub async fn list_opportunities(
     let limit = params.limit.unwrap_or(50) as i64;
     let include_closed = params.include_closed.unwrap_or(false);
 
+    // Threshold and region are applied in SQL; filtering a page in memory
+    // silently dropped qualifying rows ranked below the page limit.
     let records = state
         .store
-        .list_strategic_opportunities(include_closed, limit)
+        .list_strategic_opportunities_filtered(
+            include_closed,
+            params.priority_threshold,
+            params.region.as_deref(),
+            limit,
+        )
         .await
         .map_err(store_err)?;
 
-    let opportunities: Vec<StrategicOpportunity> = records
-        .into_iter()
-        .filter(|o| {
-            if let Some(threshold) = params.priority_threshold {
-                o.priority_score >= threshold
-            } else {
-                true
-            }
-        })
-        .filter(|o| {
-            if let Some(ref region) = params.region {
-                o.region.as_deref() == Some(region.as_str())
-            } else {
-                true
-            }
-        })
-        .map(opportunity_from_record)
-        .collect();
+    let opportunities: Vec<StrategicOpportunity> =
+        records.into_iter().map(opportunity_from_record).collect();
 
     Ok(Json(success(opportunities)))
 }
@@ -490,13 +413,7 @@ pub async fn create_opportunity(
     Json(req): Json<CreateOpportunityRequest>,
 ) -> Result<Json<ApiResponse<StrategicOpportunity>>, ApiError> {
     validate_confidence(req.confidence)?;
-
-    if req.priority_score < 0.0 || req.priority_score > 1.0 {
-        return Err(ApiError::validation(
-            "priority_score",
-            "must be between 0.0 and 1.0",
-        ));
-    }
+    validate_priority_score(req.priority_score)?;
 
     let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
 
@@ -530,37 +447,20 @@ pub async fn list_threats(
 ) -> Result<Json<ApiResponse<Vec<CriticalThreat>>>, ApiError> {
     let limit = params.limit.unwrap_or(50) as i64;
 
+    // Impact threshold, region and severity are applied in SQL; filtering a
+    // page in memory silently dropped qualifying rows.
     let records = state
         .store
-        .list_critical_threats(limit)
+        .list_critical_threats_filtered(
+            params.impact_threshold,
+            params.region.as_deref(),
+            params.severity.as_deref(),
+            limit,
+        )
         .await
         .map_err(store_err)?;
 
-    let threats: Vec<CriticalThreat> = records
-        .into_iter()
-        .filter(|t| {
-            if let Some(threshold) = params.impact_threshold {
-                t.impact_score >= threshold
-            } else {
-                true
-            }
-        })
-        .filter(|t| {
-            if let Some(ref region) = params.region {
-                t.region.as_deref() == Some(region.as_str())
-            } else {
-                true
-            }
-        })
-        .filter(|t| {
-            if let Some(ref severity) = params.severity {
-                t.severity.eq_ignore_ascii_case(severity)
-            } else {
-                true
-            }
-        })
-        .map(threat_from_record)
-        .collect();
+    let threats: Vec<CriticalThreat> = records.into_iter().map(threat_from_record).collect();
 
     Ok(Json(success(threats)))
 }
@@ -581,14 +481,8 @@ pub async fn create_threat(
     Json(req): Json<CreateThreatRequest>,
 ) -> Result<Json<ApiResponse<CriticalThreat>>, ApiError> {
     validate_confidence(req.confidence)?;
+    validate_impact_score(req.impact_score)?;
     validate_severity(&req.severity)?;
-
-    if req.impact_score < 0.0 || req.impact_score > 1.0 {
-        return Err(ApiError::validation(
-            "impact_score",
-            "must be between 0.0 and 1.0",
-        ));
-    }
 
     let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
 
@@ -636,29 +530,47 @@ pub async fn get_opportunity(
 pub async fn update_opportunity(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
-    Json(req): Json<CreateOpportunityRequest>,
+    Json(req): Json<UpdateOpportunityRequest>,
 ) -> Result<Json<ApiResponse<StrategicOpportunity>>, ApiError> {
-    validate_confidence(req.confidence)?;
-
-    if req.priority_score < 0.0 || req.priority_score > 1.0 {
-        return Err(ApiError::validation(
-            "priority_score",
-            "must be between 0.0 and 1.0",
-        ));
+    // Only the fields present in the PATCH payload are validated; absent
+    // fields keep their stored value in the store's COALESCE update.
+    if let Some(title) = req.title.as_deref() {
+        if title.trim().is_empty() {
+            return Err(ApiError::validation("title", "cannot be empty"));
+        }
+    }
+    if let Some(priority_score) = req.priority_score {
+        validate_priority_score(priority_score)?;
+    }
+    if let Some(confidence) = req.confidence {
+        validate_confidence(confidence)?;
+    }
+    if let Some(status) = req.status.as_deref() {
+        validate_opportunity_status(status)?;
     }
 
     let uuid = parse_uuid(&id, "id")?;
-
-    // Update status if provided in the opportunity type; otherwise keep active
-    let status = if req.opportunity_type.contains("closed") {
-        "closed"
-    } else {
-        "active"
-    };
+    let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
+    let title = req.title.as_deref().map(str::trim);
 
     let record = state
         .store
-        .update_strategic_opportunity_status(uuid, status)
+        .update_strategic_opportunity(
+            uuid,
+            title,
+            req.description.as_deref(),
+            req.opportunity_type.as_deref(),
+            req.priority_score,
+            req.confidence,
+            entity_id,
+            req.entity_type.as_deref(),
+            req.region.as_deref(),
+            req.estimated_value.as_deref(),
+            req.recommended_actions.as_ref(),
+            req.owner_id.as_deref(),
+            req.due_date,
+            req.status.as_deref(),
+        )
         .await
         .map_err(store_err)?
         .ok_or_else(|| ApiError::not_found("opportunity", &id))?;
@@ -688,20 +600,55 @@ pub async fn get_threat(
 pub async fn update_threat(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
-    Json(req): Json<CreateThreatRequest>,
+    Json(req): Json<UpdateThreatRequest>,
 ) -> Result<Json<ApiResponse<CriticalThreat>>, ApiError> {
-    validate_confidence(req.confidence)?;
-    validate_severity(&req.severity)?;
+    // Validate only the fields present in the PATCH payload; `status` accepts
+    // the full status set including `resolved`.
+    if let Some(title) = req.title.as_deref() {
+        if title.trim().is_empty() {
+            return Err(ApiError::validation("title", "cannot be empty"));
+        }
+    }
+    if let Some(severity) = req.severity.as_deref() {
+        validate_severity(severity)?;
+    }
+    if let Some(impact_score) = req.impact_score {
+        validate_impact_score(impact_score)?;
+    }
+    if let Some(confidence) = req.confidence {
+        validate_confidence(confidence)?;
+    }
+    if let Some(status) = req.status.as_deref() {
+        validate_threat_status(status)?;
+    }
 
     let uuid = parse_uuid(&id, "id")?;
-
-    let resolved =
-        req.severity.eq_ignore_ascii_case("resolved") || req.threat_type.contains("resolved");
-    let status = if resolved { "resolved" } else { "active" };
+    let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
+    let severity = req
+        .severity
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_lowercase);
+    let title = req.title.as_deref().map(str::trim);
 
     let record = state
         .store
-        .update_critical_threat_status(uuid, status, resolved)
+        .update_critical_threat(
+            uuid,
+            title,
+            req.description.as_deref(),
+            req.threat_type.as_deref(),
+            severity.as_deref(),
+            req.impact_score,
+            req.confidence,
+            entity_id,
+            req.entity_type.as_deref(),
+            req.region.as_deref(),
+            req.mitigation_steps.as_ref(),
+            req.owner_id.as_deref(),
+            req.sla_deadline,
+            req.status.as_deref(),
+        )
         .await
         .map_err(store_err)?
         .ok_or_else(|| ApiError::not_found("threat", &id))?;
@@ -722,46 +669,24 @@ pub async fn list_workspaces(
 ) -> Result<Json<ApiResponse<Vec<InvestigationWorkspace>>>, ApiError> {
     let limit = params.limit.unwrap_or(50) as i64;
 
+    // Visibility, type and status are filtered in SQL: filtering after LIMIT
+    // returned short pages and counted rows the caller cannot see.
     let records = state
         .store
-        .list_investigation_workspaces(limit)
+        .list_visible_investigation_workspaces(
+            auth.user_id.as_str(),
+            auth.role.can_admin(),
+            params.workspace_type.as_deref(),
+            params.status.as_deref(),
+            limit,
+        )
         .await
         .map_err(store_err)?;
 
     let workspaces: Vec<InvestigationWorkspace> =
         records.into_iter().map(workspace_from_record).collect();
 
-    // Filter by visibility based on user role
-    let filtered: Vec<InvestigationWorkspace> = workspaces
-        .into_iter()
-        .filter(|w| {
-            if auth.role.can_admin()
-                || w.visibility == "public"
-                || w.visibility == "organization"
-                || w.visibility == "team"
-            {
-                true
-            } else {
-                w.owner_id == auth.user_id.as_str()
-            }
-        })
-        .filter(|w| {
-            if let Some(ref ws_type) = params.workspace_type {
-                w.workspace_type == *ws_type
-            } else {
-                true
-            }
-        })
-        .filter(|w| {
-            if let Some(ref status) = params.status {
-                w.status == *status
-            } else {
-                true
-            }
-        })
-        .collect();
-
-    Ok(Json(success(filtered)))
+    Ok(Json(success(workspaces)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -804,15 +729,18 @@ pub async fn create_workspace(
 /// Get a specific workspace
 pub async fn get_workspace(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<InvestigationWorkspace>>, ApiError> {
     let uuid = parse_uuid(&id, "id")?;
-    let record = state
-        .store
-        .get_investigation_workspace(uuid)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| ApiError::not_found("workspace", &id))?;
+    let record = authorize_workspace(
+        state.store.as_ref(),
+        uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Read,
+    )
+    .await?;
 
     Ok(Json(success(workspace_from_record(record))))
 }
@@ -821,10 +749,22 @@ pub async fn get_workspace(
 /// Update a workspace
 pub async fn update_workspace(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
     Json(req): Json<UpdateWorkspaceRequest>,
 ) -> Result<Json<ApiResponse<InvestigationWorkspace>>, ApiError> {
     let uuid = parse_uuid(&id, "id")?;
+    authorize_workspace(
+        state.store.as_ref(),
+        uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Write,
+    )
+    .await?;
+    if let Some(name) = req.name.as_deref() {
+        validate_workspace_name(name)?;
+    }
 
     let record = state
         .store
@@ -835,6 +775,7 @@ pub async fn update_workspace(
             req.status.as_deref(),
             req.tags.as_deref(),
             req.entity_focus.as_ref(),
+            req.metadata.as_ref(),
             req.findings.as_ref().map(|f| Some(f.as_str())),
             req.conclusions.as_ref().map(|c| Some(c.as_str())),
         )
@@ -856,14 +797,17 @@ pub async fn assign_user_to_workspace(
     if req.user_id.trim().is_empty() {
         return Err(ApiError::validation("user_id", "cannot be empty"));
     }
-    if !["owner", "lead", "contributor", "viewer", "reviewer"].contains(&req.role.as_str()) {
-        return Err(ApiError::validation(
-            "role",
-            "must be one of: owner, lead, contributor, viewer, reviewer",
-        ));
-    }
+    validate_workspace_assignment_role(&req.role)?;
 
     let workspace_uuid = parse_uuid(&id, "workspace_id")?;
+    authorize_workspace(
+        state.store.as_ref(),
+        workspace_uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Manage,
+    )
+    .await?;
 
     let record = state
         .store
@@ -875,12 +819,27 @@ pub async fn assign_user_to_workspace(
 }
 
 /// DELETE /api/workspaces/:id
-/// Delete a workspace
+/// Delete a workspace (owner or platform admin only)
 pub async fn delete_workspace(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, ApiError> {
     let uuid = parse_uuid(&id, "id")?;
+    // Deletion is stricter than Manage: an admin share must not destroy the
+    // workspace.
+    let workspace = authorize_workspace(
+        state.store.as_ref(),
+        uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Read,
+    )
+    .await?;
+    if !auth.role.can_admin() && workspace.owner_id != auth.user_id.as_str() {
+        return Err(ApiError::not_found("workspace", &id));
+    }
+
     let deleted = state
         .store
         .delete_investigation_workspace(uuid)
@@ -898,9 +857,18 @@ pub async fn delete_workspace(
 /// List workspace assignments
 pub async fn list_workspace_assignments(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<WorkspaceAssignment>>>, ApiError> {
     let workspace_uuid = parse_uuid(&id, "workspace_id")?;
+    authorize_workspace(
+        state.store.as_ref(),
+        workspace_uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Read,
+    )
+    .await?;
 
     let records = state
         .store
@@ -918,9 +886,18 @@ pub async fn list_workspace_assignments(
 /// Remove a user from a workspace
 pub async fn remove_user_from_workspace(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path((workspace_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<Value>>, ApiError> {
     let workspace_uuid = parse_uuid(&workspace_id, "workspace_id")?;
+    authorize_workspace(
+        state.store.as_ref(),
+        workspace_uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Manage,
+    )
+    .await?;
 
     let removed = state
         .store
@@ -1094,26 +1071,8 @@ pub async fn add_supplier_risk(
     State(state): State<crate::AppState>,
     Json(req): Json<AddSupplierRiskRequest>,
 ) -> Result<Json<ApiResponse<SupplierRiskEntry>>, ApiError> {
-    if req.risk_score < 0.0 || req.risk_score > 1.0 {
-        return Err(ApiError::validation(
-            "risk_score",
-            "must be between 0.0 and 1.0",
-        ));
-    }
-
-    let valid_categories = [
-        "financial",
-        "operational",
-        "compliance",
-        "geopolitical",
-        "environmental",
-        "technological",
-        "reputational",
-        "strategic",
-    ];
-    if !valid_categories.contains(&req.risk_category.as_str()) {
-        return Err(ApiError::validation("risk_category", "invalid category"));
-    }
+    validate_risk_score(req.risk_score)?;
+    validate_risk_category(&req.risk_category)?;
 
     let record = state
         .store
@@ -1154,7 +1113,9 @@ pub async fn update_supplier_risk(
         .update_supplier_risk_entry(
             uuid,
             req.risk_score,
+            req.risk_factors.as_ref(),
             req.mitigation.as_deref(),
+            req.owner_id.as_deref(),
             req.status.as_deref(),
         )
         .await
@@ -1203,7 +1164,7 @@ pub async fn create_pipeline_opportunity(
     Json(req): Json<CreatePipelineOpportunityRequest>,
 ) -> Result<Json<ApiResponse<PipelineOpportunity>>, ApiError> {
     validate_stage(&req.stage)?;
-    validate_confidence(req.probability)?;
+    validate_probability(req.probability)?;
 
     let expected_close = parse_optional_date(&req.expected_close)?;
 
@@ -1254,14 +1215,20 @@ pub async fn update_pipeline_stage(
 /// Get activity feed
 pub async fn get_activity_feed(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Query(params): Query<ActivityFeedQuery>,
 ) -> Result<Json<ApiResponse<Vec<ActivityEntry>>>, ApiError> {
     let limit = params.limit.unwrap_or(50) as i64;
     let workspace_id = parse_optional_uuid(&params.workspace_id, "workspace_id")?;
 
+    // Visibility is enforced in SQL: activity rows attached to a workspace the
+    // caller cannot see, and private rows from other actors, never leave the
+    // database.
     let records = state
         .store
         .list_activity_feed(
+            auth.user_id.as_str(),
+            auth.role.can_admin(),
             workspace_id,
             params.team_id.as_deref(),
             params.actor_id.as_deref(),
@@ -1320,11 +1287,15 @@ pub async fn record_activity(
         _ => auth.user_id.to_string(),
     };
 
-    let visibility = if req.visibility.is_empty() {
-        "team"
+    // Empty means the caller did not decide; private is the safe default (the
+    // row is only visible to its actor). Arbitrary strings are rejected before
+    // they reach the database check constraint.
+    let visibility = if req.visibility.trim().is_empty() {
+        "private".to_string()
     } else {
-        &req.visibility
+        req.visibility.trim().to_string()
     };
+    validate_visibility(&visibility)?;
 
     let record = state
         .store
@@ -1338,7 +1309,7 @@ pub async fn record_activity(
             &req.details,
             workspace_id,
             req.team_id.as_deref(),
-            visibility,
+            &visibility,
         )
         .await
         .map_err(store_err)?;
@@ -1354,9 +1325,18 @@ pub async fn record_activity(
 /// List workspace shares
 pub async fn list_workspace_shares(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(workspace_id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<InvestigationShare>>>, ApiError> {
     let workspace_uuid = parse_uuid(&workspace_id, "workspace_id")?;
+    authorize_workspace(
+        state.store.as_ref(),
+        workspace_uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Read,
+    )
+    .await?;
 
     let records = state
         .store
@@ -1381,17 +1361,19 @@ pub async fn share_workspace(
         return Err(ApiError::validation("shared_with", "cannot be empty"));
     }
 
-    let valid_types = ["view", "collaborate", "embed"];
-    if !valid_types.contains(&req.share_type.as_str()) {
-        return Err(ApiError::validation("share_type", "invalid share type"));
-    }
+    validate_share_type(&req.share_type)?;
 
-    let valid_levels = ["read", "read_write", "admin"];
-    if !valid_levels.contains(&req.access_level.as_str()) {
-        return Err(ApiError::validation("access_level", "invalid access level"));
-    }
+    validate_access_level(&req.access_level)?;
 
     let workspace_uuid = parse_uuid(&workspace_id, "workspace_id")?;
+    authorize_workspace(
+        state.store.as_ref(),
+        workspace_uuid,
+        auth.user_id.as_str(),
+        auth.role.can_admin(),
+        WsAccess::Manage,
+    )
+    .await?;
 
     let record = state
         .store
@@ -1452,35 +1434,24 @@ pub async fn add_evidence(
     State(state): State<crate::AppState>,
     Json(req): Json<AddEvidenceRequest>,
 ) -> Result<Json<ApiResponse<SourceEvidence>>, ApiError> {
-    validate_confidence(req.reliability_score)?;
+    validate_reliability_score(req.reliability_score)?;
+    validate_evidence_type(&req.evidence_type)?;
 
-    let valid_types = [
-        "web_content",
-        "document",
-        "financial_report",
-        "news_article",
-        "social_media",
-        "regulatory_filing",
-        "patent",
-        "court_record",
-        "public_record",
-        "analyst_report",
-    ];
-    if !valid_types.contains(&req.evidence_type.as_str()) {
-        return Err(ApiError::validation(
-            "evidence_type",
-            "invalid evidence type",
-        ));
-    }
-
-    if req.source_url.trim().is_empty() {
+    let source_url = req.source_url.trim();
+    if source_url.is_empty() {
         return Err(ApiError::validation("source_url", "cannot be empty"));
     }
+    // Stored evidence URLs are rendered into an href; only http(s) may be
+    // stored (stored-XSS defense in depth).
+    if apex_api::web::safe_href(source_url) == "#" {
+        return Err(ApiError::validation("source_url", "must be an http(s) URL"));
+    }
 
-    let source_domain = req
-        .source_name
-        .as_ref()
-        .and_then(|n| n.split('/').next().map(|s| s.to_string()));
+    // The domain comes from the URL host, not from splitting the free-text
+    // source name (which usually has no `/` at all and produced junk).
+    let source_domain = url::Url::parse(source_url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string));
 
     let record = state
         .store
@@ -1488,7 +1459,7 @@ pub async fn add_evidence(
             &req.entity_type,
             &req.entity_id,
             &req.evidence_type,
-            &req.source_url,
+            source_url,
             source_domain.as_deref(),
             req.source_name.as_deref(),
             req.reliability_score,
@@ -1803,10 +1774,7 @@ pub async fn create_team_assignment(
         return Err(ApiError::validation("assigned_to", "cannot be empty"));
     }
 
-    let valid_roles = ["lead", "contributor", "reviewer", "observer"];
-    if !valid_roles.contains(&req.role.as_str()) {
-        return Err(ApiError::validation("role", "invalid role"));
-    }
+    validate_team_assignment_role(&req.role)?;
 
     let record = state
         .store
