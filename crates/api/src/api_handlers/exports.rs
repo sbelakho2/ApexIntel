@@ -805,13 +805,14 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
         let row = person_csv_row(&item);
+        // Pin the numeric-cell shape exactly. Scanning the whole row for
+        // "0.00" was time-dependent: an RFC3339 `updated_at` can contain that
+        // substring (e.g. micros `.009168`), which made this test flaky.
         assert!(
-            !row.contains("0.00"),
-            "unmeasured numbers must not render as 0.00: {row}"
-        );
-        assert!(
-            row.contains("\"EU\",,,,,"),
-            "priority/pain/risk/drift must be empty cells: {row}"
+            row.starts_with(
+                "\"p1\",\"Alex Doe\",\"CTO\",\"Executive\",\"Acme\",\"EU\",,,,,\"not measured\","
+            ),
+            "unmeasured priority/pain/risk/drift must be empty cells: {row}"
         );
     }
 
