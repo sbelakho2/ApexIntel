@@ -102,13 +102,30 @@ DELETE FROM embeddings
 -- and the `entity_ids` array, so clearing the array alone would be undone while
 -- `entity_id` still names the person: clear both, and let the trigger promote
 -- another remaining entity when one exists.
-UPDATE insights i
-   SET entity_ids = array_remove(i.entity_ids, c.id),
-       entity_id  = CASE WHEN i.entity_id = c.id THEN NULL ELSE i.entity_id END,
-       updated_at = now()
-  FROM pg_temp._role_slot_person_ids c
- WHERE i.entity_ids @> ARRAY[c.id]
-    OR i.entity_id = c.id;
+--
+-- Databases whose `insights` table predates the 021 unify step (the
+-- consolidated production lineage) have no singular `entity_id` column at
+-- all; guard on its existence so both shapes converge. The guard is also
+-- correct for fresh bootstraps, where the column always exists.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'insights' AND column_name = 'entity_id') THEN
+        UPDATE insights i
+           SET entity_ids = array_remove(i.entity_ids, c.id),
+               entity_id  = CASE WHEN i.entity_id = c.id THEN NULL ELSE i.entity_id END,
+               updated_at = now()
+          FROM pg_temp._role_slot_person_ids c
+         WHERE i.entity_ids @> ARRAY[c.id]
+            OR i.entity_id = c.id;
+    ELSE
+        UPDATE insights i
+           SET entity_ids = array_remove(i.entity_ids, c.id),
+               updated_at = now()
+          FROM pg_temp._role_slot_person_ids c
+         WHERE i.entity_ids @> ARRAY[c.id];
+    END IF;
+END $$;
 
 -- ── 4. Delete the placeholder person, re-checking the full predicate so an
 --      enrichment that appeared after the snapshot still wins. ─────────────
