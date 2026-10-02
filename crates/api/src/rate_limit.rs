@@ -126,12 +126,67 @@ impl TokenBucket {
 
 // ─── Rate limiter service ───────────────────────────────────────────────
 
+/// Environment flag that *requests* disabling the limiter. It is never
+/// sufficient on its own: [`ALLOW_TEST_RATE_LIMIT_DISABLED_ENV`] must also be
+/// `1`, and production startup refuses the variable otherwise.
+pub const RATE_LIMIT_DISABLED_ENV: &str = "RATE_LIMIT_DISABLED";
+
+/// Explicit test/CI override, same pattern as `APEX_ALLOW_TEST_SESSION_SECRET`.
+/// Only a literal `1` counts.
+pub const ALLOW_TEST_RATE_LIMIT_DISABLED_ENV: &str = "APEX_ALLOW_TEST_RATE_LIMIT_DISABLED";
+
+fn env_truthy(value: &str) -> bool {
+    value == "1" || value.eq_ignore_ascii_case("true")
+}
+
+/// True when the environment variable *asks* for the limiter to be disabled.
+pub fn rate_limit_disabled_requested(value: Option<&str>) -> bool {
+    value.is_some_and(env_truthy)
+}
+
+/// True only for the explicit test override (`APEX_ALLOW_TEST_RATE_LIMIT_DISABLED=1`).
+pub fn test_rate_limit_disable_allowed(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Whether limit enforcement may actually be disabled. Both the request and
+/// the explicit test override are required: a production deployment cannot
+/// silently turn off rate limiting by setting a single variable.
+pub fn should_disable_rate_limit(
+    rate_limit_disabled: Option<&str>,
+    allow_test_override: Option<&str>,
+) -> bool {
+    rate_limit_disabled_requested(rate_limit_disabled)
+        && test_rate_limit_disable_allowed(allow_test_override)
+}
+
+/// Startup validation mirroring `validate_session_secret`: refuse to boot when
+/// `RATE_LIMIT_DISABLED` is set without `APEX_ALLOW_TEST_RATE_LIMIT_DISABLED=1`.
+/// Returns a plain string so callers decide how to surface it (the binary maps
+/// it to an `anyhow` startup error).
+pub fn validate_rate_limit_disable(
+    rate_limit_disabled: Option<&str>,
+    allow_test_override: Option<&str>,
+) -> Result<(), String> {
+    if rate_limit_disabled_requested(rate_limit_disabled)
+        && !test_rate_limit_disable_allowed(allow_test_override)
+    {
+        return Err(format!(
+            "{RATE_LIMIT_DISABLED_ENV} is set but {ALLOW_TEST_RATE_LIMIT_DISABLED_ENV}=1 is not; \
+             refusing to start with rate limiting disabled"
+        ));
+    }
+    Ok(())
+}
+
 /// Per-IP, per-tier rate limiting state.
 #[derive(Clone)]
 pub struct RateLimiter {
     inner: Arc<Mutex<RateLimiterInner>>,
-    /// Test/dev escape hatch. Set `RATE_LIMIT_DISABLED=true` to allow all
-    /// requests; used by the UI e2e suite which sweeps every route rapidly.
+    /// Test/dev escape hatch. `RATE_LIMIT_DISABLED=true` only takes effect
+    /// together with `APEX_ALLOW_TEST_RATE_LIMIT_DISABLED=1`; it is used by the
+    /// UI e2e suite, which sweeps every route rapidly. Startup validation in
+    /// `main.rs` refuses the request without the override.
     disabled: bool,
 }
 
@@ -154,9 +209,12 @@ pub struct RateLimitResult {
 
 impl RateLimiter {
     pub fn new() -> Self {
-        let disabled = std::env::var("RATE_LIMIT_DISABLED")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let disabled = should_disable_rate_limit(
+            std::env::var(RATE_LIMIT_DISABLED_ENV).ok().as_deref(),
+            std::env::var(ALLOW_TEST_RATE_LIMIT_DISABLED_ENV)
+                .ok()
+                .as_deref(),
+        );
         Self {
             inner: Arc::new(Mutex::new(RateLimiterInner {
                 buckets: HashMap::new(),
@@ -413,5 +471,32 @@ mod tests {
         };
         let headers = RateLimiter::headers(&result);
         assert!(headers.iter().any(|(k, _)| k == "Retry-After"));
+    }
+
+    /// `RATE_LIMIT_DISABLED` alone must never disable enforcement; the
+    /// explicit `APEX_ALLOW_TEST_RATE_LIMIT_DISABLED=1` override is required.
+    #[test]
+    fn test_rate_limit_disable_requires_explicit_test_override() {
+        assert!(!should_disable_rate_limit(None, None));
+        assert!(!should_disable_rate_limit(Some("true"), None));
+        assert!(!should_disable_rate_limit(Some("1"), None));
+        assert!(!should_disable_rate_limit(Some("true"), Some("0")));
+        assert!(!should_disable_rate_limit(Some("true"), Some("yes")));
+        assert!(!should_disable_rate_limit(Some("false"), Some("1")));
+        assert!(should_disable_rate_limit(Some("true"), Some("1")));
+        assert!(should_disable_rate_limit(Some("TRUE"), Some("1")));
+        assert!(should_disable_rate_limit(Some("1"), Some("1")));
+    }
+
+    /// Startup validation refuses the production misconfiguration.
+    #[test]
+    fn test_validate_rate_limit_disable_refuses_request_without_override() {
+        assert!(validate_rate_limit_disable(None, None).is_ok());
+        assert!(validate_rate_limit_disable(Some("false"), None).is_ok());
+        assert!(validate_rate_limit_disable(Some("true"), Some("1")).is_ok());
+
+        let error = validate_rate_limit_disable(Some("true"), None)
+            .expect_err("RATE_LIMIT_DISABLED without the test override must be refused");
+        assert!(error.contains(ALLOW_TEST_RATE_LIMIT_DISABLED_ENV));
     }
 }

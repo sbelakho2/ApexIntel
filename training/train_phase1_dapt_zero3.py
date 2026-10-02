@@ -92,7 +92,7 @@ def main():
     # ── Tokenizer ──────────────────────────────────────────────────
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
-        trust_remote_code=True,
+        trust_remote_code=False,
         padding_side="right",
     )
     if tokenizer.pad_token is None:
@@ -112,7 +112,7 @@ def main():
         model_path,
         dtype=torch.bfloat16,
         attn_implementation=attn,
-        trust_remote_code=True,
+        trust_remote_code=False,
         use_cache=False,  # required for gradient checkpointing
         low_cpu_mem_usage=True,
     )

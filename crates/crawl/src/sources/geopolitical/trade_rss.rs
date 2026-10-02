@@ -82,11 +82,11 @@ pub struct TradeRssMonitor {
 
 impl TradeRssMonitor {
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Trade Monitor")
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) Trade Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self {
             client,
             sources: Self::default_sources(),
@@ -183,7 +183,7 @@ impl TradeRssMonitor {
         if !resp.status().is_success() {
             return Ok(Vec::new());
         }
-        let body = resp.text().await?;
+        let body = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await?;
         self.parse_rss(&body)
     }
 

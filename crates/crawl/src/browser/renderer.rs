@@ -15,6 +15,15 @@
 //! `Dockerfile.worker`, `USER apexintel`), which is exactly the configuration
 //! Chromium's setuid sandbox expects. Do not add `--no-sandbox` back to make
 //! the browser start as root; fix the service account instead.
+//!
+//! # Network-layer backstop
+//!
+//! CDP `Fetch` interception rejects private/loopback/link-local/CGNAT
+//! requests before Chromium sends them, but the strongest deployment
+//! guarantee is network-layer isolation: run Chromium (or the whole worker)
+//! in a network namespace/container whose egress denies RFC1918, link-local,
+//! loopback and CGNAT, so a validator bypass still cannot reach internal
+//! services. Pair with audit #176 (egress firewall).
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -460,9 +469,12 @@ impl PersistentChromiumBrowser {
         // turned into an SSRF pivot by hostile page content. Fail closed: if
         // interception cannot be enabled, the page must not be rendered.
         session.call("Fetch.enable", fetch_enable_params()).await?;
-        // Best-effort: auto-attach out-of-process iframes/workers so their
-        // requests also pass through the Fetch guard. If this fails, in-process
-        // page requests remain guarded.
+        // Auto-attach out-of-process iframes/workers so their requests also
+        // pass through the Fetch guard. Fail closed in production: rendering
+        // without child interception would let an iframe bypass the SSRF guard.
+        // The fixture test mode (`allow_private_hosts`) keeps the degraded
+        // behavior so local Chromium builds without Target.setAutoAttach still
+        // render fixtures.
         if let Err(error) = session
             .call(
                 "Target.setAutoAttach",
@@ -474,7 +486,13 @@ impl PersistentChromiumBrowser {
             )
             .await
         {
-            warn!(error = %error, "browser: could not auto-attach child targets; out-of-process frames are not intercepted");
+            if self.config.allow_private_hosts {
+                warn!(error = %error, "browser: could not auto-attach child targets (fixture mode); continuing");
+            } else {
+                return Err(anyhow!(
+                    "browser: failed to enable child-target interception (Target.setAutoAttach): {error}"
+                ));
+            }
         }
         let navigation = session
             .call("Page.navigate", json!({ "url": parsed.as_str() }))

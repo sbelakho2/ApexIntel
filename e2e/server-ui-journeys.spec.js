@@ -496,6 +496,134 @@ test.describe('server UI — journey contracts (DB state)', () => {
     );
   });
 
+  test('creates, edits, compares, exports and deletes a battlecard', async ({ page }) => {
+    await login(page);
+    page.on('dialog', (dialog) => dialog.accept());
+    // Reverse of the seeded journey pair, so the two cards can be compared.
+    const ours = SEED.companies[1];
+    const rival = SEED.companies[0];
+    await q(
+      'DELETE FROM battlecards WHERE our_company_id = $1::uuid AND competitor_id = $2::uuid',
+      [ours.id, rival.id]
+    );
+
+    // ── Create from the company page entry point ────────────────────────
+    await page.goto(`/companies/${rival.id}`, { waitUntil: 'domcontentloaded' });
+    await page.locator('[data-action="create-battlecard"]').click();
+    await page.waitForURL(/\/battlecards\/new\?competitor_id=/);
+    await expect(page.locator('select[name="competitor_id"]')).toHaveValue(rival.id);
+    await page.fill('input[name="title"]', 'Journey battlecard');
+    await page.selectOption('select[name="our_company_id"]', ours.id);
+    await Promise.all([
+      page.waitForURL(/\/battlecards\/[0-9a-f-]{36}\?notice=created$/),
+      page.getByRole('button', { name: 'Create Battlecard' }).click(),
+    ]);
+    const id = page.url().match(/battlecards\/([0-9a-f-]{36})/)[1];
+    await expect(page.locator('[data-battlecard-notice]')).toBeVisible();
+    let row = (
+      await q(
+        'SELECT our_company_id, competitor_id, title, status FROM battlecards WHERE id = $1::uuid',
+        [id]
+      )
+    )[0];
+    expect(row).toEqual({
+      our_company_id: ours.id,
+      competitor_id: rival.id,
+      title: 'Journey battlecard',
+      status: 'draft',
+    });
+
+    // Creating the same pair again lands on the existing card.
+    await page.goto(`/battlecards/new?competitor_id=${rival.id}&our_company_id=${ours.id}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.fill('input[name="title"]', 'Duplicate attempt');
+    await Promise.all([
+      page.waitForURL(new RegExp(`/battlecards/${id}\\?notice=exists$`)),
+      page.getByRole('button', { name: 'Create Battlecard' }).click(),
+    ]);
+    expect(
+      await scalar(
+        'SELECT count(*)::int FROM battlecards WHERE our_company_id = $1::uuid AND competitor_id = $2::uuid',
+        [ours.id, rival.id]
+      )
+    ).toBe(1);
+
+    // ── Edit title, status and a section ─────────────────────────────────
+    await page.goto(`/battlecards/${id}/edit`, { waitUntil: 'domcontentloaded' });
+    await page.fill('input[name="title"]', 'Journey battlecard (edited)');
+    await page.selectOption('select[name="status"]', 'published');
+    await page.locator('details:has(textarea[name="section_positioning"]) > summary').click();
+    await page.fill('textarea[name="section_positioning"]', 'Journey positioning statement');
+    await Promise.all([
+      page.waitForURL(new RegExp(`/battlecards/${id}\\?notice=saved$`)),
+      page.getByRole('button', { name: 'Save Changes' }).click(),
+    ]);
+    await expect(page.locator('[data-section="positioning"]')).toContainText(
+      'Journey positioning statement'
+    );
+    row = (
+      await q(
+        'SELECT title, status, positioning, updated_by FROM battlecards WHERE id = $1::uuid',
+        [id]
+      )
+    )[0];
+    expect(row.title).toBe('Journey battlecard (edited)');
+    expect(row.status).toBe('published');
+    expect(row.positioning).toBe('Journey positioning statement');
+    expect(row.updated_by).toBe('admin');
+
+    // A concurrent change (e.g. a regeneration) makes the open editor stale.
+    await page.goto(`/battlecards/${id}/edit`, { waitUntil: 'domcontentloaded' });
+    await q("UPDATE battlecards SET updated_at = now() + interval '1 second' WHERE id = $1::uuid", [
+      id,
+    ]);
+    await page.fill('input[name="title"]', 'Stale overwrite');
+    await page.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(page.locator('[data-battlecard-error]')).toContainText(/changed after you opened/);
+    expect(await scalar('SELECT title FROM battlecards WHERE id = $1::uuid', [id])).toBe(
+      'Journey battlecard (edited)'
+    );
+
+    // ── Compare with the seeded card, then export both views ────────────
+    await page.goto('/battlecards', { waitUntil: 'domcontentloaded' });
+    await page.locator(`input[name="ids"][value="${id}"]`).check();
+    await page.locator(`input[name="ids"][value="${JOURNEY.battlecardId}"]`).check();
+    await Promise.all([
+      page.waitForURL(/\/battlecards\/compare\?/),
+      page.locator('[data-battlecard-compare]').click(),
+    ]);
+    const table = page.getByRole('table', { name: 'Battlecard comparison' });
+    await expect(table).toContainText('Journey battlecard (edited)');
+    await expect(table).toContainText('Northwind vs Cobalt');
+    await expect(table).toContainText('Journey positioning statement');
+
+    const exportHref = await page.locator('[data-battlecard-compare-export]').getAttribute('href');
+    const comparison = await page.request.get(exportHref);
+    expect(comparison.status()).toBe(200);
+    expect(comparison.headers()['content-type']).toContain('text/markdown');
+    expect(comparison.headers()['content-disposition']).toContain('battlecard-comparison.md');
+    expect(await comparison.text()).toContain('Journey positioning statement');
+
+    const single = await page.request.get(`/battlecards/${id}/export`);
+    expect(single.status()).toBe(200);
+    expect(single.headers()['content-disposition']).toContain(
+      'battlecard-journey-battlecard-edited.md'
+    );
+    expect(await single.text()).toContain('Journey positioning statement');
+
+    // ── Delete ───────────────────────────────────────────────────────────
+    await page.goto(`/battlecards/${id}`, { waitUntil: 'domcontentloaded' });
+    await Promise.all([
+      page.waitForURL(/\/battlecards\?notice=deleted$/),
+      page.locator('[data-battlecard-delete]').click(),
+    ]);
+    await expectDb(
+      async () => scalar('SELECT count(*)::int FROM battlecards WHERE id = $1::uuid', [id]),
+      0
+    );
+  });
+
   // The /admin page is read-only; the admin trigger surface is the security
   // page button (same `worker_trigger_queue` row) plus the admin JSON API.
   test('queues a worker job from the security trigger', async ({ page }) => {

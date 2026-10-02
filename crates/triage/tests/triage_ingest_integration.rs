@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use apex_core::triage::TriageItemType;
+use apex_core::triage::{TriageItemType, TriageStatus};
 use apex_triage::semantic_dedup::SemanticDedup;
 use apex_triage::{QueueEnqueueRequest, TriageIngestor, TriageQueue, TriageSubmission};
 use sqlx::postgres::PgPoolOptions;
@@ -377,6 +377,67 @@ async fn enqueue_records_repeats_like_the_ingress_in_the_database() {
 
     assert_eq!(count, 3, "enqueue must count repeats");
     assert_eq!(severity, "high", "3 repeats must escalate low -> high");
+
+    delete_fixture(&pool, &item_type, &source_id).await;
+    pool.close().await;
+}
+
+/// `list`/`count` back the `/triage` page. `triage_queue.status` is TEXT; a
+/// cast to a nonexistent `triage_status` type made both fail on every call.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn list_and_count_run_against_the_real_schema() {
+    let pool = connect().await;
+    let queue = TriageQueue::new(pool.clone());
+    let ingestor = TriageIngestor::new(
+        TriageQueue::new(pool.clone()),
+        SemanticDedup::with_in_memory_fallback(),
+    );
+
+    let item_type = TriageItemType::Insight;
+    purge_stale_fixtures(&pool, &item_type).await;
+    let source_id = Uuid::new_v4().to_string();
+    ingestor
+        .submit(submission(
+            item_type.clone(),
+            &source_id,
+            Uuid::new_v4(),
+            "https://list-count.example/story",
+        ))
+        .await
+        .unwrap();
+
+    let all = queue.list(None, 500, 0).await.expect("unfiltered list");
+    assert!(all.iter().any(|item| item.source_id == source_id));
+    let pending = queue
+        .list(Some(TriageStatus::Pending), 500, 0)
+        .await
+        .expect("status-filtered list");
+    assert!(pending.iter().any(|item| item.source_id == source_id));
+    assert!(pending
+        .iter()
+        .all(|item| item.status == TriageStatus::Pending));
+
+    assert!(queue.count(None).await.expect("unfiltered count") >= 1);
+    assert!(
+        queue
+            .count(Some(TriageStatus::Pending))
+            .await
+            .expect("status-filtered count")
+            >= 1
+    );
+    assert_eq!(
+        queue
+            .count(Some(TriageStatus::Dismissed))
+            .await
+            .expect("count for an empty status"),
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM triage_queue WHERE status = 'dismissed'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    );
 
     delete_fixture(&pool, &item_type, &source_id).await;
     pool.close().await;

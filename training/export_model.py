@@ -55,7 +55,7 @@ def merge_adapters(
 ) -> None:
     """Load base model, merge Phase 1 adapter, then Phase 2 adapter, save."""
     print(f"Loading base model: {base_model_path}")
-    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=False)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -63,7 +63,7 @@ def merge_adapters(
         base_model_path,
         torch_dtype=torch_dtype,
         device_map="cpu",  # merge on CPU to avoid OOM
-        trust_remote_code=True,
+        trust_remote_code=False,
         low_cpu_mem_usage=True,
     )
 

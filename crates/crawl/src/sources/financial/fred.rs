@@ -112,11 +112,12 @@ pub struct FredMonitor {
 impl FredMonitor {
     /// Create with explicit configuration.
     pub fn new(config: FredConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) FRED Monitor")
-            .build()
-            .context("building FRED monitor HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) FRED Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building FRED monitor HTTP client")?;
 
         Ok(Self { client, config })
     }
@@ -198,8 +199,10 @@ impl FredMonitor {
         let resp = match self.client.get(&url).send().await {
             Ok(resp) => resp,
             Err(error) => {
-                let outcome =
-                    ParseOutcome::fetch_failed(format!("FRED API request failed: {error}"), None);
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("FRED API request failed: {}", error.without_url()),
+                    None,
+                );
                 PARSER_METRICS.record(&outcome);
                 return outcome;
             }
@@ -226,7 +229,8 @@ impl FredMonitor {
             value: String,
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(

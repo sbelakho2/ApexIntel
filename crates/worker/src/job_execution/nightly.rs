@@ -10,6 +10,7 @@ use apex_crawl::browser::{BrowserFetcher, BrowserRequest};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 use apex_crawl::errors::CrawlError;
 use apex_crawl::governor_limiter::CrawlGovernor;
+use apex_crawl::rss::{parse_feed_with_base, FeedItem};
 use apex_crawl::sources::{
     crawl_source_budget_from_env, dispatch_source_fetch, scheduler_backlog, select_due_sources,
     FetchDispatch, Source, FORCED_SOURCE_SLUGS,
@@ -20,10 +21,12 @@ use apex_insights::company_discovery::{normalize_company_name, CompanyCandidate,
 use apex_insights::dynamic_poi_discovery::{
     DiscoveredEntity, DynamicPoiDiscovery, EntityType, PoiCandidate, Recommendation,
 };
+use apex_store::postgres::WarningListFilters;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::sync::Semaphore;
+use url::Url;
 
 use super::JobExecutionContext;
 use crate::*;
@@ -37,6 +40,10 @@ const GLOBAL_HTTP_CONCURRENCY: usize = 12;
 const BROWSER_CONCURRENCY: usize = 2;
 /// Per-domain request rate enforced on top of the concurrency caps.
 const CRAWL_DOMAIN_RPS: u32 = 1;
+/// Hard cap on feed items materialized from one source per cycle. The HTTP
+/// body is capped, but a hostile feed can pack thousands of tiny items into
+/// that budget; without this each item costs at least one observation insert.
+const MAX_FEED_ITEMS_PER_SOURCE: usize = 200;
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const CRAWL_USER_AGENT: &str = "ApexIntelBot/1.0 (+https://apex-intel.io/bot)";
@@ -68,6 +75,23 @@ struct FailedSource {
     kind: SourceFailureKind,
 }
 
+/// One observation payload produced for a fetched source, before entity
+/// linking and persistence. Feed sources yield one per feed item; page sources
+/// yield one.
+struct SourceObservation {
+    value: serde_json::Value,
+    provenance: serde_json::Value,
+    /// Text scanned for known entity names.
+    link_text: String,
+    /// Item/page title, used to corroborate short or ambiguous entity names.
+    title_for_matching: String,
+    /// Stable per-item key (RSS link/guid) when the source is a feed; the
+    /// namespace selects the deterministic-id domain.
+    item_key: Option<String>,
+    /// URL recorded for dynamic company discovery.
+    source_url: String,
+}
+
 /// The parser contract a source must satisfy before it can be promoted to
 /// validated/operational: the fetched body must produce non-empty content.
 /// `extracted_text` is `Some` when content extraction ran; `None` falls back to
@@ -75,6 +99,79 @@ struct FailedSource {
 /// bodies never satisfy the contract.
 fn parser_contract_satisfied(body: &str, extracted_text: Option<&str>) -> bool {
     !extracted_text.unwrap_or(body).trim().is_empty()
+}
+
+/// Build one observation per parsed feed item, capped at
+/// [`MAX_FEED_ITEMS_PER_SOURCE`].
+///
+/// Returns the observations, the concatenated item text used for the parser
+/// contract, and the pre-cap item count so the caller can report truncation.
+fn feed_observations(
+    source: &Source,
+    feed_url: &str,
+    items: Vec<FeedItem>,
+) -> (Vec<SourceObservation>, String, usize) {
+    let total_items = items.len();
+    let mut observations = Vec::with_capacity(total_items.min(MAX_FEED_ITEMS_PER_SOURCE));
+    let mut feed_text = String::new();
+
+    for item in items.into_iter().take(MAX_FEED_ITEMS_PER_SOURCE) {
+        // `content` carries the full item body (`content:encoded`) and already
+        // falls back to the description in the parser; items whose entity
+        // mentions live only in the body must still be matched.
+        let body = if item.content.trim().is_empty() {
+            &item.description
+        } else {
+            &item.content
+        };
+        let item_text = format!("{} {}", item.title, body).trim().to_string();
+        if !item_text.is_empty() {
+            if !feed_text.is_empty() {
+                feed_text.push(' ');
+            }
+            feed_text.push_str(&item_text);
+        }
+        // Dedupe key for re-crawls: the item link when it survived http(s)
+        // resolution, else the feed guid.
+        let item_key = if !item.link.is_empty() {
+            item.link.clone()
+        } else if !item.guid.is_empty() {
+            item.guid.clone()
+        } else {
+            item.title.clone()
+        };
+        let source_url = if item.link.is_empty() {
+            feed_url.to_string()
+        } else {
+            item.link.clone()
+        };
+        observations.push(SourceObservation {
+            value: serde_json::json!({
+                "source_id": source.slug,
+                "url": item.link,
+                "title": item.title,
+                "description": item.description,
+                "content": item.content,
+                "guid": item.guid,
+                "published": item.published,
+                "author": item.author,
+                "categories": item.categories,
+            }),
+            provenance: serde_json::json!({
+                "source": source.slug,
+                "tier": source.tier,
+                "category": format!("{:?}", source.category),
+                "feed_url": feed_url,
+                "url": item.link,
+            }),
+            link_text: item_text,
+            title_for_matching: item.title.clone(),
+            item_key: Some(item_key),
+            source_url,
+        });
+    }
+
+    (observations, feed_text, total_items)
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -107,13 +204,21 @@ async fn fetch_source(
 
     let needs_browser_slot = dispatch == FetchDispatch::Browser;
     let _browser_permit = if needs_browser_slot || prefers_browser_ua {
-        Some(
-            browser_permits
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("browser concurrency semaphore is never closed"),
-        )
+        match browser_permits.clone().acquire_owned().await {
+            Ok(permit) => Some(permit),
+            Err(error) => {
+                // The shared semaphore is never closed, so this is defensive:
+                // surface it as a fetch failure instead of panicking the run.
+                return SourceFetchOutcome {
+                    source_index,
+                    result: Err(FailedSource {
+                        message: format!("browser concurrency gate unavailable: {error}"),
+                        http_status: None,
+                        kind: SourceFailureKind::Fetch,
+                    }),
+                };
+            }
+        }
     } else {
         None
     };
@@ -238,13 +343,110 @@ async fn persist_source_failure(
 /// a UUID lookup table.  The automaton matches all known entity names in a
 /// single O(n + matches) pass over the text, replacing the previous O(n*m)
 /// approach.
-struct EntityMatcher {
+pub(super) struct EntityMatcher {
     automaton: AhoCorasick,
     /// Ordered parallel to the patterns fed to the automaton:
     /// `ids[pattern_index]` gives the UUID for that entity.
     ids: Vec<Uuid>,
-    /// Lengths of the original patterns so we can pick the longest match.
-    lengths: Vec<usize>,
+    /// Lower-cased original pattern, parallel to `ids`; used for the title
+    /// corroboration check of short/ordinary-word names.
+    patterns: Vec<String>,
+    /// True for names that only count with corroboration (a title mention or
+    /// at least two body mentions): short names and ordinary dictionary words
+    /// that happen to also be entity names.
+    needs_corroboration: Vec<bool>,
+}
+
+impl EntityMatcher {
+    /// Build the matching index from `(id, name)` pairs without a database, so
+    /// non-crawl callers (for example the social scan) share the crawl cycle's
+    /// word-boundary and corroboration rules instead of naive substring
+    /// matching.
+    pub(super) fn from_index(index: &[(Uuid, String)]) -> anyhow::Result<EntityMatcher> {
+        let mut lowered: HashMap<String, Uuid> = HashMap::with_capacity(index.len());
+        for (id, name) in index {
+            // Skip very short names (≤2 chars) to avoid false-positive matches
+            // against common words.
+            if name.len() > 2 {
+                lowered.entry(name.to_ascii_lowercase()).or_insert(*id);
+            }
+        }
+        // Patterns are stored lower-cased for the case-insensitive title
+        // corroboration check, and sorted for a deterministic pattern index
+        // assignment (matching output is by text position, but reproducible
+        // indexes keep tests and diagnostics stable).
+        let mut patterns: Vec<String> = lowered.keys().cloned().collect();
+        patterns.sort();
+        let ids: Vec<Uuid> = patterns.iter().map(|pattern| lowered[pattern]).collect();
+        let needs_corroboration: Vec<bool> = patterns
+            .iter()
+            .map(|pattern| name_needs_corroboration(pattern))
+            .collect();
+        let pattern_refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
+        let automaton = AhoCorasick::builder()
+            .ascii_case_insensitive(true)
+            // At a given position the longest entity name wins, so "Acme
+            // Batteries" is preferred over a prefix "Acme" (the matcher's
+            // documented longest-match contract).
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&pattern_refs)
+            .map_err(|error| anyhow::anyhow!("failed to build entity name automaton: {error}"))?;
+
+        Ok(EntityMatcher {
+            automaton,
+            ids,
+            patterns,
+            needs_corroboration,
+        })
+    }
+}
+
+/// Ordinary words that are also plausible entity names. A single incidental
+/// body mention of one of these is not enough evidence to link an observation
+/// to the company; it must appear in the title or at least twice.
+const ENTITY_NAME_STOPLIST: &[&str] = &[
+    "ion",
+    "delta",
+    "data",
+    "group",
+    "global",
+    "systems",
+    "supply",
+    "energy",
+    "capital",
+    "ventures",
+    "partners",
+    "solutions",
+    "holdings",
+    "target",
+    "gap",
+    "shell",
+    "visa",
+    "orange",
+    "meta",
+    "square",
+    "pulse",
+    "swift",
+    "summit",
+    "horizon",
+    "vertex",
+    "series",
+    "source",
+    "core",
+    "prime",
+    "pioneer",
+    "frontier",
+    "unity",
+];
+
+/// Names below this length (in characters) need corroboration even when they
+/// are not in [`ENTITY_NAME_STOPLIST`].
+const MIN_UNCORROBORATED_NAME_CHARS: usize = 5;
+
+fn name_needs_corroboration(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    lowered.chars().count() < MIN_UNCORROBORATED_NAME_CHARS
+        || ENTITY_NAME_STOPLIST.contains(&lowered.as_str())
 }
 
 /// Source of the entity-name index used for crawl observation linking.
@@ -287,24 +489,7 @@ async fn build_entity_name_lookup<S: EntityIndexSource + ?Sized>(
         }
     }
 
-    // Build Aho-Corasick automaton from the lookup keys.
-    let patterns: Vec<&str> = lookup.keys().map(|s| s.as_str()).collect();
-    let ids: Vec<Uuid> = lookup.keys().map(|k| lookup[k]).collect();
-    let lengths: Vec<usize> = patterns.iter().map(|p| p.len()).collect();
-    let automaton = AhoCorasick::builder()
-        .ascii_case_insensitive(true)
-        // At a given position the longest entity name wins, so "Acme
-        // Batteries" is preferred over a prefix "Acme" (the matcher's
-        // documented longest-match contract).
-        .match_kind(MatchKind::LeftmostLongest)
-        .build(&patterns)
-        .map_err(|error| anyhow::anyhow!("failed to build entity name automaton: {error}"))?;
-
-    let matcher = EntityMatcher {
-        automaton,
-        ids,
-        lengths,
-    };
+    let matcher = EntityMatcher::from_index(&index)?;
     Ok((lookup, matcher))
 }
 
@@ -326,21 +511,145 @@ async fn entity_index_or_fail<S: EntityIndexSource + ?Sized>(
     }
 }
 
-/// Scan a text blob for the best matching entity name.  Uses the precomputed
-/// Aho-Corasick automaton for O(n + matches) matching.  Returns the entity
-/// UUID of the longest match so that more specific names win over shorter
-/// prefixes.
-fn match_entity_in_text(text: &str, matcher: &EntityMatcher) -> Option<Uuid> {
-    let mut best: Option<(usize, Uuid)> = None;
-    for mat in matcher.automaton.find_iter(text) {
-        let idx = mat.pattern().as_usize();
-        let len = matcher.lengths[idx];
-        match best {
-            Some((best_len, _)) if len <= best_len => {}
-            _ => best = Some((len, matcher.ids[idx])),
+/// True when the byte range `[start, end)` is not glued to an adjacent ASCII
+/// alphanumeric character in the original text. This is what prevents "Ion"
+/// from matching inside "nation"/"station" and "Delta" from matching "deltas".
+fn is_ascii_word_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
+    let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+    let after_ok = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+    before_ok && after_ok
+}
+
+/// Case-insensitive whole-word containment for the title corroboration check.
+/// `needle` is expected to already be lower-cased.
+fn contains_ascii_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    let lowered = haystack.to_ascii_lowercase();
+    let haystack_bytes = lowered.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut offset = 0;
+    while offset + needle_bytes.len() <= haystack_bytes.len() {
+        match haystack_bytes[offset..]
+            .windows(needle_bytes.len())
+            .position(|window| window == needle_bytes)
+        {
+            Some(position) => {
+                let start = offset + position;
+                let end = start + needle_bytes.len();
+                if is_ascii_word_boundary(haystack_bytes, start, end) {
+                    return true;
+                }
+                offset = start + 1;
+            }
+            None => return false,
         }
     }
-    best.map(|(_, id)| id)
+    false
+}
+
+/// Scan a text blob for every known entity name it contains.
+///
+/// Matching is one Aho-Corasick pass with an ASCII-alphanumeric word-boundary
+/// check on the original bytes. Short names and ordinary dictionary words only
+/// count when they are corroborated by a title mention or at least two body
+/// mentions, so incidental substrings and passing references do not create
+/// entity links. Every matched entity is returned (one observation per entity
+/// is created by the caller), not just the longest match.
+///
+/// Shared with the social scan so both callers link entities under the same
+/// rules.
+pub(super) fn match_entities_in_text(
+    text: &str,
+    title: &str,
+    matcher: &EntityMatcher,
+) -> Vec<Uuid> {
+    let bytes = text.as_bytes();
+    let mut mention_counts: HashMap<usize, u32> = HashMap::new();
+    for m in matcher.automaton.find_iter(text) {
+        if !is_ascii_word_boundary(bytes, m.start(), m.end()) {
+            continue;
+        }
+        *mention_counts.entry(m.pattern().as_usize()).or_insert(0) += 1;
+    }
+
+    let mut pattern_indexes: Vec<usize> = mention_counts.keys().copied().collect();
+    pattern_indexes.sort_unstable();
+
+    let mut matched: Vec<Uuid> = Vec::new();
+    for index in pattern_indexes {
+        let id = matcher.ids[index];
+        if matched.contains(&id) {
+            continue;
+        }
+        if matcher.needs_corroboration[index] {
+            let mentions = mention_counts[&index];
+            if mentions < 2 && !contains_ascii_word(title, &matcher.patterns[index]) {
+                continue;
+            }
+        }
+        matched.push(id);
+    }
+    matched
+}
+
+/// Compatibility wrapper for callers that only need one entity id: the first
+/// (leftmost-longest) word-boundary match that satisfies the corroboration
+/// rule. Kept for tests; production callers use [`match_entities_in_text`] so
+/// every matched entity is linked.
+#[cfg(test)]
+fn match_entity_in_text(text: &str, matcher: &EntityMatcher) -> Option<Uuid> {
+    match_entities_in_text(text, "", matcher).into_iter().next()
+}
+
+/// Warning type/title shared by every "crawl degraded" broadcast so recurrence
+/// dedup can find the existing row.
+const CRAWL_DEGRADED_WARNING_TYPE: &str = "crawl_health";
+const CRAWL_DEGRADED_WARNING_TITLE: &str = "Crawl reliability degraded";
+
+/// Stable identity of the crawl-degraded broadcast within one UTC day: two
+/// cycles on the same day derive the same id, a later day does not.
+fn crawl_degraded_broadcast_id(now: chrono::DateTime<Utc>) -> String {
+    format!("crawl_degraded:{}", now.format("%Y-%m-%d"))
+}
+
+/// Start of the UTC day `now` falls in.
+fn crawl_degraded_period_start(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    now.date_naive().and_time(chrono::NaiveTime::MIN).and_utc()
+}
+
+/// True when this period's crawl-degraded warning already exists.
+///
+/// Re-submitting it would insert another outbox alert and re-notify every
+/// consumer even though the warning row itself deduplicates, so a persistent
+/// outage broadcasts once per period instead of once per cycle.
+async fn crawl_degraded_already_broadcast(
+    store: &PgStore,
+    broadcast_id: &str,
+    period_start: chrono::DateTime<Utc>,
+) -> bool {
+    let filters = WarningListFilters {
+        warning_types: vec![CRAWL_DEGRADED_WARNING_TYPE.to_string()],
+        date_from: Some(period_start),
+        ..Default::default()
+    };
+    match store.list_warnings(&filters, None, true, 50, 0).await {
+        Ok(rows) => rows.iter().any(|row| {
+            row.description
+                .as_deref()
+                .unwrap_or("")
+                .contains(broadcast_id)
+        }),
+        Err(error) => {
+            // Fail open: a failed dedup check must not silence a real outage.
+            tracing::warn!(
+                %error,
+                "crawl_cycle: failed to check for an existing crawl-degraded broadcast; re-broadcasting"
+            );
+            false
+        }
+    }
 }
 
 #[cfg(feature = "llm")]
@@ -767,7 +1076,6 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
     let mut browser_unavailable_sources: HashSet<String> = HashSet::new();
-    let mut companies_with_new_obs: HashSet<Uuid> = HashSet::new();
     // Source runtime state is scheduler state. A failed write leaves the
     // scheduler's view of the source stale, so a run with any such failure is
     // degraded, never a clean success.
@@ -813,141 +1121,220 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             Ok(fetched) => {
                 sources_attempted += 1;
                 let body = fetched.body;
+                let observed_at = Utc::now();
+
                 // The parser contract the source metric depends on: a fetch
                 // only validates a source when extraction produced real
                 // content. Empty/unparsable bodies (thin 200s, script-only
                 // pages, extraction failure) leave `parser_contract_ok`
                 // false, so the attempt is recorded as a failure and the
                 // source stays unvalidated instead of being promoted.
-                #[cfg(any(feature = "parse", feature = "llm"))]
-                let (obs_value, parser_contract_ok, parser_failure_sample) =
-                    match extract_page(&body) {
-                        Ok(page) => {
-                            // Store the extracted text under BOTH `content` (the
-                            // canonical key all consumers read) and `body_excerpt`
-                            // (legacy compatibility). Increase from 1000 to 4000
-                            // chars so the insight LLM has enough context to ground
-                            // its analysis — 1000 chars was too short for meaningful
-                            // intelligence extraction.
-                            let text: String = page.body_text.chars().take(4000).collect();
-                            let ok = parser_contract_satisfied(&body, Some(&text));
-                            let sample = if ok {
-                                None
-                            } else {
-                                // Redacted, bounded evidence for the parser incident.
-                                Some(apex_crawl::parse_outcome::redact_sample(&text))
-                            };
-                            (
-                                serde_json::json!({
-                                    "source_id": src.slug,
-                                    "url": url,
-                                    "title": page.title,
-                                    "description": page.description,
-                                    "content": &text,
-                                    "body_excerpt": &text,
-                                    "text_content": &text,
-                                    "language": page.language,
-                                }),
-                                ok,
-                                sample,
-                            )
+                let mut observations_to_store: Vec<SourceObservation> = Vec::new();
+                let mut parser_contract_ok = false;
+                let mut parser_failure_sample: Option<String> = None;
+                let mut parser_failure_error: Option<String> = None;
+
+                if let Some(feed_url) = src.rss_url.as_deref() {
+                    // ── RSS/Atom path: one observation per feed item ──────
+                    match Url::parse(feed_url) {
+                        Ok(parsed_feed_url) => {
+                            match parse_feed_with_base(&body, Some(&parsed_feed_url)) {
+                                Ok(feed_items) => {
+                                    let (items, feed_text, total_items) =
+                                        feed_observations(src, feed_url, feed_items);
+                                    if total_items > items.len() {
+                                        tracing::warn!(
+                                            source = %src.slug,
+                                            total_items,
+                                            stored_items = items.len(),
+                                            cap = MAX_FEED_ITEMS_PER_SOURCE,
+                                            "crawl_cycle: feed item count exceeds per-source cap; truncating"
+                                        );
+                                    }
+                                    observations_to_store = items;
+                                    parser_contract_ok =
+                                        parser_contract_satisfied(&body, Some(&feed_text));
+                                    if !parser_contract_ok {
+                                        parser_failure_sample = Some(
+                                            apex_crawl::parse_outcome::redact_sample(&feed_text),
+                                        );
+                                        parser_failure_error =
+                                            Some("feed parse produced no item content".to_string());
+                                    }
+                                }
+                                Err(error) => {
+                                    parser_failure_sample =
+                                        Some(apex_crawl::parse_outcome::redact_sample(&body));
+                                    parser_failure_error =
+                                        Some(format!("feed parse failed: {error}"));
+                                }
+                            }
                         }
-                        Err(_) => (
-                            serde_json::json!({
+                        Err(error) => {
+                            parser_failure_sample =
+                                Some(apex_crawl::parse_outcome::redact_sample(&body));
+                            parser_failure_error =
+                                Some(format!("invalid feed URL '{feed_url}': {error}"));
+                        }
+                    }
+                } else {
+                    // ── HTML path (unchanged) with the page URL supplied ──
+                    #[cfg(any(feature = "parse", feature = "llm"))]
+                    {
+                        let page_url_parsed = Url::parse(url).ok();
+                        match extract_page(&body, page_url_parsed.as_ref()) {
+                            Ok(page) => {
+                                // Store the extracted text under BOTH `content`
+                                // (the canonical key all consumers read) and
+                                // `body_excerpt` (legacy compatibility).
+                                // Increase from 1000 to 4000 chars so the insight
+                                // LLM has enough context to ground its analysis.
+                                let text: String = page.body_text.chars().take(4000).collect();
+                                parser_contract_ok = parser_contract_satisfied(&body, Some(&text));
+                                if !parser_contract_ok {
+                                    // Redacted, bounded evidence for the parser incident.
+                                    parser_failure_sample =
+                                        Some(apex_crawl::parse_outcome::redact_sample(&text));
+                                }
+                                let page_title = page.title.clone();
+                                let link_text =
+                                    format!("{} {} {}", page_title, page.description, text);
+                                observations_to_store.push(SourceObservation {
+                                    value: serde_json::json!({
+                                        "source_id": src.slug,
+                                        "url": url,
+                                        "title": page_title,
+                                        "description": page.description,
+                                        "content": &text,
+                                        "body_excerpt": &text,
+                                        "text_content": &text,
+                                        "language": page.language,
+                                    }),
+                                    provenance: serde_json::json!({
+                                        "source": src.slug,
+                                        "tier": src.tier,
+                                        "category": format!("{:?}", src.category),
+                                        "url": url,
+                                    }),
+                                    link_text,
+                                    title_for_matching: page_title,
+                                    item_key: None,
+                                    source_url: url.to_string(),
+                                });
+                            }
+                            Err(error) => {
+                                parser_failure_sample =
+                                    Some(apex_crawl::parse_outcome::redact_sample(&body));
+                                parser_failure_error =
+                                    Some(format!("page extraction failed: {error}"));
+                            }
+                        }
+                    }
+                    #[cfg(not(any(feature = "parse", feature = "llm")))]
+                    {
+                        parser_contract_ok = parser_contract_satisfied(&body, None);
+                        if !parser_contract_ok {
+                            parser_failure_sample =
+                                Some(apex_crawl::parse_outcome::redact_sample(&body));
+                        }
+                        observations_to_store.push(SourceObservation {
+                            value: serde_json::json!({
                                 "source_id": src.slug,
                                 "url": url,
+                                "body_len": body.len(),
                             }),
-                            false,
-                            Some(apex_crawl::parse_outcome::redact_sample(&body)),
-                        ),
-                    };
-                #[cfg(not(any(feature = "parse", feature = "llm")))]
-                let (obs_value, parser_contract_ok, parser_failure_sample) = {
-                    let ok = parser_contract_satisfied(&body, None);
-                    let sample = if ok {
-                        None
-                    } else {
-                        Some(apex_crawl::parse_outcome::redact_sample(&body))
-                    };
-                    (
-                        serde_json::json!({
-                            "source_id": src.slug,
-                            "url": url,
-                            "body_len": body.len(),
-                        }),
-                        ok,
-                        sample,
-                    )
-                };
-
-                let obs = {
-                    let mut o = Observation::new(
-                        ObservationType::WebChange,
-                        Utc::now(),
-                        obs_value.clone(),
-                        serde_json::json!({
-                            "source": src.slug,
-                            "tier": src.tier,
-                            "category": format!("{:?}", src.category),
-                        }),
-                    );
-
-                    // Attempt entity linking: scan the crawled page text for a
-                    // known company/competitor name and attach its UUID so
-                    // downstream jobs (recipe_fire) can attribute the observation.
-                    let linkable_text = format!(
-                        "{} {} {}",
-                        obs_value
-                            .get("title")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(""),
-                        obs_value
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(""),
-                        obs_value
-                            .get("body_excerpt")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(""),
-                    );
-                    if let Some(eid) = match_entity_in_text(&linkable_text, &entity_matcher) {
-                        o.entity_id = Some(eid);
-                        o.entity_type = Some("company".to_string());
+                            provenance: serde_json::json!({
+                                "source": src.slug,
+                                "tier": src.tier,
+                                "category": format!("{:?}", src.category),
+                                "url": url,
+                            }),
+                            link_text: String::new(),
+                            title_for_matching: String::new(),
+                            item_key: None,
+                            source_url: url.to_string(),
+                        });
                     }
-                    // B326: content-derived ID — an unchanged page re-crawled
-                    // hourly no longer inserts a duplicate WebChange row; a
-                    // genuinely changed page still produces a new one.
-                    o.stabilize_id("webchange");
-                    o
-                };
-                match store.insert_observation(&obs).await {
-                    Ok(_) => {
-                        ingested += 1;
-                        if let Some(eid) = obs.entity_id {
-                            entity_linked += 1;
-                            companies_with_new_obs.insert(eid);
+                }
+
+                // Persist one observation per matched entity (the Observation
+                // shape carries a single entity id), or the single unlinked
+                // observation when no entity matched. Each per-entity row gets
+                // a stable entity-scoped id so every matched company is linked
+                // instead of later entities colliding with the first.
+                let mut insert_failure: Option<String> = None;
+                'observation: for payload in &observations_to_store {
+                    let matched_entities = match_entities_in_text(
+                        &payload.link_text,
+                        &payload.title_for_matching,
+                        &entity_matcher,
+                    );
+                    let entity_targets: Vec<Option<Uuid>> = if matched_entities.is_empty() {
+                        vec![None]
+                    } else {
+                        matched_entities.into_iter().map(Some).collect()
+                    };
+
+                    for entity_id in entity_targets {
+                        let mut observation = Observation::new(
+                            ObservationType::WebChange,
+                            observed_at,
+                            payload.value.clone(),
+                            payload.provenance.clone(),
+                        );
+                        if let Some(eid) = entity_id {
+                            observation.entity_id = Some(eid);
+                            observation.entity_type = Some("company".to_string());
                         }
+                        // B326: content-derived ID — an unchanged page/item
+                        // re-crawled hourly no longer inserts a duplicate row.
+                        let namespace = if payload.item_key.is_some() {
+                            "rss_item"
+                        } else {
+                            "webchange"
+                        };
+                        let stabilize_key = observation.stabilize_id(namespace);
+                        if let Some(eid) = entity_id {
+                            observation.id = Observation::deterministic_id(
+                                namespace,
+                                &format!("{stabilize_key}|entity:{eid}"),
+                            );
+                        }
+
+                        if let Err(error) = store.insert_observation(&observation).await {
+                            insert_failure = Some(error.to_string());
+                            break 'observation;
+                        }
+                        ingested += 1;
+                        if entity_id.is_some() {
+                            entity_linked += 1;
+                        }
+
                         #[cfg(feature = "llm")]
                         {
                             let discovery_text = format!(
                                 "{}\n{}\n{}",
-                                obs_value
+                                payload
+                                    .value
                                     .get("title")
                                     .and_then(|value| value.as_str())
                                     .unwrap_or(""),
-                                obs_value
+                                payload
+                                    .value
                                     .get("description")
                                     .and_then(|value| value.as_str())
                                     .unwrap_or(""),
-                                obs_value
+                                payload
+                                    .value
                                     .get("body_excerpt")
+                                    .or_else(|| payload.value.get("content"))
                                     .and_then(|value| value.as_str())
                                     .unwrap_or(""),
                             );
                             let discovered = dynamic_discovery.process_content(
                                 &discovery_text,
-                                url,
-                                Utc::now().timestamp(),
+                                &payload.source_url,
+                                observed_at.timestamp(),
                             );
                             if !discovered.is_empty() {
                                 let candidates = dynamic_discovery.generate_candidates(&discovered);
@@ -963,84 +1350,87 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                                 );
                             }
                         }
-                        if parser_contract_ok {
-                            match store
-                                .record_source_success(
-                                    &src.slug,
-                                    min_interval,
-                                    Some(fetched.latency_ms),
-                                    Some(fetched.http_status),
-                                    Utc::now(),
-                                )
-                                .await
-                            {
-                                Ok(_) => {
-                                    sources_succeeded += 1;
-                                    successful_sources.insert(src.slug.clone());
-                                }
-                                Err(error) => {
-                                    tracing::warn!(
-                                        source = %src.slug,
-                                        error = %error,
-                                        "crawl_cycle: failed to persist source success state"
-                                    );
-                                    sources_failed += 1;
-                                    failed_sources.insert(src.slug.clone());
-                                }
-                            }
-                        } else {
-                            // The fetch succeeded but the parser contract did
-                            // not: never promote the source. Record a parser
-                            // failure so the scheduler backs off, the parser
-                            // metric is separate from transport failures, and
-                            // `last_success_at` is preserved.
+                    }
+                }
+
+                if let Some(error) = insert_failure {
+                    tracing::warn!(
+                        source = %src.slug,
+                        error = %error,
+                        "crawl_cycle: failed to store observation"
+                    );
+                    errors += 1;
+                    sources_failed += 1;
+                    failed_sources.insert(src.slug.clone());
+                    if persist_source_failure(
+                        store.as_ref(),
+                        &src.slug,
+                        &error,
+                        None,
+                        min_interval,
+                        Utc::now(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        scheduler_state_write_failures += 1;
+                    }
+                } else if parser_contract_ok {
+                    match store
+                        .record_source_success(
+                            &src.slug,
+                            min_interval,
+                            Some(fetched.latency_ms),
+                            Some(fetched.http_status),
+                            Utc::now(),
+                        )
+                        .await
+                    {
+                        Ok(_) => {
+                            sources_succeeded += 1;
+                            successful_sources.insert(src.slug.clone());
+                        }
+                        Err(error) => {
                             tracing::warn!(
                                 source = %src.slug,
-                                http_status = fetched.http_status,
-                                "crawl_cycle: parser contract check failed (empty or unparsable content)"
+                                error = %error,
+                                "crawl_cycle: failed to persist source success state"
                             );
-                            errors += 1;
                             sources_failed += 1;
-                            sources_parse_failed += 1;
                             failed_sources.insert(src.slug.clone());
-                            if store
-                                .record_source_parse_failure(
-                                    &src.slug,
-                                    "parser contract check failed: empty or unparsable content",
-                                    parser_failure_sample.as_deref(),
-                                    Some(fetched.http_status),
-                                    min_interval,
-                                    Utc::now(),
-                                )
-                                .await
-                                .is_err()
-                            {
-                                scheduler_state_write_failures += 1;
-                            }
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            source = %src.slug,
-                            error = %e,
-                            "crawl_cycle: failed to store observation"
-                        );
-                        errors += 1;
-                        sources_failed += 1;
-                        failed_sources.insert(src.slug.clone());
-                        if persist_source_failure(
-                            store.as_ref(),
+                } else {
+                    // The fetch succeeded but the parser contract did not:
+                    // never promote the source. Record a parser failure so the
+                    // scheduler backs off, the parser metric is separate from
+                    // transport failures, and `last_success_at` is preserved.
+                    let failure_message = parser_failure_error.clone().unwrap_or_else(|| {
+                        "parser contract check failed: empty or unparsable content".to_string()
+                    });
+                    tracing::warn!(
+                        source = %src.slug,
+                        http_status = fetched.http_status,
+                        error = %failure_message,
+                        "crawl_cycle: parser contract check failed (empty or unparsable content)"
+                    );
+                    errors += 1;
+                    sources_failed += 1;
+                    sources_parse_failed += 1;
+                    failed_sources.insert(src.slug.clone());
+                    if store
+                        .record_source_parse_failure(
                             &src.slug,
-                            &e.to_string(),
-                            None,
+                            &failure_message,
+                            parser_failure_sample.as_deref(),
+                            Some(fetched.http_status),
                             min_interval,
                             Utc::now(),
                         )
                         .await
                         .is_err()
-                        {
-                            scheduler_state_write_failures += 1;
-                        }
+                    {
+                        scheduler_state_write_failures += 1;
                     }
                 }
             }
@@ -1200,13 +1590,35 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             if browser_unavailable_sources_list.is_empty() { "none".to_string() } else { browser_unavailable_sources_list.join(",") },
         );
 
-        if let Err(error) = ingress
+        // Deduplicate a persistent outage: one broadcast per UTC day. Without
+        // this, every hourly cycle inserted a fresh warning row + outbox alert
+        // and notified every consumer again while the same sources stayed
+        // down. The period id is stable across calls within the day.
+        let broadcast_now = Utc::now();
+        let broadcast_id = crawl_degraded_broadcast_id(broadcast_now);
+        if crawl_degraded_already_broadcast(
+            store.as_ref(),
+            &broadcast_id,
+            crawl_degraded_period_start(broadcast_now),
+        )
+        .await
+        {
+            tracing::info!(
+                broadcast_id,
+                "crawl_cycle: degradation already broadcast for this period; suppressing duplicate alert"
+            );
+        } else if let Err(error) = ingress
             .submit_warning(
-                NewWarning::new("crawl_health", "Crawl reliability degraded", "high")
-                    .description(&failure_summary)
-                    .confidence((1.0 - success_ratio).clamp(0.0, 1.0))
-                    // Crawl health is operational and system-wide.
-                    .system_broadcast(),
+                NewWarning::new(
+                    CRAWL_DEGRADED_WARNING_TYPE,
+                    CRAWL_DEGRADED_WARNING_TITLE,
+                    "high",
+                )
+                .description(format!("{broadcast_id} {failure_summary}"))
+                .recipe_code(broadcast_id.clone())
+                .confidence((1.0 - success_ratio).clamp(0.0, 1.0))
+                // Crawl health is operational and system-wide.
+                .system_broadcast(),
             )
             .await
         {
@@ -1231,37 +1643,6 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
         return run;
     }
 
-    // ── Observation→POI integration ──────────────────────────────────────
-    let mut poi_links_created: u64 = 0;
-    if !companies_with_new_obs.is_empty() {
-        let company_ids: Vec<Uuid> = companies_with_new_obs.iter().copied().collect();
-        // Get all persons linked to these companies
-        let person_names_result = store.get_person_names_by_company_ids(&company_ids).await;
-        if let Err(error) = &person_names_result {
-            // Reflected in the run summary's error count: an integration that
-            // silently did nothing must not look like a clean crawl.
-            errors += 1;
-            tracing::error!(
-                %error,
-                companies = company_ids.len(),
-                "crawl_cycle: failed to load person names for observation→POI integration"
-            );
-        }
-        if let Ok(person_names) = person_names_result {
-            for (_org_id, person_name) in &person_names {
-                let name_lower = person_name.to_lowercase();
-                if !name_lower.is_empty() && name_lower.len() > 4 {
-                    poi_links_created += 1;
-                }
-            }
-            tracing::info!(
-                companies_with_obs = companies_with_new_obs.len(),
-                persons_checked = person_names.len(),
-                potential_poi_links = poi_links_created,
-                "crawl_cycle: observation→POI integration complete"
-            );
-        }
-    }
     // ── Log crawl completion to activity feed ─────────────────────────────
     let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
     activity_logger
@@ -1294,7 +1675,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: due={} attempted={} succeeded={} failed={} browser_unavailable={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; due_sources_remaining={}; total_coverage_debt={:.2}; success_ratio={:.2}",
+            "crawl_cycle: due={} attempted={} succeeded={} failed={} browser_unavailable={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; due_sources_remaining={}; total_coverage_debt={:.2}; success_ratio={:.2}",
             sources_due,
             sources_attempted,
             sources_succeeded,
@@ -1304,7 +1685,6 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             entity_linked,
             dynamically_discovered_companies,
             errors,
-            poi_links_created,
             due_sources_remaining_count,
             total_coverage_debt,
             success_ratio,
@@ -2209,6 +2589,122 @@ mod failure_classification_tests {
 }
 
 #[cfg(test)]
+mod feed_observation_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use apex_crawl::sources::{Category, Region, SourceCapability};
+
+    fn feed_source() -> Source {
+        Source {
+            slug: "test_feed".to_string(),
+            name: "Test feed".to_string(),
+            url: "https://example.com/feed.xml".to_string(),
+            search_param: None,
+            region: Region::Global,
+            category: Category::News,
+            tier: 2,
+            needs_proxy: false,
+            rss_url: Some("https://example.com/feed.xml".to_string()),
+            enabled: true,
+            min_interval_minutes: 60,
+            fetch_strategy: None,
+            capability: SourceCapability::Operational,
+            notes: None,
+        }
+    }
+
+    fn feed_item(title: &str, link: &str, guid: &str) -> FeedItem {
+        FeedItem {
+            title: title.to_string(),
+            link: link.to_string(),
+            description: format!("{title} description"),
+            content: String::new(),
+            published: None,
+            author: None,
+            categories: vec![],
+            guid: guid.to_string(),
+        }
+    }
+
+    #[test]
+    fn feed_items_become_one_observation_each_with_stable_keys() {
+        let items = vec![
+            feed_item("First", "https://example.com/1", "guid-1"),
+            feed_item("Second", "", "guid-2"),
+            feed_item("Third", "", ""),
+        ];
+
+        let (observations, text, total) =
+            feed_observations(&feed_source(), "https://example.com/feed.xml", items);
+
+        assert_eq!(total, 3);
+        assert_eq!(observations.len(), 3, "one observation per feed item");
+        // Link wins, then guid, then title; all stable across re-crawls.
+        assert_eq!(
+            observations[0].item_key.as_deref(),
+            Some("https://example.com/1")
+        );
+        assert_eq!(observations[1].item_key.as_deref(), Some("guid-2"));
+        assert_eq!(observations[2].item_key.as_deref(), Some("Third"));
+        // Items without a link fall back to the feed URL as their source URL.
+        assert_eq!(observations[1].source_url, "https://example.com/feed.xml");
+        assert_eq!(observations[0].source_url, "https://example.com/1");
+        assert!(text.contains("First description"), "{text}");
+    }
+
+    #[test]
+    fn feed_item_body_is_scanned_for_entities_not_only_the_summary() {
+        let mut item = feed_item("Brief", "https://example.com/body", "guid-body");
+        item.description = "summary without names".to_string();
+        item.content = "Acme Batteries announced a new plant.".to_string();
+
+        let (observations, text, _) =
+            feed_observations(&feed_source(), "https://example.com/feed.xml", vec![item]);
+
+        assert!(
+            observations[0].link_text.contains("Acme Batteries"),
+            "entity mentions in content:encoded must be scanned: {}",
+            observations[0].link_text
+        );
+        assert!(text.contains("Acme Batteries"), "{text}");
+        assert_eq!(observations[0].title_for_matching, "Brief");
+    }
+
+    #[test]
+    fn feed_item_count_is_capped_per_source() {
+        let items: Vec<FeedItem> = (0..MAX_FEED_ITEMS_PER_SOURCE + 7)
+            .map(|index| {
+                feed_item(
+                    &format!("Item {index}"),
+                    &format!("https://example.com/{index}"),
+                    "",
+                )
+            })
+            .collect();
+
+        let (observations, text, total) =
+            feed_observations(&feed_source(), "https://example.com/feed.xml", items);
+
+        assert_eq!(
+            total,
+            MAX_FEED_ITEMS_PER_SOURCE + 7,
+            "the pre-cap count must be reported to the caller"
+        );
+        assert_eq!(
+            observations.len(),
+            MAX_FEED_ITEMS_PER_SOURCE,
+            "a hostile feed must not produce unbounded observations"
+        );
+        assert!(text.contains("Item 0 description"), "{text}");
+        assert!(
+            !text.contains(&format!("Item {MAX_FEED_ITEMS_PER_SOURCE} description")),
+            "items past the cap must not be materialized"
+        );
+    }
+}
+
+#[cfg(test)]
 mod entity_index_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -2301,6 +2797,155 @@ mod entity_index_tests {
             match_entity_in_text("ACME BATTERIES wins a contract", &matcher),
             Some(Uuid::from_u128(1)),
             "longest entity name must win"
+        );
+    }
+
+    struct FixedIndex(Vec<(Uuid, String)>);
+
+    #[async_trait::async_trait]
+    impl EntityIndexSource for FixedIndex {
+        async fn entity_name_index(&self) -> anyhow::Result<Vec<(Uuid, String)>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    async fn matcher_for(names: &[(&str, u128)]) -> EntityMatcher {
+        let mut run = JobRun::new(JobKind::CrawlCycle);
+        run.start();
+        let entries = names
+            .iter()
+            .map(|(name, id)| (Uuid::from_u128(*id), (*name).to_string()))
+            .collect();
+        let (_, matcher) = entity_index_or_fail(&FixedIndex(entries), &mut run)
+            .await
+            .expect("fixed index loads");
+        matcher
+    }
+
+    #[tokio::test]
+    async fn short_name_does_not_match_inside_larger_words() {
+        let matcher = matcher_for(&[("Ion", 7)]).await;
+
+        // "ion" inside "nation"/"station" is not a word-boundary match.
+        assert!(match_entities_in_text(
+            "the nation and the station reported growth",
+            "Market update",
+            &matcher
+        )
+        .is_empty());
+
+        // A standalone title mention corroborates the short name.
+        assert_eq!(
+            match_entities_in_text("an ion engine was tested", "Ion wins contract", &matcher),
+            vec![Uuid::from_u128(7)]
+        );
+
+        // Two body mentions corroborate the short name even without a title mention.
+        assert_eq!(
+            match_entities_in_text(
+                "the ion drive and the ion engine shipped",
+                "Market update",
+                &matcher
+            ),
+            vec![Uuid::from_u128(7)]
+        );
+
+        // A single incidental body mention is not enough.
+        assert!(
+            match_entities_in_text("an ion engine was tested", "Market update", &matcher)
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn delta_does_not_match_deltas() {
+        let matcher = matcher_for(&[("Delta", 8)]).await;
+
+        assert!(
+            match_entities_in_text("deltas rose sharply", "Deltas report", &matcher).is_empty()
+        );
+        assert_eq!(
+            match_entities_in_text("delta held steady", "Delta guidance", &matcher),
+            vec![Uuid::from_u128(8)]
+        );
+    }
+
+    #[tokio::test]
+    async fn every_matched_company_is_linked_not_only_the_longest() {
+        let matcher = matcher_for(&[
+            ("Acme Batteries", 1),
+            ("Northwind Traders", 2),
+            ("Globex Corporation", 3),
+        ])
+        .await;
+        let matched = match_entities_in_text(
+            "Acme Batteries, Northwind Traders and Globex Corporation announced a joint venture.",
+            "Joint venture",
+            &matcher,
+        );
+        assert_eq!(
+            matched.len(),
+            3,
+            "all three companies must be linked: {matched:?}"
+        );
+        for id in [1, 2, 3] {
+            assert!(
+                matched.contains(&Uuid::from_u128(id)),
+                "missing entity {id}: {matched:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn title_mention_wins_over_incidental_body_mention() {
+        let matcher = matcher_for(&[("Ion", 10), ("Northwind Traders", 11)]).await;
+        // The crawl cycle scans title + body together (the title is part of
+        // the link text), so the title subject is matched while a lone
+        // incidental short-name mention in the body is not corroborated.
+        let matched = match_entities_in_text(
+            "Northwind Traders wins the contract. The award follows an ion engine trial.",
+            "Northwind Traders wins the contract",
+            &matcher,
+        );
+        assert_eq!(
+            matched,
+            vec![Uuid::from_u128(11)],
+            "the title subject must win over a lone incidental short-name mention"
+        );
+    }
+}
+
+#[cfg(test)]
+mod crawl_degraded_broadcast_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn degraded_broadcast_id_is_stable_across_calls_in_the_same_period() {
+        // Two cycles in the same UTC day must derive the same broadcast id so
+        // the store dedup (and the pre-submit check) suppresses repeated
+        // alerts for a persistent outage.
+        let first = Utc.with_ymd_and_hms(2026, 10, 1, 0, 5, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2026, 10, 1, 23, 55, 0).unwrap();
+        assert_eq!(
+            crawl_degraded_broadcast_id(first),
+            crawl_degraded_broadcast_id(second)
+        );
+        assert_eq!(
+            crawl_degraded_period_start(first),
+            crawl_degraded_period_start(second)
+        );
+
+        // A new UTC day is a new broadcast period.
+        let next_day = Utc.with_ymd_and_hms(2026, 10, 2, 0, 5, 0).unwrap();
+        assert_ne!(
+            crawl_degraded_broadcast_id(first),
+            crawl_degraded_broadcast_id(next_day)
+        );
+        assert_ne!(
+            crawl_degraded_period_start(first),
+            crawl_degraded_period_start(next_day)
         );
     }
 }

@@ -226,7 +226,8 @@ impl MarketplaceMonitor {
             );
         }
 
-        let body = match resp.text().await {
+        let body = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(body) => body,
             Err(error) => {
                 return AcquisitionOutcome::fetch_failed(

@@ -10,10 +10,10 @@ model_dir = os.environ.get("MODEL_DIR", str(WORK / "training" / "outputs" / "mer
 adapter = os.environ.get("ADAPTER_PATH", str(WORK / "training" / "outputs" / "phase2_sft" / "best_adapter_v3"))
 
 print("Loading model...", flush=True)
-tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=False)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
-model = AutoModelForCausalLM.from_pretrained(model_dir, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_dir, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=False)
 model = PeftModel.from_pretrained(model, adapter)
 model = model.merge_and_unload()
 print("Model loaded.", flush=True)

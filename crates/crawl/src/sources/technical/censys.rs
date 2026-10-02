@@ -105,11 +105,12 @@ pub struct CensysClient {
 impl CensysClient {
     /// Create with configuration.
     pub fn new(config: CensysConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Censys Monitor")
-            .build()
-            .context("building Censys HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) Censys Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building Censys HTTP client")?;
         Ok(Self { client, config })
     }
 
@@ -165,15 +166,16 @@ impl CensysClient {
             results: Option<Vec<serde_json::Value>>,
         }
 
-        let cert_resp: CensysCertResponse = match resp.json().await {
-            Ok(cert_resp) => cert_resp,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("parse Censys certificate response failed: {error}"),
-                    "",
-                );
-            }
-        };
+        let cert_resp: CensysCertResponse =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(cert_resp) => cert_resp,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("parse Censys certificate response failed: {error}"),
+                        "",
+                    );
+                }
+            };
         let certs: Vec<CensysCertificate> = cert_resp
             .results
             .unwrap_or_default()
@@ -321,15 +323,16 @@ impl CensysClient {
             results: Option<Vec<serde_json::Value>>,
         }
 
-        let host_resp: CensysHostResponse = match resp.json().await {
-            Ok(host_resp) => host_resp,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("parse Censys host response failed: {error}"),
-                    "",
-                );
-            }
-        };
+        let host_resp: CensysHostResponse =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(host_resp) => host_resp,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("parse Censys host response failed: {error}"),
+                        "",
+                    );
+                }
+            };
         let hosts: Vec<CensysHost> = host_resp
             .results
             .unwrap_or_default()

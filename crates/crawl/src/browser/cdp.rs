@@ -6,7 +6,7 @@
 //! readiness loop can implement a `networkidle`-style quiet window.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,7 +16,9 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
+
+use crate::browser::validation::{host_from_url, request_allowed_with};
 
 /// Upper bound for a single CDP command round-trip.
 pub(crate) const CDP_CALL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -34,6 +36,8 @@ type SessionTrackers = Arc<AsyncMutex<HashMap<String, Arc<NetworkTracker>>>>;
 #[derive(Debug)]
 pub(crate) struct NetworkTracker {
     in_flight: Mutex<HashSet<String>>,
+    /// Requests this session has denied through the SSRF policy.
+    denied: AtomicUsize,
     /// Mirrors `BrowserConfig::allow_private_hosts`: the test-only escape hatch
     /// that permits loopback/private fixture targets.
     allow_private_hosts: bool,
@@ -49,8 +53,15 @@ impl NetworkTracker {
     fn new(allow_private_hosts: bool) -> Self {
         Self {
             in_flight: Mutex::new(HashSet::new()),
+            denied: AtomicUsize::new(0),
             allow_private_hosts,
         }
+    }
+
+    /// Count one request denied by the SSRF policy and return the running
+    /// total for this session (logged with the denial, never the raw URL).
+    fn note_denied(&self) -> usize {
+        self.denied.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     fn record(&self, method: &str, params: &Value) {
@@ -122,6 +133,12 @@ fn send_command(
         message["sessionId"] = Value::String(session_id.to_string());
     }
     let _ = commands.send(Message::Text(message.to_string()));
+}
+
+/// Host-only redaction for denial logs: blocked URLs can carry credentials,
+/// tokens or scraped PII in their path/query, so only the host is ever logged.
+fn redacted_host(url: &str) -> String {
+    host_from_url(url).unwrap_or_else(|| "<no-host>".to_string())
 }
 
 impl CdpClient {
@@ -368,17 +385,21 @@ async fn dispatch(
                 .unwrap_or_default()
                 .to_string();
             let allow_private_hosts = tracker.allow_private_hosts;
-            trace!(url = %url, allow_private_hosts, "cdp: fetch request paused");
+            trace!(allow_private_hosts, "cdp: fetch request paused");
             let commands = commands.clone();
             let next_id = next_id.clone();
             let session_id = session_id.to_string();
             tokio::spawn(async move {
-                let allowed =
-                    crate::browser::validation::browser_request_allowed(&url, allow_private_hosts)
-                        .await;
+                let allowed = request_allowed_with(&url, allow_private_hosts).await;
                 let (method, params) = if allowed {
                     ("Fetch.continueRequest", json!({ "requestId": request_id }))
                 } else {
+                    let denied_total = tracker.note_denied();
+                    warn!(
+                        host = %redacted_host(&url),
+                        denied_total,
+                        "browser: blocked an intercepted request (SSRF policy)"
+                    );
                     (
                         "Fetch.failRequest",
                         json!({ "requestId": request_id, "errorReason": "BlockedByClient" }),
@@ -495,5 +516,164 @@ mod tests {
         tracker.record("Page.frameStoppedLoading", &json!({}));
         tracker.record("Network.responseReceived", &json!({"requestId": "a"}));
         assert_eq!(tracker.in_flight(), 0);
+    }
+
+    #[test]
+    fn network_tracker_counts_denied_requests() {
+        let tracker = NetworkTracker::default();
+        assert_eq!(tracker.note_denied(), 1);
+        assert_eq!(tracker.note_denied(), 2);
+    }
+
+    #[test]
+    fn redacted_host_drops_credentials_path_and_query() {
+        assert_eq!(
+            redacted_host("https://user:pass@Example.com:8443/a/b?token=secret#frag"),
+            "example.com"
+        );
+        assert_eq!(
+            redacted_host("http://169.254.169.254/latest/meta-data/"),
+            "169.254.169.254"
+        );
+        assert_eq!(redacted_host("data:text/html,<p>x</p>"), "<no-host>");
+        assert_eq!(redacted_host("not a url"), "<no-host>");
+    }
+
+    fn drain_methods(rx: &mut mpsc::UnboundedReceiver<Message>) -> Vec<String> {
+        let mut methods = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            if let Message::Text(text) = message {
+                let value: Value = serde_json::from_str(&text).expect("command is JSON");
+                methods.push(value["method"].as_str().unwrap_or_default().to_string());
+            }
+        }
+        methods
+    }
+
+    #[tokio::test]
+    async fn attached_child_is_intercepted_before_it_is_resumed() {
+        let (commands, mut rx) = mpsc::unbounded_channel::<Message>();
+        let pending: PendingResponses = Arc::new(AsyncMutex::new(HashMap::new()));
+        let sessions: SessionTrackers = Arc::new(AsyncMutex::new(HashMap::new()));
+        let next_id = Arc::new(AtomicU64::new(1));
+        sessions
+            .lock()
+            .await
+            .insert("page".to_string(), Arc::new(NetworkTracker::new(false)));
+
+        dispatch(
+            &json!({
+                "method": "Target.attachedToTarget",
+                "sessionId": "page",
+                "params": { "sessionId": "child", "waitingForDebugger": true },
+            }),
+            &pending,
+            &sessions,
+            &commands,
+            &next_id,
+        )
+        .await;
+
+        let methods = drain_methods(&mut rx);
+        let fetch_enable = methods
+            .iter()
+            .position(|method| method == "Fetch.enable")
+            .expect("child session must get Fetch.enable");
+        let auto_attach = methods
+            .iter()
+            .position(|method| method == "Target.setAutoAttach")
+            .expect("child session must propagate auto-attach");
+        let resume = methods
+            .iter()
+            .position(|method| method == "Runtime.runIfWaitingForDebugger")
+            .expect("child session must be resumed");
+        assert!(
+            fetch_enable < auto_attach && auto_attach < resume,
+            "interception must land before the child resumes: {methods:?}"
+        );
+
+        let child = sessions
+            .lock()
+            .await
+            .get("child")
+            .cloned()
+            .expect("child session is registered");
+        assert!(
+            !child.allow_private_hosts,
+            "the child inherits the page's production request policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn private_request_is_failed_closed() {
+        let (commands, mut rx) = mpsc::unbounded_channel::<Message>();
+        let pending: PendingResponses = Arc::new(AsyncMutex::new(HashMap::new()));
+        let sessions: SessionTrackers = Arc::new(AsyncMutex::new(HashMap::new()));
+        let next_id = Arc::new(AtomicU64::new(1));
+        let tracker = Arc::new(NetworkTracker::new(false));
+        sessions
+            .lock()
+            .await
+            .insert("page".to_string(), tracker.clone());
+
+        dispatch(
+            &json!({
+                "method": "Fetch.requestPaused",
+                "sessionId": "page",
+                "params": {
+                    "requestId": "req-1",
+                    "request": { "url": "http://169.254.169.254/latest/meta-data/" },
+                },
+            }),
+            &pending,
+            &sessions,
+            &commands,
+            &next_id,
+        )
+        .await;
+
+        let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("policy decision must be delivered")
+            .expect("command channel is open");
+        let value: Value = match message {
+            Message::Text(text) => serde_json::from_str(&text).expect("command is JSON"),
+            other => panic!("unexpected CDP message: {other:?}"),
+        };
+        assert_eq!(value["method"], "Fetch.failRequest");
+        assert_eq!(value["params"]["errorReason"], "BlockedByClient");
+        assert_eq!(
+            tracker.note_denied(),
+            2,
+            "the private request must be the only denial recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_paused_on_unregistered_session_stays_paused() {
+        let (commands, mut rx) = mpsc::unbounded_channel::<Message>();
+        let pending: PendingResponses = Arc::new(AsyncMutex::new(HashMap::new()));
+        let sessions: SessionTrackers = Arc::new(AsyncMutex::new(HashMap::new()));
+        let next_id = Arc::new(AtomicU64::new(1));
+
+        dispatch(
+            &json!({
+                "method": "Fetch.requestPaused",
+                "sessionId": "unknown",
+                "params": {
+                    "requestId": "req-2",
+                    "request": { "url": "https://93.184.216.34/" },
+                },
+            }),
+            &pending,
+            &sessions,
+            &commands,
+            &next_id,
+        )
+        .await;
+
+        // No continue/fail is emitted, so the request remains paused (fail
+        // closed) instead of escaping interception.
+        assert!(drain_methods(&mut rx).is_empty());
     }
 }

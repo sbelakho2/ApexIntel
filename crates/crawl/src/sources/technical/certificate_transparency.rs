@@ -86,11 +86,11 @@ pub struct CtMonitor {
 impl CtMonitor {
     /// Create a new CT monitor.
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(60))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) CT Monitor")
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(60),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) CT Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self {
             client,
             seen_hashes: HashSet::new(),
@@ -133,7 +133,8 @@ impl CtMonitor {
             return outcome;
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(

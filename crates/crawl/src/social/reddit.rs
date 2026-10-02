@@ -132,17 +132,19 @@ pub struct RedditScraper {
 
 impl RedditScraper {
     pub fn new(proxy_url: Option<&str>) -> Result<Self> {
-        let mut builder = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("ApexIntelOSINT/1.0 (+https://apexintel.io; research bot)");
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some(
+                "ApexIntelOSINT/1.0 (+https://apexintel.io; research bot)".to_string(),
+            ),
+            proxy: proxy_url
+                .map(reqwest::Proxy::all)
+                .transpose()
+                .context("Invalid proxy")?,
+            ..crate::http::ExternalClientOptions::default()
+        })?;
 
-        if let Some(proxy) = proxy_url {
-            builder = builder.proxy(reqwest::Proxy::all(proxy).context("Invalid proxy")?);
-        }
-
-        Ok(Self {
-            client: builder.build()?,
-        })
+        Ok(Self { client })
     }
 
     /// Fetch the hottest posts from a subreddit.
@@ -210,15 +212,16 @@ impl RedditScraper {
     async fn fetch_listing(&self, url: &str) -> Result<Vec<SocialPost>> {
         debug!(url=%url, "Reddit API request");
 
-        let resp: RedditListing = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .context("Reddit HTTP request failed")?
-            .json()
-            .await
-            .context("Reddit JSON parse failed")?;
+        let resp: RedditListing = crate::http::read_capped_json(
+            self.client
+                .get(url)
+                .send()
+                .await
+                .context("Reddit HTTP request failed")?,
+            crate::http::MAX_EXTERNAL_BODY_BYTES,
+        )
+        .await
+        .context("Reddit JSON parse failed")?;
 
         Ok(resp
             .data

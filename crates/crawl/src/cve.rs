@@ -80,14 +80,11 @@ pub struct CveClient {
 impl CveClient {
     /// Build a client with a 20s timeout and a descriptive User-Agent.
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent("ApexIntel-CVE/1.0")
-            .build()
-            .unwrap_or_else(|error| {
-                warn!(error = %error, "cve: failed to build HTTP client; using default");
-                Client::new()
-            });
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(20),
+            user_agent: Some("ApexIntel-CVE/1.0".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self { client }
     }
 
@@ -128,16 +125,19 @@ impl CveClient {
             return http_failure(status.as_u16(), retry_after, "cve");
         }
 
-        let body: serde_json::Value = match response.json().await {
-            Ok(value) => value,
-            Err(error) => {
-                warn!(error = %error, "cve: failed to parse JSON");
-                return AcquisitionOutcome::parse_failed(
-                    format!("cve: failed to parse NVD JSON: {error}"),
-                    "",
-                );
-            }
-        };
+        let body: serde_json::Value =
+            match crate::http::read_capped_json(response, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(error = %error, "cve: failed to parse JSON");
+                    return AcquisitionOutcome::parse_failed(
+                        format!("cve: failed to parse NVD JSON: {error}"),
+                        "",
+                    );
+                }
+            };
 
         let vulnerabilities = body
             .get("vulnerabilities")

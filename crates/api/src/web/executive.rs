@@ -112,6 +112,23 @@ pub struct ExecutiveDashboardPage {
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
+/// Classify a stored `strategic_opportunities.status` for the wins/losses
+/// panel. The table's `chk_opportunity_status` constraint stores a terminal
+/// win as `completed` and a loss as `abandoned`; `won`/`lost` are accepted so
+/// the panel keeps working if a deployment widens the constraint. Any other
+/// status is still an open opportunity, not a result (audit #156).
+fn opportunity_result_type(status: &str) -> &'static str {
+    let is_win = status == "won" || status == "completed";
+    let is_loss = status == "lost" || status == "abandoned";
+    if is_win {
+        "win"
+    } else if is_loss {
+        "loss"
+    } else {
+        "opportunity"
+    }
+}
+
 /// GET /executive — render the executive dashboard page.
 pub async fn executive_dashboard(
     session: Extension<WebSession>,
@@ -136,6 +153,21 @@ pub async fn executive_dashboard(
     );
     DegradedNotice::capture(&opportunities_state, &mut degraded_notice);
     let opportunities = opportunities_state.into_items();
+
+    // Terminal results (`completed`/`abandoned`) are excluded from the open
+    // pipeline query above, so the wins/losses panel used to be structurally
+    // unable to contain a win (audit #156). Fetch them explicitly.
+    let closed_opportunities_state = DataState::from_result(
+        store.list_strategic_opportunities(true, 500).await,
+        "list_strategic_opportunities (closed) failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&closed_opportunities_state, &mut degraded_notice);
+    let closed_opportunities: Vec<_> = closed_opportunities_state
+        .into_items()
+        .into_iter()
+        .filter(|o| opportunity_result_type(&o.status) != "opportunity")
+        .collect();
 
     let threats_state = DataState::from_result(
         store.list_critical_threats(20).await,
@@ -412,34 +444,22 @@ pub async fn executive_dashboard(
 
     // ── Build recent wins/losses from strategic opportunities ────────────
 
-    let sorted_opps: Vec<_> = {
-        let mut v = opportunities.clone();
-        v.sort_by(|a, b| {
-            b.priority_score
-                .partial_cmp(&a.priority_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        v.truncate(5);
-        v
-    };
-
-    let recent_wins_losses: Vec<RecentWinLoss> = sorted_opps
-        .into_iter()
-        .map(|o| {
-            let is_win = o.status == "won" || o.status == "closed";
-            RecentWinLoss {
+    let recent_wins_losses: Vec<RecentWinLoss> = {
+        let mut terminal = closed_opportunities;
+        // Most recently updated result first; the panel is "recent".
+        terminal.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
+        terminal.truncate(5);
+        terminal
+            .into_iter()
+            .map(|o| RecentWinLoss {
                 title: o.title.clone(),
-                result_type: if is_win {
-                    "win".into()
-                } else {
-                    "opportunity".into()
-                },
+                result_type: opportunity_result_type(&o.status).to_string(),
                 company: o.entity_id.clone().unwrap_or_default(),
-                date: o.created_at.format("%Y-%m-%d").to_string(),
+                date: o.updated_at.format("%Y-%m-%d").to_string(),
                 description: o.description.clone().unwrap_or_default(),
-            }
-        })
-        .collect();
+            })
+            .collect()
+    };
 
     // ── Build recommended actions from high-priority items ───────────────
 
@@ -489,4 +509,86 @@ pub async fn executive_dashboard(
     };
 
     super::render_template(&page)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system_status::StatusStrip;
+
+    /// The stored status vocabulary decides the result: `completed` is the
+    /// table's terminal win, `abandoned` its terminal loss, and anything else
+    /// is still an open opportunity (audit #156).
+    #[test]
+    fn stored_terminal_statuses_classify_as_win_or_loss() {
+        assert_eq!(opportunity_result_type("completed"), "win");
+        assert_eq!(opportunity_result_type("won"), "win");
+        assert_eq!(opportunity_result_type("abandoned"), "loss");
+        assert_eq!(opportunity_result_type("lost"), "loss");
+        assert_eq!(opportunity_result_type("active"), "opportunity");
+        assert_eq!(opportunity_result_type("pursued"), "opportunity");
+    }
+
+    fn win_loss(title: &str, result_type: &str) -> RecentWinLoss {
+        RecentWinLoss {
+            title: title.into(),
+            result_type: result_type.into(),
+            company: String::new(),
+            date: "2026-01-02".into(),
+            description: String::new(),
+        }
+    }
+
+    fn page(recent_wins_losses: Vec<RecentWinLoss>) -> ExecutiveDashboardPage {
+        ExecutiveDashboardPage {
+            current_path: "/executive".into(),
+            can_admin: false,
+            can_write: false,
+            username: "analyst".into(),
+            warning_count: 0,
+            theme: String::new(),
+            status_strip: StatusStrip::unknown(),
+            stat_cards: vec![],
+            competitors: vec![],
+            top_risks: vec![],
+            trending_topics: vec![],
+            recent_wins_losses,
+            recommended_actions: vec![],
+            degraded_notice: None,
+        }
+    }
+
+    /// A stored win and a stored loss both render in the wins/losses panel —
+    /// before the fix the panel only ever emitted "opportunity".
+    #[test]
+    fn wins_losses_panel_renders_a_win_and_a_loss() {
+        let html = page(vec![
+            win_loss("Renewal signed", "win"),
+            win_loss("Pilot cancelled", "loss"),
+        ])
+        .render()
+        .expect("executive dashboard renders");
+
+        assert!(html.contains("Recent Wins &amp; Losses"));
+        let win_item = rendered_item(&html, "Renewal signed");
+        assert!(win_item.contains("win"), "win badge missing: {win_item}");
+        assert!(!win_item.contains("opportunity"));
+        let loss_item = rendered_item(&html, "Pilot cancelled");
+        assert!(
+            loss_item.contains("loss"),
+            "loss badge missing: {loss_item}"
+        );
+        assert!(!loss_item.contains("win"));
+    }
+
+    /// Text of the rendered list item starting at `title` up to the item's
+    /// closing `</div>`.
+    fn rendered_item<'a>(html: &'a str, title: &str) -> &'a str {
+        let after = html
+            .split_once(title)
+            .unwrap_or_else(|| panic!("item title {title:?} did not render"))
+            .1;
+        let end = after.find("</div>").unwrap_or(after.len());
+        &after[..end]
+    }
 }

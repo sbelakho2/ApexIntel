@@ -15,6 +15,7 @@ pub mod dns;
 pub mod errors;
 pub mod governor_limiter;
 pub mod headers;
+pub mod http;
 pub mod metrics;
 pub mod openalex;
 pub mod parse_outcome;

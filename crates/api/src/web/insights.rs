@@ -71,8 +71,11 @@ pub struct InsightListItem {
     pub category: String,
     pub category_label: String,
     pub category_css: String,
-    pub confidence: f64,
-    pub confidence_pct: i64,
+    /// Measured confidence; `None` = the column is NULL (or the legacy value
+    /// was never recorded) and every display surface says so.
+    pub confidence: Option<f64>,
+    pub confidence_pct: Option<i64>,
+    /// Confidence band label; "Not recorded" for an unmeasured confidence.
     pub impact_tier: String,
     pub impact_css: String,
     pub company_name: String,
@@ -92,7 +95,11 @@ pub struct InsightEvidence {
     pub source: String,
     pub url: String,
     pub snippet: String,
-    pub relevance: i64,
+    /// Per-source relevance as recorded on the evidence row. `None` = not
+    /// recorded for this source. The previous handler derived a descending
+    /// percentage from the insight confidence, which presented invented data
+    /// (audit item 177 / #138).
+    pub relevance: Option<i64>,
 }
 
 /// Inline citation chip on a claim, resolving to a numbered source.
@@ -236,15 +243,18 @@ fn insight_category_css(raw: &str) -> &'static str {
     }
 }
 
-fn impact_tier(confidence: f64) -> (&'static str, &'static str) {
-    if confidence >= 0.8 {
-        ("Critical", "apex-tier-critical")
-    } else if confidence >= 0.7 {
-        ("High", "apex-tier-high")
-    } else if confidence >= 0.4 {
-        ("Medium", "apex-tier-medium")
-    } else {
-        ("Low", "apex-tier-low")
+/// Confidence band for display. An unmeasured confidence is labelled
+/// explicitly and styled neutrally instead of falling into "Low".
+fn impact_tier(confidence: Option<f64>) -> (&'static str, &'static str) {
+    match confidence {
+        Some(confidence) if confidence >= 0.8 => ("Critical", "apex-tier-critical"),
+        Some(confidence) if confidence >= 0.7 => ("High", "apex-tier-high"),
+        Some(confidence) if confidence >= 0.4 => ("Medium", "apex-tier-medium"),
+        Some(_) => ("Low", "apex-tier-low"),
+        None => (
+            "Not recorded",
+            "bg-secondary border border-border text-muted-foreground",
+        ),
     }
 }
 
@@ -324,7 +334,9 @@ pub struct InsightsListPage {
     pub sort_field: String,
     pub sort_dir: String,
     pub show_bookmarked_only: bool,
-    pub avg_confidence_pct: i64,
+    /// Average confidence over the *measured* rows; `None` when no row in the
+    /// result set carried a confidence.
+    pub avg_confidence_pct: Option<i64>,
     pub insight_type_count: i64,
     pub high_impact_count: i64,
     pub medium_impact_count: i64,
@@ -355,7 +367,9 @@ pub struct InsightsListPartial {
     pub sort_field: String,
     pub sort_dir: String,
     pub show_bookmarked_only: bool,
-    pub avg_confidence_pct: i64,
+    /// Average confidence over the *measured* rows; `None` when no row in the
+    /// result set carried a confidence.
+    pub avg_confidence_pct: Option<i64>,
     pub insight_type_count: i64,
     pub high_impact_count: i64,
     pub medium_impact_count: i64,
@@ -385,7 +399,8 @@ pub struct InsightDetailPage {
     pub category: String,
     pub category_label: String,
     pub category_css: String,
-    pub confidence: i64,
+    /// Measured confidence percentage; `None` = not recorded.
+    pub confidence: Option<i64>,
     pub impact_tier: String,
     pub impact_css: String,
     pub summary: String,
@@ -417,7 +432,7 @@ pub struct InsightDetailPage {
 pub struct DissentingView {
     pub severity: String,
     pub category: String,
-    pub confidence_pct: i64,
+    pub confidence_pct: Option<i64>,
     pub rationale: String,
 }
 
@@ -654,7 +669,7 @@ pub async fn list_insights(
     let mut all_insights: Vec<InsightListItem> = visible_insight_rows
         .iter()
         .map(|i| {
-            let confidence = i.confidence.unwrap_or(0.0);
+            let confidence = i.confidence;
             let raw_cat = i.insight_type.clone().unwrap_or_default();
             let (tier, tier_css) = impact_tier(confidence);
             let ev_urls = i.evidence_urls.as_deref().unwrap_or(&[]);
@@ -665,7 +680,7 @@ pub async fn list_insights(
                 category_label: insight_category_label(&raw_cat).to_string(),
                 category_css: insight_category_css(&raw_cat).to_string(),
                 confidence,
-                confidence_pct: confidence_to_pct(confidence),
+                confidence_pct: confidence.map(confidence_to_pct),
                 impact_tier: tier.to_string(),
                 impact_css: tier_css.to_string(),
                 company_name: String::new(),
@@ -726,12 +741,14 @@ pub async fn list_insights(
     }
     let mut all_insights = diversified;
 
+    // Unmeasured rows are excluded from every confidence band: presenting NULL
+    // as "Low confidence" was the fabrication this filter previously baked in.
     if active_impact == "high" {
-        all_insights.retain(|i| i.confidence >= 0.7);
+        all_insights.retain(|i| i.confidence.is_some_and(|c| c >= 0.7));
     } else if active_impact == "medium" {
-        all_insights.retain(|i| i.confidence >= 0.4 && i.confidence < 0.7);
+        all_insights.retain(|i| i.confidence.is_some_and(|c| (0.4..0.7).contains(&c)));
     } else if active_impact == "low" {
-        all_insights.retain(|i| i.confidence < 0.4);
+        all_insights.retain(|i| i.confidence.is_some_and(|c| c < 0.4));
     }
 
     // Explicit confidence floor (`?min_confidence=0.7`), as used by the
@@ -743,7 +760,7 @@ pub async fn list_insights(
         } else {
             min_confidence
         };
-        all_insights.retain(|i| i.confidence >= floor);
+        all_insights.retain(|i| i.confidence.is_some_and(|c| c >= floor));
     }
 
     // Apply user's explicit sort preference (overrides diversification order).
@@ -780,12 +797,13 @@ pub async fn list_insights(
         (total + per_page - 1) / per_page
     };
 
-    let avg_confidence_pct = if all_insights.is_empty() {
-        0
+    let measured_confidences: Vec<f64> = all_insights.iter().filter_map(|i| i.confidence).collect();
+    let avg_confidence_pct = if measured_confidences.is_empty() {
+        None
     } else {
-        let avg_confidence =
-            all_insights.iter().map(|i| i.confidence).sum::<f64>() / all_insights.len() as f64;
-        confidence_to_pct(avg_confidence)
+        Some(confidence_to_pct(
+            measured_confidences.iter().sum::<f64>() / measured_confidences.len() as f64,
+        ))
     };
     let insight_type_count = {
         use std::collections::HashSet;
@@ -797,10 +815,13 @@ pub async fn list_insights(
         }
         kinds.len() as i64
     };
-    let high_impact_count = all_insights.iter().filter(|i| i.confidence >= 0.7).count() as i64;
+    let high_impact_count = all_insights
+        .iter()
+        .filter(|i| i.confidence.is_some_and(|c| c >= 0.7))
+        .count() as i64;
     let medium_impact_count = all_insights
         .iter()
-        .filter(|i| i.confidence >= 0.4 && i.confidence < 0.7)
+        .filter(|i| i.confidence.is_some_and(|c| (0.4..0.7).contains(&c)))
         .count() as i64;
 
     let start = ((page - 1) * per_page) as usize;
@@ -824,15 +845,13 @@ pub async fn list_insights(
             by_day.insert(label, [0; 8]);
         }
         for row in &visible_insight_rows {
-            let confidence = row.confidence.unwrap_or(0.0);
-            if active_impact == "high" && confidence < 0.7 {
-                continue;
-            }
-            if active_impact == "medium" && !(0.4..0.7).contains(&confidence) {
-                continue;
-            }
-            if active_impact == "low" && confidence >= 0.4 {
-                continue;
+            // Unmeasured rows match no confidence band, matching the list
+            // filter above (they are not counted as "low").
+            match active_impact.as_str() {
+                "high" if !row.confidence.is_some_and(|c| c >= 0.7) => continue,
+                "medium" if !row.confidence.is_some_and(|c| (0.4..0.7).contains(&c)) => continue,
+                "low" if !row.confidence.is_some_and(|c| c < 0.4) => continue,
+                _ => {}
             }
 
             let Some(event_time) = insight_display_time(row) else {
@@ -1020,7 +1039,6 @@ pub async fn get_insight(
 
     // Build evidence from persisted evidence refs when available: those carry
     // the evidence row ids that claims cite. Fall back to legacy evidence_urls.
-    let base_confidence_pct = confidence_to_pct(insight.confidence.unwrap_or(0.0));
     let persisted_refs: Vec<(Uuid, String)> = insight
         .metadata
         .as_ref()
@@ -1050,15 +1068,15 @@ pub async fn get_insight(
     let evidence: Vec<InsightEvidence> = evidence_source_urls
         .iter()
         .enumerate()
-        .map(|(idx, url)| {
-            let relevance = (base_confidence_pct - (idx as i64 * 8)).clamp(35, 100);
-            InsightEvidence {
-                index: idx + 1,
-                source: url.split('/').nth(2).unwrap_or("unknown").to_string(),
-                url: safe_href(url),
-                snippet: format!("Source [{}]", idx + 1),
-                relevance,
-            }
+        .map(|(idx, url)| InsightEvidence {
+            index: idx + 1,
+            source: url.split('/').nth(2).unwrap_or("unknown").to_string(),
+            url: safe_href(url),
+            snippet: format!("Source [{}]", idx + 1),
+            // Neither legacy `evidence_urls` nor persisted refs store a
+            // per-source relevance; inventing one from the insight confidence
+            // was the audit finding (#138). Unrecorded renders as unknown.
+            relevance: None,
         })
         .collect();
 
@@ -1103,9 +1121,9 @@ pub async fn get_insight(
         };
 
     let raw_type = insight.insight_type.clone().unwrap_or_default();
-    let conf = insight.confidence.unwrap_or(0.0);
-    let (tier, tier_css) = impact_tier(conf);
-    let assessment_severity = detail_assessment_severity(&insight, conf);
+    let confidence = insight.confidence;
+    let (tier, tier_css) = impact_tier(confidence);
+    let assessment_severity = detail_assessment_severity(&insight, confidence);
     let ev_urls = insight.evidence_urls.clone().unwrap_or_default();
     let diversity = source_diversity_label(&ev_urls);
 
@@ -1171,7 +1189,7 @@ pub async fn get_insight(
         category: raw_type.clone(),
         category_label: insight_category_label(&raw_type).to_string(),
         category_css: insight_category_css(&raw_type).to_string(),
-        confidence: confidence_to_pct(conf),
+        confidence: confidence.map(confidence_to_pct),
         impact_tier: tier.to_string(),
         impact_css: tier_css.to_string(),
         summary: insight.summary.clone(),
@@ -1198,10 +1216,14 @@ pub async fn get_insight(
         entities: vec![],
         annotations,
         ai_analysis: None,
-        information_gain_bits: Some(format!(
-            "{:.2}",
-            detail_information_gain_bits(conf, &assessment_severity)
-        )),
+        // The heuristic information-gain quantity is derived from confidence;
+        // with no measured confidence there is nothing to derive it from.
+        information_gain_bits: confidence.map(|confidence| {
+            format!(
+                "{:.2}",
+                detail_information_gain_bits(confidence, &assessment_severity)
+            )
+        }),
         quality_score_pct: quality_scores
             .get(&insight.id)
             .map(|s| (s * 100.0).round() as i64),
@@ -1215,12 +1237,12 @@ pub async fn get_insight(
                     .filter_map(|item| {
                         let severity = item.get("severity")?.as_str()?.to_string();
                         let category = item.get("category")?.as_str()?.to_string();
-                        let confidence = item.get("confidence")?.as_f64().unwrap_or(0.0);
+                        let confidence = item.get("confidence").and_then(|v| v.as_f64());
                         let rationale = item.get("rationale_summary")?.as_str()?.to_string();
                         Some(DissentingView {
                             severity,
                             category,
-                            confidence_pct: (confidence * 100.0).round() as i64,
+                            confidence_pct: confidence.map(|c| (c * 100.0).round() as i64),
                             rationale,
                         })
                     })
@@ -1241,7 +1263,12 @@ fn confidence_to_pct(value: f64) -> i64 {
     }
 }
 
+/// Heuristic ranking quantity derived from confidence and severity under an
+/// assumed prior. It is **not** a calibrated information-gain measurement and
+/// must be presented as a heuristic (audit item 177).
 fn detail_information_gain_bits(confidence: f64, severity: &str) -> f64 {
+    // Assumed prior over [baseline, elevated, critical]; product heuristic,
+    // not a measured base rate.
     let prior = [0.70, 0.20, 0.10];
     let target_state = match severity.trim().to_ascii_lowercase().as_str() {
         "critical" | "high" => 2,
@@ -1277,7 +1304,7 @@ fn detail_information_gain_bits(confidence: f64, severity: &str) -> f64 {
 
 fn detail_assessment_severity(
     insight: &apex_store::postgres::InsightRow,
-    confidence: f64,
+    confidence: Option<f64>,
 ) -> String {
     insight
         .metadata
@@ -1528,10 +1555,12 @@ pub async fn export_insight_pdf_html(
             return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
         }
     };
+    // `insights.impact` is nullable (DEFAULT 'medium' only applies when the
+    // INSERT omits the column), so a NULL severity stays unrecorded in the
+    // report instead of being fabricated as Medium.
     let severity = stored_severity
         .as_deref()
-        .map(crate::routes::export::insight_severity_from_stored)
-        .unwrap_or(apex_insights::InsightSeverity::Medium);
+        .map(crate::routes::export::insight_severity_from_stored);
     let evidence_urls = insight.evidence_urls.clone().unwrap_or_default();
     let report_row = apex_insights::pdf_report::InsightReportRow {
         id: insight.id.to_string(),
@@ -1617,7 +1646,7 @@ mod tests {
             category: "demand_signal".into(),
             category_label: "Demand Signal".into(),
             category_css: String::new(),
-            confidence: 80,
+            confidence: Some(80),
             impact_tier: "Critical".into(),
             impact_css: String::new(),
             summary: "Summary".into(),
@@ -1635,7 +1664,7 @@ mod tests {
                 source: "x.test".into(),
                 url: "https://x.test/a".into(),
                 snippet: "Source [1]".into(),
-                relevance: 80,
+                relevance: Some(80),
             }],
             evidence_count: 1,
             source_diversity: "Single".into(),
@@ -1687,5 +1716,29 @@ mod tests {
 
         assert!(html.contains("Claim-level evidence unavailable"));
         assert!(html.contains("data-degraded=\"true\""));
+    }
+
+    /// Evidence without a stored per-source relevance must say so, not display
+    /// a percentage derived from the insight confidence (audit #138).
+    #[test]
+    fn insight_detail_marks_unrecorded_evidence_relevance_as_unknown() {
+        let mut page = detail_page(vec![], false);
+        page.evidence[0].relevance = None;
+        let html = page.render().expect("insight detail renders");
+
+        assert!(html.contains("Relevance: not recorded"));
+        assert!(
+            !html.contains("Relevance: 80%"),
+            "unrecorded relevance must not render a measured percentage"
+        );
+    }
+
+    /// A stored per-source relevance still renders as measured.
+    #[test]
+    fn insight_detail_renders_recorded_evidence_relevance() {
+        let page = detail_page(vec![], false);
+        let html = page.render().expect("insight detail renders");
+
+        assert!(html.contains("Relevance: 80%"));
     }
 }

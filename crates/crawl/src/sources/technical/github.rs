@@ -183,11 +183,12 @@ pub struct GithubMonitor {
 impl GithubMonitor {
     /// Create with configuration.
     pub fn new(config: GithubMonitorConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) GitHub Monitor")
-            .build()
-            .context("building GitHub HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) GitHub Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building GitHub HTTP client")?;
         Ok(Self { client, config })
     }
 
@@ -250,15 +251,16 @@ impl GithubMonitor {
             pushed_at: Option<String>,
         }
 
-        let repos: Vec<GithubApiRepo> = match resp.json().await {
-            Ok(repos) => repos,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("parse GitHub repos response failed: {error}"),
-                    "",
-                );
-            }
-        };
+        let repos: Vec<GithubApiRepo> =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(repos) => repos,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("parse GitHub repos response failed: {error}"),
+                        "",
+                    );
+                }
+            };
         let now = Utc::now();
         AcquisitionOutcome::success_now(
             repos
@@ -350,15 +352,16 @@ impl GithubMonitor {
             repository: Option<serde_json::Value>,
         }
 
-        let code_resp: GithubCodeSearch = match resp.json().await {
-            Ok(code_resp) => code_resp,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("parse GitHub code search response failed: {error}"),
-                    "",
-                );
-            }
-        };
+        let code_resp: GithubCodeSearch =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(code_resp) => code_resp,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("parse GitHub code search response failed: {error}"),
+                        "",
+                    );
+                }
+            };
         let results = code_resp
             .items
             .unwrap_or_default()
@@ -417,15 +420,16 @@ impl GithubMonitor {
             items: Option<Vec<serde_json::Value>>,
         }
 
-        let commit_resp: GithubCommitSearch = match resp.json().await {
-            Ok(commit_resp) => commit_resp,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("parse GitHub commit search response failed: {error}"),
-                    "",
-                );
-            }
-        };
+        let commit_resp: GithubCommitSearch =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(commit_resp) => commit_resp,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("parse GitHub commit search response failed: {error}"),
+                        "",
+                    );
+                }
+            };
         let commit_items = commit_resp.items.unwrap_or_default();
         let commits: Vec<GithubCommit> = commit_items
             .into_iter()

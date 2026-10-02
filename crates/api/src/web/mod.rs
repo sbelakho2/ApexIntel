@@ -53,9 +53,14 @@ pub fn get_session(extensions: &axum::http::Extensions) -> Option<WebSession> {
 
 /// Check if request is an HTMX **partial** request (filter chips, pagination,
 /// explicit hx-get with hx-target). Returns false for hx-boost navigation
-/// because boost sends HX-Boosted: true and needs a full-page response.
+/// because boost sends HX-Boosted: true and needs a full-page response, and
+/// for history restoration (Back after an `hx-push-url` swap with a cold
+/// history cache), which swaps the response into `<body>` and therefore also
+/// needs the full page.
 pub fn is_htmx_request(headers: &axum::http::HeaderMap) -> bool {
-    headers.contains_key("hx-request") && !headers.contains_key("hx-boosted")
+    headers.contains_key("hx-request")
+        && !headers.contains_key("hx-boosted")
+        && !headers.contains_key("hx-history-restore-request")
 }
 
 pub fn render_template<T: Template>(template: &T) -> Response {
@@ -178,6 +183,22 @@ mod tests {
         assert_eq!(safe_href("//evil.example/x"), "#");
         assert_eq!(safe_href("/\\evil.example"), "#");
         assert_eq!(safe_href(""), "#");
+    }
+
+    #[test]
+    fn htmx_partial_detection_excludes_boost_and_history_restore() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert!(!super::is_htmx_request(&headers));
+        headers.insert("hx-request", "true".parse().unwrap());
+        assert!(super::is_htmx_request(&headers));
+
+        let mut boosted = headers.clone();
+        boosted.insert("hx-boosted", "true".parse().unwrap());
+        assert!(!super::is_htmx_request(&boosted));
+
+        let mut restore = headers;
+        restore.insert("hx-history-restore-request", "true".parse().unwrap());
+        assert!(!super::is_htmx_request(&restore));
     }
 
     #[test]

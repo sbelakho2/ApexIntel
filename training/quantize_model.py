@@ -59,7 +59,7 @@ try:
         MODEL_PATH,
         quantization_config=bnb_config,
         device_map="auto",
-        trust_remote_code=True,
+        trust_remote_code=False,
         torch_dtype=torch.bfloat16,
     )
 except torch.cuda.OutOfMemoryError as e:
@@ -84,7 +84,7 @@ except (OSError, IOError) as e:
     sys.exit(1)
 
 try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=False)
     tokenizer.save_pretrained(OUT_PATH)
     print("  ✓ Tokenizer saved", flush=True)
 except Exception as e:

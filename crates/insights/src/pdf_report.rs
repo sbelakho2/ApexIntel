@@ -271,16 +271,18 @@ impl PdfReport {
         let mut total_confidence = 0.0;
         let mut measured_confidences = 0usize;
 
-        // Group insights by severity for ordered presentation
+        // Group insights by severity for ordered presentation. Unrecorded
+        // severity sorts after Info (priority 0) rather than being presented
+        // as Medium.
         let mut by_severity: HashMap<u8, Vec<&InsightReportRow>> = HashMap::new();
         for insight in insights {
-            let severity = insight.severity.as_str();
-            let priority = match severity {
-                "critical" => 5,
-                "high" => 4,
-                "medium" => 3,
-                "low" => 2,
-                _ => 1,
+            let priority = match insight.severity.as_ref().map(InsightSeverity::as_str) {
+                Some("critical") => 5,
+                Some("high") => 4,
+                Some("medium") => 3,
+                Some("low") => 2,
+                Some(_) => 1,
+                None => 0,
             };
             by_severity.entry(priority).or_default().push(insight);
         }
@@ -292,10 +294,10 @@ impl PdfReport {
         for &sev_key in &severity_keys {
             let group = &by_severity[&sev_key];
             for insight in group {
-                let _severity_label = insight.severity.as_str();
-                let mut section = ReportSection::new(&insight.title)
-                    .with_body(&insight.summary)
-                    .with_severity(insight.severity);
+                let mut section = ReportSection::new(&insight.title).with_body(&insight.summary);
+                if let Some(severity) = insight.severity {
+                    section = section.with_severity(severity);
+                }
 
                 // Add evidence items from the insight's metadata
                 for ev in &insight.evidence {
@@ -723,7 +725,10 @@ pub struct InsightReportRow {
     pub id: String,
     pub title: String,
     pub summary: String,
-    pub severity: InsightSeverity,
+    /// Severity as recorded on the insight. `None` = no stored severity
+    /// (the `insights.impact` column is nullable); the report renders the
+    /// section without a severity badge instead of substituting Medium.
+    pub severity: Option<InsightSeverity>,
     /// Measured confidence; `None` = not measured.
     pub confidence: Option<f64>,
     pub insight_type: String,
@@ -783,7 +788,7 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             summary: format!("Summary for {}", title),
-            severity: sev,
+            severity: Some(sev),
             confidence: Some(confidence),
             insight_type: "supply_chain".to_string(),
             region: Some("EU".to_string()),
@@ -972,6 +977,22 @@ mod tests {
         let config = PdfExportConfig::default();
         assert_eq!(config.max_pages, 50);
         assert_eq!(config.page_size, PageSize::A4);
+    }
+
+    #[test]
+    fn test_from_insights_without_stored_severity_does_not_fabricate_medium() {
+        let mut row = sample_insight_row("1", "Unrated", "info", 0.5);
+        row.severity = None;
+        let report = PdfReport::from_insights("Unrated", &[row]);
+        assert_eq!(report.sections.len(), 1);
+        assert_eq!(
+            report.sections[0].severity, None,
+            "a NULL stored severity must stay unrecorded, not become Medium"
+        );
+        assert!(
+            !report.to_html().contains(">medium<"),
+            "no fabricated medium badge may be rendered"
+        );
     }
 
     #[test]

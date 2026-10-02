@@ -52,6 +52,8 @@
 <span class="apex-badge apex-badge-high">high</span>
 {% else if severity == "medium" %}
 <span class="apex-badge apex-badge-medium">medium</span>
+{% else if severity == "unknown" %}
+<span class="apex-badge apex-badge-neutral">unknown</span>
 {% else %}
 <span class="apex-badge apex-badge-low">low</span>
 {% endif %}
@@ -230,9 +232,9 @@
 {% macro warning_trend_chart(days) %}
 <div class="apex-chart-scroll">
   <div class="apex-chart-scroll-inner apex-chart-scroll-inner-wide">
-    <div class="apex-viz-frame" role="img" aria-label="Warning trend chart over time">
+    <div class="apex-viz-frame" role="group" aria-label="Warning trend chart over time">
       {% for day in days %}
-      <div class="apex-viz-column" title="{{ day.date_label }}: {{ day.total }} total warnings" tabindex="0" role="button" aria-label="{{ day.date_label }}: {{ day.total }} total warnings" data-chart-point-title="{{ day.date_label }}: {{ day.total }} total warnings">
+      <div class="apex-viz-column" title="{{ day.date_label }}: {{ day.total }} total warnings" tabindex="0" role="img" aria-label="{{ day.date_label }}: {{ day.total }} total warnings" data-chart-point-title="{{ day.date_label }}: {{ day.total }} total warnings">
         <span class="apex-viz-value">{{ day.total }}</span>
         <div class="apex-viz-track">
           <div class="apex-viz-stack" style="height: {{ day.bar_h }}%">
@@ -253,9 +255,9 @@
 {% macro insight_trend_chart(days) %}
 <div class="apex-chart-scroll">
   <div class="apex-chart-scroll-inner apex-chart-scroll-inner-wide">
-    <div class="apex-viz-frame" role="img" aria-label="Insight generation trend over time">
+    <div class="apex-viz-frame" role="group" aria-label="Insight generation trend over time">
       {% for day in days %}
-      <div class="apex-viz-column" title="{{ day.date_label }}: {{ day.total }} insights" tabindex="0" role="button" aria-label="{{ day.date_label }}: {{ day.total }} insights" data-chart-point-title="{{ day.date_label }}: {{ day.total }} insights">
+      <div class="apex-viz-column" title="{{ day.date_label }}: {{ day.total }} insights" tabindex="0" role="img" aria-label="{{ day.date_label }}: {{ day.total }} insights" data-chart-point-title="{{ day.date_label }}: {{ day.total }} insights">
         <span class="apex-viz-value">{{ day.total }}</span>
         <div class="apex-viz-track">
           <div class="apex-viz-stack" style="height: {{ day.bar_h }}%">
@@ -280,9 +282,9 @@
 {% macro crawl_activity_chart(hours) %}
 <div class="apex-chart-scroll">
   <div class="apex-chart-scroll-inner">
-    <div class="apex-viz-frame apex-viz-frame-dual" role="img" aria-label="Crawl activity grouped bar chart">
+    <div class="apex-viz-frame apex-viz-frame-dual" role="group" aria-label="Crawl activity grouped bar chart">
       {% for hour in hours %}
-      <div class="apex-viz-column" title="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations" tabindex="0" role="button" aria-label="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations" data-chart-point-title="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations">
+      <div class="apex-viz-column" title="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations" tabindex="0" role="img" aria-label="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations" data-chart-point-title="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations">
         <span class="apex-viz-value">{{ hour.success }}</span>
         <span class="apex-viz-value-secondary">{{ hour.errors }}</span>
         <div class="apex-viz-track apex-viz-track-dual">

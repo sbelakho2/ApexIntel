@@ -425,7 +425,7 @@ def load_model(model_dir: str, adapter_path: str | None = None):
     print(f"Loading model: {model_dir}", flush=True)
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=False)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
     except Exception as e:
@@ -449,7 +449,7 @@ def load_model(model_dir: str, adapter_path: str | None = None):
             torch_dtype=torch.bfloat16,
             device_map="auto",
             attn_implementation=attn,
-            trust_remote_code=True,
+            trust_remote_code=False,
         )
     except torch.cuda.OutOfMemoryError as e:
         print(f"FATAL: CUDA OOM loading model: {e}", flush=True)

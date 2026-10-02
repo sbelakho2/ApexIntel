@@ -99,6 +99,21 @@ impl SecFiling {
         obs
     }
 
+    /// Whether this filing is a material event (8-K).
+    pub fn is_material_event(&self) -> bool {
+        self.form_type == "8-K"
+    }
+
+    /// Whether this is an insider/officer trading report (Form 4).
+    pub fn is_insider_transaction(&self) -> bool {
+        self.form_type == "4"
+    }
+
+    /// Whether this is a proxy filing (DEF 14A and related).
+    pub fn is_proxy(&self) -> bool {
+        self.form_type.starts_with("DEF") || self.form_type.starts_with("PR")
+    }
+
     /// Human-readable one-line summary.
     pub fn summary(&self) -> String {
         match &self.description {
@@ -135,11 +150,11 @@ impl SecEdgarClient {
         let email =
             std::env::var("SEC_EDGAR_EMAIL").unwrap_or_else(|_| SEC_USER_AGENT_EMAIL.to_string());
         let ua = format!("ApexIntel-Research research@{email}");
-        let client = reqwest::Client::builder()
-            .user_agent(ua)
-            .timeout(Duration::from_secs(20))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(20),
+            user_agent: Some(ua),
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self { client }
     }
 
@@ -167,15 +182,16 @@ impl SecEdgarClient {
             warn!(status = %resp.status(), "sec_edgar: tickers map fetch failed");
             return http_failure(resp.status().as_u16(), retry_after, "sec_edgar tickers map");
         }
-        let map: HashMap<String, TickerEntry> = match resp.json().await {
-            Ok(map) => map,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("sec_edgar: failed to parse tickers map: {error}"),
-                    "",
-                );
-            }
-        };
+        let map: HashMap<String, TickerEntry> =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(map) => map,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("sec_edgar: failed to parse tickers map: {error}"),
+                        "",
+                    );
+                }
+            };
         let ticker_upper = ticker.to_uppercase();
         for entry in map.values() {
             if entry.ticker == ticker_upper {
@@ -217,15 +233,16 @@ impl SecEdgarClient {
             return http_failure(resp.status().as_u16(), retry_after, "sec_edgar submissions");
         }
 
-        let submission: SubmissionsResponse = match resp.json().await {
-            Ok(submission) => submission,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("sec_edgar: failed to parse submissions: {error}"),
-                    "",
-                );
-            }
-        };
+        let submission: SubmissionsResponse =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(submission) => submission,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("sec_edgar: failed to parse submissions: {error}"),
+                        "",
+                    );
+                }
+            };
         let company_name = submission.name.unwrap_or_default();
 
         // The filings are split into a "recent" array and (optionally) older
@@ -433,6 +450,27 @@ mod tests {
             filing.summary(),
             "SEC 10-K filing (2024-03-01): Annual report"
         );
+    }
+
+    #[test]
+    fn filing_classifiers_match_dead_implementation_behavior() {
+        let filing = |form_type: &str| SecFiling {
+            accession_number: "x".to_string(),
+            form_type: form_type.to_string(),
+            filing_date: "2024-01-15".to_string(),
+            report_date: None,
+            primary_document_url: "x".to_string(),
+            description: None,
+            cik: "x".to_string(),
+            company_name: "Test Corp".to_string(),
+        };
+        assert!(filing("8-K").is_material_event());
+        assert!(!filing("10-K").is_material_event());
+        assert!(filing("4").is_insider_transaction());
+        assert!(!filing("8-K").is_insider_transaction());
+        assert!(filing("DEF 14A").is_proxy());
+        assert!(filing("PREC14A").is_proxy());
+        assert!(!filing("8-K").is_proxy());
     }
 
     #[test]

@@ -533,6 +533,8 @@ impl SlackWebhook {
     /// Create a new SlackWebhook from configuration.
     pub fn new(config: &SlackConfig) -> Result<Self> {
         let timeout = config.timeout_secs;
+        // Operator-configured Slack webhook endpoint, not crawled content.
+        #[allow(clippy::disallowed_methods)]
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout))
             .build()

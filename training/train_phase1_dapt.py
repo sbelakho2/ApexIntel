@@ -179,7 +179,7 @@ def main():
     # ── Tokenizer ──────────────────────────────────────────────────
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
-        trust_remote_code=True,
+        trust_remote_code=False,
         padding_side="right",
     )
     if tokenizer.pad_token is None:
@@ -210,7 +210,7 @@ def main():
             quant_path,
             quantization_config=bnb_config,
             attn_implementation=attn,
-            trust_remote_code=True,
+            trust_remote_code=False,
             use_cache=False,
             device_map={"": local_rank},
         )
@@ -220,7 +220,7 @@ def main():
             model_path,
             quantization_config=bnb_config,
             attn_implementation=attn,
-            trust_remote_code=True,
+            trust_remote_code=False,
             use_cache=False,
             device_map="auto",  # spread across GPUs for initial quantization
         )

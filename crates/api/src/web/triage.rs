@@ -91,13 +91,15 @@ pub(crate) struct TriageDetailPage {
     pub status_strip: crate::system_status::StatusStrip,
     pub item: TriageQueueItem,
     pub thresholds: TriageThresholds,
-    // Pre-computed display values (Askama 0.12 compatibility)
+    // Pre-computed display values (Askama 0.12 compatibility). Dimension
+    // scores are `None` when the row stores no dimensions, so the template can
+    // render unknown instead of five fabricated zeros.
     pub score_pct: i64,
-    pub urgency_pct: i64,
-    pub impact_pct: i64,
-    pub actionability_pct: i64,
-    pub novelty_pct: i64,
-    pub confidence_pct: i64,
+    pub urgency_pct: Option<i64>,
+    pub impact_pct: Option<i64>,
+    pub actionability_pct: Option<i64>,
+    pub novelty_pct: Option<i64>,
+    pub confidence_pct: Option<i64>,
 }
 
 pub(crate) struct QueueStats {
@@ -123,6 +125,13 @@ fn make_queue(pool: Arc<PgStore>) -> TriageQueue {
 
 fn parse_status(s: Option<&str>) -> Option<TriageStatus> {
     s.map(TriageStatus::from_str)
+}
+
+/// A stored 0–1 triage dimension as a percentage, or `None` when the row has
+/// no stored dimension. Never defaulted to 0, which would show an unmeasured
+/// dimension as a measured zero.
+fn dimension_pct(value: Option<f64>) -> Option<i64> {
+    value.map(|v| (v * 100.0) as i64)
 }
 
 fn page_from_ctx(ctx: &PageContext) -> (String, String, i64, String, bool, bool) {
@@ -305,11 +314,11 @@ pub async fn get_triage_item(
                 can_write,
                 status_strip: pctx.status_strip.clone(),
                 score_pct: (item.composite_score * 100.0) as i64,
-                urgency_pct: (dims.map(|d| d.urgency).unwrap_or(0.0) * 100.0) as i64,
-                impact_pct: (dims.map(|d| d.impact).unwrap_or(0.0) * 100.0) as i64,
-                actionability_pct: (dims.map(|d| d.actionability).unwrap_or(0.0) * 100.0) as i64,
-                novelty_pct: (dims.map(|d| d.novelty).unwrap_or(0.0) * 100.0) as i64,
-                confidence_pct: (dims.map(|d| d.confidence).unwrap_or(0.0) * 100.0) as i64,
+                urgency_pct: dimension_pct(dims.map(|d| d.urgency)),
+                impact_pct: dimension_pct(dims.map(|d| d.impact)),
+                actionability_pct: dimension_pct(dims.map(|d| d.actionability)),
+                novelty_pct: dimension_pct(dims.map(|d| d.novelty)),
+                confidence_pct: dimension_pct(dims.map(|d| d.confidence)),
                 item,
                 thresholds,
             })
@@ -469,5 +478,14 @@ mod tests {
 
         assert!(html.contains("No triage items found."));
         assert!(!html.contains("data-degraded=\"true\""));
+    }
+
+    /// A row without stored dimensions must not render five zeros as measured
+    /// dimension scores; absence stays absent.
+    #[test]
+    fn missing_dimensions_are_unknown_not_zero() {
+        assert_eq!(dimension_pct(None), None);
+        assert_eq!(dimension_pct(Some(0.0)), Some(0));
+        assert_eq!(dimension_pct(Some(0.42)), Some(42));
     }
 }

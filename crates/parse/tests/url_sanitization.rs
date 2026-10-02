@@ -1,26 +1,33 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-//! Audit #52 adversarial regression tests: hostile `href` values must never
+//! Audit #52/#84 adversarial regression tests: hostile `href` values must never
 //! survive HTML link extraction.
 //!
 //! These tests use only the public `apex_parse::html` API. The contract under
 //! test is:
-//!   * extracted links are absolute `http(s)` URLs, resolved against the page
-//!     URL with `Url::join`;
+//!   * extracted links are absolute `http(s)` URLs, resolved against the
+//!     document base — the first `<base href>` when present (absolute, or
+//!     joined with the page URL), otherwise the caller-supplied page URL;
 //!   * non-http(s) schemes (`javascript:`, `data:`, `vbscript:`, `file:`,
 //!     `blob:`, …) are dropped in any case/whitespace/control/entity
-//!     obfuscation;
-//!   * relative hrefs are dropped when no usable `http(s)` page URL exists —
-//!     there is no raw-href fallback.
+//!     obfuscation, including when they appear in `<base href>`;
+//!   * relative hrefs are dropped when no usable base URL exists — there is no
+//!     raw-href fallback.
 
-use apex_parse::html::{extract_page, extract_page_with_base};
+use apex_parse::html::extract_page;
 use apex_parse::{
     award, cert, commodity, directory, job_post, patent, person, press, tender, trade_show,
 };
+use url::Url;
 
 const BASE: &str = "https://starz-electronics.com/company/index.html";
 
+fn base_url(raw: &str) -> Url {
+    Url::parse(raw).unwrap_or_else(|error| panic!("test base {raw:?} should parse: {error}"))
+}
+
 fn extracted_hrefs(html: &str, base: Option<&str>) -> Vec<String> {
-    extract_page_with_base(html, base)
+    let parsed = base.map(base_url);
+    extract_page(html, parsed.as_ref())
         .expect("hostile HTML must still parse")
         .links
         .into_iter()
@@ -235,7 +242,7 @@ fn relative_hrefs_are_dropped_without_a_page_url() {
         <a href="//cdn.example.com/lib.js">cdn</a>
         <a href="javascript:alert(1)">js</a>
     </body></html>"#;
-    let page = extract_page(html).expect("HTML parses");
+    let page = extract_page(html, None).expect("HTML parses");
     assert!(
         page.links.is_empty(),
         "no relative/raw href may survive without a base URL: {:?}",
@@ -245,38 +252,59 @@ fn relative_hrefs_are_dropped_without_a_page_url() {
 
 #[test]
 fn hostile_page_url_does_not_leak_into_relative_links() {
+    let html = r#"<html><body><a href="/about">About</a></body></html>"#;
+
+    // Values that are not URLs at all cannot become a base.
+    for unparseable in ["not a url", "", "   "] {
+        assert!(
+            Url::parse(unparseable).is_err(),
+            "{unparseable:?} unexpectedly parses"
+        );
+    }
+    let page = extract_page(html, None).expect("HTML parses");
+    assert!(page.links.is_empty(), "{:?}", page.links);
+
+    // Parseable but hostile schemes cannot resolve a relative path; the
+    // resolved value is either non-http(s) or the join fails outright.
     for hostile_base in [
         "javascript:alert(1)",
         "data:text/html,x",
         "file:///etc/passwd",
-        "not a url",
-        "",
-        "   ",
+        "ftp://evil.example/",
     ] {
-        let html = r#"<html><body><a href="/about">About</a></body></html>"#;
-        let hrefs = extracted_hrefs(html, Some(hostile_base));
+        let parsed = base_url(hostile_base);
+        let page = extract_page(html, Some(&parsed)).expect("HTML parses");
         assert!(
-            hrefs.is_empty(),
-            "relative link survived hostile base {hostile_base:?}: {hrefs:?}"
+            page.links.is_empty(),
+            "relative link survived hostile base {hostile_base:?}: {:?}",
+            page.links
         );
     }
 }
 
 #[test]
-fn document_base_tag_does_not_override_page_url() {
-    // `<base href="javascript:...">` must be ignored: resolution uses the
-    // caller-supplied page URL, not attacker-controlled in-document markup.
+fn base_tag_is_honoured_but_cannot_smuggle_hostile_schemes() {
+    // Audit #84: the document's first `<base href>` is honoured. A hostile
+    // scheme in the base cannot smuggle a relative link (the join produces a
+    // non-http(s) result or fails), while safe absolute links still survive.
     let html = r#"<html><head><base href="javascript:alert(1)"></head>
-        <body><a href="about">About</a></body></html>"#;
+        <body>
+            <a href="about">About</a>
+            <a href="https://safe.example/ok">Safe</a>
+        </body></html>"#;
     let hrefs = extracted_hrefs(html, Some(BASE));
-    assert_eq!(
-        hrefs,
-        vec!["https://starz-electronics.com/company/about".to_string()]
-    );
+    assert_eq!(hrefs, vec!["https://safe.example/ok".to_string()]);
 
-    // Without a page URL, a document <base> must not resurrect the link.
-    let page = extract_page(html).expect("HTML parses");
-    assert!(page.links.is_empty(), "{:?}", page.links);
+    // Without a page URL the hostile base still cannot resurrect the relative
+    // link; the safe absolute link is unaffected.
+    let page = extract_page(html, None).expect("HTML parses");
+    assert_eq!(
+        page.links
+            .iter()
+            .map(|l| l.href.as_str())
+            .collect::<Vec<_>>(),
+        vec!["https://safe.example/ok"]
+    );
 }
 
 #[test]
@@ -436,7 +464,8 @@ fn every_extracted_href_is_absolute_http_or_https() {
         .map(|h| format!("<a href=\"{h}\">x</a>"))
         .collect();
     let html = format!("<html><body>{anchors}</body></html>");
-    let page = extract_page_with_base(&html, Some(BASE)).expect("mixed HTML parses");
+    let base = base_url(BASE);
+    let page = extract_page(&html, Some(&base)).expect("mixed HTML parses");
     assert_all_http_s(
         &page
             .links

@@ -12,7 +12,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
 
@@ -114,16 +114,11 @@ pub struct CtMonitor {
 impl CtMonitor {
     /// Create a new CT monitor
     pub fn new(config: CtMonitorConfig) -> Self {
-        let client = Client::builder()
-            .timeout(StdDuration::from_secs(30))
-            .user_agent("ApexIntel-CtMonitor/1.0")
-            .build()
-            .unwrap_or_else(|error| {
-                // CT monitoring is best-effort telemetry; never panic the
-                // worker over an HTTP client construction failure.
-                warn!(%error, "CtMonitor: failed to build HTTP client; using default client");
-                Client::new()
-            });
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: StdDuration::from_secs(30),
+            user_agent: Some("ApexIntel-CtMonitor/1.0".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        });
 
         Self {
             client,
@@ -174,7 +169,8 @@ impl CtMonitor {
             return outcome;
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(
@@ -272,7 +268,8 @@ impl CtMonitor {
             return outcome;
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(

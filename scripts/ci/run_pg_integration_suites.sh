@@ -119,6 +119,9 @@ run cargo test -p apex-api --test alert_routing_policy_integration --locked -- -
 # ── Login throttle: concurrent reserves serialize on the attempt key ────────
 run cargo test -p apex-store --test login_throttle_pg_integration --locked -- --ignored --test-threads=1
 
+# ── Battlecards: create outcomes, optimistic-concurrency edits, atomic regen ─
+run cargo test -p apex-store --test battlecards_integration --locked -- --ignored --test-threads=1
+
 # ── Warning analysis consumes explicit warning_evidence links ────────────────
 run cargo test -p apex-api --test warning_evidence_analysis_integration --features llm \
   --locked -- --ignored --test-threads=1

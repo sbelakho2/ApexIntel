@@ -1,0 +1,66 @@
+# ApexIntel secret-scan policy (audit item 177).
+#
+# CI runs `gitleaks detect --no-git` against the checked-out tree. Everything
+# gitleaks ships by default applies (`useDefault = true`); this file only adds
+# the exclusions needed for a repository that vendors documentation, fixtures
+# and screenshots alongside the code.
+title = "ApexIntel gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated, vendored and history-only content that is not part of the shipped product"
+# Paths are regexes matched against repository-relative paths. Build output,
+# dependency trees, local run state and the archived Python daemon are not
+# product source and would otherwise dominate the scan (and the runtime).
+paths = [
+  # Build output / dependency caches.
+  '''(^|/)target/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)playwright-report/''',
+  '''(^|/)test-results/''',
+  '''(^|/)\.git/''',
+  # Local-only runtime state and generated data.
+  '''(^|/)data/''',
+  '''(^|/)tmp/''',
+  '''(^|/)backups/''',
+  '''(^|/)screenshots/''',
+  '''(^|/)__pycache__/''',
+  # Historical/experimental material kept for reference, not deployed.
+  '''(^|/)training_data/''',
+  '''(^|/)experiments/''',
+  '''(^|/)training/''',
+  # Agent-manager worktrees/state; never part of a CI checkout.
+  '''(^|/)\.kilo/''',
+  # cargo-deny installed by the CI dependency steps (shared workspace volume).
+  '''(^|/)\.ci-tools''',
+  # Local (gitignored) environment file; .env.example is still scanned.
+  '''^\.env$''',
+  # Lockfiles list registry checksums, not credentials.
+  '''Cargo\.lock$''',
+  '''package-lock\.json$''',
+]
+# Documented, non-secret CI/test fixtures: the e2e session secret (rejected in
+# production unless APEX_ALLOW_TEST_SESSION_SECRET=1), the CI service key and
+# the local-development defaults from .env.example / docker-compose.yml.
+regexes = [
+  # e2e/CI session secret documented in .woodpecker.yml (test-only override).
+  '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+  # CI-only service key in .woodpecker.yml.
+  '''ci-features-check-key-0123456789abcdef''',
+  # Local development defaults that must never be used in production.
+  '''change-me-local-dev''',
+  '''change-me-minio-local-dev''',
+  '''minioadmin''',
+  '''redis_dev''',
+  # Argon2id PHC hash of the CI e2e password (public test credential).
+  '''\$argon2id\$v=19\$m=19456,t=2,p=1\$Qe/tm9Em6f7USVaFRR\+YXg\$''',
+  # Unit-test API key fixtures in crates/api/src/api_keys.rs (not credentials).
+  '''duplicate-key-0123456789abcdef012345''',
+  '''beta-key-0123456789abcdef012345678''',
+  '''gamma-key-0123456789abcdef0123456''',
+  # SQL DDL false positive: the generic-api-key rule reads the primary-key
+  # column list of the login throttle table as a secret.
+  '''failure_count_10m''',
+]

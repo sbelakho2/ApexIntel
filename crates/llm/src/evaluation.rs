@@ -180,11 +180,19 @@ pub struct EvalResult {
     /// Overall pass/fail for this case.
     pub passed: bool,
     pub ran_at: DateTime<Utc>,
+    /// Set when the case could not be executed at all (model unreachable,
+    /// transport error). Such a case produced no output, so it is excluded
+    /// from quality rates instead of being scored as a model failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_error: Option<String>,
 }
 
 impl EvalResult {
     pub fn failed_checks(&self) -> Vec<String> {
         let mut failures = vec![];
+        if let Some(error) = &self.execution_error {
+            failures.push(format!("execution: {error}"));
+        }
         if let CheckOutcome::Fail(msg) = &self.json_valid {
             failures.push(format!("json_valid: {msg}"));
         }
@@ -223,14 +231,26 @@ pub struct EvalReport {
     /// that a quality gate would read as catastrophic degradation.
     pub avg_judge_score: Measurement<f64>,
     pub avg_latency_ms: f64,
+    /// Cases that could not be executed (see [`EvalResult::execution_error`]).
+    #[serde(default)]
+    pub execution_errors: usize,
 }
 
 impl EvalReport {
+    /// Cases that actually produced model output and were graded.
+    pub fn evaluated_cases(&self) -> usize {
+        self.total_cases.saturating_sub(self.execution_errors)
+    }
+
+    /// Fraction of graded cases that passed. Cases that could not execute
+    /// are excluded: an unreachable model is an availability problem, not a
+    /// quality measurement.
     pub fn pass_rate(&self) -> f64 {
-        if self.total_cases == 0 {
+        let evaluated = self.evaluated_cases();
+        if evaluated == 0 {
             return 0.0;
         }
-        self.passed as f64 / self.total_cases as f64
+        self.passed as f64 / evaluated as f64
     }
 
     /// Return all failing case IDs with their failure reasons.
@@ -245,18 +265,20 @@ impl EvalReport {
     /// Compute hallucination rate estimate: fraction of cases where the LLM
     /// introduced phrases it was explicitly told to forbid or generated invalid JSON.
     pub fn estimated_hallucination_rate(&self) -> f64 {
-        if self.total_cases == 0 {
+        let evaluated = self.evaluated_cases();
+        if evaluated == 0 {
             return 0.0;
         }
         let hallucinated = self
             .results
             .iter()
+            .filter(|r| r.execution_error.is_none())
             .filter(|r| {
                 matches!(&r.forbidden_phrases, CheckOutcome::Fail(_))
                     || matches!(&r.json_valid, CheckOutcome::Fail(_))
             })
             .count();
-        hallucinated as f64 / self.total_cases as f64
+        hallucinated as f64 / evaluated as f64
     }
 }
 
@@ -330,29 +352,37 @@ impl EvalRunner {
                 }
                 Err(e) => {
                     warn!(case_id=%case.id, error=%e, "Eval case execution error");
-                    // Push a failure result
+                    // The model produced no output: record the execution
+                    // error without grading any check, so an outage never
+                    // reads as invalid JSON / hallucination.
                     results.push(EvalResult {
                         case_id: case.id.clone(),
                         response: String::new(),
                         latency_ms: 0,
-                        json_valid: CheckOutcome::Fail(e.to_string()),
+                        json_valid: CheckOutcome::Skipped,
                         required_keys: CheckOutcome::Skipped,
                         required_keywords: CheckOutcome::Skipped,
                         forbidden_phrases: CheckOutcome::Skipped,
                         sentence_bounds: CheckOutcome::Skipped,
                         judge_score: None,
-                        judge_pass: CheckOutcome::Fail("execution_error".into()),
-                        judge_rationale: Some(e.to_string()),
+                        judge_pass: CheckOutcome::Skipped,
+                        judge_rationale: None,
                         gold_similarity: None,
                         passed: false,
                         ran_at: Utc::now(),
+                        execution_error: Some(format!("{e:#}")),
                     });
                 }
             }
         }
 
         let passed = results.iter().filter(|r| r.passed).count();
-        let failed = results.len() - passed;
+        let execution_errors = results
+            .iter()
+            .filter(|r| r.execution_error.is_some())
+            .count();
+        let failed = results.len() - passed - execution_errors;
+        let executed = results.len() - execution_errors;
 
         let report = EvalReport {
             suite_name: suite.name.clone(),
@@ -366,18 +396,20 @@ impl EvalRunner {
             } else {
                 Measurement::not_measured()
             },
-            avg_latency_ms: if !results.is_empty() {
-                total_latency as f64 / results.len() as f64
+            avg_latency_ms: if executed > 0 {
+                total_latency as f64 / executed as f64
             } else {
                 0.0
             },
             results,
+            execution_errors,
         };
 
         info!(
             suite=%suite.name,
             passed=%report.passed,
             failed=%report.failed,
+            execution_errors=%report.execution_errors,
             pass_rate=%format!("{:.1}%", report.pass_rate() * 100.0),
             avg_score=%report.avg_judge_score.display_fixed(3),
             "Eval run complete"
@@ -464,6 +496,7 @@ impl EvalRunner {
             gold_similarity,
             passed,
             ran_at: Utc::now(),
+            execution_error: None,
         })
     }
 
@@ -773,6 +806,7 @@ mod tests {
             results: vec![],
             avg_judge_score: Measurement::measured(0.75),
             avg_latency_ms: 200.0,
+            execution_errors: 0,
         };
         assert!((report.pass_rate() - 0.75).abs() < 0.001);
     }
@@ -819,6 +853,7 @@ mod tests {
             failed: 2,
             avg_judge_score: Measurement::measured(0.5),
             avg_latency_ms: 100.0,
+            execution_errors: 0,
             results: vec![
                 make_result("c1", true, CheckOutcome::Pass, CheckOutcome::Pass),
                 make_result(
@@ -865,6 +900,103 @@ mod tests {
         assert_ne!(report.avg_judge_score.value_copied(), Some(0.0));
     }
 
+    /// Regression: an unreachable model used to record every case as
+    /// `json_valid: Fail`, which produced hallucination_rate = 1.0 and a
+    /// critical "LLM quality regression" broadcast for a pure outage.
+    #[tokio::test]
+    async fn unreachable_model_is_execution_error_not_hallucination() {
+        struct DownLlm;
+        #[async_trait::async_trait]
+        impl LlmClient for DownLlm {
+            async fn generate_json(&self, _: &str, _: &str) -> Result<String> {
+                anyhow::bail!("connection refused")
+            }
+            async fn generate_text(&self, _: &str, _: &str) -> Result<String> {
+                anyhow::bail!("connection refused")
+            }
+        }
+        let llm = Arc::new(DownLlm);
+        let runner = EvalRunner::new(llm.clone(), llm);
+        let suite = standard_eval_suite();
+        let report = runner.run(&suite).await.expect("suite runs");
+
+        assert_eq!(report.total_cases, suite.cases.len());
+        assert_eq!(report.execution_errors, suite.cases.len());
+        assert_eq!(report.evaluated_cases(), 0);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.estimated_hallucination_rate(), 0.0);
+        assert_eq!(report.avg_judge_score, Measurement::not_measured());
+        for result in &report.results {
+            assert!(result.execution_error.is_some());
+            assert_eq!(result.json_valid, CheckOutcome::Skipped);
+            assert!(result
+                .failed_checks()
+                .iter()
+                .any(|f| f.starts_with("execution:")));
+        }
+    }
+
+    #[test]
+    fn rates_exclude_execution_errors() {
+        let mut errored = make_result("c3", false, CheckOutcome::Skipped, CheckOutcome::Skipped);
+        errored.execution_error = Some("timeout".into());
+        let report = EvalReport {
+            suite_name: "test".into(),
+            run_id: "r1".into(),
+            ran_at: Utc::now(),
+            total_cases: 3,
+            passed: 1,
+            failed: 1,
+            avg_judge_score: Measurement::measured(0.5),
+            avg_latency_ms: 100.0,
+            execution_errors: 1,
+            results: vec![
+                make_result("c1", true, CheckOutcome::Pass, CheckOutcome::Pass),
+                make_result(
+                    "c2",
+                    false,
+                    CheckOutcome::Fail("bad JSON".into()),
+                    CheckOutcome::Pass,
+                ),
+                errored,
+            ],
+        };
+        assert_eq!(report.evaluated_cases(), 2);
+        assert!((report.pass_rate() - 0.5).abs() < 1e-9);
+        assert!((report.estimated_hallucination_rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn report_without_execution_errors_field_deserializes() {
+        let report = EvalReport {
+            suite_name: "s".into(),
+            run_id: "r".into(),
+            ran_at: Utc::now(),
+            total_cases: 1,
+            passed: 1,
+            failed: 0,
+            avg_judge_score: Measurement::measured(0.9),
+            avg_latency_ms: 1.0,
+            execution_errors: 0,
+            results: vec![make_result(
+                "c1",
+                true,
+                CheckOutcome::Pass,
+                CheckOutcome::Pass,
+            )],
+        };
+        let mut value = serde_json::to_value(&report).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("execution_errors");
+        assert!(value["results"][0].get("execution_error").is_none());
+        let back: EvalReport = serde_json::from_value(value).expect("legacy artifact");
+        assert_eq!(back.execution_errors, 0);
+        assert!(back.results[0].execution_error.is_none());
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     fn build_dummy_runner() -> EvalRunner {
@@ -903,6 +1035,7 @@ mod tests {
             gold_similarity: None,
             passed,
             ran_at: Utc::now(),
+            execution_error: None,
         }
     }
 }

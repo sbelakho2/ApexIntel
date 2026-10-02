@@ -86,11 +86,12 @@ pub fn build_entity_admission_service(
     admission_source: &str,
     company_type_label: &str,
 ) -> EntityAdmissionService<PgAdmissionStore> {
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .user_agent("ApexIntelBot/1.0 (+https://apex-intel.io/bot)")
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+    let http =
+        apex_crawl::http::external_client_or_panic(apex_crawl::http::ExternalClientOptions {
+            timeout: std::time::Duration::from_secs(12),
+            user_agent: Some("ApexIntelBot/1.0 (+https://apex-intel.io/bot)".to_string()),
+            ..apex_crawl::http::ExternalClientOptions::default()
+        });
     let verifier =
         build_production_entity_verifier(store.pool.clone(), http, EntityVerifierCaps::from_env());
     EntityAdmissionService::new(verifier, PgAdmissionStore::from_store(store))

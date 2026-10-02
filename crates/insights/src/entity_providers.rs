@@ -897,6 +897,8 @@ mod tests {
 
     #[tokio::test]
     async fn production_builder_wires_non_seed_providers() {
+        // Test-fixture client: production clients come from the worker's guarded factory.
+        #[allow(clippy::disallowed_methods)]
         let verifier = build_production_entity_verifier(
             lazy_pool(),
             reqwest::Client::new(),
@@ -933,6 +935,8 @@ mod tests {
             independent_sources: false,
             ..EntityVerifierCaps::default()
         };
+        // Test-fixture client: production clients come from the worker's guarded factory.
+        #[allow(clippy::disallowed_methods)]
         let verifier = build_production_entity_verifier(lazy_pool(), reqwest::Client::new(), caps);
         assert!(verifier.provider_names().is_empty());
     }

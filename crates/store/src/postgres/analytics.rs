@@ -668,9 +668,9 @@ impl PgStore {
                 COALESCE(COUNT(*), 0) as sources_attempted,
                 COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) as sources_succeeded,
                 COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as sources_failed,
-                COALESCE(SUM(new_observations), 0) as new_observations,
-                COALESCE(SUM(changed_pages), 0) as changed_pages,
-                COALESCE(SUM(bytes_fetched), 0) as bytes_fetched
+                COALESCE(SUM(new_observations), 0)::bigint as new_observations,
+                COALESCE(SUM(changed_pages), 0)::bigint as changed_pages,
+                COALESCE(SUM(bytes_fetched), 0)::bigint as bytes_fetched
                FROM crawl_logs
                WHERE created_at >= $1"#,
         )

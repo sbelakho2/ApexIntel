@@ -1081,18 +1081,9 @@ pub fn default_scheduler() -> Scheduler {
         .with_timeout(7200), // 2 h
     );
 
-    // Hypothesis generation runs after mining (02:30 UTC) — calls LLM
-    s.register(
-        JobDef::new(
-            JobKind::HypothesisGeneration,
-            Schedule::DailyAt {
-                hour: 2,
-                minute: 30,
-            },
-        )
-        .with_jitter(60) // +1 min
-        .with_timeout(7200), // 2 h — LLM inference can be slow
-    );
+    // (No standalone hypothesis-generation job: pattern mining already runs
+    // generation + staging over the mined candidates. `run_hypothesis_generation`
+    // only re-reads stats and is kept for manual/custom invocation.)
 
     s.register(
         JobDef::new(
@@ -2062,7 +2053,6 @@ mod tests {
         let expected_jobs = [
             "crawl_cycle",
             "pattern_mining",
-            "hypothesis_generation",
             "poi_refresh",
             "poi_discovery",
             "poi_role_reclassify",
@@ -2112,6 +2102,18 @@ mod tests {
                 "missing default job {expected_job}"
             );
         }
+    }
+
+    #[test]
+    fn test_default_scheduler_excludes_stats_only_hypothesis_generation() {
+        // `run_hypothesis_generation` only re-reads mining stats (generation
+        // happens inside pattern mining); scheduling it would burn a slot on
+        // a no-op, so it is not registered by default.
+        let s = default_scheduler();
+        assert!(
+            !s.jobs.contains_key("hypothesis_generation"),
+            "stats-only hypothesis generation must not be a default job"
+        );
     }
 
     #[test]

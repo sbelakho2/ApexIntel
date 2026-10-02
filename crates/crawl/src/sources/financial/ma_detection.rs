@@ -217,11 +217,12 @@ pub struct MaMonitor {
 
 impl MaMonitor {
     pub fn new(config: MaMonitorConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) M&A Monitor")
-            .build()
-            .context("building M&A monitor HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) M&A Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building M&A monitor HTTP client")?;
         Ok(Self {
             client,
             config,
@@ -244,7 +245,9 @@ impl MaMonitor {
             return Ok(Vec::new());
         }
 
-        let body = resp.text().await.context("read Crunchbase feed")?;
+        let body = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+            .await
+            .context("read Crunchbase feed")?;
         let items = crate::rss::parse_feed(&body).unwrap_or_default();
 
         let events: Vec<MaEvent> = items

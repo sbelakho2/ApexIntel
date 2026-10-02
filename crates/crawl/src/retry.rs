@@ -337,9 +337,12 @@ pub async fn retry_with_backoff(
                 let status = response.status();
 
                 if status.is_success() {
-                    let body = response.text().await.map_err(|e| {
-                        RetryError::Request(format!("failed to read response body: {e}"))
-                    })?;
+                    let body =
+                        crate::http::read_capped(response, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                            .await
+                            .map_err(|e| {
+                                RetryError::Request(format!("failed to read response body: {e}"))
+                            })?;
 
                     if let Some(cb) = circuit_breaker {
                         cb.record_success(&domain);
@@ -355,7 +358,10 @@ pub async fn retry_with_backoff(
 
                 // Non-success status — classify and possibly retry
                 let category = classify_http_status(status, &config.retryable_status_codes);
-                let body_text = response.text().await.unwrap_or_default();
+                let body_text =
+                    crate::http::read_capped(response, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                        .await
+                        .unwrap_or_default();
                 last_error = Some(format!(
                     "HTTP {}: {}",
                     status.as_u16(),

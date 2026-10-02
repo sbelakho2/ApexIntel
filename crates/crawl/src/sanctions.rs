@@ -210,11 +210,14 @@ impl SanctionsScreener {
     /// Downloads OFAC SDN XML + EU consolidated XML.  Network errors from
     /// individual sources are logged and skipped so partial loading succeeds.
     pub async fn load_from_web() -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(60))
-            .user_agent("ApexIntel/1.0 compliance-screening (+https://apexintel.io)")
-            .build()
-            .context("Build HTTP client for sanctions loading")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(60),
+            user_agent: Some(
+                "ApexIntel/1.0 compliance-screening (+https://apexintel.io)".to_string(),
+            ),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("Build HTTP client for sanctions loading")?;
 
         let mut screener = Self::empty();
 
@@ -256,7 +259,9 @@ impl SanctionsScreener {
         if !resp.status().is_success() {
             anyhow::bail!("OFAC SDN download returned {}", resp.status());
         }
-        let body = resp.bytes().await.context("Read OFAC SDN body")?;
+        let body = crate::http::read_capped_bytes(resp, crate::http::MAX_BULK_BODY_BYTES)
+            .await
+            .context("Read OFAC SDN body")?;
         self.parse_ofac_sdn_xml(&body)
     }
 
@@ -413,7 +418,9 @@ impl SanctionsScreener {
         if !resp.status().is_success() {
             anyhow::bail!("EU consolidated download returned {}", resp.status());
         }
-        let body = resp.bytes().await.context("Read EU consolidated body")?;
+        let body = crate::http::read_capped_bytes(resp, crate::http::MAX_BULK_BODY_BYTES)
+            .await
+            .context("Read EU consolidated body")?;
         self.parse_eu_consolidated_xml(&body)
     }
 

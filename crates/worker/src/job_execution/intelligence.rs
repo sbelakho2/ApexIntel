@@ -463,6 +463,10 @@ pub(super) async fn run_self_improvement_cycle(
                         .evaluation
                         .value_ref()
                         .map(|summary| summary.hallucination_rate),
+                    eval_execution_errors = outcome
+                        .evaluation
+                        .value_ref()
+                        .map(|summary| summary.execution_errors),
                     captures_seeded = outcome
                         .critique
                         .value_ref()

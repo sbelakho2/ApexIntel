@@ -71,7 +71,7 @@ static RE_WEBSITE: LazyLock<Regex> = LazyLock::new(|| {
 pub fn extract_directory(body_text: &str, title: &str, url: &str) -> DirectoryExtract {
     let normalized_body = normalizer::normalize_whitespace(body_text);
     // No raw-URL fallback: a hostile or over-long page URL must never survive
-    // extraction (same contract as `html::sanitize_extracted_href`).
+    // extraction (same contract as `html::resolve_href`).
     let normalized_url = normalize_url(url).unwrap_or_default();
 
     // Determine directory type based on content

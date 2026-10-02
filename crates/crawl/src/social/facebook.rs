@@ -26,12 +26,13 @@ pub struct FacebookScraper {
 impl FacebookScraper {
     /// Build a new scraper with the given user agent.
     pub fn new(user_agent: &str) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent(user_agent)
-            .redirect(reqwest::redirect::Policy::limited(3))
-            .build()
-            .context("building Facebook HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(20),
+            user_agent: Some(user_agent.to_string()),
+            redirect: Some(3),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building Facebook HTTP client")?;
         Ok(Self { client })
     }
 
@@ -83,7 +84,9 @@ impl FacebookScraper {
             anyhow::bail!("Facebook returned HTTP {}", resp.status());
         }
 
-        resp.text().await.context("reading Facebook response body")
+        crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+            .await
+            .context("reading Facebook response body")
     }
 
     fn parse_page_posts(&self, html: &str, page_id: &str, max_posts: usize) -> Vec<SocialPost> {

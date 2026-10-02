@@ -167,14 +167,17 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
         // ── System event types (from ActivityLogger) ──────────────────────
         "insight_generated" => {
             let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let conf = obj
-                .get("confidence")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            if title.is_empty() {
-                format!("Confidence: {:.0}%", conf * 100.0)
-            } else {
-                format!("\"{}\" (conf: {:.0}%)", title, conf * 100.0)
+            let confidence = obj.get("confidence").and_then(|v| v.as_f64());
+            // An absent confidence is unknown, never "0%" (audit sweep).
+            match (title.is_empty(), confidence) {
+                (false, Some(confidence)) => {
+                    format!("\"{}\" (conf: {:.0}%)", title, confidence * 100.0)
+                }
+                (false, None) => format!("\"{}\"", title),
+                (true, Some(confidence)) => {
+                    format!("Confidence: {:.0}%", confidence * 100.0)
+                }
+                (true, None) => String::new(),
             }
         }
         "poi_discovered" => {
@@ -191,22 +194,28 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
             }
         }
         "crawl_completed" => {
-            let urls = obj
-                .get("urls_crawled")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let obs = obj
-                .get("new_observations")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let secs = obj
-                .get("duration_secs")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            format!(
-                "{} pages crawled, {} new observations (in {:.0}s)",
-                urls, obs, secs
-            )
+            let urls = obj.get("urls_crawled").and_then(|v| v.as_u64());
+            let obs = obj.get("new_observations").and_then(|v| v.as_u64());
+            let secs = obj.get("duration_secs").and_then(|v| v.as_f64());
+            // Omit unmeasured counters instead of reporting them as 0.
+            match (urls, obs, secs) {
+                (Some(urls), Some(obs), Some(secs)) => {
+                    format!("{urls} pages crawled, {obs} new observations (in {secs:.0}s)")
+                }
+                (urls, obs, secs) => {
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(urls) = urls {
+                        parts.push(format!("{urls} pages crawled"));
+                    }
+                    if let Some(obs) = obs {
+                        parts.push(format!("{obs} new observations"));
+                    }
+                    if let Some(secs) = secs {
+                        parts.push(format!("in {secs:.0}s"));
+                    }
+                    parts.join(", ")
+                }
+            }
         }
         "company_detected" => {
             let signal = obj
@@ -237,11 +246,11 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
             }
         }
         "psych_profile_updated" => {
-            let quality = obj
-                .get("profile_quality")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            format!("Profile quality: {:.2}", quality)
+            let quality = obj.get("profile_quality").and_then(|v| v.as_f64());
+            match quality {
+                Some(quality) => format!("Profile quality: {quality:.2}"),
+                None => "Profile quality not recorded".to_string(),
+            }
         }
         "battlecard_generated" => {
             let comp = obj.get("competitor").and_then(|v| v.as_str()).unwrap_or("");
@@ -253,14 +262,13 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
         }
         "memo_generated" => {
             let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let count = obj
-                .get("entity_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if !title.is_empty() {
-                format!("\"{}\" ({} entities)", title, count)
-            } else {
-                format!("{} entities", count)
+            let count = obj.get("entity_count").and_then(|v| v.as_u64());
+            // An absent count is omitted, not claimed as 0 entities.
+            match (title.is_empty(), count) {
+                (false, Some(count)) => format!("\"{title}\" ({count} entities)"),
+                (false, None) => format!("\"{title}\""),
+                (true, Some(count)) => format!("{count} entities"),
+                (true, None) => String::new(),
             }
         }
         "recipe_promoted" => {
@@ -281,17 +289,21 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
         }
         "job_completed" | "job_failed" | "job_skipped" | "job_unknown" => {
             let job_kind = obj.get("job_kind").and_then(|v| v.as_str()).unwrap_or("");
-            let items = obj
-                .get("items_processed")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let dur = obj.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let items = obj.get("items_processed").and_then(|v| v.as_u64());
+            let dur = obj.get("duration_ms").and_then(|v| v.as_u64());
             let notes = obj.get("notes").and_then(|v| v.as_str()).unwrap_or("");
             let status = obj
                 .get("status")
                 .and_then(|v| v.as_str())
                 .unwrap_or(action_type);
-            let mut out = format!("{} — {} ({} items, {}ms)", job_kind, status, items, dur);
+            // Only measured counters appear; a missing value is not 0 items.
+            let measured = match (items, dur) {
+                (Some(items), Some(dur)) => format!(" ({items} items, {dur}ms)"),
+                (Some(items), None) => format!(" ({items} items)"),
+                (None, Some(dur)) => format!(" ({dur}ms)"),
+                (None, None) => String::new(),
+            };
+            let mut out = format!("{job_kind} — {status}{measured}");
             if !notes.is_empty() {
                 out.push_str(&format!(" — {}", notes));
             }
@@ -832,6 +844,56 @@ pub fn validate_visibility(value: &str) -> Result<(), ApiError> {
     validate_member("visibility", value.trim(), &WORKSPACE_VISIBILITIES)
 }
 
+/// Literals accepted by `activity_feed.chk_activity_action_type` (migration
+/// 100, which widens the 002/062 baseline with every type the code writes).
+/// `POST /api/activity` validates against this list so an unknown value is a
+/// 400 instead of a database CHECK violation surfacing as a 500.
+pub const ACTIVITY_ACTION_TYPES: [&str; 33] = [
+    // Collaboration actions (migration 002)
+    "create",
+    "update",
+    "delete",
+    "share",
+    "assign",
+    "comment",
+    "resolve",
+    "reopen",
+    "escalate",
+    "deescalate",
+    "approve",
+    "reject",
+    "merge",
+    "split",
+    // System event types
+    "insight_generated",
+    "poi_discovered",
+    "crawl_completed",
+    "company_detected",
+    "threat_detected",
+    "psych_profile_updated",
+    "battlecard_generated",
+    "memo_generated",
+    "recipe_promoted",
+    // Job lifecycle events (062 adds job_degraded)
+    "job_completed",
+    "job_degraded",
+    "job_failed",
+    "job_skipped",
+    // Triage fallback (crates/triage/src/router_integration.rs)
+    "triage_alert",
+    "triage_queue_update",
+    "triage_status_change",
+    // Event outbox dead-letter operator alert
+    "alert_dead_lettered",
+    // Warning ingress lifecycle
+    "warning_created",
+    "warning_updated",
+];
+
+pub fn validate_activity_action_type(value: &str) -> Result<(), ApiError> {
+    validate_member("action_type", value.trim(), &ACTIVITY_ACTION_TYPES)
+}
+
 pub fn validate_workspace_request(req: &CreateWorkspaceRequest) -> Result<(), ApiError> {
     validate_workspace_name(&req.name)?;
     validate_workspace_type(&req.workspace_type)?;
@@ -1148,6 +1210,60 @@ mod tests {
     fn validate_severity_rejects_invalid_values() {
         assert!(validate_severity("extreme").is_err());
         assert!(validate_severity("lowest").is_err());
+    }
+
+    #[test]
+    fn validate_activity_action_type_matches_the_database_constraint() {
+        // Every literal from migration 100's chk_activity_action_type.
+        for value in [
+            "create",
+            "update",
+            "delete",
+            "share",
+            "assign",
+            "comment",
+            "resolve",
+            "reopen",
+            "escalate",
+            "deescalate",
+            "approve",
+            "reject",
+            "merge",
+            "split",
+            "insight_generated",
+            "poi_discovered",
+            "crawl_completed",
+            "company_detected",
+            "threat_detected",
+            "psych_profile_updated",
+            "battlecard_generated",
+            "memo_generated",
+            "recipe_promoted",
+            "job_completed",
+            "job_degraded",
+            "job_failed",
+            "job_skipped",
+            "triage_alert",
+            "triage_queue_update",
+            "triage_status_change",
+            "alert_dead_lettered",
+            "warning_created",
+            "warning_updated",
+        ] {
+            assert!(
+                validate_activity_action_type(value).is_ok(),
+                "{value} must be accepted"
+            );
+        }
+        assert_eq!(ACTIVITY_ACTION_TYPES.len(), 33);
+    }
+
+    #[test]
+    fn validate_activity_action_type_rejects_unknown_values() {
+        assert!(validate_activity_action_type("").is_err());
+        assert!(validate_activity_action_type("drop_table").is_err());
+        assert!(validate_activity_action_type("CREATE").is_err());
+        assert!(validate_activity_action_type("job_started").is_err());
     }
 
     #[test]
@@ -1954,5 +2070,63 @@ mod comprehensive_tests {
     fn normalize_optional_text_preserves_valid() {
         let result = normalize_optional_text(Some("valid text".to_string()));
         assert_eq!(result, Some("valid text".to_string()));
+    }
+
+    // ── Activity detail formatting must not fabricate measurements ───────────
+
+    #[test]
+    fn activity_details_omit_unmeasured_values_instead_of_zeroing_them() {
+        let text = format_activity_details(
+            "insight_generated",
+            &serde_json::json!({"title": "Chip shortage"}),
+        );
+        assert_eq!(text, "\"Chip shortage\"");
+        assert!(!text.contains("0%"));
+
+        let text = format_activity_details("crawl_completed", &serde_json::json!({}));
+        assert_eq!(text, "");
+
+        let text = format_activity_details("psych_profile_updated", &serde_json::json!({}));
+        assert!(text.contains("not recorded"));
+
+        let text =
+            format_activity_details("memo_generated", &serde_json::json!({"title": "Week 1"}));
+        assert_eq!(text, "\"Week 1\"");
+
+        let text = format_activity_details(
+            "job_completed",
+            &serde_json::json!({"job_kind": "crawl", "status": "ok"}),
+        );
+        assert_eq!(text, "crawl — ok");
+    }
+
+    #[test]
+    fn activity_details_preserve_measured_values() {
+        let text = format_activity_details(
+            "crawl_completed",
+            &serde_json::json!({
+                "urls_crawled": 8,
+                "new_observations": 3,
+                "duration_secs": 12,
+            }),
+        );
+        assert_eq!(text, "8 pages crawled, 3 new observations (in 12s)");
+
+        let text = format_activity_details(
+            "job_completed",
+            &serde_json::json!({
+                "job_kind": "crawl",
+                "status": "ok",
+                "items_processed": 4,
+                "duration_ms": 1200,
+            }),
+        );
+        assert_eq!(text, "crawl — ok (4 items, 1200ms)");
+
+        let text = format_activity_details(
+            "insight_generated",
+            &serde_json::json!({"title": "Chip shortage", "confidence": 0.87}),
+        );
+        assert_eq!(text, "\"Chip shortage\" (conf: 87%)");
     }
 }

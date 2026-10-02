@@ -136,11 +136,12 @@ pub struct TenderMonitor {
 
 impl TenderMonitor {
     pub fn new(config: TenderMonitorConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Tender Monitor")
-            .build()
-            .context("building Tender monitor HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) Tender Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building Tender monitor HTTP client")?;
         Ok(Self { client, config })
     }
 
@@ -182,15 +183,16 @@ impl TenderMonitor {
             );
         }
 
-        let json: serde_json::Value = match resp.json().await {
-            Ok(json) => json,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("parse SAM.gov response failed: {error}"),
-                    "",
-                );
-            }
-        };
+        let json: serde_json::Value =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(json) => json,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("parse SAM.gov response failed: {error}"),
+                        "",
+                    );
+                }
+            };
         let items = json
             .get("response_data")
             .and_then(|v| v.as_array())
@@ -269,15 +271,16 @@ impl TenderMonitor {
             return crate::acquisition::http_failure(resp.status().as_u16(), retry_after, "TED EU");
         }
 
-        let json: serde_json::Value = match resp.json().await {
-            Ok(json) => json,
-            Err(error) => {
-                return AcquisitionOutcome::parse_failed(
-                    format!("parse TED EU response failed: {error}"),
-                    "",
-                );
-            }
-        };
+        let json: serde_json::Value =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(json) => json,
+                Err(error) => {
+                    return AcquisitionOutcome::parse_failed(
+                        format!("parse TED EU response failed: {error}"),
+                        "",
+                    );
+                }
+            };
         let notices = json
             .get("result")
             .and_then(|v| v.as_array())

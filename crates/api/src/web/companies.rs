@@ -60,11 +60,29 @@ pub struct CompanyListItem {
     pub name: String,
     pub sector: String,
     pub region: String,
-    pub risk_score: i64,
+    /// Measured risk score (0–100); `None` = the column is NULL and the
+    /// template renders "—" instead of a fabricated zero.
+    pub risk_score: Option<i64>,
     pub warning_count: i64,
     pub insight_count: i64,
-    pub is_competitor: bool,
+    /// Tri-state competitor flag: `None` = the metadata key is absent, so the
+    /// template must not present the company as merely "Tracked".
+    pub is_competitor: Option<bool>,
     pub updated_at: String,
+}
+
+impl CompanyListItem {
+    /// Template helper: true when the row carries a measured, positive risk
+    /// score (the threat chip is only shown for one).
+    pub fn has_risk_score(&self) -> bool {
+        self.risk_score.is_some_and(|score| score > 0)
+    }
+
+    /// Template helper: the measured score, or 0 when none; callers gate on
+    /// [`Self::has_risk_score`].
+    pub fn risk_score_value(&self) -> i64 {
+        self.risk_score.unwrap_or(0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -87,7 +105,6 @@ pub struct CompanySite {
 pub struct CompanyProduct {
     pub name: String,
     pub family: String,
-    pub status: String,
 }
 
 #[derive(Clone, Debug)]
@@ -110,7 +127,8 @@ pub struct CompanyWarning {
     pub title: String,
     pub warning_type: String,
     pub severity: String,
-    pub confidence_pct: i64,
+    /// Measured confidence percentage; `None` = not recorded.
+    pub confidence_pct: Option<i64>,
     pub created_at: String,
     pub age: String,
     pub acknowledged: bool,
@@ -193,7 +211,8 @@ pub struct CompanyInsight {
     pub title: String,
     pub insight_type: String,
     pub summary: String,
-    pub confidence_pct: i64,
+    /// Measured confidence percentage; `None` = not recorded.
+    pub confidence_pct: Option<i64>,
     pub created_at: String,
 }
 
@@ -368,8 +387,16 @@ pub struct CompanyDetailPage {
     pub description: String,
     pub website: String,
     pub website_url: String,
-    pub risk_score: i64,
-    pub is_competitor: bool,
+    /// Measured risk score (0–100); `None` = not recorded.
+    pub risk_score: Option<i64>,
+    /// True when [`Self::risk_score`] was measured (summary cell renders "—"
+    /// otherwise).
+    pub has_risk_score: bool,
+    /// [`Self::risk_score`] or 0; the score ring is only rendered when
+    /// `has_risk_score` is true, so the zero is never shown as a measurement.
+    pub risk_score_value: i64,
+    /// Tri-state competitor flag; `None` = not recorded.
+    pub is_competitor: Option<bool>,
     pub created_at: String,
     pub updated_at: String,
     pub key_persons: Vec<CompanyKeyPerson>,
@@ -480,13 +507,13 @@ pub async fn list_companies(
     let mut all_companies: Vec<CompanyListItem> = company_rows
         .iter()
         .map(|c| {
+            // Tri-state: an absent metadata flag is unknown, not `false`.
             let is_comp = c
                 .metadata
                 .as_ref()
                 .and_then(|m| m.get("is_competitor"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let risk_score = c.risk_score.map(|s| (s * 100.0) as i64).unwrap_or(0);
+                .and_then(|v| v.as_bool());
+            let risk_score = c.risk_score.map(|s| (s * 100.0) as i64);
             CompanyListItem {
                 id: c.id.to_string(),
                 name: c.name.clone(),
@@ -510,7 +537,7 @@ pub async fn list_companies(
     }
 
     if !active_sector.is_empty() {
-        all_companies.retain(|c| risk_tier(c.risk_score) == active_sector);
+        all_companies.retain(|c| risk_tier_or_unknown(c.risk_score) == active_sector);
     }
 
     let total = all_companies.len() as i64;
@@ -527,8 +554,14 @@ pub async fn list_companies(
         .cloned()
         .collect();
 
-    let competitor_count = all_companies.iter().filter(|c| c.is_competitor).count() as i64;
-    let high_risk_count = all_companies.iter().filter(|c| c.risk_score >= 70).count() as i64;
+    let competitor_count = all_companies
+        .iter()
+        .filter(|c| c.is_competitor == Some(true))
+        .count() as i64;
+    let high_risk_count = all_companies
+        .iter()
+        .filter(|c| c.risk_score.is_some_and(|score| score >= 70))
+        .count() as i64;
     let regions_count = {
         use std::collections::HashSet;
         let mut regions: HashSet<&str> = HashSet::new();
@@ -542,7 +575,7 @@ pub async fn list_companies(
     let avg_risk = {
         let scored: Vec<i64> = all_companies
             .iter()
-            .map(|c| c.risk_score)
+            .filter_map(|c| c.risk_score)
             .filter(|s| *s > 0)
             .collect();
         if scored.is_empty() {
@@ -551,6 +584,9 @@ pub async fn list_companies(
             scored.iter().sum::<i64>() / scored.len() as i64
         }
     };
+    // avg_risk == 0 means "no measured score" and the template renders "—" for
+    // it; a measured average of exactly 0 is indistinguishable and renders the
+    // same way.
 
     let region_slices = {
         use std::collections::HashMap;
@@ -608,7 +644,7 @@ pub async fn list_companies(
         .map(|c| CompanyQuickLink {
             id: c.id.clone(),
             name: c.name.clone(),
-            tier: risk_tier(c.risk_score).to_string(),
+            tier: risk_tier_or_unknown(c.risk_score).to_string(),
         })
         .collect();
 
@@ -800,6 +836,12 @@ fn risk_tier(score: i64) -> &'static str {
     }
 }
 
+/// Tier label for a possibly-unmeasured score: an absent score is reported as
+/// "—", never silently bucketed as the lowest tier.
+fn risk_tier_or_unknown(score: Option<i64>) -> &'static str {
+    score.map_or("—", risk_tier)
+}
+
 fn capitalize(value: &str) -> String {
     let mut chars = value.chars();
     match chars.next() {
@@ -921,13 +963,14 @@ pub async fn get_company(
     let products: Vec<CompanyProduct> = product_rows
         .iter()
         .map(|pf| CompanyProduct {
+            // No `status`: the product-family row has no status column, and a
+            // hard-coded "active" presented invented data (audit item 177).
             name: pf.name.clone(),
             family: pf
                 .tech_tags
                 .as_ref()
                 .map(|t| t.join(", "))
                 .unwrap_or_default(),
-            status: "active".into(),
         })
         .collect();
 
@@ -1000,7 +1043,8 @@ pub async fn get_company(
             title: w.title.clone(),
             warning_type: w.warning_type.clone(),
             severity: w.severity.clone(),
-            confidence_pct: w.confidence.map(|c| (c * 100.0) as i64).unwrap_or(0),
+            // NULL confidence stays unrecorded; no fabricated 0%.
+            confidence_pct: w.confidence.map(|c| (c * 100.0) as i64),
             created_at: w.ts_utc.format("%Y-%m-%d").to_string(),
             age: dashboard::age_label(w.ts_utc),
             acknowledged: w.acknowledged,
@@ -1023,7 +1067,8 @@ pub async fn get_company(
             title: i.title.clone(),
             insight_type: i.insight_type.clone().unwrap_or_default(),
             summary: i.summary.chars().take(180).collect::<String>(),
-            confidence_pct: i.confidence.map(|c| (c * 100.0) as i64).unwrap_or(0),
+            // NULL confidence stays unrecorded; no fabricated 0%.
+            confidence_pct: i.confidence.map(|c| (c * 100.0) as i64),
             created_at: i
                 .created_at
                 .map(|d| d.format("%Y-%m-%d").to_string())
@@ -1203,7 +1248,12 @@ pub async fn get_company(
     // ── Entity workspace: open investigations + pipeline status ─────────
     let workspaces_state = DataState::from_result(
         store
-            .list_investigation_workspaces_for_entity(&id, 25)
+            .list_investigation_workspaces_for_entity(
+                &id,
+                session.user_id.as_str(),
+                session.role.can_admin(),
+                25,
+            )
             .await,
         "failed to fetch entity investigations",
         Vec::is_empty,
@@ -1316,12 +1366,13 @@ pub async fn get_company(
     let website = company.domain.clone().unwrap_or_default();
     let website_url = normalize_website_url(&website);
 
+    // Tri-state: an absent metadata flag is unknown, not `false`.
     let is_comp = company
         .metadata
         .as_ref()
         .and_then(|m| m.get("is_competitor"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .and_then(|v| v.as_bool());
+    let measured_risk_score = company.risk_score.map(|s| (s * 100.0) as i64);
 
     let tpl = CompanyDetailPage {
         current_path: ctx.current_path,
@@ -1340,7 +1391,9 @@ pub async fn get_company(
         description: company.legal_name.clone().unwrap_or_default(),
         website,
         website_url,
-        risk_score: company.risk_score.map(|s| (s * 100.0) as i64).unwrap_or(0),
+        risk_score: measured_risk_score,
+        has_risk_score: measured_risk_score.is_some(),
+        risk_score_value: measured_risk_score.unwrap_or(0),
         is_competitor: is_comp,
         created_at: company
             .created_at
@@ -1559,8 +1612,10 @@ mod tests {
             description: "Grid-scale storage manufacturer.".into(),
             website: "northwind-power.test".into(),
             website_url: "https://northwind-power.test".into(),
-            risk_score: 64,
-            is_competitor: false,
+            risk_score: Some(64),
+            has_risk_score: true,
+            risk_score_value: 64,
+            is_competitor: Some(false),
             created_at: "2026-01-10 09:00".into(),
             updated_at: "2026-01-16 09:00".into(),
             key_persons: vec![CompanyKeyPerson {
@@ -1583,7 +1638,7 @@ mod tests {
                 title: "Northwind Power expands cell manufacturing capacity".into(),
                 warning_type: "capacity_alert".into(),
                 severity: "high".into(),
-                confidence_pct: 83,
+                confidence_pct: Some(83),
                 created_at: "2026-01-15".into(),
                 age: "2d ago".into(),
                 acknowledged: false,

@@ -71,6 +71,8 @@ impl EmbeddingClient {
     pub fn from_config(config: &ModelConfig) -> Self {
         let base_url = config.base_url.trim_end_matches('/').to_string();
         let model_name = config.model_name.clone();
+        // Operator-configured embedding endpoint (trusted infrastructure), not crawled content.
+        #[allow(clippy::disallowed_methods)]
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .user_agent("apex-intel-embedding-client/0.1")
@@ -361,7 +363,7 @@ mod tests {
 
     #[test]
     fn from_config_keeps_the_api_key_and_debug_redacts_it() {
-        let mut config = ModelConfig::default();
+        let mut config = ModelConfig::llamacpp_default();
         config.api_key = Some("embed-key".into());
         let client = EmbeddingClient::from_config(&config);
         assert!(

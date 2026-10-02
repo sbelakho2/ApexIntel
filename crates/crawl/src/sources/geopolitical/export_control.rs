@@ -79,11 +79,13 @@ pub struct ExportControlMonitor {
 impl ExportControlMonitor {
     /// Create a new monitor.
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(60))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Export Control Monitor")
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(60),
+            user_agent: Some(
+                "ApexIntel/1.0 (+https://apexintel.io) Export Control Monitor".to_string(),
+            ),
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self {
             client,
             entity_list_entries: Vec::new(),
@@ -104,7 +106,9 @@ impl ExportControlMonitor {
         if !resp.status().is_success() {
             anyhow::bail!("BIS Entity List returned {}", resp.status());
         }
-        let bytes = resp.bytes().await.context("read BIS Entity List body")?;
+        let bytes = crate::http::read_capped_bytes(resp, crate::http::MAX_BULK_BODY_BYTES)
+            .await
+            .context("read BIS Entity List body")?;
         let text = String::from_utf8_lossy(&bytes);
         self.parse_entity_list_csv(&text).await
     }
@@ -165,7 +169,9 @@ impl ExportControlMonitor {
             debug!(status = %resp.status(), "BIS Denied Persons returned non-success");
             return Ok(0);
         }
-        let bytes = resp.bytes().await.context("read BIS Denied Persons body")?;
+        let bytes = crate::http::read_capped_bytes(resp, crate::http::MAX_BULK_BODY_BYTES)
+            .await
+            .context("read BIS Denied Persons body")?;
         let text = String::from_utf8_lossy(&bytes);
         let mut count = 0;
         for line in text.lines().skip(1) {

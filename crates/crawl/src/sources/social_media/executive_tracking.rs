@@ -125,6 +125,25 @@ impl MovementType {
             Self::Unknown
         }
     }
+
+    /// Parse a movement type from a free-form label. Returns `None` when no
+    /// known movement vocabulary is present.
+    pub fn from_str(label: &str) -> Option<Self> {
+        match label.to_lowercase().as_str() {
+            "hire" | "hired" | "joined" | "joins" | "new hire" | "appoints" => Some(Self::Hire),
+            "departure" | "left" | "leaves" | "resigned" | "resigns" | "exits" => {
+                Some(Self::Departure)
+            }
+            "resignation" | "stepping down" => Some(Self::Resignation),
+            "termination" | "fired" | "terminated" | "removed" => Some(Self::Termination),
+            "promotion" | "promoted" | "elevated" => Some(Self::Promotion),
+            "lateral" | "lateral_move" | "moves to" => Some(Self::LateralMove),
+            "board" | "board_change" | "board appointment" | "director" => Some(Self::BoardChange),
+            "retirement" | "retired" | "retires" => Some(Self::Retirement),
+            "internal" | "internal_move" => Some(Self::InternalMove),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +311,31 @@ impl ExecutiveTracker {
             .collect()
     }
 
+    /// Get movements for a specific person (case-insensitive substring).
+    pub fn movements_for_person(&self, name: &str) -> Vec<&ExecutiveMovement> {
+        let needle = name.to_lowercase();
+        self.movements
+            .iter()
+            .filter(|m| m.executive_name.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    /// Get the most recent movement recorded for each executive.
+    pub fn latest_movements(&self) -> Vec<&ExecutiveMovement> {
+        let mut latest: std::collections::HashMap<String, &ExecutiveMovement> =
+            std::collections::HashMap::new();
+        for movement in &self.movements {
+            let key = movement.executive_name.to_lowercase();
+            match latest.get(&key) {
+                Some(existing) if existing.detected_at >= movement.detected_at => {}
+                _ => {
+                    latest.insert(key, movement);
+                }
+            }
+        }
+        latest.into_values().collect()
+    }
+
     /// Get hires.
     pub fn hires(&self) -> Vec<&ExecutiveMovement> {
         self.movements.iter().filter(|m| m.is_hire()).collect()
@@ -326,6 +370,20 @@ mod tests {
             MovementType::from_headline("Bob promoted to CFO at BigCo"),
             MovementType::Promotion
         );
+    }
+
+    #[test]
+    fn movement_type_from_str_labels() {
+        assert_eq!(MovementType::from_str("joined"), Some(MovementType::Hire));
+        assert_eq!(
+            MovementType::from_str("PROMOTED"),
+            Some(MovementType::Promotion)
+        );
+        assert_eq!(
+            MovementType::from_str("resigned"),
+            Some(MovementType::Departure)
+        );
+        assert_eq!(MovementType::from_str("unknown-ish"), None);
     }
 
     #[test]

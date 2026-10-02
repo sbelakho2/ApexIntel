@@ -49,7 +49,9 @@ pub struct RecipePerformance {
     pub recipe_id: i64,
     pub name: String,
     pub total_runs: i64,
-    pub success_count: i64,
+    /// Expected successes (measured precision × runs); `None` when the recipe
+    /// has no measured precision, so the UI shows unknown instead of 0.
+    pub success_count: Option<i64>,
     pub failure_count: i64,
     pub avg_duration_ms: i64,
     pub last_run: String,
@@ -248,8 +250,10 @@ pub struct AdminPage {
     pub training_datasets: Vec<TrainingDatasetItem>,
     pub db_size: String,
     pub uptime: String,
-    pub total_observations: i64,
-    pub total_entities: i64,
+    /// Measured totals; `None` renders as unknown rather than a fabricated 0
+    /// when the probe failed (audit #129).
+    pub total_observations: Option<i64>,
+    pub total_entities: Option<i64>,
     pub stats: AdminStats,
     /// Real per-source ingestion stats (B316).
     pub observation_sources: Vec<SourceItem>,
@@ -294,6 +298,16 @@ fn fmt_process_uptime() -> String {
 
 fn validation_issue_count(value: &serde_json::Value) -> usize {
     value.as_array().map(|items| items.len()).unwrap_or(0)
+}
+
+/// Measured total from a probe state, or `None` when the probe failed or
+/// returned nothing. A rendered `0` must only ever mean a measured zero
+/// (audit #129: unmeasured admin stats showed 0).
+fn measured_total<T>(state: &DataState<T>, value: impl FnOnce(&T) -> i64) -> Option<i64> {
+    match state {
+        DataState::Loaded(loaded) => Some(value(loaded)),
+        DataState::Empty | DataState::Degraded { .. } => None,
+    }
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
@@ -372,7 +386,7 @@ pub async fn admin_page(
                 total_runs: r.fired_count,
                 // Expected successes from measured precision only; an
                 // unreviewed recipe contributes no fabricated count.
-                success_count: r.precision_score.map_or(0, |precision| {
+                success_count: r.precision_score.map(|precision| {
                     ((precision.clamp(0.0, 1.0)) * r.fired_count as f64).round() as i64
                 }),
                 failure_count: 0,
@@ -410,15 +424,9 @@ pub async fn admin_page(
         DataState::Empty | DataState::Degraded { .. } => vec![],
     };
 
-    // Totals
-    let total_observations = match &crawl_state {
-        DataState::Loaded(cs) => cs.total_fingerprints,
-        _ => 0,
-    };
-    let total_entities = match &poi_cov_state {
-        DataState::Loaded(pc) => pc.total_persons,
-        _ => 0,
-    };
+    // Totals: a failed/empty probe is unknown, never a measured zero.
+    let total_observations = measured_total(&crawl_state, |cs| cs.total_fingerprints);
+    let total_entities = measured_total(&poi_cov_state, |pc| pc.total_persons);
 
     // B316: real database/process statistics. Each system metric is measured
     // from a probe instead of being hard-coded to "Connected"/"Ready".
@@ -896,5 +904,21 @@ mod tests {
         // No published snapshot in this test process: an unmeasured platform
         // renders no badge rather than a fabricated Healthy row.
         assert!(capability_badges().is_empty());
+    }
+
+    /// A failed or empty probe is unknown — it must not become a measured 0
+    /// in the view model (audit #129).
+    #[test]
+    fn failed_probes_yield_unknown_totals_not_zero() {
+        let loaded: DataState<i64> = DataState::Loaded(7);
+        assert_eq!(measured_total(&loaded, |v| *v), Some(7));
+
+        let empty: DataState<i64> = DataState::Empty;
+        assert_eq!(measured_total(&empty, |v| *v), None);
+
+        let degraded: DataState<i64> = DataState::Degraded {
+            error_id: "inc-129".into(),
+        };
+        assert_eq!(measured_total(&degraded, |v| *v), None);
     }
 }

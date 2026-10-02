@@ -256,6 +256,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route(
             "/api/battlecards/:id",
             get(battlecards_handlers::get_battlecard)
+                .patch(battlecards_handlers::patch_battlecard)
                 .delete(battlecards_handlers::delete_battlecard),
         )
         .route(

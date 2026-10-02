@@ -25,11 +25,12 @@ pub struct DiscordScraper {
 
 impl DiscordScraper {
     pub fn new() -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) OSINT Collector")
-            .build()
-            .context("building Discord HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(10),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) OSINT Collector".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building Discord HTTP client")?;
         Ok(Self { client })
     }
 
@@ -55,7 +56,10 @@ impl DiscordScraper {
             );
         }
 
-        let widget: DiscordWidget = resp.json().await.context("parsing Discord widget JSON")?;
+        let widget: DiscordWidget =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("parsing Discord widget JSON")?;
 
         Ok(ServerSnapshot {
             guild_id: guild_id.to_string(),
@@ -98,7 +102,10 @@ impl DiscordScraper {
             anyhow::bail!("Discord invite returned HTTP {}", resp.status());
         }
 
-        let invite: DiscordInviteResp = resp.json().await.context("parsing Discord invite JSON")?;
+        let invite: DiscordInviteResp =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("parsing Discord invite JSON")?;
 
         Ok(InvitePreview {
             guild_name: invite

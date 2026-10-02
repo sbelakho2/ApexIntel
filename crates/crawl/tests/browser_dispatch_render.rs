@@ -130,7 +130,7 @@ async fn browser_dispatch_renders_js_only_page_and_ingests_rendered_text() {
     // The crawl cycle ingests parsed page text, not the raw fixture HTML:
     // the JS-injected marker must survive content extraction.
     let extracted =
-        apex_parse::html::extract_page(&page.html).expect("extract the rendered page text");
+        apex_parse::html::extract_page(&page.html, None).expect("extract the rendered page text");
     assert!(
         extracted.body_text.contains("ApexIntel browser rendered"),
         "extracted text must contain the rendered marker: {:.300}",

@@ -65,8 +65,11 @@ impl Default for TorConfig {
 
 impl TorConfig {
     /// SOCKS proxy URL for reqwest.
+    ///
+    /// Uses the `socks5h` scheme so DNS resolution happens inside Tor;
+    /// plain `socks5` would resolve hostnames locally and leak lookups.
     pub fn socks_url(&self) -> String {
-        format!("socks5://{}:{}", self.socks_host, self.socks_port)
+        format!("socks5h://{}:{}", self.socks_host, self.socks_port)
     }
 
     /// Control port URL for connection.
@@ -135,11 +138,15 @@ impl TorProxy {
             anyhow::bail!("Invalid Tor proxy address: {}", addr);
         }
 
-        Ok(reqwest::Client::builder()
-            .proxy(reqwest::Proxy::all(self.socks_url())?)
-            .timeout(Duration::from_secs(self.config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Dark Web Monitor")
-            .build()?)
+        crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(self.config.timeout_secs),
+            user_agent: Some(
+                "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0".to_string(),
+            ),
+            proxy: Some(reqwest::Proxy::all(self.socks_url())?),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .map_err(Into::into)
     }
 
     /// Resolve a .onion address via Tor.
@@ -204,7 +211,7 @@ mod tests {
     #[test]
     fn tor_config_urls() {
         let cfg = TorConfig::default();
-        assert!(cfg.socks_url().contains("socks5"));
+        assert_eq!(cfg.socks_url(), "socks5h://127.0.0.1:9050");
         assert!(cfg.control_url().contains("127.0.0.1"));
     }
 

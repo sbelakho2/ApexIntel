@@ -1,15 +1,17 @@
 //! OSINT Source Modules
 //!
 //! Domain-specific intelligence collection modules covering social media
-//! (LinkedIn, Twitter/X, forums, executive tracking), financial data,
+//! (industry forums, executive movement tracking), financial data,
 //! geopolitical feeds, technical/infrastructure sources, and dark-web
 //! monitoring.  Each submodule provides typed models and HTTP clients
 //! for its respective data domain.
+//!
+//! Social platform scrapers (LinkedIn, Twitter/X, Telegram, Reddit, …) live
+//! in [`crate::social`].
 
 pub mod dark_web;
 pub mod financial;
 pub mod geopolitical;
-pub mod social_intel;
 pub mod social_media;
 pub mod technical;
 

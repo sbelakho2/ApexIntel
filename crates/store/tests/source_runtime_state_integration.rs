@@ -264,3 +264,58 @@ async fn source_parse_failure_preserves_last_success_and_degrades() {
         .unwrap();
     pool.close().await;
 }
+
+/// `get_crawl_stats` feeds the admin crawl panel and the worker storage stage.
+/// `SUM(bigint)` yields NUMERIC; without a cast back to BIGINT the row failed
+/// to decode into `i64` whenever the query ran.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn crawl_stats_aggregates_decode_as_bigint() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = PgStore::from_pool(pool.clone());
+    // Far-future timestamps isolate the fixture rows from any other data.
+    let since = Utc::now() + Duration::days(36_500);
+    let marker = "https://crawl-stats-integration.example/";
+
+    sqlx::query("DELETE FROM crawl_logs WHERE source_url = $1")
+        .bind(marker)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (status, new_obs, changed, bytes) in
+        [("success", 3_i64, 2_i64, 1_000_i64), ("failed", 4, 1, 24)]
+    {
+        sqlx::query(
+            "INSERT INTO crawl_logs (source_url, status, new_observations, changed_pages, bytes_fetched, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(marker)
+        .bind(status)
+        .bind(new_obs)
+        .bind(changed)
+        .bind(bytes)
+        .bind(since + Duration::minutes(1))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let stats = store
+        .get_crawl_stats(since)
+        .await
+        .expect("crawl stats decode");
+    assert_eq!(stats.sources_attempted, 2);
+    assert_eq!(stats.sources_succeeded, 1);
+    assert_eq!(stats.sources_failed, 1);
+    assert_eq!(stats.new_observations, 7);
+    assert_eq!(stats.changed_pages, 3);
+    assert_eq!(stats.bytes_fetched, 1_024);
+
+    sqlx::query("DELETE FROM crawl_logs WHERE source_url = $1")
+        .bind(marker)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}

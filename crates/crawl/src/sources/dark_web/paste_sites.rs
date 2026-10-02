@@ -125,11 +125,12 @@ pub struct PasteMonitor {
 
 impl PasteMonitor {
     pub fn new(config: PasteMonitorConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Paste Monitor")
-            .build()
-            .context("building Paste monitor HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some(crate::dark_web::DARK_WEB_USER_AGENT.to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building Paste monitor HTTP client")?;
         Ok(Self {
             client,
             config,
@@ -161,7 +162,8 @@ impl PasteMonitor {
             );
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 return AcquisitionOutcome::fetch_failed(
@@ -211,7 +213,11 @@ impl PasteMonitor {
             let title = p.title.clone();
 
             // Fetch content synchronously for non-async context
-            let paste_client = reqwest::Client::new();
+            let paste_client =
+                crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+                    timeout: Duration::from_secs(10),
+                    ..crate::http::ExternalClientOptions::default()
+                });
             let content = if self.config.fetch_content {
                 match paste_client
                     .get(format!("https://pastebin.com/raw/{}", paste_id))
@@ -219,7 +225,11 @@ impl PasteMonitor {
                     .send()
                     .await
                 {
-                    Ok(resp) => resp.text().await.unwrap_or_default(),
+                    Ok(resp) => {
+                        crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                            .await
+                            .unwrap_or_default()
+                    }
                     Err(_) => String::new(),
                 }
             } else {

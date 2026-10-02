@@ -37,7 +37,7 @@
   </div>
   <div class="apex-card p-4">
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Observations Stored</p>
-    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ total_observations }}</p>
+    <p class="mt-1.5 text-2xl font-black tabular-nums">{% if let Some(total) = total_observations %}{{ total }}{% else %}—{% endif %}</p>
   </div>
 </div>
 
@@ -199,7 +199,7 @@
       <tr class="border-b border-rams-line">
         <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Recipe</th>
         <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Runs</th>
-        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Successes</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted" title="Estimated from measured precision &times; runs; recipes without measured precision show unknown">Est. successes</th>
         <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Last Fired</th>
       </tr>
     </thead>
@@ -208,7 +208,7 @@
       <tr>
         <td class="px-4 py-2 text-xs font-semibold">{{ r.name }}</td>
         <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.total_runs }}</td>
-        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.success_count }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{% if let Some(successes) = r.success_count %}{{ successes }}{% else %}—{% endif %}</td>
         <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.last_run }}</td>
       </tr>
       {% endfor %}

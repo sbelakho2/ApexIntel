@@ -119,7 +119,7 @@ also authenticate read + CSRF-checked write calls to `/api/*` endpoints
 
 ```bash
 cargo test --workspace        # ~2,000 unit/integration tests
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings -W clippy::disallowed_methods
 npx tailwindcss -i crates/api/static/css/globals.css \
   -o crates/api/static/css/tailwind.css --minify   # after CSS edits
 

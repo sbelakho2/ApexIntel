@@ -46,6 +46,9 @@ pub struct InsightResponse {
     pub evidence_urls: Vec<String>,
     pub entity_ids: Vec<String>,
     pub tags: Vec<String>,
+    /// Optional ranking signal. Where populated this is a heuristic derived
+    /// from stored confidence/severity, not a calibrated information-gain
+    /// measurement; `None` = not measured (never a fabricated default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub information_gain_bits: Option<f64>,
     #[serde(default)]

@@ -186,7 +186,27 @@ where
         .get("/persons/:id", crate::web::persons::get_person)
         .get("/competitors", crate::web::competitors::list_competitors)
         .get("/battlecards", crate::web::battlecards::list_battlecards)
+        .get(
+            "/battlecards/new",
+            crate::web::battlecards::new_battlecard_page,
+        )
+        .get(
+            "/battlecards/compare",
+            crate::web::battlecards::compare_battlecards,
+        )
+        .get(
+            "/battlecards/compare/export",
+            crate::web::battlecards::export_comparison,
+        )
         .get("/battlecards/:id", crate::web::battlecards::get_battlecard)
+        .get(
+            "/battlecards/:id/edit",
+            crate::web::battlecards::edit_battlecard_page,
+        )
+        .get(
+            "/battlecards/:id/export",
+            crate::web::battlecards::export_battlecard,
+        )
         .get("/graph", crate::web::graph::graph_page)
         .get("/recipes", crate::web::recipes::list_recipes)
         .get("/recipes/new", crate::web::recipes::new_recipe)
@@ -264,6 +284,15 @@ where
         .post(
             "/recipes/create-form",
             crate::web::recipes::create_recipe_form,
+        )
+        .post("/battlecards", crate::web::battlecards::create_battlecard)
+        .post(
+            "/battlecards/:id",
+            crate::web::battlecards::update_battlecard,
+        )
+        .post(
+            "/battlecards/:id/delete",
+            crate::web::battlecards::delete_battlecard,
         )
         .post("/workspaces", crate::web::collaboration::create_workspace)
         .post(

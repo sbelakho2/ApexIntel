@@ -25,6 +25,8 @@ use chrono::Utc;
 use crate::{JobKind, JobRun, PgStore};
 use apex_crawl::acquisition::{AcquisitionOutcome, AcquisitionRunCounters, AcquisitionRunDecision};
 
+use super::nightly::{match_entities_in_text, EntityMatcher};
+
 /// Subreddits most relevant to EMS/semiconductor/supply-chain intelligence.
 const MONITORED_SUBREDDITS: &[&str] = &[
     "worldnews",
@@ -55,6 +57,12 @@ const HN_SEARCH_TERMS: &[&str] = &[
 /// Maximum posts to store per platform per run.
 const MAX_POSTS_PER_PLATFORM: usize = 50;
 
+/// Hard cap on a fetched platform response body. The guarded HTTP client is
+/// shared with the crawler, and its body cap is only enforced when callers
+/// read through `apex_crawl::http::read_capped`; `.text()` would buffer an
+/// unbounded hostile body.
+const MAX_FETCH_BODY_BYTES: usize = 10 * 1024 * 1024;
+
 /// Run the social media scan.
 pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
@@ -64,7 +72,9 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let mut total_posts: u64 = 0;
     let mut total_linked: u64 = 0;
 
-    // Load tracked company names for entity linking.
+    // Load tracked company names and build the same word-boundary matcher the
+    // crawl cycle uses. A failed matcher build must fail the job, never fall
+    // back to unlinked (or substring-linked) posts.
     let company_names = match load_company_names(store).await {
         Ok(names) => names,
         Err(error) => {
@@ -78,6 +88,15 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
         run.skip("social_scan: no companies to match against");
         return run;
     }
+    let matcher = match EntityMatcher::from_index(&company_names) {
+        Ok(matcher) => matcher,
+        Err(error) => {
+            run.fail(&format!(
+                "social_scan: failed to build entity matcher: {error}"
+            ));
+            return run;
+        }
+    };
 
     let mut counters = AcquisitionRunCounters::default();
 
@@ -94,14 +113,18 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
         counters.record(&outcome);
         let posts = outcome.into_items();
         for post in &posts {
-            let entity_id = link_post_to_entity(&post.text, &company_names, store).await;
-            if let Err(e) = store_social_observation(store, post, source, entity_id).await {
-                counters.record_persistence_failure();
-                tracing::warn!(error = %e, source, "social_scan: failed to store post");
-            } else {
-                total_posts += 1;
-                if entity_id.is_some() {
-                    total_linked += 1;
+            // One observation per matched entity (the Observation shape
+            // carries a single entity id), or one unlinked observation when
+            // nothing matched — the same contract as the crawl cycle.
+            for entity_id in post_entity_targets(&post.text, &matcher) {
+                if let Err(e) = store_social_observation(store, post, source, entity_id).await {
+                    counters.record_persistence_failure();
+                    tracing::warn!(error = %e, source, "social_scan: failed to store post");
+                } else {
+                    total_posts += 1;
+                    if entity_id.is_some() {
+                        total_linked += 1;
+                    }
                 }
             }
         }
@@ -126,7 +149,7 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
     let elapsed = start.elapsed();
     let notes = format!(
-        "social_scan: {} posts ingested ({} linked to entities) from Reddit+Telegram+HN+Twitter in {:.1}s; {}",
+        "social_scan: {} observations stored ({} entity-linked) from Reddit+Telegram+HN+Twitter in {:.1}s; {}",
         total_posts,
         total_linked,
         elapsed.as_secs_f64(),
@@ -205,11 +228,12 @@ impl PlatformAccumulator {
 /// Build a social HTTP client; a construction failure is an unavailable
 /// platform, never a silent different client configuration.
 fn build_social_client(user_agent: &str, timeout_secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .user_agent(user_agent)
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .build()
-        .map_err(|error| format!("failed to build HTTP client: {error}"))
+    apex_crawl::http::external_client_with(apex_crawl::http::ExternalClientOptions {
+        timeout: std::time::Duration::from_secs(timeout_secs),
+        user_agent: Some(user_agent.to_string()),
+        ..apex_crawl::http::ExternalClientOptions::default()
+    })
+    .map_err(|error| format!("failed to build HTTP client: {error}"))
 }
 
 /// Fetch a URL as text, mapping every failure onto an explicit outcome.
@@ -221,12 +245,14 @@ async fn fetch_text(
     match client.get(url).send().await {
         Ok(resp) if resp.status().is_success() => {
             let status = resp.status().as_u16();
-            resp.text().await.map_err(|error| {
-                AcquisitionOutcome::fetch_failed(
-                    format!("{context} body read failed: {error}"),
-                    Some(status),
-                )
-            })
+            apex_crawl::http::read_capped(resp, MAX_FETCH_BODY_BYTES)
+                .await
+                .map_err(|error| {
+                    AcquisitionOutcome::fetch_failed(
+                        format!("{context} body read failed: {error}"),
+                        Some(status),
+                    )
+                })
         }
         Ok(resp) => {
             let status = resp.status().as_u16();
@@ -515,27 +541,38 @@ async fn store_social_observation(
     obs.entity_type = Some("company".to_string());
     obs.confidence = if entity_id.is_some() { 0.8 } else { 0.4 };
     // B326: stable ID per (platform, url, content) — posts that remain in a
-    // feed across scans were previously re-inserted every 2h.
-    obs.stabilize_id("social");
+    // feed across scans were previously re-inserted every 2h. Entity-linked
+    // observations are scoped by entity so every matched company gets its own
+    // row instead of colliding with the first one.
+    //
+    // Id-migration caveat: rows already stored under the legacy
+    // entity-unscoped id can re-insert once after this switch, because
+    // `observations` has no natural unique key besides `id` and the old row
+    // cannot be addressed by the new entity-scoped id. The duplicate is
+    // accepted as a one-time cost (the alternative is a data migration that
+    // rewrites ids); every scan after that is idempotent.
+    let stabilize_key = obs.stabilize_id("social");
+    if let Some(entity_id) = entity_id {
+        obs.id = apex_core::entities::Observation::deterministic_id(
+            "social",
+            &format!("{stabilize_key}|entity:{entity_id}"),
+        );
+    }
     store
         .insert_observation(&obs)
         .await
         .map_err(|e| sqlx::Error::Protocol(format!("{e}")))
 }
 
-/// Link a post to a tracked company by name matching.
-async fn link_post_to_entity(
-    text: &str,
-    company_names: &[(uuid::Uuid, String)],
-    _store: &PgStore,
-) -> Option<uuid::Uuid> {
-    let lower = text.to_lowercase();
-    for (id, name) in company_names {
-        if lower.contains(&name.to_lowercase()) {
-            return Some(*id);
-        }
+/// Entity targets for one post: every matched entity id, or a single `None`
+/// when nothing matched (the post is still stored, just unlinked).
+fn post_entity_targets(text: &str, matcher: &EntityMatcher) -> Vec<Option<uuid::Uuid>> {
+    let matched = match_entities_in_text(text, "", matcher);
+    if matched.is_empty() {
+        vec![None]
+    } else {
+        matched.into_iter().map(Some).collect()
     }
-    None
 }
 
 /// Load tracked company names for entity linking.
@@ -599,4 +636,70 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     let content_end = after_open.find(&close)?;
     let raw = &after_open[content_start..content_end];
     Some(strip_html_tags(raw))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn matcher_for(names: &[(uuid::Uuid, &str)]) -> EntityMatcher {
+        let index: Vec<(uuid::Uuid, String)> = names
+            .iter()
+            .map(|(id, name)| (*id, (*name).to_string()))
+            .collect();
+        EntityMatcher::from_index(&index).expect("test matcher builds")
+    }
+
+    #[test]
+    fn post_entity_targets_links_every_word_boundary_match() {
+        let first = uuid::Uuid::from_u128(1);
+        let second = uuid::Uuid::from_u128(2);
+        let matcher = matcher_for(&[(first, "Acme Batteries"), (second, "Northwind Traders")]);
+
+        let targets = post_entity_targets(
+            "Acme Batteries and Northwind Traders both announced results.",
+            &matcher,
+        );
+
+        assert_eq!(
+            targets.len(),
+            2,
+            "both entities must be linked: {targets:?}"
+        );
+        assert!(targets.contains(&Some(first)));
+        assert!(targets.contains(&Some(second)));
+    }
+
+    #[test]
+    fn post_entity_targets_rejects_substrings_and_short_single_mentions() {
+        let ion = uuid::Uuid::from_u128(3);
+        let matcher = matcher_for(&[(ion, "Ion")]);
+
+        assert_eq!(
+            post_entity_targets("the nation reported steady growth", &matcher),
+            vec![None],
+            "substring matches must not link"
+        );
+        assert_eq!(
+            post_entity_targets("an ion engine was tested", &matcher),
+            vec![None],
+            "a lone short-name mention needs a title or a second mention"
+        );
+        assert_eq!(
+            post_entity_targets("the ion drive and the ion engine shipped", &matcher),
+            vec![Some(ion)],
+            "two body mentions corroborate a short name"
+        );
+    }
+
+    #[test]
+    fn post_entity_targets_keeps_unlinked_posts() {
+        let matcher = matcher_for(&[(uuid::Uuid::from_u128(4), "Globex Corporation")]);
+        assert_eq!(
+            post_entity_targets("unrelated content without names", &matcher),
+            vec![None]
+        );
+    }
 }

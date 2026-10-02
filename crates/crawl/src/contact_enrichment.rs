@@ -52,14 +52,11 @@ impl ContactEnricher {
     /// Build from environment. Reads optional provider API keys; the website
     /// fallback is always available.
     pub fn from_env() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent("ApexIntel-Contacts/1.0")
-            .build()
-            .unwrap_or_else(|e| {
-                warn!(error = %e, "contact_enrichment: client build failed; default");
-                Client::new()
-            });
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(20),
+            user_agent: Some("ApexIntel-Contacts/1.0".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self {
             client,
             apollo_key: std::env::var("APOLLO_API_KEY")
@@ -249,7 +246,8 @@ impl ContactEnricher {
                 Some(status),
             );
         }
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 return ParseOutcome::fetch_failed(
@@ -340,7 +338,8 @@ impl ContactEnricher {
                 Some(status),
             );
         }
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 return ParseOutcome::fetch_failed(
@@ -409,7 +408,8 @@ impl ContactEnricher {
                 Some(status),
             );
         }
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 return ParseOutcome::fetch_failed(
@@ -489,13 +489,14 @@ impl ContactEnricher {
                 }
             };
             fetched_any_page = true;
-            let html = match resp.text().await {
-                Ok(t) => t,
-                Err(error) => {
-                    last_error = Some(format!("failed to read {url}: {error}"));
-                    continue;
-                }
-            };
+            let html =
+                match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                    Ok(t) => t,
+                    Err(error) => {
+                        last_error = Some(format!("failed to read {url}: {error}"));
+                        continue;
+                    }
+                };
             // Look for a mailto: near the person's last name.
             let mut out = Vec::new();
             for line in html.lines() {

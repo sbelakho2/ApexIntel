@@ -21,6 +21,7 @@
 //! but malformed fails the job: silently ignoring operator configuration is
 //! precisely the failure mode where configured forums/rules never took effect.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use apex_crawl::dark_web::{DarkWebForum, DarkWebMonitor, DarkWebPost, MonitoringRule, ScanReport};
@@ -211,6 +212,136 @@ fn dark_web_warning(post: &DarkWebPost) -> NewWarning {
         .system_broadcast()
 }
 
+/// Parse and deduplicate the entity ids referenced by monitoring rules.
+///
+/// Rules regularly reference the same company, and every resolved name/domain
+/// is an independent matcher. Deduplicating here bounds entity resolution to
+/// one `get_company` query per unique id instead of one per rule reference,
+/// and skips ids that cannot identify a company.
+fn unique_rule_entity_ids(rules: &[MonitoringRule]) -> Vec<Uuid> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+    for rule in rules {
+        for entity_id in &rule.entity_ids {
+            let Ok(uuid) = Uuid::parse_str(entity_id.trim()) else {
+                continue;
+            };
+            if seen.insert(uuid) {
+                ids.push(uuid);
+            }
+        }
+    }
+    ids
+}
+
+/// How entity resolution for the configured monitoring rules went.
+///
+/// The monitor can only emit a post when at least one monitored entity name
+/// or domain exists, so a run that resolved nothing must not be reported as a
+/// successful zero-post scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntityResolutionOutcome {
+    /// No monitoring rule referenced an entity id at all: no monitored
+    /// entities exist, so the scan window would necessarily be empty.
+    NoneReferenced,
+    /// Entities were referenced but none could be monitored (missing and/or
+    /// lookup errors) — nothing can match.
+    AllUnresolved,
+    /// At least one entity resolved, but some references were missing or
+    /// failed lookup; the scan proceeds with the resolved subset.
+    PartiallyUnresolved {
+        missing: usize,
+        lookup_errors: usize,
+    },
+    /// Every referenced entity resolved.
+    FullyResolved,
+}
+
+fn classify_entity_resolution(
+    referenced: usize,
+    resolved: usize,
+    missing: usize,
+    lookup_errors: usize,
+) -> EntityResolutionOutcome {
+    if referenced == 0 {
+        EntityResolutionOutcome::NoneReferenced
+    } else if resolved == 0 {
+        EntityResolutionOutcome::AllUnresolved
+    } else if missing + lookup_errors > 0 {
+        EntityResolutionOutcome::PartiallyUnresolved {
+            missing,
+            lookup_errors,
+        }
+    } else {
+        EntityResolutionOutcome::FullyResolved
+    }
+}
+
+/// Explicit note for a partially resolved run; `None` when everything
+/// resolved.
+fn partial_resolution_note(
+    referenced: usize,
+    resolved: usize,
+    missing: usize,
+    lookup_errors: usize,
+) -> Option<String> {
+    if missing + lookup_errors == 0 {
+        return None;
+    }
+    Some(format!(
+        "{} of {referenced} referenced entities could not be monitored \
+         ({missing} not found, {lookup_errors} lookup error(s)); continuing with {resolved}",
+        missing + lookup_errors
+    ))
+}
+
+/// Degrade/fail a run whose monitored-entity resolution is unusable.
+///
+/// Returns `true` when the scan may proceed (all or at least one entity
+/// resolved). A run that resolved nothing is never left reporting success:
+/// the monitor's entity gate would make its zero-post result vacuous.
+fn resolution_guard(
+    run: &mut JobRun,
+    configured_rules: usize,
+    referenced: usize,
+    resolved: usize,
+    missing: usize,
+    lookup_errors: usize,
+) -> bool {
+    match classify_entity_resolution(referenced, resolved, missing, lookup_errors) {
+        EntityResolutionOutcome::NoneReferenced => {
+            run.degrade(
+                0,
+                &format!(
+                    "dark_web_scan: {configured_rules} configured monitoring rule(s) reference \
+                     no entity ids; with no monitored entities a zero-post scan is not a success"
+                ),
+            );
+            false
+        }
+        EntityResolutionOutcome::AllUnresolved => {
+            run.fail(&format!(
+                "dark_web_scan: none of the {referenced} referenced entities could be monitored \
+                 ({missing} not found, {lookup_errors} lookup error(s)); refusing to report a \
+                 zero-post success"
+            ));
+            false
+        }
+        EntityResolutionOutcome::PartiallyUnresolved { .. }
+        | EntityResolutionOutcome::FullyResolved => true,
+    }
+}
+
+/// Monitored names/domains extracted from one resolved company: the display
+/// name always, plus the domain when it is present and non-blank.
+fn monitored_entity_names(name: &str, domain: Option<&str>) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    if let Some(domain) = domain.map(str::trim).filter(|domain| !domain.is_empty()) {
+        names.push(domain.to_string());
+    }
+    names
+}
+
 /// Persist matching posts and tally real outcomes.
 ///
 /// `warnings_inserted` only advances after a successful ingress submission;
@@ -366,11 +497,76 @@ pub(super) async fn run_dark_web_scan(
             return run;
         }
     };
+    // Resolve the monitored entities behind the rule's entity ids: a
+    // candidate only becomes a post when it mentions a monitored name or
+    // domain (audit #88), so without this the scan would emit nothing. Ids
+    // are deduplicated first so each company costs one query regardless of
+    // how many rules reference it.
+    let configured_rules = rules.as_deref().unwrap_or(&[]);
+    let rule_entity_ids = unique_rule_entity_ids(configured_rules);
+    let referenced = rule_entity_ids.len();
+    let mut resolved = 0usize;
+    let mut missing = 0usize;
+    let mut lookup_errors = 0usize;
+    for uuid in &rule_entity_ids {
+        match store.get_company(*uuid).await {
+            Ok(Some(company)) => {
+                resolved += 1;
+                for entity_name in monitored_entity_names(&company.name, company.domain.as_deref())
+                {
+                    monitor.add_entity(entity_name);
+                }
+            }
+            Ok(None) => {
+                missing += 1;
+                tracing::warn!(
+                    %uuid,
+                    "dark_web_scan: referenced monitored entity not found; continuing"
+                );
+            }
+            Err(error) => {
+                lookup_errors += 1;
+                tracing::warn!(
+                    %uuid,
+                    %error,
+                    "dark_web_scan: failed to resolve monitored entity; continuing"
+                );
+            }
+        }
+    }
+    // Nothing resolved (or nothing was referenceable in the first place)
+    // means the scan cannot emit posts: report that explicitly instead of a
+    // green zero-post run.
+    if !resolution_guard(
+        &mut run,
+        configured_rules.len(),
+        referenced,
+        resolved,
+        missing,
+        lookup_errors,
+    ) {
+        return run;
+    }
+    let partial_resolution_note =
+        partial_resolution_note(referenced, resolved, missing, lookup_errors);
+
     apply_monitor_config(&mut monitor, forums, rules);
 
     let report = monitor.scan_all_detailed().await;
     let counters = persist_dark_web_posts(store.as_ref(), ingress.as_ref(), &report.posts).await;
     complete_dark_web_scan(&mut run, &report, counters);
+
+    // A partially resolved monitored set is not a clean success: only
+    // persistence/ingress failures would otherwise flag the run, and the
+    // unresolved entities silently weakened coverage.
+    if let Some(note) = partial_resolution_note {
+        if matches!(run.status, JobStatus::Succeeded { .. }) {
+            run.degrade(
+                counters.observations_inserted,
+                &format!("{} — dark_web_scan: {note}", run.notes),
+            );
+        }
+    }
     run
 }
 
@@ -556,6 +752,128 @@ mod tests {
             err.to_string().contains("DARKWEB_MONITORING_RULES"),
             "{err}"
         );
+    }
+
+    // ── Rule entity resolution ──────────────────────────────────────────────
+
+    #[test]
+    fn unique_rule_entity_ids_dedupes_and_skips_unparseable() {
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let mut rule_one = custom_rule("r1", "leak");
+        rule_one.entity_ids = vec![first.to_string(), "not-a-uuid".to_string()];
+        let mut rule_two = custom_rule("r2", "dump");
+        // Same company referenced again (with surrounding whitespace) plus a
+        // new one: one resolution per unique id, not one per reference.
+        rule_two.entity_ids = vec![format!("  {}  ", first), second.to_string()];
+
+        assert_eq!(
+            unique_rule_entity_ids(&[rule_one, rule_two]),
+            vec![first, second]
+        );
+    }
+
+    #[test]
+    fn monitored_entity_names_include_name_and_non_blank_domain_only() {
+        assert_eq!(
+            monitored_entity_names("Acme Corp", Some("acme.example")),
+            vec!["Acme Corp".to_string(), "acme.example".to_string()]
+        );
+        assert_eq!(
+            monitored_entity_names("Acme Corp", None),
+            vec!["Acme Corp".to_string()]
+        );
+        assert_eq!(
+            monitored_entity_names("Acme Corp", Some("   ")),
+            vec!["Acme Corp".to_string()],
+            "blank domains must not become monitored entities"
+        );
+    }
+
+    // ── Entity resolution outcomes ──────────────────────────────────────────
+
+    #[test]
+    fn entity_resolution_classification_covers_all_states() {
+        assert_eq!(
+            classify_entity_resolution(0, 0, 0, 0),
+            EntityResolutionOutcome::NoneReferenced
+        );
+        assert_eq!(
+            classify_entity_resolution(2, 0, 1, 1),
+            EntityResolutionOutcome::AllUnresolved
+        );
+        assert_eq!(
+            classify_entity_resolution(3, 2, 1, 0),
+            EntityResolutionOutcome::PartiallyUnresolved {
+                missing: 1,
+                lookup_errors: 0
+            }
+        );
+        assert_eq!(
+            classify_entity_resolution(3, 3, 0, 0),
+            EntityResolutionOutcome::FullyResolved
+        );
+    }
+
+    #[test]
+    fn no_referenced_entities_degrades_instead_of_succeeding() {
+        let mut run = JobRun::new(JobKind::DarkWebScan);
+        run.start();
+        assert!(!resolution_guard(&mut run, 2, 0, 0, 0, 0));
+        match &run.status {
+            JobStatus::Degraded { reason, .. } => {
+                assert!(
+                    reason.contains("reference no entity ids"),
+                    "degrade reason must explain the missing entity references: {reason}"
+                );
+            }
+            other => panic!("no referenced entities must degrade, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_unresolved_entities_fails_with_counts() {
+        let mut run = JobRun::new(JobKind::DarkWebScan);
+        run.start();
+        assert!(!resolution_guard(&mut run, 1, 3, 0, 2, 1));
+        match &run.status {
+            JobStatus::Failed { error, .. } => {
+                assert!(
+                    error.contains("none of the 3 referenced entities"),
+                    "{error}"
+                );
+                assert!(error.contains("2 not found"), "{error}");
+                assert!(error.contains("1 lookup error(s)"), "{error}");
+                assert!(error.contains("refusing to report"), "{error}");
+            }
+            other => panic!("all-unresolved entities must fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn at_least_one_resolved_continues_the_scan() {
+        let mut run = JobRun::new(JobKind::DarkWebScan);
+        run.start();
+        assert!(resolution_guard(&mut run, 1, 3, 1, 2, 0));
+        assert!(
+            matches!(run.status, JobStatus::Running),
+            "a partially resolved scan must continue"
+        );
+
+        let mut complete = JobRun::new(JobKind::DarkWebScan);
+        complete.start();
+        assert!(resolution_guard(&mut complete, 1, 2, 2, 0, 0));
+        assert!(matches!(complete.status, JobStatus::Running));
+    }
+
+    #[test]
+    fn partial_resolution_note_names_unresolved_entities_only_when_needed() {
+        assert_eq!(partial_resolution_note(3, 3, 0, 0), None);
+        let note = partial_resolution_note(3, 1, 1, 1).expect("partial note");
+        assert!(note.contains("2 of 3 referenced entities"), "{note}");
+        assert!(note.contains("1 not found"), "{note}");
+        assert!(note.contains("1 lookup error(s)"), "{note}");
+        assert!(note.contains("continuing with 1"), "{note}");
     }
 
     // ── Persistence counters ────────────────────────────────────────────────

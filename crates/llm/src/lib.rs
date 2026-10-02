@@ -693,6 +693,8 @@ impl OpenAiCompatibleClient {
     pub fn new(config: ModelConfig) -> Self {
         let timeout = std::time::Duration::from_secs(config.timeout_seconds as u64);
         let connect_timeout = std::time::Duration::from_secs(10);
+        // Operator-configured LLM endpoint (trusted infrastructure), not crawled content.
+        #[allow(clippy::disallowed_methods)]
         let http = reqwest::Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
 
-{% block title %}{{ battlecard.title }} — Battlecard — ApexIntel{% endblock %}
+{% block title %}{{ title }} — Battlecard — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
@@ -10,73 +10,84 @@
     <li class="select-none">/</li>
     <li><a href="/battlecards" class="hover:text-rams-foreground">Battlecards</a></li>
     <li class="select-none">/</li>
-    <li class="text-rams-foreground" aria-current="page">{{ battlecard.title }}</li>
+    <li class="text-rams-foreground" aria-current="page">{{ title }}</li>
   </ol>
 </nav>
 {% endblock %}
 
 {% block content %}
-<div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
-  <div>
-    <h1 class="text-lg font-black uppercase tracking-[0.08em]">{{ battlecard.title }}</h1>
-    <div class="flex items-center gap-3 mt-1">
-      <span class="text-[10px] font-bold uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm
-        {%- if battlecard.status == "active" %} bg-rams-green/20 text-rams-green
-        {%- else if battlecard.status == "draft" %} bg-rams-orange/20 text-rams-orange
-        {%- else if battlecard.status == "archived" %} bg-rams-panel text-rams-muted
-        {%- else %} bg-rams-panel text-rams-muted{% endif %}">{{ battlecard.status }}</span>
-      {% if !competitor_name.is_empty() %}
-      <span class="text-xs text-rams-muted">vs {{ competitor_name }}</span>
+{% if let Some(message) = notice %}
+<div class="apex-alert apex-alert-success mb-4 text-xs font-semibold" role="status" data-battlecard-notice>{{ message }}</div>
+{% endif %}
+{% if let Some(message) = degraded_notice %}
+<div class="apex-card mb-4 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ message }}</div>
+{% endif %}
+
+<div class="apex-card p-4 mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+  <div class="min-w-0">
+    <h1 class="text-lg font-black uppercase tracking-[0.08em]">{{ title }}</h1>
+    <div class="flex flex-wrap items-center gap-3 mt-2">
+      {% if status == "published" %}
+      {% call m::status_badge(status, "success") %}
+      {% else if status == "draft" %}
+      {% call m::status_badge(status, "warning") %}
+      {% else %}
+      {% call m::status_badge(status, "neutral") %}
       {% endif %}
-      <span class="text-[10px] text-rams-muted">Updated {{ battlecard.updated_at.format("%Y-%m-%d %H:%M UTC") }}</span>
+      <span class="text-xs text-rams-muted">
+        {% if competitor_name.is_empty() %}Unknown competitor{% else %}vs <a href="/companies/{{ competitor_id }}" class="font-bold text-rams-foreground hover:underline">{{ competitor_name }}</a>{% endif %}
+        · for {% if our_company_name.is_empty() %}unknown company{% else %}<a href="/companies/{{ our_company_id }}" class="hover:underline">{{ our_company_name }}</a>{% endif %}
+      </span>
     </div>
+    <p class="mt-2 text-[10px] text-rams-muted">
+      {{ generated_count }} of {{ sections.len() }} sections · Created {{ created_at }} · Updated {{ updated_at }}
+      {% if let Some(at) = regenerated_at %} · Regenerated {{ at }}{% endif %}
+    </p>
   </div>
-  <div class="flex items-center gap-2">
-    <a href="/api/battlecards/{{ battlecard.id }}/export?format=markdown"
-       class="inline-flex items-center gap-1.5 rounded-sm border border-rams-line bg-rams-panel px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-rams-foreground hover:bg-rams-panel">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      <span>Export</span>
+  <div class="flex flex-wrap items-center gap-2">
+    <a href="/battlecards/{{ id }}/export" class="apex-btn apex-btn-secondary text-[10px]" data-battlecard-export download>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>Export Markdown</span>
     </a>
+    {% if can_write %}
+    <a href="/battlecards/{{ id }}/edit" class="apex-btn apex-btn-secondary text-[10px]" data-battlecard-edit>Edit</a>
     <button type="button"
-            class="inline-flex items-center gap-1.5 rounded-sm border border-rams-line bg-rams-panel px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-rams-foreground hover:bg-rams-panel"
-            hx-post="/api/battlecards/{{ battlecard.id }}/regenerate"
+            class="apex-btn apex-btn-secondary text-[10px]"
+            hx-post="/api/battlecards/{{ id }}/regenerate"
             hx-swap="none"
-            hx-trigger="click"
-            onclick="this.disabled=true;this.textContent='Regenerating…'">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            hx-disabled-elt="this"
+            title="Rebuild every section from stored company data">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       <span>Regenerate</span>
     </button>
+    <form method="post" action="/battlecards/{{ id }}/delete" class="inline" data-confirm="Delete this battlecard? This cannot be undone.">
+      <button type="submit" class="apex-btn apex-btn-secondary text-[10px] text-rams-red" data-battlecard-delete>Delete</button>
+    </form>
+    {% endif %}
   </div>
 </div>
 
 <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-  <!-- Section cards -->
   {% for section in sections %}
-  <div class="apex-card p-4 {% if !section.has_data %}opacity-60{% endif %}">
+  <section class="apex-card p-4" data-section="{{ section.name }}" aria-labelledby="section-{{ section.name }}">
     <div class="flex items-center justify-between mb-2">
-      <h3 class="text-xs font-black uppercase tracking-[0.12em]">{{ section.label }}</h3>
-      {% if section.has_data %}
-      <span class="text-[10px] text-rams-green font-bold">✓</span>
-      {% else %}
+      <h2 id="section-{{ section.name }}" class="text-xs font-black uppercase tracking-[0.12em]">{{ section.label }}</h2>
+      {% if section.lines.is_empty() %}
       <span class="text-[10px] text-rams-muted">—</span>
+      {% else %}
+      <span class="text-[10px] text-rams-green font-bold" aria-label="Has content">✓</span>
       {% endif %}
     </div>
-    {% if !section.preview.is_empty() %}
-    <p class="text-xs text-rams-muted line-clamp-3">{{ section.preview }}</p>
+    {% if section.lines.is_empty() %}
+    <p class="text-[10px] text-rams-muted italic">Not yet generated</p>
     {% else %}
-    <p class="text-[10px] text-rams-muted italic">
-      {%- if section.has_data %}Data available{% else %}Not yet generated{% endif -%}
-    </p>
+    <ul class="space-y-1 text-xs text-rams-foreground list-disc pl-4">
+      {% for line in section.lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
     {% endif %}
-  </div>
+  </section>
   {% endfor %}
 </div>
-
-{% if battlecard.regenerated_at.is_some() %}
-<div class="mt-6 apex-card p-3">
-  <p class="text-[10px] text-rams-muted">
-    Last regenerated: {{ battlecard.regenerated_at.unwrap().format("%Y-%m-%d %H:%M UTC") }}
-  </p>
-</div>
-{% endif %}
 {% endblock %}

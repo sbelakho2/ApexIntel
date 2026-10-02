@@ -85,11 +85,12 @@ pub struct I2pMonitor {
 impl I2pMonitor {
     /// Create with explicit configuration.
     pub fn new(config: I2pConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) I2P Monitor")
-            .build()
-            .context("building I2P monitor HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some(crate::dark_web::DARK_WEB_USER_AGENT.to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building I2P monitor HTTP client")?;
 
         Ok(Self { client, config })
     }
@@ -157,7 +158,8 @@ impl I2pMonitor {
             );
         }
 
-        let body = match resp.text().await {
+        let body = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(body) => body,
             Err(error) => {
                 return AcquisitionOutcome::fetch_failed(

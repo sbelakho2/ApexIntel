@@ -210,7 +210,7 @@ pub enum CertExtractionStatus {
 /// Extract all certification mentions from page text.
 pub fn extract_certifications(body_text: &str, url: &str) -> Vec<CertExtract> {
     // No raw-URL fallback: a hostile or over-long page URL must never survive
-    // extraction (same contract as `html::sanitize_extracted_href`).
+    // extraction (same contract as `html::resolve_href`).
     let normalized_url = normalize_url(url).unwrap_or_default();
     let holder = extract_holder(body_text);
     let mut results = Vec::new();

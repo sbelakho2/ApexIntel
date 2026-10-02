@@ -386,8 +386,9 @@ pipeline.
 - `DECIMAL(5,4)` → `DOUBLE PRECISION` for strategic/threat/supplier/pipeline/
   source-evidence scores is blocked by dependent views; needs a
   view-preserving migration.
-- Dead/duplicate lineage in `crates/store/migrations/`, unused resilience
-  modules in `crawl`/`worker`, and the unwired WASM UI remain.
+- Dead/duplicate lineage in `crates/store/migrations/` was deleted (audit
+  #175; enforced by `scripts/ci/check_single_migrations_folder.sh`); unused
+  resilience modules in `crawl`/`worker` and the unwired WASM UI remain.
 
 ---
 

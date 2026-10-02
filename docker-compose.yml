@@ -45,11 +45,11 @@ services:
     # noeviction: `allkeys-lru` silently evicted login_throttle:* keys under
     # memory pressure, erasing lockouts. Better to reject writes than to lose
     # security state.
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --requirepass ${REDIS_PASSWORD:-redis_dev}
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env or export it}
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_dev}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env or export it}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 3

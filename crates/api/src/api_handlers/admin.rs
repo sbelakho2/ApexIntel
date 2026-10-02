@@ -26,6 +26,8 @@ pub(crate) fn calibration_curve_from_samples(
     rows: &[apex_store::postgres::ResolvedStatsAlertCalibrationSampleRecord],
 ) -> CalibrationCurve {
     if rows.is_empty() {
+        // No resolved samples means no measured curve: `Default` carries
+        // `samples: 0` and `None` metrics, never fabricated zeros.
         return CalibrationCurve::default();
     }
 
@@ -67,9 +69,10 @@ pub(crate) fn calibration_curve_from_samples(
 
     CalibrationCurve {
         points,
-        brier_score: total_brier / total_count,
-        reliability,
-        resolution,
+        samples: rows.len(),
+        brier_score: Some(total_brier / total_count),
+        reliability: Some(reliability),
+        resolution: Some(resolution),
     }
 }
 
@@ -448,11 +451,12 @@ async fn execute_replay_job(
         )
         .await?;
 
-    let warnings_generated = if body.emit_warnings() {
-        total_observations
-    } else {
-        0
-    };
+    // There is no replay execution engine in this build: the request is
+    // recorded and matching rows are counted, but no observation is
+    // re-processed and no warning is emitted. Persist zeros for the work that
+    // did not happen instead of echoing the queued count as if it ran.
+    let processed = 0;
+    let warnings_generated = 0;
 
     let updated = state
         .store
@@ -460,7 +464,7 @@ async fn execute_replay_job(
             job_id,
             ReplayStatus::Completed.as_str(),
             total_observations,
-            total_observations,
+            processed,
             warnings_generated,
             0,
             Some(Utc::now()),
@@ -471,8 +475,10 @@ async fn execute_replay_job(
         "job_id": job_id,
         "from_date": body.from_date,
         "to_date": body.to_date,
-        "processed": total_observations,
+        "observations_requested": total_observations,
+        "observations_processed": processed,
         "warnings_generated": warnings_generated,
+        "execution": "replay_engine_not_implemented",
     });
             // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
     let _ = state
@@ -618,6 +624,8 @@ pub(crate) async fn post_replay(
             job_id: job_id.to_string(),
             status: ReplayStatus::Queued,
             observations_queued: total_observations,
+            observations_processed: 0,
+            warnings_generated: 0,
             time_range: format!("{}..{}", body.from_date, body.to_date),
             estimated_duration_secs: estimate_duration(total_observations, recipe_count),
         };
@@ -638,6 +646,8 @@ pub(crate) async fn post_replay(
                 job_id: progress.job_id,
                 status: progress.status,
                 observations_queued: progress.total_observations,
+                observations_processed: progress.processed,
+                warnings_generated: progress.warnings_generated,
                 time_range: format!("{}..{}", body.from_date, body.to_date),
                 estimated_duration_secs: estimate_duration(total_observations, recipe_count),
             })),

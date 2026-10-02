@@ -156,7 +156,7 @@
           <td class="text-rams-muted">{{ w.warning_type }}</td>
           <td class="text-rams-muted">{{ w.company_name }}</td>
           <td>{% call m::region_badge(w.region) %}</td>
-          <td class="text-right font-bold tabular-nums">{{ w.confidence_pct }}%</td>
+          <td class="text-right font-bold tabular-nums">{% if let Some(pct) = w.confidence_pct %}{{ pct }}%{% else %}—{% endif %}</td>
           <td class="tabular-nums text-rams-muted">{{ w.created_at }}</td>
           <td>{% if w.acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>{% else %}<span class="text-[10px] font-bold uppercase apex-text-warning">Active</span>{% endif %}</td>
         </tr>
@@ -186,7 +186,7 @@
                 {% endif %}
               </div>
             </div>
-            <span class="text-xs font-bold tabular-nums text-rams-muted">{{ w.confidence_pct }}%</span>
+            <span class="text-xs font-bold tabular-nums text-rams-muted">{% if let Some(pct) = w.confidence_pct %}{{ pct }}%{% else %}confidence not recorded{% endif %}</span>
           </div>
           <div class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-rams-muted">
             <span class="min-w-0 break-words">{{ w.company_name }} · {{ w.warning_type }}</span>

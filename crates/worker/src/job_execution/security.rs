@@ -13,6 +13,16 @@ use apex_crawl::dns::{
 use crate::intelligence_ingress::{IngressCounters, IntelligenceIngress, NewWarning};
 use crate::*;
 
+/// Hard cap on a lookalike-domain response body read for the brand heuristic.
+/// The guarded client only enforces the crawler body cap when callers read
+/// through `apex_crawl::http::read_capped`; the heuristic needs only the head
+/// of the page, so a hostile body cannot force unbounded buffering.
+const MAX_LOOKALIKE_BODY_BYTES: usize = 1024 * 1024;
+
+/// Hard cap on the CISA KEV catalog download (currently ~3 MiB); a redirected
+/// or hostile response must not be buffered without bound.
+const MAX_KEV_CATALOG_BYTES: usize = 16 * 1024 * 1024;
+
 /// Parse one numeric security threshold from the environment.
 ///
 /// An absent variable keeps its default; a present-but-malformed value is a
@@ -981,18 +991,16 @@ pub(super) async fn run_kev_catalog_fetch(kind: &JobKind, store: &Arc<PgStore>) 
     // the rest of the crawler uses — via the shared reqwest stack, not an
     // external `curl` binary whose absence silently disabled the job.
     let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(90))
-        .user_agent(user_agent);
+    let mut proxy = None;
     if let Some(proxy_url) = crate::build_paid_proxy_url_from_env() {
         let host = proxy_url
             .replacen("http://", "", 1)
             .replacen("https://", "", 1);
         let socks_url = format!("socks5h://{host}");
         match reqwest::Proxy::all(&socks_url) {
-            Ok(proxy) => {
+            Ok(configured) => {
                 tracing::info!("kev_catalog_fetch: fetching via SOCKS5 proxy");
-                builder = builder.proxy(proxy);
+                proxy = Some(configured);
             }
             Err(error) => {
                 run.fail(&format!(
@@ -1004,20 +1012,28 @@ pub(super) async fn run_kev_catalog_fetch(kind: &JobKind, store: &Arc<PgStore>) 
     } else {
         tracing::info!("kev_catalog_fetch: fetching directly (no proxy configured)");
     }
-    let client = match builder.build() {
-        Ok(client) => client,
-        Err(error) => {
-            run.fail(&format!(
-                "kev_catalog_fetch: failed to build the HTTP client: {error}"
-            ));
-            return run;
-        }
-    };
+    let client =
+        match apex_crawl::http::external_client_with(apex_crawl::http::ExternalClientOptions {
+            timeout: std::time::Duration::from_secs(90),
+            user_agent: Some(user_agent.to_string()),
+            proxy,
+            ..apex_crawl::http::ExternalClientOptions::default()
+        }) {
+            Ok(client) => client,
+            Err(error) => {
+                run.fail(&format!(
+                    "kev_catalog_fetch: failed to build the HTTP client: {error}"
+                ));
+                return run;
+            }
+        };
     let body = match client.get(url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-            Ok(bytes) => Ok(bytes.to_vec()),
-            Err(error) => Err(format!("failed to read response body: {error}")),
-        },
+        Ok(resp) if resp.status().is_success() => {
+            match apex_crawl::http::read_capped_bytes(resp, MAX_KEV_CATALOG_BYTES).await {
+                Ok(bytes) => Ok(bytes),
+                Err(error) => Err(format!("failed to read response body: {error}")),
+            }
+        }
         Ok(resp) => Err(format!("HTTP {} from CISA", resp.status())),
         Err(error) => Err(format!("request failed: {error}")),
     };
@@ -1339,7 +1355,7 @@ async fn gather_lookalike_evidence(
         } else if status.is_success() {
             https_reachable = true;
             // Best-effort content heuristic; read failure only loses evidence.
-            if let Ok(body) = resp.text().await {
+            if let Ok(body) = apex_crawl::http::read_capped(resp, MAX_LOOKALIKE_BODY_BYTES).await {
                 brand_content_match = brand_signal_in_body(original_domain, &body);
             }
         }
@@ -1348,7 +1364,9 @@ async fn gather_lookalike_evidence(
         if let Ok(resp) = http.get(format!("http://{variant}/")).send().await {
             if resp.status().is_success() {
                 http_reachable = true;
-                if let Ok(body) = resp.text().await {
+                if let Ok(body) =
+                    apex_crawl::http::read_capped(resp, MAX_LOOKALIKE_BODY_BYTES).await
+                {
                     brand_content_match = brand_signal_in_body(original_domain, &body);
                 }
             }
@@ -1467,17 +1485,12 @@ pub(super) async fn run_lookalike_domain_scan(
 
     // Redirects are disabled so the redirect target itself is observable
     // evidence instead of being silently followed.
-    let evidence_http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("ApexIntel-LookalikeEvidence/1.0")
-        .build()
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                %error,
-                "lookalike_domain_scan: evidence HTTP client build failed; using default client"
-            );
-            reqwest::Client::new()
+    let evidence_http =
+        apex_crawl::http::external_client_or_panic(apex_crawl::http::ExternalClientOptions {
+            timeout: Duration::from_secs(10),
+            redirect: None,
+            user_agent: Some("ApexIntel-LookalikeEvidence/1.0".to_string()),
+            ..apex_crawl::http::ExternalClientOptions::default()
         });
 
     for company in &companies {

@@ -41,21 +41,16 @@ pub struct ExtractedLink {
 }
 
 /// Extract structured content from raw HTML.
-#[instrument(skip(html_content))]
-pub fn extract_page(html_content: &str) -> Result<PageContent> {
-    extract_page_with_base(html_content, None)
-}
-
-/// Extract structured content from raw HTML, resolving relative hrefs against
-/// the page URL when it is known.
 ///
-/// Link extraction keeps only absolute `http(s)` results. Relative hrefs are
-/// resolved with `Url::join` when `page_url` is supplied and dropped when it
-/// is not; non-http(s) schemes are discarded. There is deliberately no
-/// raw-href fallback: whitespace/control-obfuscated `javascript:`, `data:`,
+/// Relative links are resolved against the first `<base href>` when the
+/// document supplies one (an absolute base wins; a relative base is resolved
+/// against `page_url`), falling back to `page_url`. Link extraction keeps only
+/// absolute `http(s)` results, so a relative/protocol-relative or hostile
+/// scheme value is never stored raw. There is deliberately no raw-href
+/// fallback: whitespace/control-obfuscated `javascript:`, `data:`,
 /// `vbscript:` or similar payloads never survive extraction.
 #[instrument(skip(html_content))]
-pub fn extract_page_with_base(html_content: &str, page_url: Option<&str>) -> Result<PageContent> {
+pub fn extract_page(html_content: &str, page_url: Option<&Url>) -> Result<PageContent> {
     let doc = Html::parse_document(html_content);
 
     let title = extract_title(&doc);
@@ -121,7 +116,7 @@ pub fn extract_page_with_base(html_content: &str, page_url: Option<&str>) -> Res
 
 /// Extract structured content from raw HTML bytes.
 /// Falls back to lossy decoding if UTF-8 decoding fails.
-pub fn extract_page_bytes(html_bytes: &[u8]) -> Result<PageContent> {
+pub fn extract_page_bytes(html_bytes: &[u8], page_url: Option<&Url>) -> Result<PageContent> {
     let html = if let Ok(s) = std::str::from_utf8(html_bytes) {
         s.to_string()
     } else {
@@ -129,7 +124,7 @@ pub fn extract_page_bytes(html_bytes: &[u8]) -> Result<PageContent> {
         let (decoded, _, _) = encoding.decode(html_bytes);
         decoded.to_string()
     };
-    extract_page(&html)
+    extract_page(&html, page_url)
 }
 
 fn detect_charset(html_bytes: &[u8]) -> Option<&'static Encoding> {
@@ -220,82 +215,153 @@ fn has_meta_description(doc: &Html) -> bool {
     false
 }
 
+/// Upper bound on the raw body text collected by [`collect_text_skipping`].
+///
+/// The walk itself is iterative and therefore independent of document depth,
+/// but a hostile page can still present an unbounded volume of text nodes.
+/// When the next text node would push the buffer past this cap the walk stops,
+/// so the returned text is truncated at a text-node boundary (never inside a
+/// UTF-8 code point) rather than growing without limit.
+const MAX_BODY_TEXT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Collect text under `root` in document order with an explicit stack,
+/// skipping `script`/`style`/`noscript` subtrees entirely.
+///
+/// Text fragments are separated by a single space (later collapsed by
+/// [`normalizer::normalize_whitespace`]) so inline tags do not glue words
+/// together. The walk is iterative, so a deeply nested document cannot exhaust
+/// the call stack; at most [`MAX_BODY_TEXT_BYTES`] bytes are collected.
+fn collect_text_skipping(root: scraper::ElementRef<'_>) -> String {
+    let mut text = String::new();
+    // `root` derefs to a `NodeRef`; seeding it lets the loop handle its
+    // children uniformly. Nodes are pushed as `NodeRef`s whose type is
+    // inferred without naming the `ego-tree` crate (not a direct dependency).
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        match node.value() {
+            scraper::Node::Text(t) => {
+                let fragment = t.text.as_ref();
+                if text.len().saturating_add(fragment.len()) > MAX_BODY_TEXT_BYTES {
+                    break;
+                }
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(fragment);
+                continue;
+            }
+            scraper::Node::Element(el) if matches!(el.name(), "script" | "style" | "noscript") => {
+                // Skip the whole subtree: script/style/noscript text is never
+                // document content.
+                continue;
+            }
+            _ => {}
+        }
+        // Push children in reverse so the LIFO stack pops them in document
+        // order.
+        let mut children = Vec::new();
+        let mut child = node.first_child();
+        while let Some(current) = child {
+            children.push(current);
+            child = current.next_sibling();
+        }
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    text
+}
+
+/// Extract normalized visible body text, skipping `script`/`style`/`noscript`
+/// subtrees. Falls back to the whole document (minus those subtrees) when no
+/// `<body>` element exists or the body holds no usable text.
 fn extract_body_text(doc: &Html) -> String {
-    // Skip <script>, <style>, and <noscript> elements to avoid contaminating body text
-    // with JavaScript code, CSS rules, or fallback content.
     let body_sel =
         Selector::parse("body").unwrap_or_else(|error| panic!("invalid body selector: {error:?}"));
-    let skip_sel = Selector::parse("script, style, noscript")
-        .unwrap_or_else(|error| panic!("invalid script/style selector: {error:?}"));
 
     match doc.select(&body_sel).next() {
         Some(body) => {
-            // Collect IDs of elements to skip (use ego_tree::NodeId via type inference)
-            let skip_ids: std::collections::HashSet<_> =
-                body.select(&skip_sel).map(|el| el.id()).collect();
-
-            // Collect text from nodes not dominated by skip elements
-            let mut parts = Vec::new();
-            for node_ref in body.descendants() {
-                if let scraper::node::Node::Text(ref t) = node_ref.value() {
-                    // Check if any ancestor is a skipped element
-                    let dominated = node_ref.ancestors().any(|a| skip_ids.contains(&a.id()));
-                    if !dominated {
-                        parts.push(t.text.as_ref());
-                    }
-                }
-            }
-            let text = parts.join(" ");
-            let normalized =
-                normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&text));
+            let text = collect_text_skipping(body);
+            let normalized = normalizer::remove_boilerplate(&text);
             if normalized.is_empty() {
-                let fallback = doc.root_element().text().collect::<Vec<_>>().join(" ");
-                normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&fallback))
+                let fallback = collect_text_skipping(doc.root_element());
+                normalizer::remove_boilerplate(&fallback)
             } else {
                 normalized
             }
         }
         None => {
-            let text: String = doc.root_element().text().collect::<Vec<_>>().join(" ");
+            let text = collect_text_skipping(doc.root_element());
             normalizer::normalize_whitespace(&text)
         }
     }
 }
 
-/// Resolve one raw `href` to an absolute `http(s)` URL, or `None` when the
-/// value is hostile, opaque, or unresolvable.
+/// Resolve the base used for relative hrefs.
 ///
-/// `Url::parse` strips leading/trailing C0-control/space characters and
-/// removes ASCII tab/newline anywhere in the input, so ` javascript:`,
+/// The first `<base href>` in document order wins, matching browser behaviour.
+/// An absolute base value is used as-is; a relative one is resolved against
+/// `page_url` with `Url::join`. When the tag is missing, empty, or entirely
+/// unresolvable, `page_url` is used instead. The base is not filtered to
+/// http(s) here: [`resolve_href`] still requires every stored link to resolve
+/// to an absolute `http(s)` URL, so a hostile base can at worst make relative
+/// links unresolvable (they are dropped) — it can never be stored as a link.
+fn resolve_document_base(doc: &Html, page_url: Option<&Url>) -> Option<Url> {
+    let base_sel = Selector::parse("base[href]")
+        .unwrap_or_else(|error| panic!("invalid base selector: {error:?}"));
+    if let Some(raw) = doc
+        .select(&base_sel)
+        .next()
+        .and_then(|el| el.value().attr("href"))
+    {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            if let Ok(absolute) = Url::parse(trimmed) {
+                return Some(absolute);
+            }
+            if let Some(page) = page_url {
+                if let Ok(joined) = page.join(trimmed) {
+                    return Some(joined);
+                }
+            }
+        }
+    }
+    page_url.cloned()
+}
+
+/// Resolve one raw `href` against `base` to an absolute `http(s)` URL, or
+/// `None` when the value is hostile, opaque, or unresolvable.
+///
+/// `Url::parse`/`Url::join` strip leading/trailing C0-control/space characters
+/// and remove ASCII tab/newline anywhere in the input, so ` javascript:`,
 /// `\tjavascript:` and `java\nscript:` all collapse to the hostile
 /// `javascript:` scheme before the scheme gate; they are rejected together
-/// with `data:`, `vbscript:`, `file:` and friends. Relative values are
-/// joined against `base` when one is available.
-fn sanitize_extracted_href(raw: &str, base: Option<&Url>) -> Option<String> {
+/// with `data:`, `vbscript:`, `file:` and friends. Relative and
+/// protocol-relative values are joined against `base` when one is available
+/// and dropped otherwise — the raw value is never returned.
+fn resolve_href(raw: &str, base: Option<&Url>) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return None;
     }
-    let resolved = match Url::parse(trimmed) {
-        Ok(url) => url,
-        Err(url::ParseError::RelativeUrlWithoutBase) => base?.join(trimmed).ok()?,
-        Err(_) => return None,
+    let resolved = match base {
+        Some(base) => base.join(trimmed).ok()?,
+        None => Url::parse(trimmed).ok()?,
     };
+    if !matches!(resolved.scheme(), "http" | "https") {
+        return None;
+    }
     normalize_url(resolved.as_str())
 }
 
-fn extract_links(doc: &Html, page_url: Option<&str>) -> Vec<ExtractedLink> {
+fn extract_links(doc: &Html, page_url: Option<&Url>) -> Vec<ExtractedLink> {
     let sel = Selector::parse("a[href]")
         .unwrap_or_else(|error| panic!("invalid link selector: {error:?}"));
-    let base = page_url
-        .map(str::trim)
-        .filter(|raw| !raw.is_empty())
-        .and_then(|raw| Url::parse(raw).ok())
-        .filter(|url| matches!(url.scheme(), "http" | "https"));
+    let base = resolve_document_base(doc, page_url);
     doc.select(&sel)
         .filter_map(|el| {
             let text = normalizer::normalize_whitespace(&el.text().collect::<String>());
-            let href = sanitize_extracted_href(el.value().attr("href")?, base.as_ref())?;
+            let href = resolve_href(el.value().attr("href")?, base.as_ref())?;
             Some(ExtractedLink { text, href })
         })
         .collect()
@@ -367,7 +433,11 @@ mod tests {
     "#;
 
     fn sample_page(html: &str) -> PageContent {
-        extract_page(html).unwrap_or_else(|error| panic!("sample HTML should parse: {error}"))
+        extract_page(html, None).unwrap_or_else(|error| panic!("sample HTML should parse: {error}"))
+    }
+
+    fn page_url(raw: &str) -> Url {
+        Url::parse(raw).unwrap_or_else(|error| panic!("test URL `{raw}` should parse: {error}"))
     }
 
     #[test]
@@ -413,24 +483,25 @@ mod tests {
         assert!(!hrefs.iter().any(|h| h.starts_with('#')));
     }
 
-    // Audit #52: link extraction must resolve relative hrefs and keep only
-    // absolute http(s) results — no raw-href fallback.
+    // Audit #84: link extraction must resolve relative and protocol-relative
+    // hrefs against the page URL and keep only absolute http(s) results — no
+    // raw-href fallback.
     #[test]
     fn test_extract_links_resolves_relative_against_page_url() {
         let html = r#"<html><body>
             <a href="/about">About</a>
             <a href="capabilities">Capabilities</a>
             <a href="//cdn.example.com/lib.js">CDN</a>
+            <a href="../up">Up</a>
         </body></html>"#;
-        let page = extract_page_with_base(
-            html,
-            Some("https://starz-electronics.com/company/index.html"),
-        )
-        .unwrap_or_else(|error| panic!("relative-link HTML should parse: {error}"));
+        let base = page_url("https://starz-electronics.com/company/index.html");
+        let page = extract_page(html, Some(&base))
+            .unwrap_or_else(|error| panic!("relative-link HTML should parse: {error}"));
         let hrefs: Vec<&str> = page.links.iter().map(|l| l.href.as_str()).collect();
         assert!(hrefs.contains(&"https://starz-electronics.com/about"));
         assert!(hrefs.contains(&"https://starz-electronics.com/company/capabilities"));
         assert!(hrefs.contains(&"https://cdn.example.com/lib.js"));
+        assert!(hrefs.contains(&"https://starz-electronics.com/up"));
     }
 
     #[test]
@@ -455,7 +526,8 @@ mod tests {
             <a href="JavaScript:alert(1)">mixed</a>
             <a href="JAVASCRIPT:alert(1)">upper</a>
         </body></html>"#;
-        let page = extract_page_with_base(html, Some("https://example.com/"))
+        let base = page_url("https://example.com/");
+        let page = extract_page(html, Some(&base))
             .unwrap_or_else(|error| panic!("hostile-link HTML should parse: {error}"));
         assert!(page.links.is_empty(), "javascript: hrefs must be dropped");
     }
@@ -466,7 +538,8 @@ mod tests {
             <a href="data:text/html,<script>alert(1)</script>">data</a>
             <a href="vbscript:msgbox(1)">vb</a>
         </body></html>"#;
-        let page = extract_page_with_base(html, Some("https://example.com/"))
+        let base = page_url("https://example.com/");
+        let page = extract_page(html, Some(&base))
             .unwrap_or_else(|error| panic!("hostile-link HTML should parse: {error}"));
         assert!(
             page.links.is_empty(),
@@ -482,7 +555,8 @@ mod tests {
             <a href=\"java\nscript:alert(1)\">newline</a>\
             <a href=\" \tjavascript:alert(1)\">space-tab</a>\
             </body></html>";
-        let page = extract_page_with_base(html, Some("https://example.com/"))
+        let base = page_url("https://example.com/");
+        let page = extract_page(html, Some(&base))
             .unwrap_or_else(|error| panic!("obfuscated-link HTML should parse: {error}"));
         assert!(
             page.links.is_empty(),
@@ -499,6 +573,119 @@ mod tests {
         </body></html>"#;
         let page = sample_page(html);
         assert!(page.links.is_empty());
+    }
+
+    // Audit #84: relative paths resolve to the page origin, `..` walks up the
+    // document path, and protocol-relative hrefs pick up the page scheme.
+    #[test]
+    fn test_extract_links_relative_admin_and_parent_path() {
+        let html = r#"<html><body>
+            <a href="/admin">Admin</a>
+            <a href="../up">Up</a>
+            <a href="//evil.example/x">Protocol relative</a>
+        </body></html>"#;
+        let base = page_url("https://shop.example.com/a/b/index.html");
+        let page = extract_page(html, Some(&base))
+            .unwrap_or_else(|error| panic!("relative-link HTML should parse: {error}"));
+        let hrefs: Vec<&str> = page.links.iter().map(|l| l.href.as_str()).collect();
+        assert_eq!(
+            hrefs,
+            vec![
+                "https://shop.example.com/admin",
+                "https://shop.example.com/a/up",
+                "https://evil.example/x",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_links_honours_absolute_base_tag() {
+        let html = r#"<html><head><base href="https://cdn.example/assets/"></head>
+            <body>
+                <a href="app.js">Asset</a>
+                <a href="https://other.example/x">Absolute</a>
+            </body></html>"#;
+        let base = page_url("https://starz.example.com/page/index.html");
+        let page = extract_page(html, Some(&base))
+            .unwrap_or_else(|error| panic!("base-tag HTML should parse: {error}"));
+        let hrefs: Vec<&str> = page.links.iter().map(|l| l.href.as_str()).collect();
+        assert_eq!(
+            hrefs,
+            vec![
+                "https://cdn.example/assets/app.js",
+                "https://other.example/x"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_links_resolves_relative_base_tag_against_page_url() {
+        let html = r#"<html><head><base href="/base/"></head>
+            <body><a href="x.html">X</a></body></html>"#;
+        let base = page_url("https://starz.example.com/dir/page.html");
+        let page = extract_page(html, Some(&base))
+            .unwrap_or_else(|error| panic!("base-tag HTML should parse: {error}"));
+        assert_eq!(page.links.len(), 1);
+        assert_eq!(page.links[0].href, "https://starz.example.com/base/x.html");
+    }
+
+    #[test]
+    fn test_extract_links_base_tag_without_page_url_is_unresolvable() {
+        let html = r#"<html><head><base href="/base/"></head>
+            <body><a href="x.html">X</a></body></html>"#;
+        let page = sample_page(html);
+        assert!(
+            page.links.is_empty(),
+            "relative <base> needs a page URL: {:?}",
+            page.links
+        );
+    }
+
+    #[test]
+    fn test_extract_links_hostile_base_tag_cannot_smuggle_hrefs() {
+        let html = r#"<html><head><base href="javascript:alert(1)"></head>
+            <body>
+                <a href="about">Relative</a>
+                <a href="data:text/html,x">Data</a>
+                <a href="https://safe.example/ok">Absolute</a>
+            </body></html>"#;
+        let base = page_url("https://starz.example.com/");
+        let page = extract_page(html, Some(&base))
+            .unwrap_or_else(|error| panic!("hostile-base HTML should parse: {error}"));
+        assert_eq!(
+            page.links
+                .iter()
+                .map(|l| l.href.as_str())
+                .collect::<Vec<_>>(),
+            vec!["https://safe.example/ok"]
+        );
+    }
+
+    #[test]
+    fn test_extract_links_never_stores_raw_hostile_href() {
+        let hostile = [
+            "JaVaScRiPt:alert(1)",
+            " javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "/admin",
+            "../up",
+            "//evil.example/x",
+        ];
+        let base = page_url("https://shop.example.com/a/b/index.html");
+        for raw in hostile {
+            let html = format!("<html><body><a href=\"{raw}\">x</a></body></html>");
+            let page = extract_page(&html, Some(&base))
+                .unwrap_or_else(|error| panic!("hostile-href HTML should parse: {error}"));
+            for link in &page.links {
+                assert_ne!(link.href, raw, "raw href leaked for {raw:?}");
+                assert!(
+                    link.href.starts_with("http://") || link.href.starts_with("https://"),
+                    "stored href {actual:?} for {raw:?} is not absolute http(s)",
+                    actual = link.href
+                );
+            }
+        }
     }
 
     #[test]
@@ -621,5 +808,77 @@ mod tests {
         </body></html>"#;
         let page = sample_page(html);
         assert_eq!(page.emails.len(), 2); // deduped
+    }
+
+    // Audit #90: recursive body walk — script/style/noscript subtrees are
+    // skipped, text is collected in document order, and the walk is iterative
+    // so hostile nesting cannot overflow the stack.
+    #[test]
+    fn test_extract_body_text_skips_script_style_noscript_subtrees() {
+        let html = r#"<html><body>
+            <p>visible one</p>
+            <script>var hidden = "script text";</script>
+            <style>.hidden { color: red; }</style>
+            <noscript><p>noscript fallback text</p></noscript>
+            <p>visible two</p>
+        </body></html>"#;
+        let page = sample_page(html);
+        assert!(page.body_text.contains("visible one"));
+        assert!(page.body_text.contains("visible two"));
+        assert!(!page.body_text.contains("script text"));
+        assert!(!page.body_text.contains("color: red"));
+        assert!(!page.body_text.contains("noscript fallback"));
+    }
+
+    #[test]
+    fn test_extract_body_text_preserves_document_order() {
+        let html = r#"<html><body>
+            <p>alpha <b>beta</b></p><div>gamma<span>delta</span></div>
+        </body></html>"#;
+        let page = sample_page(html);
+        assert_eq!(page.body_text, "alpha beta gamma delta");
+    }
+
+    #[test]
+    fn test_extract_body_text_deeply_nested_does_not_panic() {
+        const DEPTH: usize = 20_000;
+        let mut html = String::with_capacity(DEPTH * 11 + 64);
+        html.push_str("<html><body>");
+        html.push_str(&"<div>".repeat(DEPTH));
+        html.push_str("deep marker");
+        html.push_str(&"</div>".repeat(DEPTH));
+        html.push_str("</body></html>");
+        let page = sample_page(&html);
+        assert!(
+            page.body_text.contains("deep marker"),
+            "deeply nested text was lost"
+        );
+    }
+
+    #[test]
+    fn test_extract_body_text_pathological_page_completes_with_correct_text() {
+        let mut html = String::from("<html><body>");
+        for i in 0..5_000 {
+            html.push_str("<script>ignore</script><style>.a{}</style><p>item");
+            html.push_str(&i.to_string());
+            html.push_str("</p>");
+        }
+        html.push_str("<p>final marker</p></body></html>");
+        let page = sample_page(&html);
+        assert!(page.body_text.contains("item0 "));
+        assert!(page.body_text.contains("item2500 "));
+        assert!(page.body_text.contains("item4999"));
+        assert!(page.body_text.ends_with("final marker"));
+        assert!(!page.body_text.contains("ignore"));
+        assert!(!page.body_text.contains(".a{}"));
+    }
+
+    #[test]
+    fn test_extract_page_bytes_resolves_relative_links() {
+        let html = b"<html><body><a href=\"/about\">About</a></body></html>";
+        let base = page_url("https://starz.example.com/index.html");
+        let page = extract_page_bytes(html, Some(&base)).expect("bytes HTML should parse");
+        assert_eq!(page.links.len(), 1);
+        assert_eq!(page.links[0].href, "https://starz.example.com/about");
     }
 }

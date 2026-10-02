@@ -469,10 +469,10 @@ pub(crate) async fn export_insight_pdf(
             return export_error_response(ApiError::internal("internal error"));
         }
     };
-    let severity = stored_severity
-        .as_deref()
-        .map(insight_severity_from_stored)
-        .unwrap_or(apex_insights::InsightSeverity::Medium);
+    // `insights.impact` is nullable (DEFAULT 'medium' only applies when the
+    // INSERT omits the column), so a NULL severity stays unrecorded in the
+    // report instead of being fabricated as Medium.
+    let severity = stored_severity.as_deref().map(insight_severity_from_stored);
     let evidence_urls = insight.evidence_urls.clone().unwrap_or_default();
     let evidence = evidence_urls
         .iter()

@@ -28,7 +28,10 @@
       <div class="mt-2 flex items-center gap-2">
         {% call m::region_badge(region) %}
         <span class="text-[11px] text-rams-muted">{{ sector }}</span>
-        {% if is_competitor %}<span class="text-[10px] font-bold uppercase apex-text-competitor">Competitor</span>{% endif %}
+        {% if let Some(competitor) = is_competitor %}
+        {% if competitor %}<span class="text-[10px] font-bold uppercase apex-text-competitor">Competitor</span>{% else %}<span class="text-[10px] text-rams-muted">Not a competitor</span>{% endif %}
+        {% else %}<span class="text-[10px] text-rams-muted">Competitor status not recorded</span>
+        {% endif %}
       </div>
     </div>
     <div class="flex items-center gap-3">
@@ -39,7 +42,11 @@
          class="no-print rounded-rams-sm border border-rams-orange/40 bg-rams-orange/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-rams-orange"
          download>Export PDF</a>
       {% endif %}
-      {% call m::score_ring(risk_score, 48) %}
+      {% if has_risk_score %}
+      {% call m::score_ring(risk_score_value, 48) %}
+      {% else %}
+      <span class="text-[10px] text-rams-muted">Risk score not recorded</span>
+      {% endif %}
     </div>
   </div>
 
@@ -57,7 +64,7 @@
       <div><span class="font-black uppercase text-rams-muted">Warnings</span><br><span class="tabular-nums">{{ total_warnings }}</span></div>
       <div><span class="font-black uppercase text-rams-muted">Insights</span><br><span class="tabular-nums">{{ total_insights }}</span></div>
       <div><span class="font-black uppercase text-rams-muted">Evidence</span><br><span class="tabular-nums">{{ why_now.evidence_count }}</span></div>
-      <div><span class="font-black uppercase text-rams-muted">Risk score</span><br><span class="tabular-nums">{{ risk_score }}</span></div>
+      <div><span class="font-black uppercase text-rams-muted">Risk score</span><br><span class="tabular-nums">{% if has_risk_score %}{{ risk_score_value }}{% else %}—{% endif %}</span></div>
     </div>
   </section>
 
@@ -96,6 +103,9 @@
         <button type="submit" class="apex-btn apex-btn-secondary text-xs">Add to work queue</button>
       </form>
       <a href="/graph?focus={{ id }}" class="apex-btn apex-btn-secondary text-xs">Open graph</a>
+      {% if can_write %}
+      <a href="/battlecards/new?competitor_id={{ id }}" class="apex-btn apex-btn-secondary text-xs" data-action="create-battlecard">Create battlecard</a>
+      {% endif %}
       <a href="/pipeline" class="apex-btn apex-btn-secondary text-xs">Add to pipeline</a>
     </div>
   </section>
@@ -240,7 +250,7 @@
         </div>
         <div class="mt-1 flex flex-wrap items-center gap-2">
           {% if !i.insight_type.is_empty() %}<span class="inline-flex items-center rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.insight_type }}</span>{% endif %}
-          <span class="text-[10px] text-rams-muted tabular-nums">{{ i.confidence_pct }}% confidence</span>
+          <span class="text-[10px] text-rams-muted tabular-nums">{% if let Some(pct) = i.confidence_pct %}{{ pct }}% confidence{% else %}confidence not recorded{% endif %}</span>
         </div>
         {% if !i.summary.is_empty() %}<p class="mt-1 text-[11px] text-rams-muted line-clamp-2">{{ i.summary }}</p>{% endif %}
       </a>
@@ -354,7 +364,7 @@
         <div class="mt-1 flex flex-wrap items-center gap-2">
           {% call m::severity_badge(w.severity) %}
           <span class="text-[10px] text-rams-muted">{{ w.warning_type }}</span>
-          <span class="text-[10px] text-rams-muted tabular-nums">{{ w.confidence_pct }}% confidence</span>
+          <span class="text-[10px] text-rams-muted tabular-nums">{% if let Some(pct) = w.confidence_pct %}{{ pct }}% confidence{% else %}confidence not recorded{% endif %}</span>
         </div>
       </a>
       {% endfor %}

@@ -8,7 +8,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use apex_insights::entity_relevance::EntityProfile;
-use apex_store::postgres::CompanyRow;
+use apex_store::postgres::{BattlecardWriteOutcome, CompanyRow, CreateBattlecardOutcome};
 
 /// GET /api/battlecards — list all battlecards with optional filters.
 #[derive(Debug, Deserialize)]
@@ -22,6 +22,11 @@ pub struct ListBattlecardsQuery {
 pub struct BattlecardItem {
     pub id: String,
     pub account_name: String,
+    pub status: String,
+    pub competitor_id: String,
+    /// Absent when the competitor company row cannot be resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub competitor_name: Option<String>,
     /// Derived from battlecard content (weakness/kill-shot density).
     /// Absent when the card has not been generated yet (B314) — the previous
     /// implementation returned hardcoded "medium"/0.5 for every card.
@@ -82,25 +87,67 @@ pub(crate) async fn list_battlecards(
     let request_id = Uuid::new_v4().to_string();
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(50).clamp(1, 100);
+    let status = match params
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(raw) => match apex_api::routes::battlecards::normalize_status(raw) {
+            Some(status) => Some(status),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(error_response(ApiError::validation(
+                        "status",
+                        "status must be one of draft, published, archived",
+                    ))),
+                )
+            }
+        },
+    };
 
     match state
         .store
-        .list_battlecards(params.status.as_deref(), None, page, per_page)
+        .list_battlecards(status, None, page, per_page)
         .await
     {
         Ok(rows) => {
-            let total_rows = rows.len() as u32;
+            let competitor_ids: Vec<Uuid> = rows.iter().map(|r| r.competitor_id).collect();
+            // Names are display-only enrichment: a lookup failure leaves
+            // `competitor_name` absent rather than failing the list.
+            let competitor_names: std::collections::HashMap<Uuid, String> = if competitor_ids
+                .is_empty()
+            {
+                std::collections::HashMap::new()
+            } else {
+                match state.store.get_company_names_by_ids(&competitor_ids).await {
+                    Ok(names) => names
+                        .into_iter()
+                        .map(|(id, name, _region, _company_type)| (id, name))
+                        .collect(),
+                    Err(err) => {
+                        tracing::warn!(request_id = %request_id, "battlecard competitor name lookup failed: {err:#}");
+                        std::collections::HashMap::new()
+                    }
+                }
+            };
             let items: Vec<BattlecardItem> = rows
                 .into_iter()
                 .map(|row| BattlecardItem {
                     id: row.id.to_string(),
                     account_name: row.title,
+                    status: row.status,
+                    competitor_id: row.competitor_id.to_string(),
+                    competitor_name: competitor_names.get(&row.competitor_id).cloned(),
                     threat_level: derive_threat_level(
                         row.weaknesses.as_ref(),
                         row.kill_shots.as_ref(),
                     ),
                     win_probability: derive_win_probability(row.win_loss.as_ref()),
-                    competitor_count: total_rows.max(1),
+                    // A battlecard targets exactly one competitor.
+                    competitor_count: 1,
                     key_intel: row
                         .positioning
                         .as_ref()
@@ -172,17 +219,52 @@ pub(crate) async fn create_battlecard(
         }
     };
 
-    match state
-        .store
-        .create_battlecard(our_id, comp_id, &payload.title)
-        .await
-    {
-        Ok(id) => (
+    if our_id == comp_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(error_response(ApiError::validation(
+                "competitor_id",
+                "competitor_id must differ from our_company_id",
+            ))),
+        );
+    }
+    let title = match apex_api::routes::battlecards::validate_title(&payload.title) {
+        Ok(title) => title,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::validation("title", message))),
+            )
+        }
+    };
+
+    match state.store.create_battlecard(our_id, comp_id, &title).await {
+        Ok(CreateBattlecardOutcome::Created(id)) => (
             StatusCode::CREATED,
             Json(success_with_meta(
                 serde_json::json!({"id": id.to_string()}),
                 ResponseMeta::now().with_request_id(request_id),
             )),
+        ),
+        Ok(CreateBattlecardOutcome::Duplicate(existing)) => {
+            let mut details = std::collections::BTreeMap::new();
+            details.insert("existing_id".to_string(), existing.to_string());
+            (
+                StatusCode::CONFLICT,
+                Json(error_response(
+                    ApiError::new(
+                        ErrorCode::Conflict,
+                        "A battlecard for this company pair already exists",
+                    )
+                    .with_details(details),
+                )),
+            )
+        }
+        Ok(CreateBattlecardOutcome::UnknownCompany) => (
+            StatusCode::BAD_REQUEST,
+            Json(error_response(ApiError::bad_request(
+                "our_company_id or competitor_id does not reference an existing company",
+            ))),
         ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "create_battlecard failed: {err:#}");
@@ -353,6 +435,151 @@ pub(crate) async fn update_battlecard_section(
     }
 }
 
+/// PATCH /api/battlecards/:id — update title, status and/or sections.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchBattlecardRequest {
+    pub title: Option<String>,
+    pub status: Option<String>,
+    #[serde(default)]
+    pub sections: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Optimistic concurrency: when set, the update only applies if the
+    /// battlecard's `updated_at` still equals this value (409 otherwise).
+    pub expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub(crate) async fn patch_battlecard(
+    State(state): State<AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+    Json(payload): Json<PatchBattlecardRequest>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let request_id = Uuid::new_v4().to_string();
+    let uid = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid battlecard ID",
+                ))),
+            )
+        }
+    };
+    let title = match payload.title.as_deref() {
+        None => None,
+        Some(raw) => match apex_api::routes::battlecards::validate_title(raw) {
+            Ok(title) => Some(title),
+            Err(message) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(error_response(ApiError::validation("title", message))),
+                )
+            }
+        },
+    };
+    let status = match payload.status.as_deref() {
+        None => None,
+        Some(raw) => match apex_api::routes::battlecards::normalize_status(raw) {
+            Some(status) => Some(status),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(error_response(ApiError::validation(
+                        "status",
+                        "status must be one of draft, published, archived",
+                    ))),
+                )
+            }
+        },
+    };
+    let mut sections: Vec<(&str, serde_json::Value)> = Vec::with_capacity(payload.sections.len());
+    for (name, value) in &payload.sections {
+        match apex_api::routes::battlecards::SECTIONS
+            .iter()
+            .find(|(section, _)| section == name)
+        {
+            Some((section, _)) => sections.push((section, value.clone())),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(error_response(ApiError::validation(
+                        "sections",
+                        format!("unknown battlecard section '{name}'"),
+                    ))),
+                )
+            }
+        }
+    }
+    if title.is_none() && status.is_none() && sections.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(error_response(ApiError::bad_request(
+                "Provide at least one of title, status or sections",
+            ))),
+        );
+    }
+
+    match state
+        .store
+        .update_battlecard_details(
+            uid,
+            title.as_deref(),
+            status,
+            &sections,
+            auth.user_id.as_str(),
+            payload.expected_updated_at,
+        )
+        .await
+    {
+        Ok(BattlecardWriteOutcome::Updated) => match state.store.get_battlecard(uid).await {
+            Ok(Some(row)) => (
+                StatusCode::OK,
+                Json(success_with_meta(
+                    serde_json::to_value(apex_api::routes::battlecards::BattlecardResponse::from(
+                        row,
+                    ))
+                    .unwrap_or(serde_json::Value::Null),
+                    ResponseMeta::now().with_request_id(request_id),
+                )),
+            ),
+            Ok(None) => (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found("Battlecard", &id))),
+            ),
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "patch_battlecard reload failed: {err:#}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Battlecard updated but could not be reloaded",
+                    ))),
+                )
+            }
+        },
+        Ok(BattlecardWriteOutcome::NotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(error_response(ApiError::not_found("Battlecard", &id))),
+        ),
+        Ok(BattlecardWriteOutcome::Conflict) => (
+            StatusCode::CONFLICT,
+            Json(error_response(ApiError::new(
+                ErrorCode::Conflict,
+                "Battlecard changed since expected_updated_at; reload and retry",
+            ))),
+        ),
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "patch_battlecard failed: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to update battlecard",
+                ))),
+            )
+        }
+    }
+}
+
 /// Build an [`EntityProfile`] from a stored [`CompanyRow`] so the battlecard
 /// engine can reason about real firmographics/keywords.
 fn entity_profile_from_company(c: &CompanyRow) -> EntityProfile {
@@ -401,14 +628,33 @@ fn infer_category(industry: &[String]) -> apex_insights::entity_relevance::Entit
 /// [`BattlecardEngine`] (data-driven win/loss + pricing + feature matrix), and
 /// optionally layers LLM-grounded narrative on positioning/objections/strengths
 /// when the `llm` feature is enabled and a model is reachable. Every regenerated
-/// section is persisted back to the battlecard's JSONB columns.
+/// section is persisted back to the battlecard's JSONB columns atomically.
+/// HTMX callers receive `HX-Refresh: true` so the page re-renders the new
+/// content.
 pub(crate) async fn regenerate_battlecard(
     State(state): State<AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let htmx = headers.contains_key("hx-request");
+    let (status, body) = regenerate_battlecard_inner(&state, &auth, &id).await;
+    let mut response = (status, body).into_response();
+    if htmx && status.is_success() {
+        response
+            .headers_mut()
+            .insert("HX-Refresh", axum::http::HeaderValue::from_static("true"));
+    }
+    response
+}
+
+async fn regenerate_battlecard_inner(
+    state: &AppState,
+    auth: &ApiAuthContext,
+    id: &str,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let request_id = Uuid::new_v4().to_string();
-    let uid = match Uuid::parse_str(&id) {
+    let uid = match Uuid::parse_str(id) {
         Ok(id) => id,
         Err(_) => {
             return (
@@ -426,7 +672,7 @@ pub(crate) async fn regenerate_battlecard(
         Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(error_response(ApiError::not_found("Battlecard", &id))),
+                Json(error_response(ApiError::not_found("Battlecard", id))),
             )
         }
         Err(err) => {
@@ -442,7 +688,7 @@ pub(crate) async fn regenerate_battlecard(
 
     let our_company = match state.store.get_company(bc.our_company_id).await {
         Ok(Some(c)) => c,
-        _ => {
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(error_response(ApiError::not_found(
@@ -451,10 +697,19 @@ pub(crate) async fn regenerate_battlecard(
                 ))),
             )
         }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "regenerate_battlecard: company load failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load a battlecard input",
+                ))),
+            );
+        }
     };
     let competitor = match state.store.get_company(bc.competitor_id).await {
         Ok(Some(c)) => c,
-        _ => {
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(error_response(ApiError::not_found(
@@ -462,6 +717,15 @@ pub(crate) async fn regenerate_battlecard(
                     &bc.competitor_id.to_string(),
                 ))),
             )
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "regenerate_battlecard: company load failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load a battlecard input",
+                ))),
+            );
         }
     };
 
@@ -574,131 +838,142 @@ pub(crate) async fn regenerate_battlecard(
     let mut llm_used = false;
     #[cfg(feature = "llm")]
     {
-        if let Ok(client) = apex_llm::inference::LlmClient::from_env() {
-            if let Ok(Some(llm)) =
-                apex_insights::battlecards::llm_sections::synthesize_llm_sections(
-                    &client,
-                    &our_company.name,
-                    &competitor.name,
-                    &insights,
-                    3,
-                )
-                .await
-            {
-                llm_used = true;
-                data.positioning = apex_insights::battlecards::llm_sections::enrich_positioning(
-                    data.positioning,
-                    &llm,
-                );
-                data.strengths = apex_insights::battlecards::llm_sections::merge_strengths(
-                    data.strengths,
-                    &llm.strengths,
-                );
-                data.weaknesses = apex_insights::battlecards::llm_sections::merge_weaknesses(
-                    data.weaknesses,
-                    &llm.weaknesses,
-                );
-                if !llm.objection_handlers.is_empty() {
-                    data.objection_handlers = llm.objection_handlers;
-                }
+        match apex_llm::inference::LlmClient::from_env() {
+            Err(error) => {
+                tracing::debug!(%error, "regenerate_battlecard: LLM not configured; data-driven sections only");
             }
-        }
-    }
-
-    // 6. Persist each regenerated section back to the battlecard JSONB.
-    let sections: [(&str, serde_json::Value); 9] = [
-        (
-            "positioning",
-            serde_json::to_value(&data.positioning).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "pricing",
-            serde_json::to_value(&data.pricing).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "feature_matrix",
-            serde_json::to_value(&data.feature_matrix).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "strengths",
-            serde_json::to_value(&data.strengths).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "weaknesses",
-            serde_json::to_value(&data.weaknesses).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "objection_handlers",
-            serde_json::to_value(&data.objection_handlers).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "kill_shots",
-            serde_json::to_value(&data.kill_shots).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "recent_news",
-            serde_json::to_value(&data.recent_news).unwrap_or(serde_json::Value::Null),
-        ),
-        (
-            "win_loss",
-            serde_json::to_value(&data.win_loss).unwrap_or(serde_json::Value::Null),
-        ),
-    ];
-    for (section, json) in sections {
-        match state
-            .store
-            .update_battlecard_section(uid, section, &json, auth.user_id.as_str())
+            Ok(client) => match apex_insights::battlecards::llm_sections::synthesize_llm_sections(
+                &client,
+                &our_company.name,
+                &competitor.name,
+                &insights,
+                3,
+            )
             .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                tracing::warn!(
-                    section,
-                    "regenerate_battlecard: battlecard missing while persisting section"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(section, error = %e, "regenerate_battlecard: persist section failed");
-            }
+            {
+                Ok(Some(llm)) => {
+                    llm_used = true;
+                    data.positioning = apex_insights::battlecards::llm_sections::enrich_positioning(
+                        data.positioning,
+                        &llm,
+                    );
+                    data.strengths = apex_insights::battlecards::llm_sections::merge_strengths(
+                        data.strengths,
+                        &llm.strengths,
+                    );
+                    data.weaknesses = apex_insights::battlecards::llm_sections::merge_weaknesses(
+                        data.weaknesses,
+                        &llm.weaknesses,
+                    );
+                    if !llm.objection_handlers.is_empty() {
+                        data.objection_handlers = llm.objection_handlers;
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!(request_id = %request_id, "regenerate_battlecard: LLM produced no grounded sections");
+                }
+                Err(error) => {
+                    tracing::warn!(request_id = %request_id, "regenerate_battlecard: LLM enrichment failed, keeping data-driven sections: {error:#}");
+                }
+            },
         }
     }
-    // Timestamp touch-up on an already-persisted battlecard; a failure must
-    // not disappear silently.
-    if let Err(error) = state.store.update_battlecard_timestamp(uid).await {
-        tracing::error!(
-            battlecard_id = %uid,
-            %error,
-            "regenerate_battlecard: failed to update the battlecard timestamp"
-        );
+
+    // 6. Persist every regenerated section atomically (all sections plus
+    //    `regenerated_at`, or nothing).
+    fn section_json<T: Serialize>(
+        name: &'static str,
+        value: &T,
+    ) -> Result<(&'static str, serde_json::Value), String> {
+        serde_json::to_value(value)
+            .map(|json| (name, json))
+            .map_err(|e| format!("{name}: {e}"))
+    }
+    let sections: Result<Vec<(&str, serde_json::Value)>, String> = [
+        section_json("positioning", &data.positioning),
+        section_json("pricing", &data.pricing),
+        section_json("feature_matrix", &data.feature_matrix),
+        section_json("strengths", &data.strengths),
+        section_json("weaknesses", &data.weaknesses),
+        section_json("objection_handlers", &data.objection_handlers),
+        section_json("kill_shots", &data.kill_shots),
+        section_json("recent_news", &data.recent_news),
+        section_json("win_loss", &data.win_loss),
+    ]
+    .into_iter()
+    .collect();
+    let sections = match sections {
+        Ok(sections) => sections,
+        Err(error) => {
+            tracing::error!(request_id = %request_id, %error, "regenerate_battlecard: section serialization failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to serialize the regenerated battlecard",
+                ))),
+            );
+        }
+    };
+    match state
+        .store
+        .apply_battlecard_regeneration(uid, &sections, auth.user_id.as_str())
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found("Battlecard", id))),
+            )
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, battlecard_id = %uid, "regenerate_battlecard: persist failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to save the regenerated battlecard",
+                ))),
+            );
+        }
     }
 
-    // 7. Activity-feed entry (best-effort).
+    // 7. Activity-feed echo. The card is already saved, so a failure here is
+    //    logged rather than turned into a request failure.
     let details = serde_json::json!({
         "logged_at": chrono::Utc::now().to_rfc3339(),
+        "battlecard_id": uid.to_string(),
         "competitor": &competitor.name,
         "deals_analyzed": closed_deals.len(),
         "pricing_points": pricing.len(),
         "llm_enriched": llm_used,
         "summary": format!("Battlecard regenerated for competitor {} from {} deals + {} pricing points", competitor.name, closed_deals.len(), pricing.len()),
     });
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         r#"INSERT INTO activity_feed
              (actor_id, actor_name, action_type, entity_type, entity_id, entity_name,
               details, workspace_id, team_id, visibility, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())"#,
     )
-    .bind("system")
+    .bind(auth.user_id.as_str())
     .bind("Battlecard Generator")
     .bind("battlecard_generated")
     .bind(Some("company"))
-    .bind(bc.our_company_id.to_string())
+    .bind(bc.competitor_id.to_string())
     .bind(&bc.title)
     .bind(&details)
     .bind(None::<uuid::Uuid>)
     .bind(None::<&str>)
     .bind("team")
     .execute(&state.store.pool)
-    .await;
+    .await
+    {
+        tracing::warn!(
+            request_id = %request_id,
+            battlecard_id = %uid,
+            %error,
+            "regenerate_battlecard: activity feed insert failed"
+        );
+    }
 
     (
         StatusCode::OK,
@@ -735,7 +1010,33 @@ pub(crate) async fn export_battlecard(
 
     match state.store.get_battlecard(uid).await {
         Ok(Some(row)) => {
-            let body = serde_json::json!({"format": "markdown", "content": format!("# {}\n\nPositioning: {:?}", row.title, row.positioning)});
+            let names = match apex_api::routes::battlecards::company_names(
+                &state.store,
+                &[row.competitor_id, row.our_company_id],
+            )
+            .await
+            {
+                Ok(names) => names,
+                Err(err) => {
+                    tracing::error!(request_id = %request_id, "export_battlecard company lookup failed: {err:#}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(error_response(ApiError::internal(
+                            "Failed to export battlecard",
+                        ))),
+                    );
+                }
+            };
+            let content = apex_api::routes::battlecards::render_markdown(
+                &row,
+                names.get(&row.competitor_id).map(String::as_str),
+                names.get(&row.our_company_id).map(String::as_str),
+            );
+            let body = serde_json::json!({
+                "format": "markdown",
+                "filename": format!("{}.md", apex_api::routes::battlecards::export_filename(&row.title)),
+                "content": content,
+            });
             (
                 StatusCode::OK,
                 Json(success_with_meta(

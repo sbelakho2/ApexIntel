@@ -25,17 +25,17 @@ pub struct TelegramScraper {
 
 impl TelegramScraper {
     pub fn new(proxy_url: Option<&str>) -> Result<Self> {
-        let mut builder = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("Mozilla/5.0 (compatible; ApexIntelOSINT/1.0)");
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some("Mozilla/5.0 (compatible; ApexIntelOSINT/1.0)".to_string()),
+            proxy: proxy_url
+                .map(reqwest::Proxy::all)
+                .transpose()
+                .context("Invalid proxy")?,
+            ..crate::http::ExternalClientOptions::default()
+        })?;
 
-        if let Some(proxy) = proxy_url {
-            builder = builder.proxy(reqwest::Proxy::all(proxy).context("Invalid proxy")?);
-        }
-
-        Ok(Self {
-            client: builder.build()?,
-        })
+        Ok(Self { client })
     }
 
     /// Fetch recent posts from a public Telegram channel.
@@ -46,22 +46,37 @@ impl TelegramScraper {
         let mut all_posts = Vec::new();
         let mut before_id: Option<u64> = None;
 
+        let encoded_channel = urlencoding::encode(channel);
         for page in 0..MAX_PAGES {
             let url = if let Some(id) = before_id {
-                format!("{}/{}?before={}", TELEGRAM_WEB, channel, id)
+                format!("{}/{}?before={}", TELEGRAM_WEB, encoded_channel, id)
             } else {
-                format!("{}/{}", TELEGRAM_WEB, channel)
+                format!("{}/{}", TELEGRAM_WEB, encoded_channel)
             };
 
             debug!(url=%url, page, "Fetching Telegram channel page");
 
-            let html = match self.client.get(&url).send().await {
-                Ok(r) => r.text().await?,
+            // A failure on the first page must surface as an error so callers
+            // can tell "channel unreachable" apart from "channel has no posts";
+            // later-page failures keep the partial result already collected.
+            let resp = match self.client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => r,
+                Ok(r) if page == 0 => {
+                    anyhow::bail!("Telegram channel {channel} returned HTTP {}", r.status())
+                }
+                Ok(r) => {
+                    tracing::warn!(page, status = %r.status(), "Telegram page non-success; returning partial results");
+                    break;
+                }
+                Err(e) if page == 0 => {
+                    return Err(anyhow::Error::new(e).context("Telegram channel fetch"));
+                }
                 Err(e) => {
-                    tracing::warn!("Telegram fetch error on page {}: {}", page, e);
+                    tracing::warn!(page, error = %e, "Telegram fetch error; returning partial results");
                     break;
                 }
             };
+            let html = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await?;
 
             let posts = self.parse_channel_html(channel, &html);
             if posts.is_empty() {

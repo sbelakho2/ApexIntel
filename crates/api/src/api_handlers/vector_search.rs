@@ -15,7 +15,9 @@ use axum::{
 use uuid::Uuid;
 
 use crate::AppState;
-use apex_api::responses::{error_response, success_with_meta, ApiError, ApiResponse, ResponseMeta};
+use apex_api::responses::{
+    error_response, success_with_meta, ApiError, ApiResponse, ErrorCode, ResponseMeta,
+};
 use apex_api::routes::vector_search::{
     ReindexQuery, ReindexResponse, SimilarEntitiesPath, SimilarEntitiesQuery,
     SimilarEntitiesResponse, SimilarEntityHit, VectorSearchHit, VectorSearchQuery,
@@ -47,13 +49,14 @@ pub(crate) async fn vector_search(
     let embedding = match generate_embedding(&state, &params.q).await {
         Ok(emb) => emb,
         Err(e) => {
-            tracing::error!(request_id = %request_id, "failed to generate embedding: {e:#}");
-            let err = ApiError::internal("Failed to generate embedding");
-            return (
-                StatusCode::from_u16(err.http_status())
-                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                Json(error_response(err)),
+            // The embedding provider is an external dependency: an outage or a
+            // missing LLM configuration is a 503, not an internal server fault.
+            tracing::warn!(request_id = %request_id, "failed to generate embedding: {e:#}");
+            let err = ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "Embedding service unavailable",
             );
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(error_response(err)));
         }
     };
 

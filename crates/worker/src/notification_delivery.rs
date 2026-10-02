@@ -341,6 +341,8 @@ pub trait ChannelTransport: Send + Sync {
 /// `Err` on failure (TLS backend init, ...): the caller propagates instead of
 /// falling back to a silently different client or panicking.
 fn build_notification_http_client() -> Result<reqwest::Client> {
+    // Operator-configured webhook channel endpoints, not crawled content.
+    #[allow(clippy::disallowed_methods)]
     reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()

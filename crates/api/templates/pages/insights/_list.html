@@ -11,7 +11,7 @@
   <div class="apex-stat">
     <div class="apex-stat-rail metric-rail-green"></div>
     <p class="apex-stat-label">Avg Confidence</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_confidence_pct }}%</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{% if let Some(pct) = avg_confidence_pct %}{{ pct }}%{% else %}—{% endif %}</p>
   </div>
   {% call m::metric_card("Medium Impact", medium_impact_count.to_string(), "metric-rail-steel") %}
 </div>
@@ -107,7 +107,7 @@
           <td class="px-4 py-3"><span class="mobile-inline-chip inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.category_css }}">{{ i.category_label }}</span></td>
           <td class="px-4 py-3"><span class="inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.impact_css }}">{{ i.impact_tier }}</span></td>
           <td class="px-4 py-3 text-rams-muted">{{ i.company_name }}</td>
-          <td class="px-4 py-3 text-right font-bold tabular-nums">{{ i.confidence_pct }}%</td>
+          <td class="px-4 py-3 text-right font-bold tabular-nums">{% if let Some(pct) = i.confidence_pct %}{{ pct }}%{% else %}—{% endif %}</td>
           <td class="px-4 py-3 text-rams-muted">{% if i.region.is_empty() %}—{% else %}{{ i.region }}{% endif %}</td>
           <td class="px-4 py-3 text-right tabular-nums text-rams-muted">{{ i.evidence_count }}</td>
           <td class="px-4 py-3 tabular-nums text-rams-muted">{{ i.age_label }}</td>
@@ -132,7 +132,7 @@
           <div class="mt-1.5 flex flex-wrap items-center gap-2">
             <span class="mobile-inline-chip inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.category_css }}">{{ i.category_label }}</span>
             <span class="inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.impact_css }}">{{ i.impact_tier }}</span>
-            <span class="text-xs font-bold tabular-nums text-rams-muted">{{ i.confidence_pct }}%</span>
+            <span class="text-xs font-bold tabular-nums text-rams-muted">{% if let Some(pct) = i.confidence_pct %}{{ pct }}%{% else %}confidence not recorded{% endif %}</span>
             {% if !i.region.is_empty() %}<span class="text-[10px] text-rams-muted">{{ i.region }}</span>{% endif %}
           </div>
           {% if !i.summary_preview.is_empty() %}

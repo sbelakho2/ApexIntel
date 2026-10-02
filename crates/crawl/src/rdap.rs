@@ -80,15 +80,12 @@ pub struct RdapClient {
 impl RdapClient {
     /// Build a client with a 15s timeout and a descriptive User-Agent.
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .user_agent("ApexIntel-RDAP/1.0")
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(15),
+            user_agent: Some("ApexIntel-RDAP/1.0".to_string()),
             // RDAP bootstrap redirects to the authoritative registry.
-            .build()
-            .unwrap_or_else(|error| {
-                warn!(error = %error, "rdap: failed to build HTTP client; using default");
-                Client::new()
-            });
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self { client }
     }
 
@@ -122,13 +119,16 @@ impl RdapClient {
             return Ok(None);
         }
 
-        let json: serde_json::Value = match response.json().await {
-            Ok(value) => value,
-            Err(error) => {
-                warn!(domain = %domain, error = %error, "rdap: failed to parse JSON");
-                return Ok(None);
-            }
-        };
+        let json: serde_json::Value =
+            match crate::http::read_capped_json(response, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(domain = %domain, error = %error, "rdap: failed to parse JSON");
+                    return Ok(None);
+                }
+            };
 
         Ok(Some(Self::parse(&json, domain)))
     }

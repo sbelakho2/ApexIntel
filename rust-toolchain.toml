@@ -1,0 +1,16 @@
+# Pinned Rust toolchain for local builds and CI (audit item 177).
+#
+# The exact stable release is pinned instead of the floating `stable` channel so
+# that a toolchain bump is an explicit, reviewable commit and CI cannot start
+# failing because a new stable changed a lint or error message overnight. The CI
+# image is pinned to the matching `rust:1.98.0-bookworm` tag in .woodpecker.yml
+# (the exact-patch tag, not `rust:1.98-bookworm`, which now resolves to a later
+# 1.98.x patch and would drift the image away from this pin).
+#
+# 1.98.0 was the stable release this repository was verified against (see
+# `rustc --version`); rustfmt and clippy are the components CI invokes.
+# `rust:1.98.0-bookworm` carries RUST_VERSION=1.98.0 (verified via the image
+# config blob), and rustup honours this file inside the container regardless.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

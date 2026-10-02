@@ -186,11 +186,11 @@ pub struct AnalystCoverageMonitor {
 
 impl AnalystCoverageMonitor {
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Analyst Monitor")
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) Analyst Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        });
         Self {
             client,
             ratings_cache: HashMap::new(),
@@ -222,10 +222,10 @@ impl AnalystCoverageMonitor {
             events: Option<serde_json::Value>,
         }
 
-        let _yahoo_resp: YahooAnalystResponse = resp
-            .json()
-            .await
-            .unwrap_or(YahooAnalystResponse { events: None });
+        let _yahoo_resp: YahooAnalystResponse =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .unwrap_or(YahooAnalystResponse { events: None });
         let ratings = Vec::new(); // Parsing would require full Yahoo Finance API response structure
         self.ratings_cache
             .insert(ticker.to_string(), ratings.clone());
@@ -260,7 +260,10 @@ impl AnalystCoverageMonitor {
             regular_market_price: Option<f64>,
         }
 
-        let chart: YahooChart = resp.json().await.unwrap_or(YahooChart { meta: None });
+        let chart: YahooChart =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .unwrap_or(YahooChart { meta: None });
         let current_price = chart.meta.and_then(|m| m.regular_market_price);
 
         let targets = current_price

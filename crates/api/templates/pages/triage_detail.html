@@ -49,23 +49,23 @@
     <!-- Dimension scores -->
     <div class="mt-6 grid grid-cols-5 gap-3">
       <div class="text-center">
-        <div class="text-xs font-black tabular-nums">{{ urgency_pct }}</div>
+        <div class="text-xs font-black tabular-nums">{% if let Some(v) = urgency_pct %}{{ v }}{% else %}—{% endif %}</div>
         <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Urgency</div>
       </div>
       <div class="text-center">
-        <div class="text-xs font-black tabular-nums">{{ impact_pct }}</div>
+        <div class="text-xs font-black tabular-nums">{% if let Some(v) = impact_pct %}{{ v }}{% else %}—{% endif %}</div>
         <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Impact</div>
       </div>
       <div class="text-center">
-        <div class="text-xs font-black tabular-nums">{{ actionability_pct }}</div>
+        <div class="text-xs font-black tabular-nums">{% if let Some(v) = actionability_pct %}{{ v }}{% else %}—{% endif %}</div>
         <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Actionability</div>
       </div>
       <div class="text-center">
-        <div class="text-xs font-black tabular-nums">{{ novelty_pct }}</div>
+        <div class="text-xs font-black tabular-nums">{% if let Some(v) = novelty_pct %}{{ v }}{% else %}—{% endif %}</div>
         <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Novelty</div>
       </div>
       <div class="text-center">
-        <div class="text-xs font-black tabular-nums">{{ confidence_pct }}</div>
+        <div class="text-xs font-black tabular-nums">{% if let Some(v) = confidence_pct %}{{ v }}{% else %}—{% endif %}</div>
         <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Confidence</div>
       </div>
     </div>

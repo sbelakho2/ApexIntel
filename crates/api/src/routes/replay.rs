@@ -59,7 +59,15 @@ impl ReplayRequest {
 pub struct ReplayResponse {
     pub job_id: String,
     pub status: ReplayStatus,
+    /// Observations that matched the request filter and were registered for
+    /// replay. This is a *requested/queued* count, not work that ran.
     pub observations_queued: usize,
+    /// Observations actually re-processed by an execution engine. There is no
+    /// replay engine in this build, so this is always 0 rather than echoing
+    /// the queued count.
+    pub observations_processed: usize,
+    /// Warnings actually produced by a replay run. 0 while no engine runs.
+    pub warnings_generated: usize,
     pub time_range: String,
     pub estimated_duration_secs: u64,
 }
@@ -273,5 +281,24 @@ mod tests {
     fn test_replay_status_values() {
         assert_ne!(ReplayStatus::Running, ReplayStatus::Completed);
         assert_eq!(ReplayStatus::Queued, ReplayStatus::Queued);
+    }
+
+    #[test]
+    fn queued_response_reports_zero_work_done() {
+        // The queued count is a request size; processed/warnings must report
+        // work that actually happened (none, until an engine runs).
+        let response = ReplayResponse {
+            job_id: "job-1".into(),
+            status: ReplayStatus::Queued,
+            observations_queued: 42,
+            observations_processed: 0,
+            warnings_generated: 0,
+            time_range: "2026-01-01..2026-01-31".into(),
+            estimated_duration_secs: 1,
+        };
+        let json = serde_json::to_value(&response).expect("serialize");
+        assert_eq!(json["observations_queued"], 42);
+        assert_eq!(json["observations_processed"], 0);
+        assert_eq!(json["warnings_generated"], 0);
     }
 }

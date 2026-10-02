@@ -18,31 +18,31 @@
 {% block content %}
 {% call m::page_header("Compare Battlecards", "layers", "Side-by-side comparison of battlecard sections across competitors.", "") %}
 
-<div class="apex-card p-4 mb-6">
-  <p class="text-xs text-rams-muted">Select battlecards to compare. All sections will be displayed side-by-side for competitive analysis.</p>
+{% if let Some(notice) = error_notice %}
+<div class="apex-card border border-rams-red/40 p-4 mb-6 text-sm font-semibold text-rams-red" role="alert" data-battlecard-error>
+  {{ notice }} Select 2–4 battlecards on the <a href="/battlecards" class="underline">battlecards list</a> and choose Compare selected.
 </div>
-
-<div class="overflow-x-auto">
-  <table class="apex-table w-full" aria-label="Battlecard comparison table">
+{% else %}
+<div class="overflow-x-auto apex-card">
+  <table class="apex-table w-full" aria-label="Battlecard comparison">
     <thead>
       <tr>
-        <th class="sticky left-0 z-10 bg-rams-module min-w-[140px]">Section</th>
+        <th scope="col" class="sticky left-0 z-10 bg-rams-module min-w-[140px]">Section</th>
         {% for card in battlecards %}
-        <th class="min-w-[200px]">{{ card.name }}</th>
+        <th scope="col" class="min-w-[200px]">
+          <a href="/battlecards/{{ card.id }}" class="hover:underline">{{ card.title }}</a>
+          <span class="block text-[10px] font-normal text-rams-muted normal-case">{% if !card.competitor_name.is_empty() %}vs {{ card.competitor_name }} · {% endif %}{{ card.status }}</span>
+        </th>
         {% endfor %}
       </tr>
     </thead>
     <tbody>
       {% for row in rows %}
       <tr>
-        <td class="sticky left-0 z-10 bg-rams-module font-bold text-[10px] uppercase tracking-[0.12em] text-rams-muted">{{ row.label }}</td>
+        <th scope="row" class="sticky left-0 z-10 bg-rams-module font-bold text-[10px] uppercase tracking-[0.12em] text-rams-muted text-left">{{ row.label }}</th>
         {% for cell in row.cells %}
-        <td class="text-[12px] {% if !cell.has_data %}text-rams-muted italic{% endif %}">
-          {% if cell.has_data %}
-          {{ cell.value }}
-          {% else %}
-          —
-          {% endif %}
+        <td class="text-[12px] align-top {% if !cell.has_data %}text-rams-muted italic{% endif %}">
+          {% if cell.has_data %}{{ cell.value }}{% else %}—{% endif %}
         </td>
         {% endfor %}
       </tr>
@@ -50,13 +50,15 @@
     </tbody>
   </table>
 </div>
+{% endif %}
 
 <div class="mt-6 flex items-center justify-center gap-3">
-  <a href="/battlecards" class="apex-btn">← Back to Battlecards</a>
-  <a href="/battlecards/export/compare?ids={% for card in battlecards %}{{ card.id }}{% if !loop.last %},{% endif %}{% endfor %}&format=markdown"
-     class="apex-btn apex-btn-primary">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+  <a href="/battlecards" class="apex-btn apex-btn-secondary">← Back to Battlecards</a>
+  {% if error_notice.is_none() %}
+  <a href="{{ export_href }}" class="apex-btn apex-btn-primary" data-battlecard-compare-export download>
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     Export Comparison
   </a>
+  {% endif %}
 </div>
 {% endblock %}

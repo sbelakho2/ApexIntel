@@ -1,4 +1,3 @@
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,124 +23,15 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/53
 /// truncated instead of buffered unbounded into memory.
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
-/// Maximum redirects followed; more is treated as an error.
-const MAX_REDIRECTS: usize = 5;
-
 /// Cap on attacker-controlled waits (`Crawl-delay`, `Retry-After`): one hostile
 /// host must not hold a worker slot for hours.
 const MAX_DELAY: Duration = Duration::from_secs(60);
 
-/// Whether an address is a routable public address. Private, loopback,
-/// link-local, CGNAT, documentation, broadcast and unspecified ranges are
-/// rejected so a crawled page (or a redirect) cannot reach cloud metadata
-/// (169.254.169.254), MinIO, NATS monitoring, or internal APIs.
-fn is_public(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            !(v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.octets()[0] == 0
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64))
-        }
-        // `to_ipv4` covers IPv4-mapped (`::ffff:a.b.c.d`) *and* the deprecated
-        // IPv4-compatible (`::a.b.c.d`) forms, so `http://[::169.254.169.254]/`
-        // is classified through the IPv4 rules — matching
-        // `browser/validation.rs`.
-        IpAddr::V6(v6) => match v6.to_ipv4() {
-            Some(v4) => is_public(IpAddr::V4(v4)),
-            None => {
-                !(v6.is_loopback()
-                    || v6.is_unspecified()
-                    || (v6.segments()[0] & 0xfe00) == 0xfc00
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80)
-            }
-        },
-    }
-}
-
-/// DNS resolver that only yields public addresses. reqwest skips DNS for
-/// IP-literal URLs, so [`url_allowed`] is also enforced on the request URL and
-/// on every redirect target.
-#[derive(Debug)]
-struct PublicOnlyResolver;
-
-impl reqwest::dns::Resolve for PublicOnlyResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        Box::pin(async move {
-            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
-                .filter(|addr| is_public(addr.ip()))
-                .collect();
-            if addrs.is_empty() {
-                return Err("resolved only to non-public addresses".into());
-            }
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
-/// http(s) only, and any IP-literal host must be public. Shared with the
-/// crawler-adjacent fetchers ([`crate::poi_expansion`],
-/// [`crate::person_scraper`]) through [`secure_crawl_builder`].
-pub(crate) fn url_allowed(url: &Url) -> bool {
-    matches!(url.scheme(), "http" | "https")
-        && match url.host() {
-            Some(url::Host::Ipv4(ip)) => is_public(IpAddr::V4(ip)),
-            Some(url::Host::Ipv6(ip)) => is_public(IpAddr::V6(ip)),
-            Some(url::Host::Domain(_)) => true,
-            None => false,
-        }
-}
-
-/// Whether a redirect hop may be followed. `allow_private_targets` mirrors the
-/// [`secure_client_builder`] escape hatch; without it the hop must satisfy
-/// [`url_allowed`].
-pub(crate) fn redirect_allowed(url: &Url, allow_private_targets: bool) -> bool {
-    allow_private_targets || url_allowed(url)
-}
-
-/// Client builder with the SSRF protections applied to the request URL, DNS
-/// resolution and every redirect hop. `allow_private_targets` is the explicit
-/// test/dev escape hatch.
-pub(crate) fn secure_client_builder(
-    timeout: Duration,
-    user_agent: &str,
-    allow_private_targets: bool,
-) -> reqwest::ClientBuilder {
-    let builder = reqwest::ClientBuilder::new()
-        .timeout(timeout)
-        .user_agent(user_agent)
-        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= MAX_REDIRECTS {
-                attempt.error("too many redirects")
-            } else if !redirect_allowed(attempt.url(), allow_private_targets) {
-                attempt.stop()
-            } else {
-                attempt.follow()
-            }
-        }));
-    if allow_private_targets {
-        builder
-    } else {
-        builder.dns_resolver(Arc::new(PublicOnlyResolver))
-    }
-}
-
-/// Hardened builder for crawler-adjacent fetchers that do not go through
-/// [`CrawlClient`] (POI expansion, person scraper). It carries the same SSRF
-/// posture as a production crawl: DNS resolution is restricted to public
-/// addresses and every redirect hop is checked by [`redirect_allowed`].
-///
-/// Callers must additionally check the entry URL with [`url_allowed`] (IP
-/// literals skip DNS) and read bodies with [`read_body_capped`], mirroring
-/// [`CrawlClient::fetch_text`].
-pub(crate) fn secure_crawl_builder(timeout: Duration, user_agent: &str) -> reqwest::ClientBuilder {
-    secure_client_builder(timeout, user_agent, false)
-}
+/// Entry-URL guard shared with the crawler-adjacent fetchers
+/// ([`crate::poi_expansion`], [`crate::person_scraper`]). The guarded
+/// implementation (public-only DNS, redirect validation) lives in
+/// [`crate::http`].
+pub(crate) use crate::http::url_allowed;
 
 #[derive(Clone)]
 pub struct CrawlClientConfig {
@@ -245,12 +135,12 @@ pub struct FetchResponse {
 
 impl CrawlClient {
     pub fn new(config: CrawlClientConfig) -> Result<Self, CrawlError> {
-        let client = secure_client_builder(
-            config.timeout,
-            &config.user_agent,
-            config.allow_private_targets,
-        )
-        .build()
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: config.timeout,
+            user_agent: Some(config.user_agent.clone()),
+            allow_private_targets: config.allow_private_targets,
+            ..crate::http::ExternalClientOptions::default()
+        })
         .map_err(|error| CrawlError::Transport {
             url: "client_builder".to_string(),
             message: error.to_string(),
@@ -631,24 +521,25 @@ impl CrawlClient {
                         return Ok(client.clone());
                     }
                 }
-                let client = secure_client_builder(
-                    self.config.timeout,
-                    user_agent,
-                    self.config.allow_private_targets,
-                )
-                .proxy(reqwest::Proxy::all(proxy_url).map_err(|error| {
-                    CrawlError::ProxyConfiguration {
+                let client =
+                    crate::http::external_client_with(crate::http::ExternalClientOptions {
+                        timeout: self.config.timeout,
+                        user_agent: Some(user_agent.to_string()),
+                        proxy: Some(reqwest::Proxy::all(proxy_url).map_err(|error| {
+                            CrawlError::ProxyConfiguration {
+                                url: request_url.to_string(),
+                                proxy: proxy_url.to_string(),
+                                message: error.to_string(),
+                            }
+                        })?),
+                        allow_private_targets: self.config.allow_private_targets,
+                        ..crate::http::ExternalClientOptions::default()
+                    })
+                    .map_err(|error| CrawlError::ProxyConfiguration {
                         url: request_url.to_string(),
                         proxy: proxy_url.to_string(),
                         message: error.to_string(),
-                    }
-                })?)
-                .build()
-                .map_err(|error| CrawlError::ProxyConfiguration {
-                    url: request_url.to_string(),
-                    proxy: proxy_url.to_string(),
-                    message: error.to_string(),
-                })?;
+                    })?;
                 // The proxy pool is small and bounded by configuration; one
                 // client per (proxy, user-agent) keeps its connection pool.
                 if let Ok(mut cache) = self.proxy_clients.lock() {
@@ -668,33 +559,12 @@ pub(crate) async fn read_body_capped(
     resp: reqwest::Response,
     request_url: &str,
 ) -> Result<String, CrawlError> {
-    let mut resp = resp;
-    let mut bytes: Vec<u8> = Vec::new();
-    loop {
-        match resp.chunk().await {
-            Ok(Some(chunk)) => {
-                if bytes.len() + chunk.len() > MAX_BODY_BYTES {
-                    let remaining = MAX_BODY_BYTES.saturating_sub(bytes.len());
-                    bytes.extend_from_slice(&chunk[..remaining]);
-                    warn!(
-                        url = request_url,
-                        cap_bytes = MAX_BODY_BYTES,
-                        "crawl_client: response body exceeded the cap; truncated"
-                    );
-                    break;
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            Ok(None) => break,
-            Err(error) => {
-                return Err(CrawlError::BodyRead {
-                    url: request_url.to_string(),
-                    message: error.to_string(),
-                });
-            }
-        }
-    }
-    Ok(String::from_utf8_lossy(&bytes).to_string())
+    crate::http::read_capped(resp, MAX_BODY_BYTES)
+        .await
+        .map_err(|error| CrawlError::BodyRead {
+            url: request_url.to_string(),
+            message: error.to_string(),
+        })
 }
 
 fn parse_cache_control_max_age(value: &str) -> Option<Duration> {
@@ -709,6 +579,8 @@ fn parse_cache_control_max_age(value: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::browser::validation::is_private_host;
 
     use std::collections::VecDeque;
     use std::net::SocketAddr;
@@ -925,16 +797,15 @@ mod tests {
             "::169.254.169.254", // IPv4-compatible IPv6 -> metadata
             "::ffff:10.0.0.1",   // IPv4-mapped IPv6 -> private
             "::ffff:127.0.0.1",
+            "localhost",
         ] {
-            let ip: IpAddr = blocked.parse().expect("test IP parses");
             assert!(
-                !is_public(ip),
+                is_private_host(blocked),
                 "{blocked} must not be reachable by the crawler"
             );
         }
         for allowed in ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"] {
-            let ip: IpAddr = allowed.parse().expect("test IP parses");
-            assert!(is_public(ip), "{allowed} is a public address");
+            assert!(!is_private_host(allowed), "{allowed} is a public address");
         }
     }
 
@@ -967,33 +838,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn redirect_guard_rejects_private_ip_literals() {
-        for blocked in [
-            "http://169.254.169.254/latest/meta-data/",
-            "http://127.0.0.1:8222/",
-            "http://[::1]/",
-            "http://[::169.254.169.254]/",
-            "http://[::ffff:10.0.0.1]/",
-            "file:///etc/passwd",
-            "ftp://example.com/x",
-        ] {
-            let url = Url::parse(blocked).expect("url parses");
-            assert!(
-                !redirect_allowed(&url, false),
-                "redirect hop must be blocked: {blocked}"
-            );
-        }
-        let public = Url::parse("https://example.com/").expect("url parses");
-        assert!(redirect_allowed(&public, false));
-        // The explicit test escape hatch keeps its semantics.
-        let loopback = Url::parse("http://127.0.0.1:8222/").expect("url parses");
-        assert!(redirect_allowed(&loopback, true));
-    }
-
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
-    async fn secure_crawl_builder_blocks_redirect_to_private_ip_literal() {
+    async fn factory_blocks_redirect_to_private_ip_literal() {
         // The entry URL is a loopback IP literal (reqwest skips DNS for IP
         // literals, so the public-only resolver does not block it); the
         // redirect hop points at the metadata service and must be stopped.
@@ -1001,8 +848,7 @@ mod tests {
             "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
         ])
         .await;
-        let client = secure_crawl_builder(Duration::from_secs(5), "test-agent")
-            .build()
+        let client = crate::http::external_client(Duration::from_secs(5), None)
             .expect("build hardened client");
         let response = client
             .get(format!("http://{addr}/start"))
@@ -1035,9 +881,12 @@ mod tests {
         let redirect: &'static str = Box::leak(redirect.into_boxed_str());
         let start = start_test_server(vec![redirect]).await;
 
-        let client = secure_client_builder(Duration::from_secs(5), "test-agent", true)
-            .build()
-            .expect("build escape-hatch client");
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(5),
+            allow_private_targets: true,
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .expect("build escape-hatch client");
         let body = client
             .get(format!("http://{start}/start"))
             .send()
@@ -1059,7 +908,8 @@ mod tests {
             body.len()
         );
         let addr = start_lenient_test_server(vec![response]).await;
-        let resp = reqwest::Client::new()
+        let resp = crate::http::external_client(Duration::from_secs(5), None)
+            .expect("build test client")
             .get(format!("http://{addr}/big"))
             .send()
             .await

@@ -1,0 +1,106 @@
+{# HTMX partial: status chips + battlecard grid + compare selection + pager.
+   Rendered inside #battlecards-results for full-page loads (included by
+   list.html) and for chip/pagination swaps. #}
+{% import "macros.html" as m %}
+
+{% if let Some(notice) = results.degraded_notice %}
+<div class="apex-card mb-4 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Filter battlecards by status">
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Status:</span>
+    <a href="/battlecards"
+       hx-get="/battlecards"
+       hx-target="#battlecards-results"
+       hx-push-url="true"
+       {% if results.active_status == "" %}aria-current="true"{% endif %}
+       class="apex-chip {% if results.active_status == "" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">All</a>
+    <a href="/battlecards?status=published"
+       hx-get="/battlecards?status=published"
+       hx-target="#battlecards-results"
+       hx-push-url="true"
+       {% if results.active_status == "published" %}aria-current="true"{% endif %}
+       class="apex-chip {% if results.active_status == "published" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Published</a>
+    <a href="/battlecards?status=draft"
+       hx-get="/battlecards?status=draft"
+       hx-target="#battlecards-results"
+       hx-push-url="true"
+       {% if results.active_status == "draft" %}aria-current="true"{% endif %}
+       class="apex-chip {% if results.active_status == "draft" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Draft</a>
+    <a href="/battlecards?status=archived"
+       hx-get="/battlecards?status=archived"
+       hx-target="#battlecards-results"
+       hx-push-url="true"
+       {% if results.active_status == "archived" %}aria-current="true"{% endif %}
+       class="apex-chip {% if results.active_status == "archived" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Archived</a>
+  </div>
+</div>
+
+<div class="apex-card p-4">
+  {% if results.battlecards.is_empty() %}
+    {% if results.active_status == "" %}
+    {% call m::empty_state("No battlecards yet", "Create a battlecard for a competitor with New Battlecard, or from a company page.") %}
+    {% else %}
+    {% call m::empty_state("No battlecards with this status", "Choose another status filter to see more battlecards.") %}
+    {% endif %}
+  {% else %}
+  {% if results.can_compare() %}
+  <form id="battlecards-compare" method="get" action="/battlecards/compare" class="mb-4 flex flex-wrap items-center justify-between gap-2">
+    <p class="text-[10px] font-bold uppercase tracking-[0.12em] text-rams-muted">Select 2–4 battlecards to compare side by side.</p>
+    <button type="submit" class="apex-btn apex-btn-secondary text-[10px]" data-battlecard-compare>Compare selected</button>
+  </form>
+  {% endif %}
+  <ul class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Battlecards">
+  {% for bc in results.battlecards %}
+  <li class="apex-card p-4" data-battlecard-id="{{ bc.id }}">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <a href="/battlecards/{{ bc.id }}" class="font-bold text-sm hover:underline block truncate">{{ bc.title }}</a>
+        {% if !bc.competitor_name.is_empty() %}
+        <p class="text-[10px] text-rams-muted uppercase mt-1">vs {{ bc.competitor_name }}</p>
+        {% endif %}
+      </div>
+      {% if bc.status == "published" %}
+      {% call m::status_badge(bc.status, "success") %}
+      {% else if bc.status == "draft" %}
+      {% call m::status_badge(bc.status, "warning") %}
+      {% else %}
+      {% call m::status_badge(bc.status, "neutral") %}
+      {% endif %}
+    </div>
+    <div class="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-rams-muted">
+      <span>{{ bc.section_count }} of {{ results.section_total }} sections</span>
+      <span>Updated {{ bc.updated_at }}</span>
+      {% if results.can_compare() %}
+      <label class="ml-auto inline-flex items-center gap-1 font-bold uppercase">
+        <input type="checkbox" name="ids" value="{{ bc.id }}" form="battlecards-compare" aria-label="Compare {{ bc.title }}">
+        Compare
+      </label>
+      {% endif %}
+    </div>
+  </li>
+  {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+{% if results.has_prev() || results.has_next() %}
+<nav class="mt-6 flex items-center justify-center gap-2" aria-label="Battlecard pages">
+  {% if results.has_prev() %}
+  <a href="/battlecards?page={{ results.page - 1 }}&per_page={{ results.per_page }}&status={{ results.active_status }}"
+     hx-get="/battlecards?page={{ results.page - 1 }}&per_page={{ results.per_page }}&status={{ results.active_status }}"
+     hx-target="#battlecards-results"
+     hx-push-url="true"
+     class="apex-action-link">← Prev</a>
+  {% endif %}
+  <span class="text-[10px] font-bold text-rams-muted">Page {{ results.page }}</span>
+  {% if results.has_next() %}
+  <a href="/battlecards?page={{ results.page + 1 }}&per_page={{ results.per_page }}&status={{ results.active_status }}"
+     hx-get="/battlecards?page={{ results.page + 1 }}&per_page={{ results.per_page }}&status={{ results.active_status }}"
+     hx-target="#battlecards-results"
+     hx-push-url="true"
+     class="apex-action-link">Next →</a>
+  {% endif %}
+</nav>
+{% endif %}

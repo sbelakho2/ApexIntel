@@ -286,6 +286,8 @@ impl LlmClient {
         api_key: Option<String>,
         config: InferenceConfig,
     ) -> Self {
+        // Operator-configured LLM endpoint (trusted infrastructure), not crawled content.
+        #[allow(clippy::disallowed_methods)]
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()

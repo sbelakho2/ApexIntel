@@ -227,7 +227,10 @@ pub use admin::is_valid_manual_trigger_kind;
 mod analytics;
 mod artifacts;
 mod battlecards;
-pub use battlecards::BattlecardRow;
+pub use battlecards::{
+    BattlecardCompanyOption, BattlecardRow, BattlecardWriteOutcome, CreateBattlecardOutcome,
+    BATTLECARD_STATUSES, BATTLECARD_TITLE_MAX_CHARS,
+};
 mod alert_configs;
 mod alert_subscriptions;
 pub use alert_subscriptions::UserAlertSubscriptionRecord;

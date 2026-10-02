@@ -8,6 +8,7 @@
 //! - `POST /api/activity` — insert a system event (worker-driven)
 
 use crate::*;
+use apex_api::routes::collaboration::{validate_activity_action_type, validate_visibility};
 use apex_shared::ActivityEvent as SharedActivityEvent;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -161,6 +162,10 @@ pub struct CreateActivityRequest {
     pub entity_id: Option<String>,
     pub entity_name: Option<String>,
     pub details: Option<serde_json::Value>,
+    /// Activity visibility. Defaults to the historical `organization` value
+    /// when omitted; must otherwise be one of the `chk_activity_visibility`
+    /// literals (validated before the INSERT).
+    pub visibility: Option<String>,
 }
 
 pub(crate) async fn create_activity_event(
@@ -184,12 +189,27 @@ pub(crate) async fn create_activity_event(
         );
     }
 
+    // Validate against the database CHECK literals up front so an unknown
+    // value is a 400, not a constraint violation reported as a 500.
+    if let Err(err) = validate_activity_action_type(&payload.action_type) {
+        return (StatusCode::BAD_REQUEST, Json(error_response(err)));
+    }
+    let visibility = payload
+        .visibility
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("organization");
+    if let Err(err) = validate_visibility(visibility) {
+        return (StatusCode::BAD_REQUEST, Json(error_response(err)));
+    }
+
     let result = sqlx::query(
         r#"
         INSERT INTO activity_feed (
             actor_id, actor_name, action_type, entity_type,
             entity_id, entity_name, details, visibility
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'organization')
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id::text
         "#,
     )
@@ -200,6 +220,7 @@ pub(crate) async fn create_activity_event(
     .bind(&payload.entity_id)
     .bind(&payload.entity_name)
     .bind(&details)
+    .bind(visibility)
     .fetch_one(&state.store.pool)
     .await;
 

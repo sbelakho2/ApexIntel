@@ -155,6 +155,8 @@ async fn check_nats(nats_url: &str) -> ComponentCheck {
     }
 }
 
+// Operator-configured MinIO health probe endpoint, not crawled content.
+#[allow(clippy::disallowed_methods)]
 async fn check_minio(minio_endpoint: &str) -> ComponentCheck {
     let start = Instant::now();
     match reqwest::Client::new()
@@ -184,6 +186,8 @@ async fn check_minio(minio_endpoint: &str) -> ComponentCheck {
     }
 }
 
+// Operator-configured LLM server health probe endpoint, not crawled content.
+#[allow(clippy::disallowed_methods)]
 async fn check_llm(llm_base_url: &str) -> ComponentCheck {
     let start = Instant::now();
     match reqwest::Client::new()

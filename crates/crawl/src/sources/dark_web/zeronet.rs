@@ -84,11 +84,12 @@ pub struct ZeroNetMonitor {
 impl ZeroNetMonitor {
     /// Create with explicit configuration.
     pub fn new(config: ZeroNetConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) ZeroNet Monitor")
-            .build()
-            .context("building ZeroNet monitor HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some(crate::dark_web::DARK_WEB_USER_AGENT.to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building ZeroNet monitor HTTP client")?;
 
         Ok(Self { client, config })
     }
@@ -194,7 +195,8 @@ impl ZeroNetMonitor {
             date_added: Option<i64>,
         }
 
-        let body = match resp.text().await {
+        let body = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(body) => body,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(

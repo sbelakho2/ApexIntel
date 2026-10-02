@@ -105,7 +105,16 @@ impl TorClient {
             Err(e) => {
                 warn!("tor_client: failed to build SOCKS5 client: {e:#}");
                 Self {
-                    client: reqwest::Client::new(),
+                    client: crate::http::external_client_or_panic(
+                        crate::http::ExternalClientOptions {
+                            timeout: Duration::from_secs(90),
+                            user_agent: Some(
+                                "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0"
+                                    .to_string(),
+                            ),
+                            ..crate::http::ExternalClientOptions::default()
+                        },
+                    ),
                     available: false,
                 }
             }
@@ -293,7 +302,9 @@ impl TorClient {
             .send()
             .await
             .context("tor GET failed")?;
-        let text = resp.text().await.context("tor response body")?;
+        let text = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+            .await
+            .context("tor response body")?;
         Ok(text)
     }
 }
@@ -337,21 +348,24 @@ fn build_tor_client() -> Result<reqwest::Client> {
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
 
-    let mut builder = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all("socks5h://127.0.0.1:9050")?)
-        .timeout(Duration::from_secs(90))
-        .connect_timeout(Duration::from_secs(30))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0");
-
     // Only disable TLS verification if explicitly opted in via env var.
     // Onion sites may use self-signed certs, but disabling verification globally
     // opens the door to MITM attacks. Use APEX_TOR_DANGEROUS_INSECURE_TLS=1 sparingly.
     if disable_tls {
         tracing::warn!("Tor client TLS verification DISABLED via APEX_TOR_DANGEROUS_INSECURE_TLS");
-        builder = builder.danger_accept_invalid_certs(true);
     }
 
-    builder.build().context("build tor reqwest client")
+    crate::http::external_client_with(crate::http::ExternalClientOptions {
+        timeout: Duration::from_secs(90),
+        user_agent: Some(
+            "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0".to_string(),
+        ),
+        proxy: Some(reqwest::Proxy::all("socks5h://127.0.0.1:9050")?),
+        connect_timeout: Some(Duration::from_secs(30)),
+        danger_accept_invalid_certs: disable_tls,
+        ..crate::http::ExternalClientOptions::default()
+    })
+    .context("build tor reqwest client")
 }
 
 /// Parse the PwnDB HTML response and extract `BreachRecord` entries.

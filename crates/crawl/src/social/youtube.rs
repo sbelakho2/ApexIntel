@@ -26,11 +26,12 @@ pub struct YouTubeScraper {
 
 impl YouTubeScraper {
     pub fn new(api_key: Option<String>) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) OSINT Collector")
-            .build()
-            .context("building YouTube HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(15),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) OSINT Collector".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building YouTube HTTP client")?;
         Ok(Self { client, api_key })
     }
 
@@ -49,15 +50,16 @@ impl YouTubeScraper {
         let url = format!("{}?channel_id={}", YOUTUBE_RSS_BASE, channel_id);
         debug!(channel_id, "Fetching YouTube RSS");
 
-        let xml = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("YouTube RSS GET")?
-            .text()
-            .await
-            .context("reading YouTube RSS body")?;
+        let xml = crate::http::read_capped(
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .context("YouTube RSS GET")?,
+            crate::http::MAX_EXTERNAL_BODY_BYTES,
+        )
+        .await
+        .context("reading YouTube RSS body")?;
 
         Ok(parse_youtube_rss(&xml, max))
     }
@@ -72,11 +74,10 @@ impl YouTubeScraper {
             .context("YouTube API key required for search")?;
 
         let url = format!(
-            "{}/search?part=snippet&type=video&q={}&maxResults={}&key={}",
+            "{}/search?part=snippet&type=video&q={}&maxResults={}",
             YOUTUBE_API_BASE,
             urlencoding::encode(query),
             max.min(50),
-            key
         );
 
         debug!(query, "YouTube API search");
@@ -84,6 +85,7 @@ impl YouTubeScraper {
         let resp = self
             .client
             .get(&url)
+            .header("X-Goog-Api-Key", key)
             .send()
             .await
             .context("YouTube API search request")?;
@@ -93,7 +95,10 @@ impl YouTubeScraper {
             return Ok(vec![]);
         }
 
-        let data: YtSearchResponse = resp.json().await.context("parsing YouTube API response")?;
+        let data: YtSearchResponse =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("parsing YouTube API response")?;
 
         let posts = data
             .items
@@ -128,18 +133,21 @@ impl YouTubeScraper {
             .context("YouTube API key required for stats")?;
 
         let url = format!(
-            "{}/videos?part=statistics&id={}&key={}",
-            YOUTUBE_API_BASE, video_id, key
+            "{}/videos?part=statistics&id={}",
+            YOUTUBE_API_BASE,
+            urlencoding::encode(video_id)
         );
 
-        let resp: YtVideoResponse = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await
-            .context("parsing video stats")?;
+        let resp: YtVideoResponse = crate::http::read_capped_json(
+            self.client
+                .get(&url)
+                .header("X-Goog-Api-Key", key)
+                .send()
+                .await?,
+            crate::http::MAX_EXTERNAL_BODY_BYTES,
+        )
+        .await
+        .context("parsing video stats")?;
 
         let stats = resp
             .items

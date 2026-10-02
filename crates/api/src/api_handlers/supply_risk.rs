@@ -11,10 +11,48 @@ use uuid::Uuid;
 pub struct SupplyRiskItem {
     pub id: String,
     pub name: String,
-    pub risk_level: String,
+    /// Risk level recorded on the activity details; `None` = not recorded
+    /// (never a defaulted "medium").
+    pub risk_level: Option<String>,
     pub category: String,
-    pub impact_score: i64,
+    /// Impact score recorded on the activity details; `None` = not recorded
+    /// (never a defaulted 50).
+    pub impact_score: Option<i64>,
     pub last_detected: String,
+}
+
+fn supply_risk_item(record: &apex_store::postgres::ActivityFeedRecord) -> SupplyRiskItem {
+    let category = record
+        .details
+        .get("category")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("supplier")
+        .to_string();
+    SupplyRiskItem {
+        id: record.id.to_string(),
+        name: record
+            .entity_name
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string()),
+        // A missing detail is unknown, not a fabricated "medium".
+        risk_level: record
+            .details
+            .get("risk_level")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        category,
+        // A missing detail is unknown, not a fabricated 50.
+        impact_score: record
+            .details
+            .get("impact_score")
+            .and_then(serde_json::Value::as_i64),
+        last_detected: record
+            .details
+            .get("detected_at")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| record.created_at.to_rfc3339()),
+    }
 }
 
 pub(crate) async fn get_supply_risks(
@@ -67,31 +105,7 @@ pub(crate) async fn get_supply_risks(
                 )
         })
         .take(100)
-        .map(|record| SupplyRiskItem {
-            id: record.id.to_string(),
-            name: record
-                .entity_name
-                .clone()
-                .unwrap_or_else(|| "Unknown".to_string()),
-            risk_level: record
-                .details
-                .get("risk_level")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("medium")
-                .to_string(),
-            category: category_of(record),
-            impact_score: record
-                .details
-                .get("impact_score")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(50),
-            last_detected: record
-                .details
-                .get("detected_at")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| record.created_at.to_rfc3339()),
-        })
+        .map(supply_risk_item)
         .collect();
 
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -106,4 +120,44 @@ pub(crate) async fn get_supply_risks(
                 .with_duration(duration_ms),
         )),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(details: serde_json::Value) -> apex_store::postgres::ActivityFeedRecord {
+        apex_store::postgres::ActivityFeedRecord {
+            id: uuid::Uuid::new_v4(),
+            actor_id: "analyst".into(),
+            actor_name: "Analyst".into(),
+            action_type: "threat_detected".into(),
+            entity_type: None,
+            entity_id: None,
+            entity_name: Some("Acme".into()),
+            details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "workspace".into(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Missing risk details are unknown, never a defaulted "medium"/50.
+    #[test]
+    fn unrecorded_risk_details_stay_unknown() {
+        let item = supply_risk_item(&record(serde_json::json!({})));
+        assert_eq!(item.risk_level, None);
+        assert_eq!(item.impact_score, None);
+    }
+
+    #[test]
+    fn recorded_risk_details_pass_through() {
+        let item = supply_risk_item(&record(serde_json::json!({
+            "risk_level": "high",
+            "impact_score": 82,
+        })));
+        assert_eq!(item.risk_level.as_deref(), Some("high"));
+        assert_eq!(item.impact_score, Some(82));
+    }
 }

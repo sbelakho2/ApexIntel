@@ -25,6 +25,7 @@ use std::time::Instant;
 use chrono::Utc;
 use uuid::Uuid;
 
+use super::nightly::{match_entities_in_text, EntityMatcher};
 use crate::{JobKind, JobRun, PgStore};
 use apex_crawl::acquisition::{AcquisitionOutcome, AcquisitionRunCounters, AcquisitionRunDecision};
 
@@ -33,6 +34,11 @@ use apex_crawl::acquisition::{AcquisitionOutcome, AcquisitionRunCounters, Acquis
 /// code might use for the same source strings. Derived deterministically so the
 /// same source string always maps to the same observation id.
 const TENDER_ID_NAMESPACE: Uuid = Uuid::from_u128(0xb248_ec9d_3471_b10b_5144_2bc2_f5f5_4ad9);
+
+/// Hard cap on a portal response body. The guarded client only enforces the
+/// crawler body cap when callers read through `apex_crawl::http::read_capped`;
+/// `.text()` would buffer an unbounded hostile response.
+const MAX_PORTAL_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 /// MENA procurement portal definitions. `search_url` is a query template where
 /// `{q}` is replaced with a URL-encoded keyword; portals that expose no
@@ -112,22 +118,35 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let start = Instant::now();
 
     let company_names = load_company_names(store).await;
-
-    let client = match reqwest::Client::builder()
-        .user_agent("ApexIntel-Tenders/1.0 (+research; tenders)")
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-    {
-        Ok(client) => client,
+    // Same word-boundary + corroboration matcher as the crawl cycle and social
+    // scan. A failed build fails the run rather than silently degrading to
+    // substring matching (or to no entity links at all).
+    let matcher = match EntityMatcher::from_index(&company_names) {
+        Ok(matcher) => matcher,
         Err(error) => {
-            // A transport that cannot be constructed is a job failure, not a
-            // silent fallback to another client configuration.
             run.fail(&format!(
-                "tender_scan: failed to build the HTTP client: {error}"
+                "tender_scan: failed to build entity matcher: {error}"
             ));
             return run;
         }
     };
+
+    let client =
+        match apex_crawl::http::external_client_with(apex_crawl::http::ExternalClientOptions {
+            timeout: std::time::Duration::from_secs(20),
+            user_agent: Some("ApexIntel-Tenders/1.0 (+research; tenders)".to_string()),
+            ..apex_crawl::http::ExternalClientOptions::default()
+        }) {
+            Ok(client) => client,
+            Err(error) => {
+                // A transport that cannot be constructed is a job failure, not a
+                // silent fallback to another client configuration.
+                run.fail(&format!(
+                    "tender_scan: failed to build the HTTP client: {error}"
+                ));
+                return run;
+            }
+        };
 
     let mut total_posted: u64 = 0;
     let mut total_relevant: u64 = 0;
@@ -149,27 +168,41 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
             }
             total_relevant += 1;
 
-            // Link to a tracked company if the buyer matches a known name.
-            let entity_id = match_posted_company(&posting.buyer, &posting.title, &company_names);
-
-            let was_new = store_tender_observation(store, portal, posting, entity_id).await;
-            match was_new {
-                Ok(true) => {
-                    total_linked += entity_id.is_some() as u64;
-                }
-                Ok(false) => {
-                    total_deduped += 1;
-                }
-                Err(e) => {
-                    // A fetched posting that cannot be persisted is data loss,
-                    // never an optional warning.
-                    counters.record_persistence_failure();
-                    tracing::warn!(
-                        portal = portal.code,
-                        url = %posting.url,
-                        error = %e,
-                        "tender_scan: failed to store TenderPosted observation"
-                    );
+            // Link to every tracked company mentioned in the posting (the
+            // buyer prefix lives in the body window; the title is included so
+            // a title-only mention still links). One observation per matched
+            // entity, or one unlinked observation when nothing matches — the
+            // same contract as the crawl cycle and social scan.
+            let matched = match_entities_in_text(
+                &format!("{} {}", posting.title, posting.body),
+                &posting.title,
+                &matcher,
+            );
+            let targets: Vec<Option<Uuid>> = if matched.is_empty() {
+                vec![None]
+            } else {
+                matched.into_iter().map(Some).collect()
+            };
+            for entity_id in targets {
+                let was_new = store_tender_observation(store, portal, posting, entity_id).await;
+                match was_new {
+                    Ok(true) => {
+                        total_linked += entity_id.is_some() as u64;
+                    }
+                    Ok(false) => {
+                        total_deduped += 1;
+                    }
+                    Err(e) => {
+                        // A fetched posting that cannot be persisted is data
+                        // loss, never an optional warning.
+                        counters.record_persistence_failure();
+                        tracing::warn!(
+                            portal = portal.code,
+                            url = %posting.url,
+                            error = %e,
+                            "tender_scan: failed to store TenderPosted observation"
+                        );
+                    }
                 }
             }
         }
@@ -319,7 +352,7 @@ async fn fetch_and_parse(
             Some(status.as_u16()),
         );
     }
-    let html = match resp.text().await {
+    let html = match apex_crawl::http::read_capped(resp, MAX_PORTAL_BODY_BYTES).await {
         Ok(html) => html,
         Err(error) => {
             return AcquisitionOutcome::fetch_failed(
@@ -470,6 +503,9 @@ async fn store_tender_observation(
         "url": posting.url,
         "portal": portal.name,
         "country": portal.country,
+        // The scraped listing carries no publication timestamp, so `ts_utc`
+        // is the scan time; label it instead of presenting it as posted_at.
+        "timestamp_basis": "scraped_at",
     });
 
     let mut obs = apex_core::entities::Observation::new(
@@ -479,8 +515,10 @@ async fn store_tender_observation(
         provenance,
     );
     // Deterministic ID: same portal + reference/url → same observation, so
-    // re-scraping a still-open tender is an idempotent no-op.
-    obs.id = deterministic_tender_id(portal.code, posting);
+    // re-scraping a still-open tender is an idempotent no-op. Entity-linked
+    // observations get an entity-scoped suffix so every matched company gets
+    // its own row instead of colliding with the first match.
+    obs.id = deterministic_tender_id(portal.code, posting, entity_id);
     obs.entity_id = entity_id;
     obs.entity_type = Some("company".to_string());
     obs.confidence = if entity_id.is_some() { 0.85 } else { 0.6 };
@@ -499,37 +537,26 @@ async fn store_tender_observation(
 /// Derive a stable UUIDv5 from the portal code and the posting's reference
 /// number (falling back to its URL). The same input always yields the same ID,
 /// making repeated scans of an unchanged tender idempotent.
-fn deterministic_tender_id(portal_code: &str, posting: &RawPosting) -> Uuid {
+///
+/// Entity-linked observations append `|entity:<uuid>` so each matched company
+/// has a distinct row. Rows written before that suffix existed can re-insert
+/// once after the switch; `observations` has no natural unique key besides the
+/// primary key, so there is nothing to make the old and new schemes collide on
+/// (the same documented trade-off as the social scan, B326).
+fn deterministic_tender_id(
+    portal_code: &str,
+    posting: &RawPosting,
+    entity_id: Option<Uuid>,
+) -> Uuid {
     let key = match &posting.reference {
         Some(r) if !r.trim().is_empty() => format!("{portal_code}|{r}"),
         _ => format!("{portal_code}|{}", posting.url),
     };
-    Uuid::new_v5(&TENDER_ID_NAMESPACE, key.as_bytes())
-}
-
-/// Match a posting's buyer (or title) against tracked company names.
-fn match_posted_company(
-    buyer: &Option<String>,
-    title: &str,
-    company_names: &[(Uuid, String)],
-) -> Option<Uuid> {
-    if company_names.is_empty() {
-        return None;
-    }
-    // Prefer the buyer field; fall back to the title.
-    let candidates: Vec<&str> = buyer
-        .as_deref()
-        .map(|b| vec![b, title])
-        .unwrap_or_else(|| vec![title]);
-    for text in candidates {
-        let lower = text.to_lowercase();
-        for (id, name) in company_names {
-            if lower.contains(&name.to_lowercase()) {
-                return Some(*id);
-            }
-        }
-    }
-    None
+    let scoped = match entity_id {
+        Some(entity_id) => format!("{key}|entity:{entity_id}"),
+        None => key,
+    };
+    Uuid::new_v5(&TENDER_ID_NAMESPACE, scoped.as_bytes())
 }
 
 /// Coarse sector detection from title+body (mirrors the tender parser).
@@ -838,15 +865,32 @@ mod tests {
             body: "irrelevant".into(),
             reference: Some("TN-2026-001".into()),
         };
-        let id_a = deterministic_tender_id("tuneps", &posting);
-        let id_b = deterministic_tender_id("tuneps", &posting);
+        let id_a = deterministic_tender_id("tuneps", &posting, None);
+        let id_b = deterministic_tender_id("tuneps", &posting, None);
         assert_eq!(id_a, id_b, "same posting must yield the same ID");
 
         // A different reference yields a different ID.
         let mut other = posting.clone_url_title();
         other.reference = Some("TN-2026-002".into());
-        let id_c = deterministic_tender_id("tuneps", &other);
+        let id_c = deterministic_tender_id("tuneps", &other, None);
         assert_ne!(id_a, id_c);
+
+        // Entity scoping keeps two matched companies on distinct rows while
+        // the unlinked id stays on the original scheme.
+        let entity_one = Uuid::new_v4();
+        let entity_two = Uuid::new_v4();
+        let scoped_one = deterministic_tender_id("tuneps", &posting, Some(entity_one));
+        let scoped_two = deterministic_tender_id("tuneps", &posting, Some(entity_two));
+        assert_ne!(scoped_one, scoped_two);
+        assert_ne!(
+            scoped_one, id_a,
+            "linked rows must not collide with the unlinked row"
+        );
+        assert_eq!(
+            deterministic_tender_id("tuneps", &posting, Some(entity_one)),
+            scoped_one,
+            "entity-scoped ids must be stable across runs"
+        );
     }
 
     #[test]
@@ -867,13 +911,13 @@ mod tests {
         };
         // ref present → keyed by ref
         assert_eq!(
-            deterministic_tender_id("p", &with_ref),
-            deterministic_tender_id("p", &with_ref)
+            deterministic_tender_id("p", &with_ref, None),
+            deterministic_tender_id("p", &with_ref, None)
         );
         // no ref → keyed by url, so differs from the ref-keyed one
         assert_ne!(
-            deterministic_tender_id("p", &no_ref),
-            deterministic_tender_id("p", &with_ref)
+            deterministic_tender_id("p", &no_ref, None),
+            deterministic_tender_id("p", &with_ref, None)
         );
     }
 
@@ -890,18 +934,80 @@ mod tests {
         assert_eq!(detect_sector("hello", "world"), None);
     }
 
+    fn matcher_for(companies: &[(Uuid, &str)]) -> EntityMatcher {
+        let index: Vec<(Uuid, String)> = companies
+            .iter()
+            .map(|(id, name)| (*id, (*name).to_string()))
+            .collect();
+        EntityMatcher::from_index(&index).expect("test matcher builds")
+    }
+
+    fn tender_text(posting: &RawPosting) -> String {
+        format!("{} {}", posting.title, posting.body)
+    }
+
     #[test]
-    fn match_posted_company_prefers_buyer_then_title() {
-        let companies = vec![(Uuid::new_v4(), "Acme Electronics".into())];
-        assert_eq!(
-            match_posted_company(&Some("Acme Electronics SARL".into()), "tender", &companies),
-            Some(companies[0].0)
+    fn tender_matching_uses_word_boundaries_not_substrings() {
+        let id = Uuid::new_v4();
+        let matcher = matcher_for(&[(id, "Ion")]);
+        // Whole word in the buyer/title text links.
+        let matched =
+            match_entities_in_text("Buyer: Ion Systems\nbattery tender", "Ion award", &matcher);
+        assert_eq!(matched, vec![id]);
+        // Inside another word ("nation") must not link.
+        let matched = match_entities_in_text(
+            "National grid battery tender",
+            "National grid battery tender",
+            &matcher,
         );
-        assert_eq!(
-            match_posted_company(&None, "Supply for Acme Electronics project", &companies),
-            Some(companies[0].0)
+        assert!(
+            matched.is_empty(),
+            "substring of a longer word must not create an entity link"
         );
-        assert_eq!(match_posted_company(&None, "unrelated", &companies), None);
+    }
+
+    #[test]
+    fn tender_matching_links_every_matched_entity() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let matcher = matcher_for(&[(first, "Acme Electronics"), (second, "Northwind Power")]);
+        let posting = RawPosting {
+            title: "BESS supply for Northwind Power".into(),
+            buyer: Some("Acme Electronics SARL".into()),
+            url: "https://tuneps.tn/123".into(),
+            body: "Buyer: Acme Electronics SARL\nNorthwind Power grid storage".into(),
+            reference: Some("TN-2026-001".into()),
+        };
+        let matched = match_entities_in_text(&tender_text(&posting), &posting.title, &matcher);
+        assert_eq!(
+            matched.len(),
+            2,
+            "every matched entity must be linked, not just the first"
+        );
+        assert!(matched.contains(&first));
+        assert!(matched.contains(&second));
+    }
+
+    #[test]
+    fn tender_matching_requires_corroboration_for_short_names() {
+        let id = Uuid::new_v4();
+        // "Ion" is short and on the ordinary-word stoplist: a single mention
+        // only links when the title also names it (the tender caller passes
+        // title+body as `text` and the title separately).
+        let matcher = matcher_for(&[(id, "Ion")]);
+        let title = "Ion wins the tender";
+        let text = format!("{title} Buyer: Ion");
+        assert_eq!(
+            match_entities_in_text(&text, title, &matcher),
+            vec![id],
+            "a title mention corroborates the single body mention"
+        );
+        let incognito =
+            match_entities_in_text("an ion engine was tested", "Market update", &matcher);
+        assert!(
+            incognito.is_empty(),
+            "an incidental single mention with no title corroboration must not link"
+        );
     }
 
     #[test]

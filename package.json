@@ -12,7 +12,7 @@
     "test": "npm run test:rust",
     "test:rust": "cargo test --workspace --locked --no-fail-fast && cargo test --workspace --all-features --locked --no-fail-fast",
     "test:pg": "bash scripts/ci/run_pg_integration_suites.sh",
-    "test:ci": "cargo fmt --all -- --check && bash scripts/ci/check_frontend_removed.sh && bash scripts/ci/check_false_success.sh --self-test && bash scripts/ci/check_false_success.sh && bash scripts/ci/check_identifier_decode.sh --self-test && bash scripts/ci/check_identifier_decode.sh && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings && npm run test && npm run test:pg",
+    "test:ci": "cargo fmt --all -- --check && bash scripts/ci/check_frontend_removed.sh && bash scripts/ci/check_false_success.sh --self-test && bash scripts/ci/check_false_success.sh && bash scripts/ci/check_identifier_decode.sh --self-test && bash scripts/ci/check_identifier_decode.sh && cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::disallowed_methods && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -W clippy::disallowed_methods && npm run test && npm run test:pg",
     "test:server-ui": "node scripts/ci/e2e_server_ui.mjs",
     "test:server-ui:specs": "playwright test -c playwright.server-ui.config.cjs",
     "test:server-ui:journeys": "playwright test -c playwright.server-ui.config.cjs e2e/server-ui-tasks.spec.js e2e/server-ui-journeys.spec.js",

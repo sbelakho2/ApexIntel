@@ -246,7 +246,7 @@ impl TriageQueue {
                    composite_score, is_overridden, override_score,
                    status::text, created_at, triaged_at, acknowledged_at
             FROM triage_queue
-            WHERE ($1::text IS NULL OR status = $1::triage_status)
+            WHERE ($1::text IS NULL OR status = $1::text)
             ORDER BY
                 CASE WHEN is_overridden THEN COALESCE(override_score, composite_score) ELSE composite_score END DESC,
                 created_at ASC
@@ -272,7 +272,7 @@ impl TriageQueue {
         let row: (i64,) = sqlx::query_as(
             r#"
             SELECT COUNT(*) FROM triage_queue
-            WHERE ($1::text IS NULL OR status = $1::triage_status)
+            WHERE ($1::text IS NULL OR status = $1::text)
             "#,
         )
         .bind(status_str)

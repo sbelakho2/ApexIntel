@@ -121,11 +121,12 @@ impl ShodanClient {
     }
 
     pub fn with_config(config: ShodanMonitorConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) Shodan Monitor")
-            .build()
-            .context("building Shodan HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io) Shodan Monitor".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building Shodan HTTP client")?;
         Ok(Self { client, config })
     }
 
@@ -147,6 +148,7 @@ impl ShodanClient {
             .query(&[("limit", &query.limit.to_string())])
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("Shodan search request")?;
 
         if !resp.status().is_success() {
@@ -154,7 +156,9 @@ impl ShodanClient {
         }
 
         let search_resp: ShodanSearchResponse =
-            resp.json().await.context("parse Shodan response")?;
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("parse Shodan response")?;
         let total = search_resp.total.unwrap_or(0);
         let hosts = search_resp.matches.unwrap_or_default();
 
@@ -178,12 +182,16 @@ impl ShodanClient {
             .query(&[("key", self.api_key().unwrap_or(""))])
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("Shodan host request")?;
 
         if !resp.status().is_success() {
             anyhow::bail!("Shodan host request returned {}", resp.status());
         }
-        let host: ShodanHost = resp.json().await.context("parse Shodan host response")?;
+        let host: ShodanHost =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("parse Shodan host response")?;
         Ok(host)
     }
 
@@ -195,12 +203,13 @@ impl ShodanClient {
             .query(&[("key", self.api_key().unwrap_or(""))])
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("Shodan alerts request")?;
 
-        let alerts_resp: AlertsResponse = resp
-            .json()
-            .await
-            .unwrap_or(AlertsResponse { triggers: None });
+        let alerts_resp: AlertsResponse =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .unwrap_or(AlertsResponse { triggers: None });
         Ok(alerts_resp.triggers.unwrap_or_default())
     }
 }

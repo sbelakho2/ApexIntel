@@ -149,11 +149,12 @@ pub struct HibpMonitor {
 impl HibpMonitor {
     /// Create with configuration.
     pub fn new(config: HibpMonitorConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io)")
-            .build()
-            .context("building HIBP HTTP client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(config.timeout_secs),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io)".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("building HIBP HTTP client")?;
         Ok(Self { client, config })
     }
 
@@ -202,7 +203,8 @@ impl HibpMonitor {
             return outcome;
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(
@@ -325,7 +327,8 @@ impl HibpMonitor {
             is_spam_list: bool,
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(
@@ -463,7 +466,8 @@ impl HibpMonitor {
             email_count: u64,
         }
 
-        let text = match resp.text().await {
+        let text = match crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await
+        {
             Ok(text) => text,
             Err(error) => {
                 let outcome = ParseOutcome::fetch_failed(

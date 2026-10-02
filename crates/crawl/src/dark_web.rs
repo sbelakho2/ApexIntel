@@ -8,10 +8,12 @@
 //! [`DarkWebMonitor`] maintains a list of [`DarkWebForum`] targets and
 //! [`MonitoringRule`] definitions.  Each scan cycle:
 //!
-//! 1. Fetches recent content from each active forum (via Tor SOCKS5 proxy if
-//!    configured, otherwise clearnet).
+//! 1. Fetches recent content from each active forum through the Tor SOCKS5
+//!    proxy when configured; without Tor, only forums explicitly marked
+//!    clearnet-safe (legitimate research/news/paste surfaces) are scanned.
 //! 2. Extracts candidate posts via HTML parsing / regex.
-//! 3. Matches against configured keywords and entity names.
+//! 3. Matches against configured keywords and requires a monitored entity
+//!    name/domain mention, so untargeted keyword hits are not emitted.
 //! 4. Scores each post by relevance.
 //! 5. Extracts embedded indicators (emails, domains, BTC addresses, etc.).
 //! 6. Returns scored [`DarkWebPost`] records for downstream persistence.
@@ -32,9 +34,12 @@
 
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use reqwest::{Client, Proxy, StatusCode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::sync::Once;
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -112,6 +117,36 @@ pub struct DarkWebForum {
     pub topics_of_interest: Vec<String>,
 }
 
+/// Hosts that are legitimate clearnet research / news / paste surfaces.
+///
+/// Criminal forums, card shops, exploit markets and leak sites must **never**
+/// be fetched from the operator's real IP; only these explicitly marked
+/// surfaces may be scanned without Tor.
+const CLEARNET_SAFE_HOSTS: &[&str] = &["haveibeenpwned.com", "pastebin.com", "darkfeed.io"];
+
+impl DarkWebForum {
+    /// Whether this forum may be scanned over clearnet (no Tor proxy).
+    ///
+    /// This is the explicit clearnet-safe marking required before
+    /// [`DarkWebMonitor::scan_forum`] will fetch a forum without Tor: the
+    /// forum must both be configured as [`AccessMethod::Clearnet`] and have a
+    /// host on the [`CLEARNET_SAFE_HOSTS`] allowlist of legitimate
+    /// research/news/paste surfaces. Criminal forums and marketplaces fail
+    /// this check, so a clearnet-only monitor can never expose the operator's
+    /// real IP to them.
+    pub fn is_clearnet_safe(&self) -> bool {
+        if self.access_method != AccessMethod::Clearnet {
+            return false;
+        }
+        let Some(host) = crate::browser::validation::host_from_url(&self.base_url) else {
+            return false;
+        };
+        CLEARNET_SAFE_HOSTS
+            .iter()
+            .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+    }
+}
+
 /// A forum post or thread matching monitoring criteria.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DarkWebPost {
@@ -126,6 +161,11 @@ pub struct DarkWebPost {
     /// Truncated content around the matched keywords.
     pub content_snippet: String,
     /// When the post was published.
+    ///
+    /// Best-effort: parsed from the page when the scraped text carries a date,
+    /// otherwise set to the fetch time (the field is not optional). Post ids
+    /// are content-addressed, so the fallback timestamp cannot cause the same
+    /// unchanged post to be re-reported.
     pub posted_at: DateTime<Utc>,
     /// Direct URL to the post.
     pub url: String,
@@ -184,7 +224,10 @@ pub fn default_forums() -> Vec<DarkWebForum> {
             base_url: "https://breachforums.st".into(),
             forum_type: ForumType::Leak,
             access_method: AccessMethod::Clearnet,
-            is_active: true, // enabled — clearnet mirror often works
+            // Criminal forum: never scanned over clearnet. A Tor proxy must be
+            // configured and the operator must explicitly re-enable it, so the
+            // operator's real IP/identity is never exposed to the forum.
+            is_active: false,
             last_checked: None,
             topics_of_interest: vec![
                 "databases".into(),
@@ -198,7 +241,8 @@ pub fn default_forums() -> Vec<DarkWebForum> {
             base_url: "https://exploit.in".into(),
             forum_type: ForumType::Exploit,
             access_method: AccessMethod::Clearnet,
-            is_active: true, // enabled — clearnet mirror often works
+            // Criminal exploit market: see BreachForums above.
+            is_active: false,
             last_checked: None,
             topics_of_interest: vec![
                 "exploit".into(),
@@ -248,6 +292,31 @@ const HIGH_PRIORITY_BOOST: f64 = 0.15;
 /// Decay factor for old posts (per day beyond the recency window).
 const AGE_DECAY_PER_DAY: f64 = 0.05;
 
+/// Generic browser-like User-Agent for dark-web scraping.
+///
+/// The monitor must not advertise `ApexIntel` to criminal infrastructure: a
+/// unique product UA is a stable fingerprint that links every scan back to the
+/// same operator, defeating the anonymity the Tor proxy provides.
+pub(crate) const DARK_WEB_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0";
+
+/// Maximum compiled regex program size (1 MiB) for all runtime-built regexes.
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+/// Minimum character length for a candidate block to be treated as a real post
+/// rather than navigation/menu chrome.
+const MIN_CANDIDATE_CHARS: usize = 80;
+
+/// Minimum whitespace-separated words for a candidate block to be a real post.
+const MIN_CANDIDATE_WORDS: usize = 8;
+
+/// Upper bound on snippet context so a hostile page cannot force huge slices.
+const MAX_SNIPPET_CONTEXT_CHARS: usize = 2_000;
+
+/// Warns once per process when scans cannot emit posts because no monitored
+/// entity names are configured.
+static NO_ENTITY_NAMES_WARNED: Once = Once::new();
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Entity extraction regexes
 // ─────────────────────────────────────────────────────────────────────────────
@@ -285,6 +354,11 @@ lazy_static! {
 
     /// Potential company name pattern (capitalized words, 2+).
     static ref RE_COMPANY: Regex = compile_regex(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b");
+
+    /// ISO-8601-ish date (optionally with a time) as often shown on forum posts.
+    static ref RE_POST_DATE: Regex = compile_regex(
+        r"\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?\b"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,41 +387,60 @@ pub struct DarkWebMonitor {
     pub forums: Vec<DarkWebForum>,
     /// Active monitoring rules.
     pub rules: Vec<MonitoringRule>,
+    /// Names / domains of the entities being monitored.
+    ///
+    /// A candidate becomes a post only when it mentions at least one of these
+    /// (case-insensitive word-boundary match). When the list is empty the
+    /// monitor emits no posts and logs once: untargeted keyword hits are not
+    /// intelligence and would otherwise flood downstream consumers.
+    pub entity_names: Vec<String>,
     /// Reusable HTTP client.
     http_client: Client,
-    /// Optional Tor SOCKS5 proxy URL (e.g., `socks5://127.0.0.1:9050`).
+    /// Optional Tor SOCKS5 proxy URL (always `socks5h://`, e.g.
+    /// `socks5h://127.0.0.1:9050`).
     tor_proxy_url: Option<String>,
 }
 
 impl DarkWebMonitor {
     /// Create a new monitor.
     ///
-    /// If `tor_proxy_url` is `Some("socks5://...")`, all HTTP traffic is routed
-    /// through the Tor SOCKS5 proxy.  Set to `None` for clearnet-only access.
+    /// If `tor_proxy_url` is `Some("socks5h://...")`, all HTTP traffic is
+    /// routed through the Tor SOCKS5 proxy with DNS resolved inside Tor. A
+    /// legacy `socks5://` URL is rewritten to `socks5h://` so operator input
+    /// can never silently leak DNS lookups. Set to `None` for clearnet-only
+    /// access (only forums marked clearnet-safe can then be scanned).
     ///
     /// Forums are seeded from [`default_forums()`] and can be replaced via
     /// [`set_forums`](Self::set_forums).
     pub fn new(tor_proxy_url: Option<String>) -> anyhow::Result<Self> {
-        let mut client_builder = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io)")
-            .pool_max_idle_per_host(4);
+        // Never let a plain `socks5://` proxy resolve DNS locally: rewrite it
+        // to `socks5h://` so hostname lookups happen inside Tor.
+        let tor_proxy_url = tor_proxy_url.map(|url| normalize_socks_proxy_url(&url));
 
         // Route through Tor SOCKS5 proxy if configured
-        if let Some(ref proxy_url) = tor_proxy_url {
-            let proxy = Proxy::all(proxy_url)
-                .map_err(|e| anyhow::anyhow!("invalid Tor proxy URL '{}': {}", proxy_url, e))?;
-            client_builder = client_builder.proxy(proxy);
-            debug!(proxy_url = %proxy_url, "dark_web: Tor proxy configured");
-        }
+        let proxy = match tor_proxy_url {
+            Some(ref proxy_url) => {
+                let proxy = Proxy::all(proxy_url)
+                    .map_err(|e| anyhow::anyhow!("invalid Tor proxy URL '{}': {}", proxy_url, e))?;
+                debug!(proxy_url = %proxy_url, "dark_web: Tor proxy configured");
+                Some(proxy)
+            }
+            None => None,
+        };
 
-        let http_client = client_builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {}", e))?;
+        let http_client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some(DARK_WEB_USER_AGENT.to_string()),
+            proxy,
+            pool_max_idle_per_host: Some(4),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {}", e))?;
 
         Ok(Self {
             forums: default_forums(),
             rules: Vec::new(),
+            entity_names: Vec::new(),
             http_client,
             tor_proxy_url,
         })
@@ -361,6 +454,16 @@ impl DarkWebMonitor {
     /// Replace the default rules with a custom set.
     pub fn set_rules(&mut self, rules: Vec<MonitoringRule>) {
         self.rules = rules;
+    }
+
+    /// Replace the monitored entity names / domains used to gate posts.
+    pub fn set_entities(&mut self, entity_names: Vec<String>) {
+        self.entity_names = entity_names;
+    }
+
+    /// Add one monitored entity name or domain.
+    pub fn add_entity(&mut self, entity_name: impl Into<String>) {
+        self.entity_names.push(entity_name.into());
     }
 
     /// Add a single monitoring rule.
@@ -392,6 +495,12 @@ impl DarkWebMonitor {
     pub async fn scan_all_detailed(&self) -> ScanReport {
         let mut report = ScanReport::default();
 
+        if self.entity_names.is_empty() {
+            NO_ENTITY_NAMES_WARNED.call_once(|| {
+                warn!("dark_web: no monitored entity names configured — scans will not emit posts");
+            });
+        }
+
         for forum in &self.forums {
             if !forum.is_active {
                 debug!(forum = %forum.name, "dark_web: skipping inactive forum");
@@ -419,6 +528,10 @@ impl DarkWebMonitor {
             }
         }
 
+        // Dedupe content-addressed ids (e.g. identical blocks seen twice in
+        // one page or across forums) before sorting.
+        report.posts = dedupe_posts_by_id(report.posts);
+
         // Sort by relevance descending, then by posted_at descending
         report.posts.sort_unstable_by(|a, b| {
             b.relevance_score
@@ -443,6 +556,21 @@ impl DarkWebMonitor {
     /// instead (see [`crate::breach::BreachMonitor`]).
     pub async fn scan_forum(&self, forum: &DarkWebForum) -> anyhow::Result<Vec<DarkWebPost>> {
         debug!(forum = %forum.name, url = %forum.base_url, "dark_web: scanning forum");
+
+        // Identity protection: without Tor, only explicitly marked clearnet
+        // research/news/paste surfaces may be fetched. Criminal forums and
+        // marketplaces would otherwise see the operator's real IP.
+        if self.tor_proxy_url.is_none() && !forum.is_clearnet_safe() {
+            warn!(
+                forum = %forum.name,
+                url = %forum.base_url,
+                "dark_web: refusing clearnet scan of forum that is not marked clearnet-safe"
+            );
+            anyhow::bail!(
+                "refusing to scan '{}' over clearnet without Tor: forum is not marked clearnet-safe",
+                forum.name
+            );
+        }
 
         // Special-case HIBP — it's an API, not a scrapable forum
         if forum.base_url.contains("haveibeenpwned.com") {
@@ -475,13 +603,15 @@ impl DarkWebMonitor {
             anyhow::bail!("forum {} returned HTTP {}", forum.base_url, resp.status());
         }
 
-        let html = resp.text().await.map_err(|e| {
-            anyhow::anyhow!(
-                "failed to read response body from {}: {}",
-                forum.base_url,
-                e
-            )
-        })?;
+        let html = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to read response body from {}: {}",
+                    forum.base_url,
+                    e
+                )
+            })?;
 
         if html.len() < 100 {
             debug!(forum = %forum.name, "dark_web: response too short, skipping");
@@ -494,15 +624,34 @@ impl DarkWebMonitor {
         // Split into candidate "posts" by common separators
         let candidates = split_into_candidates(&text);
 
+        let posts = self.build_posts_from_candidates(forum, &candidates);
+
+        debug!(
+            forum = %forum.name,
+            candidates = candidates.len(),
+            matches = posts.len(),
+            "dark_web: forum scan results"
+        );
+
+        Ok(posts)
+    }
+
+    /// Build scored posts from candidate blocks.
+    ///
+    /// Applies keyword matching, the monitored-entity gate, stable
+    /// content-addressed ids, best-effort dates and deduplication. Candidates
+    /// are only kept when they match at least one keyword **and** mention at
+    /// least one monitored entity name/domain; an empty entity list therefore
+    /// yields no posts (the caller logs that once).
+    fn build_posts_from_candidates(
+        &self,
+        forum: &DarkWebForum,
+        candidates: &[String],
+    ) -> Vec<DarkWebPost> {
         let now = Utc::now();
         let mut posts = Vec::new();
 
-        for (i, candidate) in candidates.iter().enumerate() {
-            // Skip very short fragments
-            if candidate.len() < 40 {
-                continue;
-            }
-
+        for candidate in candidates {
             // Run keyword matching against all rules (or default keywords)
             let matched_keywords = if self.rules.is_empty() {
                 // Default keyword set when no rules configured
@@ -519,6 +668,12 @@ impl DarkWebMonitor {
             };
 
             if matched_keywords.is_empty() {
+                continue;
+            }
+
+            // Untargeted keyword hits are not intelligence: require at least
+            // one monitored entity name or domain before emitting a post.
+            if !mentions_monitored_entity(candidate, &self.entity_names) {
                 continue;
             }
 
@@ -545,15 +700,19 @@ impl DarkWebMonitor {
             );
 
             let snippet = extract_snippet(candidate, &matched_keywords, 200);
-            let post_id = format!("{}-{}", forum.name.to_lowercase().replace(' ', "_"), i);
 
             posts.push(DarkWebPost {
-                id: post_id,
+                // Content-addressed: stable across scans and independent of
+                // candidate order or wall-clock time.
+                id: stable_post_id(&forum.name, candidate),
                 forum_name: forum.name.clone(),
                 thread_title: truncate_title(candidate, 120),
                 author: "unknown".into(), // generic scrape cannot always extract author
                 content_snippet: snippet,
-                posted_at: now,
+                // Best-effort: use a date carried by the scraped text. The
+                // public type requires a value, so fall back to the fetch
+                // time; the content-addressed id keeps re-scans idempotent.
+                posted_at: extract_posted_at(candidate).unwrap_or(now),
                 url: forum.base_url.clone(),
                 matched_keywords,
                 relevance_score: relevance,
@@ -561,14 +720,7 @@ impl DarkWebMonitor {
             });
         }
 
-        debug!(
-            forum = %forum.name,
-            candidates = candidates.len(),
-            matches = posts.len(),
-            "dark_web: forum scan results"
-        );
-
-        Ok(posts)
+        dedupe_posts_by_id(posts)
     }
 
     /// Scan a pastebin-like site (simple text API).
@@ -601,10 +753,11 @@ impl DarkWebMonitor {
             title: Option<String>,
         }
 
-        let pastes: Vec<PasteInfo> = match resp.json().await {
-            Ok(p) => p,
-            Err(_) => return Ok(vec![]),
-        };
+        let pastes: Vec<PasteInfo> =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(p) => p,
+                Err(_) => return Ok(vec![]),
+            };
 
         let now = Utc::now();
         let mut posts = Vec::new();
@@ -624,9 +777,12 @@ impl DarkWebMonitor {
         let total_keywords = all_keywords.len().max(1) as f64;
 
         for paste in &pastes {
-            let content_url = match &paste.scrape_url {
-                Some(u) => u.clone(),
-                None => continue,
+            let content_url = match paste.scrape_url.as_deref().and_then(safe_response_url) {
+                Some(url) => url,
+                None => {
+                    debug!("dark_web: dropping paste with a non-public scrape URL");
+                    continue;
+                }
             };
 
             let content_resp = match self.http_client.get(&content_url).send().await {
@@ -638,13 +794,21 @@ impl DarkWebMonitor {
                 continue;
             }
 
-            let content = match content_resp.text().await {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
+            let content =
+                match crate::http::read_capped(content_resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
 
             let matched = match_keywords(&content, &all_keywords);
             if matched.is_empty() {
+                continue;
+            }
+
+            // Same monitored-entity gate as the generic scraper.
+            if !mentions_monitored_entity(&content, &self.entity_names) {
                 continue;
             }
 
@@ -662,12 +826,16 @@ impl DarkWebMonitor {
             let relevance =
                 Self::compute_relevance_score(&matched, &entities, &content, now, total_keywords);
 
-            let paste_url = paste.full_url.clone().unwrap_or_else(|| {
-                format!(
-                    "https://pastebin.com/{}",
-                    paste.key.as_deref().unwrap_or("unknown")
-                )
-            });
+            let paste_url = paste
+                .full_url
+                .as_deref()
+                .and_then(safe_response_url)
+                .unwrap_or_else(|| {
+                    format!(
+                        "https://pastebin.com/{}",
+                        paste.key.as_deref().unwrap_or("unknown")
+                    )
+                });
 
             posts.push(DarkWebPost {
                 id: paste
@@ -821,14 +989,11 @@ impl DarkWebMonitor {
             }
         }
 
-        // IPv4 addresses
+        // IPv4 addresses (private/loopback/link-local/CGNAT filtered via the
+        // shared browser validator instead of ad-hoc prefix checks)
         for cap in RE_IPV4.find_iter(text) {
             let ip = cap.as_str().to_string();
-            if !ip.starts_with("127.")
-                && !ip.starts_with("10.")
-                && !ip.starts_with("192.168.")
-                && !entities.contains(&ip)
-            {
+            if !crate::browser::validation::is_private_host(&ip) && !entities.contains(&ip) {
                 entities.push(ip);
             }
         }
@@ -865,20 +1030,14 @@ impl DarkWebMonitor {
     ///
     /// Returns `true` if the post's relevance score meets or exceeds the
     /// rule's `min_relevance` threshold and any of the rule's keywords appear
-    /// in the post.
+    /// in the post's title or snippet as a whole word (case-insensitive).
     pub fn matches_rule(&self, post: &DarkWebPost, rule: &MonitoringRule) -> bool {
         if post.relevance_score < rule.min_relevance {
             return false;
         }
 
-        // Check if any of the rule's keywords match
-        let content_lower = post.content_snippet.to_lowercase();
-        let title_lower = post.thread_title.to_lowercase();
-
-        rule.keywords.iter().any(|kw| {
-            let kw_lower = kw.to_lowercase();
-            content_lower.contains(&kw_lower) || title_lower.contains(&kw_lower)
-        })
+        let haystack = format!("{}\n{}", post.thread_title, post.content_snippet);
+        !match_keywords(&haystack, &rule.keywords).is_empty()
     }
 }
 
@@ -887,6 +1046,13 @@ impl DarkWebMonitor {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Default set of monitoring keywords used when no rules are configured.
+///
+/// Only terms specific enough to imply targeting or a real compromise are
+/// kept. Near-universal words (`access`, `admin`, `config`, `proxy`, `vpn`,
+/// `database`, `shell`, `crawl`, `scrape`, `spider`, `c2`, `cnc`, `dump`,
+/// `combo`, `exposed`, `payload`) were removed because they match almost every
+/// page and drown real hits. All matching is word-bounded, so e.g. `rat` does
+/// not match "generation", "separate" or "rate".
 pub fn default_monitoring_keywords() -> Vec<String> {
     vec![
         "breach".into(),
@@ -901,169 +1067,363 @@ pub fn default_monitoring_keywords() -> Vec<String> {
         "backdoor".into(),
         "zero-day".into(),
         "0day".into(),
-        "dump".into(),
-        "combo".into(),
-        "database".into(),
         "sql injection".into(),
-        "shell".into(),
-        "access".into(),
-        "admin".into(),
         "compromised".into(),
-        "exposed".into(),
         "malware".into(),
         "phishing".into(),
         "trojan".into(),
         "rat".into(),
         "botnet".into(),
         "ddos".into(),
-        "payload".into(),
-        "c2".into(),
-        "cnc".into(),
-        "proxy".into(),
-        "vpn".into(),
-        "config".into(),
-        "scrape".into(),
-        "crawl".into(),
-        "spider".into(),
     ]
 }
 
+/// Rewrite a plain `socks5://` proxy URL to `socks5h://`.
+///
+/// `socks5h://` resolves hostnames inside the proxy (Tor), while `socks5://`
+/// resolves them locally and leaks DNS lookups. The check is case-insensitive
+/// so operator-provided URLs cannot smuggle the leaking scheme through.
+fn normalize_socks_proxy_url(url: &str) -> String {
+    const LEGACY_SCHEME: &str = "socks5://";
+    match url.get(..LEGACY_SCHEME.len()) {
+        Some(prefix) if prefix.eq_ignore_ascii_case(LEGACY_SCHEME) => {
+            format!("socks5h://{}", &url[LEGACY_SCHEME.len()..])
+        }
+        _ => url.to_string(),
+    }
+}
+
+/// Compile a bounded, case-insensitive regex for one keyword/entity.
+///
+/// With `word_boundaries`, the keyword must match as a whole word so short
+/// terms cannot fire inside larger words. Returns `None` for empty keywords or
+/// regex-compilation failures (never panics on hostile input).
+fn keyword_regex(keyword: &str, word_boundaries: bool) -> Option<Regex> {
+    if keyword.trim().is_empty() {
+        return None;
+    }
+    let escaped = regex::escape(keyword);
+    let pattern = if word_boundaries {
+        format!(r"\b{escaped}\b")
+    } else {
+        escaped
+    };
+    RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .ok()
+}
+
+/// Whether `text` mentions at least one monitored entity name or domain.
+///
+/// Case-insensitive with word boundaries so short names cannot match inside
+/// larger words; domains are matched as escaped literals.
+fn mentions_monitored_entity(text: &str, entity_names: &[String]) -> bool {
+    entity_names.iter().any(|name| {
+        keyword_regex(name.trim(), true)
+            .map(|re| re.is_match(text))
+            .unwrap_or(false)
+    })
+}
+
+/// Content-addressed, stable post id: `hex(sha256(forum.name + "|" + candidate))`.
+///
+/// The id does not depend on scan order or wall-clock time, so re-scanning the
+/// same post yields the same id and downstream persistence dedupes it.
+fn stable_post_id(forum_name: &str, candidate: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(forum_name.as_bytes());
+    hasher.update(b"|");
+    hasher.update(candidate.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Validate a URL taken from a remote response (e.g. the Pastebin scrape API)
+/// before it is fetched or stored.
+///
+/// Response-derived URLs are attacker-influenced, and reqwest skips DNS for
+/// IP-literal hosts, so a private/metadata literal would otherwise bypass the
+/// guarded client's public-only resolver. Only absolute `http(s)` URLs whose
+/// host is public survive; anything else is dropped.
+fn safe_response_url(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    crate::http::url_allowed(&parsed).then(|| parsed.to_string())
+}
+
+/// Drop posts that repeat a content-addressed id, preserving first-seen order.
+fn dedupe_posts_by_id(posts: Vec<DarkWebPost>) -> Vec<DarkWebPost> {
+    let mut seen = HashSet::new();
+    posts
+        .into_iter()
+        .filter(|post| seen.insert(post.id.clone()))
+        .collect()
+}
+
+/// Best-effort extraction of a post date carried in the scraped text.
+///
+/// Returns `None` when no parseable date is present. Callers fall back to the
+/// fetch time (the public `posted_at` type requires a value), which is safe
+/// because post ids are content-addressed and re-scans do not re-report.
+fn extract_posted_at(text: &str) -> Option<DateTime<Utc>> {
+    let caps = RE_POST_DATE.captures(text)?;
+    let year: i32 = caps.get(1)?.as_str().parse().ok()?;
+    let month: u32 = caps.get(2)?.as_str().parse().ok()?;
+    let day: u32 = caps.get(3)?.as_str().parse().ok()?;
+    let hour: u32 = caps
+        .get(4)
+        .and_then(|m| m.as_str().parse().ok())
+        .unwrap_or(0);
+    let minute: u32 = caps
+        .get(5)
+        .and_then(|m| m.as_str().parse().ok())
+        .unwrap_or(0);
+    let second: u32 = caps
+        .get(6)
+        .and_then(|m| m.as_str().parse().ok())
+        .unwrap_or(0);
+    let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+    let time = chrono::NaiveTime::from_hms_opt(hour, minute, second)?;
+    Some(DateTime::from_naive_utc_and_offset(
+        date.and_time(time),
+        Utc,
+    ))
+}
+
+/// HTML tag name (lowercased, without attributes), or `""` for malformed tags.
+fn html_tag_name(tag_body_lower: &str) -> &str {
+    let body = tag_body_lower.trim_start_matches('/').trim_start();
+    let end = body
+        .find(|c: char| c.is_whitespace() || c == '/')
+        .unwrap_or(body.len());
+    &body[..end]
+}
+
+/// Whether a tag ends a text block and should emit a `\n\n` separator.
+///
+/// Closing tags for `p`/`div`/`li`/`tr` and the void tags `br`/`hr` mark post
+/// boundaries; opening block tags must not add a separator before their text.
+fn tag_ends_block(tag_body_lower: &str) -> bool {
+    let name = html_tag_name(tag_body_lower);
+    match name {
+        "br" | "hr" => true,
+        "p" | "div" | "li" | "tr" => tag_body_lower.trim_start().starts_with('/'),
+        _ => false,
+    }
+}
+
+/// Skip the content of a `script`/`style` element.
+///
+/// Returns the index of the closing `<`, or `chars.len()` when unterminated.
+fn skip_element_content(chars: &[char], from: usize, name: &str) -> usize {
+    let needle: Vec<char> = format!("</{name}")
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let mut i = from;
+    while i + needle.len() <= chars.len() {
+        let matched = chars[i..i + needle.len()]
+            .iter()
+            .zip(&needle)
+            .all(|(candidate, expected)| candidate.to_ascii_lowercase() == *expected);
+        if matched {
+            return i;
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+/// Collapse spaces/tabs only (newlines stay meaningful block separators),
+/// trim each line, and reduce blank-line runs to a single blank line.
+fn normalize_extracted_text(raw: &str) -> String {
+    let mut spaced = String::with_capacity(raw.len());
+    let mut prev_space = false;
+    for ch in raw.chars() {
+        if ch == ' ' || ch == '\t' {
+            if !prev_space {
+                spaced.push(' ');
+                prev_space = true;
+            }
+        } else {
+            spaced.push(ch);
+            prev_space = false;
+        }
+    }
+
+    let mut cleaned = String::with_capacity(spaced.len());
+    let mut pending_blank = false;
+    for line in spaced.lines().map(str::trim) {
+        if line.is_empty() {
+            pending_blank = !cleaned.is_empty();
+            continue;
+        }
+        if !cleaned.is_empty() {
+            cleaned.push_str(if pending_blank { "\n\n" } else { "\n" });
+        }
+        pending_blank = false;
+        cleaned.push_str(line);
+    }
+    cleaned
+}
+
 /// Simple HTML tag stripper for extracting text from scraped HTML.
+///
+/// Block-closing tags (`</p>`, `</div>`, `</li>`, `</tr>`, `<br>`, `<hr>`)
+/// become `\n\n` separators so individual posts survive into
+/// [`split_into_candidates`]; only spaces/tabs are collapsed, never newlines.
 fn strip_html_tags(html: &str) -> String {
     let mut result = String::with_capacity(html.len());
-    let mut in_tag = false;
-    let mut in_script = false;
-    let mut in_style = false;
-
     let chars: Vec<char> = html.chars().collect();
     let len = chars.len();
     let mut i = 0;
 
     while i < len {
-        if in_script {
-            if i + 9 <= len
-                && chars[i..i + 8].iter().collect::<String>().to_lowercase() == "</script"
-            {
-                in_script = false;
-            }
+        let ch = chars[i];
+        if ch != '<' {
+            result.push(ch);
             i += 1;
             continue;
         }
-        if in_style {
-            if i + 8 <= len
-                && chars[i..i + 7].iter().collect::<String>().to_lowercase() == "</style"
-            {
-                in_style = false;
-            }
-            i += 1;
+
+        // Unterminated tag: drop the malformed remainder.
+        let Some(rel_end) = chars[i..].iter().position(|c| *c == '>') else {
+            break;
+        };
+        let tag_end = i + rel_end;
+        let tag_lower = chars[i + 1..tag_end]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .to_ascii_lowercase();
+
+        let is_closing = tag_lower.trim_start().starts_with('/');
+        if !is_closing && html_tag_name(&tag_lower) == "script" {
+            i = skip_element_content(&chars, tag_end + 1, "script");
             continue;
         }
-        if in_tag {
-            if chars[i] == '>' {
-                in_tag = false;
-            }
-            i += 1;
+        if !is_closing && html_tag_name(&tag_lower) == "style" {
+            i = skip_element_content(&chars, tag_end + 1, "style");
             continue;
         }
-        if chars[i] == '<' {
-            // Check for script/style tags to skip their content
-            if i + 7 < len && chars[i..i + 7].iter().collect::<String>().to_lowercase() == "<script"
-            {
-                in_script = true;
-                i += 1;
-                continue;
-            }
-            if i + 6 < len && chars[i..i + 6].iter().collect::<String>().to_lowercase() == "<style"
-            {
-                in_style = true;
-                i += 1;
-                continue;
-            }
-            in_tag = true;
-            i += 1;
-            continue;
+
+        if tag_ends_block(&tag_lower) {
+            result.push('\n');
+            result.push('\n');
         }
-        result.push(chars[i]);
-        i += 1;
+        i = tag_end + 1;
     }
 
-    // Collapse whitespace
-    let mut cleaned = String::with_capacity(result.len());
-    let mut prev_was_space = false;
-    for ch in result.chars() {
-        if ch.is_whitespace() {
-            if !prev_was_space {
-                cleaned.push(' ');
-                prev_was_space = true;
-            }
-        } else {
-            cleaned.push(ch);
-            prev_was_space = false;
-        }
-    }
+    normalize_extracted_text(&result)
+}
 
-    cleaned.trim().to_string()
+/// Whether a block is long/wordy enough to be a post rather than nav chrome.
+fn is_post_candidate(block: &str) -> bool {
+    block.chars().count() >= MIN_CANDIDATE_CHARS
+        && block.split_whitespace().count() >= MIN_CANDIDATE_WORDS
 }
 
 /// Split extracted text into candidate post blocks.
+///
+/// Blocks below [`MIN_CANDIDATE_CHARS`]/[`MIN_CANDIDATE_WORDS`] (navigation
+/// menus, boilerplate) are dropped where possible.
 fn split_into_candidates(text: &str) -> Vec<String> {
     // Try common separators: double newlines, horizontal rules, etc.
     let mut candidates = Vec::new();
 
     // Split on common post separators
     for block in text.split("\n\n") {
-        let trimmed = block.trim().to_string();
-        if !trimmed.is_empty() && trimmed.len() >= 40 {
-            candidates.push(trimmed);
+        let trimmed = block.trim();
+        if is_post_candidate(trimmed) {
+            candidates.push(trimmed.to_string());
         }
     }
 
-    // If we got very few candidates, try other delimiters
-    if candidates.len() < 3 {
-        candidates.clear();
+    // Only try other delimiters when the primary split found nothing: a valid
+    // split must not be discarded just because it produced few posts.
+    if candidates.is_empty() {
         for block in text.split("──") {
-            let trimmed = block.trim().to_string();
-            if !trimmed.is_empty() && trimmed.len() >= 40 {
-                candidates.push(trimmed);
+            let trimmed = block.trim();
+            if is_post_candidate(trimmed) {
+                candidates.push(trimmed.to_string());
             }
         }
     }
 
     // If still too few, treat the whole text as one candidate
-    if candidates.is_empty() && text.len() >= 40 {
-        candidates.push(text.trim().to_string());
+    let whole = text.trim();
+    if candidates.is_empty() && is_post_candidate(whole) {
+        candidates.push(whole.to_string());
     }
 
     candidates
 }
 
-/// Match keywords in text (case-insensitive).
+/// Match keywords in text (case-insensitive, word-bounded).
 fn match_keywords(text: &str, keywords: &[String]) -> Vec<String> {
-    let text_lower = text.to_lowercase();
     keywords
         .iter()
-        .filter(|kw| text_lower.contains(&kw.to_lowercase()))
+        .filter(|kw| {
+            keyword_regex(kw, true)
+                .map(|re| re.is_match(text))
+                .unwrap_or(false)
+        })
         .cloned()
         .collect()
 }
 
+/// Snap a byte index down to the nearest UTF-8 character boundary.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    let mut index = index;
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// Snap a byte index up to the nearest UTF-8 character boundary.
+fn ceil_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    let mut index = index;
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
 /// Extract a snippet of text around the first matched keyword.
+///
+/// The search runs over the **original** text with a bounded, case-insensitive
+/// regex and the resulting byte offsets are snapped to character boundaries,
+/// so non-ASCII text (Cyrillic, Arabic, accented, …) cannot cause a slicing
+/// panic. Falls back to the first `context_chars` characters when no keyword
+/// is found.
 fn extract_snippet(text: &str, matched_keywords: &[String], context_chars: usize) -> String {
+    let context_chars = context_chars.min(MAX_SNIPPET_CONTEXT_CHARS);
     if matched_keywords.is_empty() {
         return text.chars().take(context_chars).collect();
     }
 
-    let text_lower = text.to_lowercase();
-    let first_kw = &matched_keywords[0].to_lowercase();
-
-    if let Some(pos) = text_lower.find(first_kw) {
-        let start = pos.saturating_sub(context_chars / 2);
-        let end = (pos + matched_keywords[0].len() + context_chars / 2).min(text.len());
-        let snippet: String = text[start..end].chars().collect();
-        snippet.replace('\n', " ").trim().to_string()
-    } else {
-        text.chars().take(context_chars).collect()
+    let half = context_chars / 2;
+    for keyword in matched_keywords {
+        let Some(re) = keyword_regex(keyword, false) else {
+            continue;
+        };
+        if let Some(found) = re.find(text) {
+            let start = floor_char_boundary(text, found.start().saturating_sub(half));
+            let end = ceil_char_boundary(text, found.end().saturating_add(half).min(text.len()));
+            let snippet: String = text[start..end].chars().collect();
+            return snippet.replace('\n', " ").trim().to_string();
+        }
     }
+
+    text.chars().take(context_chars).collect()
 }
 
 /// Truncate a string to a maximum length, appending "…" if truncated.
@@ -1299,11 +1659,18 @@ mod tests {
 
     #[test]
     fn extract_ipv4_addresses() {
-        let text = "Server at 192.168.1.1 (internal) and 203.0.113.5 (public)";
+        let text = concat!(
+            "Server at 192.168.1.1 (internal), 172.16.5.5 (internal), ",
+            "169.254.169.254 (metadata), 127.0.0.1 (loopback) and ",
+            "203.0.113.5 (public)"
+        );
         let entities = DarkWebMonitor::extract_entities(text);
-        // Private IPs should be excluded
-        assert!(!entities.contains(&"192.168.1.1".to_string()));
-        // Public IPs should be included
+        for private in ["192.168.1.1", "172.16.5.5", "169.254.169.254", "127.0.0.1"] {
+            assert!(
+                !entities.contains(&private.to_string()),
+                "private/metadata address {private} must be filtered"
+            );
+        }
         assert!(entities.contains(&"203.0.113.5".to_string()));
     }
 
@@ -1369,11 +1736,14 @@ mod tests {
     }
 
     #[test]
-    fn keyword_matching_partial_word() {
+    fn keyword_matching_no_partial_word() {
         let keywords = vec!["pass".to_string()];
         let text = "The password is secret";
         let matched = match_keywords(text, &keywords);
-        assert!(matched.contains(&"pass".to_string()));
+        assert!(
+            !matched.contains(&"pass".to_string()),
+            "word-bounded matching must not match 'pass' inside 'password': {matched:?}"
+        );
     }
 
     // ── Rule matching ───────────────────────────────────────────────────────
@@ -1487,7 +1857,9 @@ mod tests {
     fn strip_html_collapses_whitespace() {
         let html = "<div>\n  <p>Line1</p>\n  <p>  Line2  </p>\n</div>";
         let text = strip_html_tags(html);
-        assert_eq!(text, "Line1 Line2");
+        // `</p>`/`</div>` are block separators, so the two paragraphs stay
+        // distinct candidates instead of being joined by a space.
+        assert_eq!(text, "Line1\n\nLine2");
     }
 
     // ── Snippet extraction ──────────────────────────────────────────────────
@@ -1630,5 +2002,336 @@ mod tests {
         let score = monitor.calculate_relevance(&post);
         assert!(score > 0.0, "relevance should be > 0, got {score}");
         assert!(score <= 1.0, "relevance should be <= 1.0, got {score}");
+    }
+
+    // ── Shared test fixtures ────────────────────────────────────────────────
+
+    fn test_forum(name: &str) -> DarkWebForum {
+        DarkWebForum {
+            name: name.into(),
+            base_url: "https://example.com/forum".into(),
+            forum_type: ForumType::Leak,
+            access_method: AccessMethod::Clearnet,
+            is_active: true,
+            last_checked: None,
+            topics_of_interest: vec![],
+        }
+    }
+
+    // ── Item 85: DNS/identity leaks ─────────────────────────────────────────
+
+    #[test]
+    fn dark_web_user_agent_is_generic() {
+        assert!(
+            !DARK_WEB_USER_AGENT
+                .to_ascii_lowercase()
+                .contains("apexintel"),
+            "scraper User-Agent must not identify ApexIntel: {DARK_WEB_USER_AGENT}"
+        );
+        assert!(DARK_WEB_USER_AGENT.starts_with("Mozilla/5.0"));
+    }
+
+    #[test]
+    fn legacy_socks5_proxy_url_is_rewritten_to_socks5h() {
+        let monitor = DarkWebMonitor::new(Some("socks5://127.0.0.1:9050".into())).unwrap();
+        assert!(monitor.has_tor_proxy());
+        assert_eq!(
+            monitor.tor_proxy_url.as_deref(),
+            Some("socks5h://127.0.0.1:9050"),
+            "socks5:// must be rewritten so DNS resolves through Tor"
+        );
+    }
+
+    #[test]
+    fn explicit_socks5h_proxy_url_is_preserved() {
+        let monitor = DarkWebMonitor::new(Some("socks5h://127.0.0.1:9050".into())).unwrap();
+        assert_eq!(
+            monitor.tor_proxy_url.as_deref(),
+            Some("socks5h://127.0.0.1:9050")
+        );
+    }
+
+    #[test]
+    fn default_criminal_forums_are_inactive_and_not_clearnet_safe() {
+        let forums = default_forums();
+        for name in ["BreachForums", "Exploit.in"] {
+            let forum = forums
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("{name} must be seeded"));
+            assert!(!forum.is_active, "{name} must be seeded inactive");
+            assert!(
+                !forum.is_clearnet_safe(),
+                "{name} must not be clearnet-safe"
+            );
+        }
+    }
+
+    #[test]
+    fn default_research_surfaces_are_clearnet_safe() {
+        let forums = default_forums();
+        for name in ["Have I Been Pwned", "Pastebin", "Ransomware Blog (Generic)"] {
+            let forum = forums
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("{name} must be seeded"));
+            assert!(forum.is_clearnet_safe(), "{name} should be clearnet-safe");
+        }
+    }
+
+    #[test]
+    fn clearnet_scan_of_unmarked_forum_is_refused_without_proxy() {
+        let monitor = DarkWebMonitor::new(None).unwrap();
+        let mut forum = test_forum("Criminal Forum");
+        forum.base_url = "https://breachforums.st".into();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(monitor.scan_forum(&forum));
+        assert!(
+            result.is_err(),
+            "clearnet scan of a non-clearnet-safe forum must be refused: {result:?}"
+        );
+    }
+
+    // ── Item 86: snippet extraction on non-ASCII text ───────────────────────
+
+    #[test]
+    fn extract_snippet_cyrillic_text() {
+        let text = "Привет, мир. На форуме опубликована утечка данных breach компании Acme";
+        let snippet = extract_snippet(text, &["breach".to_string()], 80);
+        assert!(snippet.contains("breach"), "snippet: {snippet:?}");
+    }
+
+    #[test]
+    fn extract_snippet_cyrillic_keyword() {
+        let text = "Сегодня зафиксирована УТЕЧКА данных компании";
+        let snippet = extract_snippet(text, &["утечка".to_string()], 40);
+        assert!(snippet.contains("УТЕЧКА"), "snippet: {snippet:?}");
+    }
+
+    #[test]
+    fn extract_snippet_arabic_text() {
+        let text = "مرحبا بالعالم تم نشر بيانات مسربة breach في المنتدى";
+        let snippet = extract_snippet(text, &["breach".to_string()], 12);
+        assert!(snippet.contains("breach"), "snippet: {snippet:?}");
+    }
+
+    #[test]
+    fn extract_snippet_accented_text_does_not_panic() {
+        // Lowercasing `İ` yields two chars, so the old byte-offset slicing
+        // panicked mid-character; the regex/char-boundary version must not.
+        let text = "Aİbreach target";
+        let snippet = extract_snippet(text, &["breach".to_string()], 4);
+        assert!(snippet.contains("breach"), "snippet: {snippet:?}");
+    }
+
+    #[test]
+    fn extract_snippet_no_keyword_falls_back_to_first_chars() {
+        let text = "Hello world, this is a longer text without any monitored keyword";
+        let snippet = extract_snippet(text, &[], 5);
+        assert_eq!(snippet, "Hello");
+    }
+
+    // ── Item 87: real posts, stable ids ─────────────────────────────────────
+
+    #[test]
+    fn strip_html_block_tags_separate_blocks() {
+        let text = strip_html_tags("<div><p>First post body</p><p>Second post body</p></div>");
+        assert_eq!(text, "First post body\n\nSecond post body");
+    }
+
+    #[test]
+    fn strip_html_void_break_tags_emit_separator() {
+        assert_eq!(strip_html_tags("<p>alpha<br>beta</p>"), "alpha\n\nbeta");
+        assert_eq!(
+            strip_html_tags("<p>alpha</p><hr><p>beta</p>"),
+            "alpha\n\nbeta"
+        );
+    }
+
+    #[test]
+    fn strip_html_preserves_single_newlines() {
+        assert_eq!(
+            strip_html_tags("<p>line one\nline two</p>"),
+            "line one\nline two"
+        );
+    }
+
+    #[test]
+    fn split_into_candidates_drops_navigation_and_finds_posts() {
+        let first = "This is the first real forum post with plenty of words to pass the minimum length filter for candidates.";
+        let second = "This is the second real forum post that also carries enough words and characters to be treated as content.";
+        let text = format!("Home Forum Login\n\n{first}\n\n{second}");
+        let candidates = split_into_candidates(&text);
+        assert_eq!(candidates.len(), 2, "candidates: {candidates:?}");
+        assert_eq!(candidates[0], first);
+        assert_eq!(candidates[1], second);
+    }
+
+    #[test]
+    fn stable_post_id_is_content_addressed() {
+        let a = stable_post_id("BreachForums", "same candidate text");
+        let b = stable_post_id("BreachForums", "same candidate text");
+        let other_text = stable_post_id("BreachForums", "different candidate text");
+        let other_forum = stable_post_id("Exploit.in", "same candidate text");
+        assert_eq!(a, b, "same forum + candidate must yield the same id");
+        assert_ne!(a, other_text, "different text must yield a different id");
+        assert_ne!(a, other_forum, "different forum must yield a different id");
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn response_urls_cannot_point_at_private_or_non_http_targets() {
+        // The Pastebin scrape API's `scrape_url`/`full_url` values are
+        // attacker-influenced: IP-literal hosts skip DNS, so they must be
+        // classified before the guarded client ever sees them.
+        for blocked in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8080/admin",
+            "http://10.0.0.5/",
+            "http://192.168.1.1/",
+            "http://[::1]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://localhost/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<p>x</p>",
+            "not a url",
+        ] {
+            assert_eq!(
+                safe_response_url(blocked),
+                None,
+                "must be dropped: {blocked}"
+            );
+        }
+        assert_eq!(
+            safe_response_url("https://pastebin.com/raw/abc").as_deref(),
+            Some("https://pastebin.com/raw/abc")
+        );
+        // Onion hostnames are public DNS names (reachable only through Tor)
+        // and must not be swept up by the private-host classifier.
+        assert!(safe_response_url("http://pasteexample.onion/raw/x").is_some());
+    }
+
+    #[test]
+    fn build_posts_ids_stable_across_calls_and_deduped() {
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        monitor.set_entities(vec!["Acme Corp".to_string()]);
+        let forum = test_forum("TestForum");
+        let candidate =
+            "Acme Corp breach: customer credentials and password dump offered for sale".to_string();
+
+        let first = monitor.build_posts_from_candidates(&forum, std::slice::from_ref(&candidate));
+        let second = monitor.build_posts_from_candidates(&forum, std::slice::from_ref(&candidate));
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].id, second[0].id, "ids must be stable across calls");
+        assert_eq!(first[0].id, stable_post_id(&forum.name, &candidate));
+
+        let dupes = monitor.build_posts_from_candidates(&forum, &[candidate.clone(), candidate]);
+        assert_eq!(dupes.len(), 1, "identical candidates must dedupe by id");
+    }
+
+    #[test]
+    fn extract_posted_at_reads_page_date() {
+        let date = extract_posted_at("Posted on 2024-03-15 by leaker").expect("date");
+        assert_eq!(date.to_rfc3339(), "2024-03-15T00:00:00+00:00");
+        let dt = extract_posted_at("2024-03-15 14:05:30 UTC").expect("datetime");
+        assert_eq!(dt.to_rfc3339(), "2024-03-15T14:05:30+00:00");
+        assert!(extract_posted_at("no date carried here").is_none());
+    }
+
+    // ── Item 88: word-bounded keywords and entity gate ──────────────────────
+
+    #[test]
+    fn rat_keyword_does_not_match_inside_words() {
+        let keywords = vec!["rat".to_string()];
+        for text in [
+            "generation of reports",
+            "separate the rate",
+            "a moderate rate",
+        ] {
+            assert!(
+                match_keywords(text, &keywords).is_empty(),
+                "'rat' must not match inside {text:?}"
+            );
+        }
+        assert!(
+            match_keywords("a rat in the cellar", &keywords).contains(&"rat".to_string()),
+            "standalone 'rat' must match"
+        );
+    }
+
+    #[test]
+    fn default_keywords_exclude_generic_terms() {
+        let kws = default_monitoring_keywords();
+        for generic in [
+            "access", "admin", "config", "proxy", "vpn", "database", "shell", "crawl", "scrape",
+            "spider", "c2", "cnc", "dump", "combo", "exposed", "payload",
+        ] {
+            assert!(
+                !kws.contains(&generic.to_string()),
+                "near-universal term {generic:?} must be removed"
+            );
+        }
+        assert!(kws.contains(&"breach".to_string()));
+    }
+
+    #[test]
+    fn candidate_without_monitored_entity_is_not_posted() {
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        monitor.set_entities(vec!["Acme Corp".to_string()]);
+        let forum = test_forum("TestForum");
+        let candidates = vec![
+            "This breach thread discusses leaked credentials in general but never names the monitored customer".to_string(),
+        ];
+        assert!(
+            monitor
+                .build_posts_from_candidates(&forum, &candidates)
+                .is_empty(),
+            "candidate without a monitored entity must not become a post"
+        );
+    }
+
+    #[test]
+    fn candidate_with_monitored_entity_is_posted() {
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        monitor.set_entities(vec!["Acme Corp".to_string()]);
+        let forum = test_forum("TestForum");
+        let candidates = vec![
+            "This breach thread leaks Acme Corp credentials and password dumps for sale now"
+                .to_string(),
+        ];
+        let posts = monitor.build_posts_from_candidates(&forum, &candidates);
+        assert_eq!(posts.len(), 1, "entity match must produce a post");
+        assert_eq!(posts[0].forum_name, "TestForum");
+    }
+
+    #[test]
+    fn no_monitored_entities_means_no_posts() {
+        let monitor = DarkWebMonitor::new(None).unwrap();
+        let forum = test_forum("TestForum");
+        let candidates = vec![
+            "This breach thread mentions Acme Corp but no entities are configured".to_string(),
+        ];
+        assert!(
+            monitor
+                .build_posts_from_candidates(&forum, &candidates)
+                .is_empty(),
+            "an empty entity list must suppress all posts"
+        );
+    }
+
+    #[test]
+    fn entity_matching_uses_word_boundaries() {
+        assert!(mentions_monitored_entity(
+            "data from acme-corp.com leaked",
+            &["acme-corp.com".to_string()]
+        ));
+        assert!(!mentions_monitored_entity(
+            "not related at all",
+            &["acme-corp.com".to_string()]
+        ));
+        assert!(!mentions_monitored_entity("anything", &[]));
     }
 }

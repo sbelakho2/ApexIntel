@@ -36,11 +36,18 @@
 #  13. release evidence bundle (scripts/ci/release_evidence.sh) for the exact
 #      commit SHA: executed gates plus the gates owned by the steps above,
 #      artifact digests and timestamps, written to release-evidence/<sha>/.
+#  14. secret scanning (gitleaks) over the checked-out tree, and dependency
+#      license/advisory checks (cargo-deny). Licenses are blocking; advisories
+#      report the known Cargo.lock debt non-blockingly until the dependency
+#      bump lands (see deny.toml for the pinned ignore rationale).
 #
 # Runtime readiness additionally proves the schema lineage (applied migration
 # head == embedded head + checksum verification) through the `schema`
 # capability in /api/health/capabilities and `schema_lineage` in
 # /api/health/ready.
+#
+# The Rust toolchain is pinned twice for the same version: rust-toolchain.toml
+# (1.98.0) for local builds and the `rust:1.98.0-bookworm` image tag for CI.
 #
 # All cargo invocations use `--locked` so a stale Cargo.lock fails the build.
 
@@ -113,7 +120,7 @@ steps:
   - name: fabricated-metrics-guard
     image: alpine:3.20
     commands:
-      - apk add --no-cache bash grep
+      - apk add --no-cache bash grep python3
       - bash scripts/ci/check_fabricated_metrics.sh
 
   # False-success + identifier-decode guards.
@@ -135,12 +142,16 @@ steps:
   # Fails if a migration header or body comment describes a different revision
   # than its filename (audit #40 + stale body numbering). Production-applied
   # migrations (000..078) are frozen and explicitly allowlisted in
-  # scripts/ci/frozen_migrations.txt.
+  # scripts/ci/frozen_migrations.txt. Also fails on a migration that opens its
+  # own explicit transaction (sqlx wraps each migration) and on a second
+  # migrations folder reappearing anywhere in the workspace.
   - name: migration-headers
     image: alpine:3.20
     commands:
       - apk add --no-cache bash grep
-      - bash scripts/ci/check_migration_headers.sh
+      - bash scripts/ci/check_migration_headers.sh migrations
+      - bash scripts/ci/check_migration_no_explicit_tx.sh
+      - bash scripts/ci/check_single_migrations_folder.sh
   # Fails if alert publication bypasses the transactional outbox (a direct
   # `publish_alert(...)` call from a job/pipeline loses the crash/retry/
   # dead-letter guarantees).
@@ -159,8 +170,54 @@ steps:
       - apk add --no-cache git bash grep
       - bash scripts/ci/check_frontend_removed.sh
 
+  # Secret scanning over the checked-out tree. `--no-git` keeps the scan on
+  # committed content (the CI checkout has no local .env); .gitleaks.toml keeps
+  # the default rule set and allowlists only documented test fixtures and
+  # generated directories. Non-interactive; leaks exit 1.
+  - name: gitleaks
+    image: zricethezav/gitleaks:v8.30.1
+    commands:
+      - gitleaks detect --source . --no-git --config .gitleaks.toml --exit-code 1 --redact --verbose
+
+  # Dependency license policy (BLOCKING): every third-party crate must use a
+  # permissive license (see deny.toml for the allowlist and the first-party
+  # clarify entries). cargo-deny is pinned to the version whose config schema
+  # deny.toml targets; installed from source because Woodpecker cannot run
+  # GitHub actions. Each step installs into its own root: steps without
+  # depends_on run in parallel, and two concurrent installs must not race on
+  # the same output directory.
+  - name: cargo-deny-licenses
+    image: rust:1.98.0-bookworm
+    environment:
+      CARGO_TERM_COLOR: always
+    commands:
+      - cargo install cargo-deny --locked --version 0.20.2 --root .ci-tools-licenses
+      - .ci-tools-licenses/bin/cargo-deny check licenses
+
+  # Advisory report (NON-BLOCKING, `failure: ignore`). The committed Cargo.lock
+  # currently resolves crates with open advisories (h2, rustls-webpki,
+  # quick-xml, lopdf, ...) plus the yanked spin 0.9.8; they cannot be fixed
+  # without a dependency-bump change outside this step. The step publishes the
+  # findings in every pipeline log without failing the build, so a NEW advisory
+  # is visible immediately. deny.toml keeps `yanked = "warn"` for the same
+  # reason.
+  - name: cargo-deny-advisories
+    image: rust:1.98.0-bookworm
+    failure: ignore
+    environment:
+      CARGO_TERM_COLOR: always
+    commands:
+      - cargo install cargo-deny --locked --version 0.20.2 --root .ci-tools-advisories
+      - .ci-tools-advisories/bin/cargo-deny check advisories
+
+  # Dead-code evaluation (audit item 177): `unreachable_pub` (rustc) and
+  # `cargo-udeps` are nightly-only. No job is added — it cannot run on the
+  # pinned stable toolchain without a second, unpinned nightly. Recommended
+  # follow-up: a scheduled nightly job reporting (non-blocking)
+  #   RUSTFLAGS="-W unreachable_pub" cargo +nightly check --workspace --all-targets
+  #   cargo +nightly udeps --workspace --all-targets
   - name: rust
-    image: rust:bookworm
+    image: rust:1.98.0-bookworm
     environment:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: "1"
@@ -177,10 +234,11 @@ steps:
       - rustup component add rustfmt clippy
       # Formatting
       - cargo fmt --all -- --check
-      # Lint: default features
-      - cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Lint: default features. `disallowed_methods` is allow-by-default even
+      # though clippy.toml declares it repo-wide, so it must be enabled here.
+      - cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::disallowed_methods
       # Lint: full feature matrix
-      - cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -W clippy::disallowed_methods
       # Tests: default features
       - cargo test --workspace --locked --no-fail-fast
       # Tests: full feature matrix
@@ -200,7 +258,7 @@ steps:
   # release-evidence `wasm-shared` gate is only truthful if a step actually
   # compiles it for wasm32, so a native-only regression fails CI here.
   - name: wasm-shared
-    image: rust:bookworm
+    image: rust:1.98.0-bookworm
     commands:
       - rustup target add wasm32-unknown-unknown
       - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
@@ -211,7 +269,7 @@ steps:
   # login) plus the learning evaluation gate. The suite list lives in the
   # canonical runner so local `npm run test:pg` and CI cannot drift.
   - name: migrations
-    image: rust:bookworm
+    image: rust:1.98.0-bookworm
     depends_on: [rust]
     environment:
       TEST_DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
@@ -224,7 +282,7 @@ steps:
   # image also has Node), starts it against the database service, and drives a
   # real browser across every navigation route at mobile + desktop.
   - name: e2e-server-ui-smoke
-    image: rust:bookworm
+    image: rust:1.98.0-bookworm
     depends_on: [rust, migrations]
     environment:
       DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
@@ -238,7 +296,11 @@ steps:
       # Service key for authenticated metadata checks (>= 32 chars).
       API_KEY_1: ci-features-check-key-0123456789abcdef,ci-check,service,ci-service
       SEARCH_INDEX_PATH: /tmp/apex-index
+      # Test-only: the server refuses to start with rate limiting disabled
+      # unless this explicit override is also present (same pattern as
+      # APEX_ALLOW_TEST_SESSION_SECRET).
       RATE_LIMIT_DISABLED: "true"
+      APEX_ALLOW_TEST_RATE_LIMIT_DISABLED: "1"
       HOST: 127.0.0.1
       PORT: "9095"
     commands:
@@ -257,8 +319,9 @@ steps:
       - ./target/release/apex-api & sleep 6
       - curl -sf http://127.0.0.1:9095/api/health
       # Production artifact must advertise the LLM capability. `/api/features`
-      # is authenticated (audit P0-8), so the service key is presented.
-      - curl -sf -H "X-API-Key: ci-features-check-key-0123456789abcdef" http://127.0.0.1:9095/api/features | grep -q '"llm_enabled":true'
+      # is authenticated (audit P0-8), so the service key is presented. The API
+      # only accepts `Authorization: Bearer` (no X-API-Key header).
+      - 'curl -sf -H "Authorization: Bearer ci-features-check-key-0123456789abcdef" http://127.0.0.1:9095/api/features | grep -q "\"llm_enabled\":true"'
       # Deployment provenance route must answer with the running service identity.
       - curl -sf http://127.0.0.1:9095/api/version | grep -q '"service":"apex-api"'
       - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs
@@ -267,7 +330,7 @@ steps:
   # the PostgreSQL rows the actions must have produced (not just rendered
   # success). Separate stage from the route sweep on purpose.
   - name: e2e-server-ui-journeys
-    image: rust:bookworm
+    image: rust:1.98.0-bookworm
     depends_on: [rust, migrations, e2e-server-ui-smoke]
     environment:
       BASE_URL: http://127.0.0.1:9095
@@ -285,7 +348,11 @@ steps:
       # Service key for authenticated metadata checks (>= 32 chars).
       API_KEY_1: ci-features-check-key-0123456789abcdef,ci-check,service,ci-service
       SEARCH_INDEX_PATH: /tmp/apex-index-journeys
+      # Test-only: the server refuses to start with rate limiting disabled
+      # unless this explicit override is also present (same pattern as
+      # APEX_ALLOW_TEST_SESSION_SECRET).
       RATE_LIMIT_DISABLED: "true"
+      APEX_ALLOW_TEST_RATE_LIMIT_DISABLED: "1"
       HOST: 127.0.0.1
       PORT: "9095"
     commands:
@@ -309,7 +376,9 @@ steps:
   # proving Browser-strategy sources are renderable in the container.
   # Requires a Docker daemon on the runner: the host socket is mounted below.
   # The step executes repository code with that socket plus SYS_ADMIN, so it
-  # is restricted to trusted events and never runs on pull requests.
+  # is restricted to trusted events and never runs on pull requests. SYS_ADMIN
+  # + seccomp=unconfined are test-only (see browser_container_check.sh); the
+  # deployed worker uses Chromium's seccomp profile instead (Dockerfile.worker).
   - name: browser-container
     image: docker:27-cli
     depends_on: [rust]
@@ -330,7 +399,7 @@ steps:
   # claimed. CI_COMMIT_SHA / CI_PIPELINE_NUMBER / CI_PIPELINE_CREATED are
   # injected by Woodpecker and feed /api/version via the printed exports.
   - name: release-evidence
-    image: rust:bookworm
+    image: rust:1.98.0-bookworm
     depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared]
     when:
       - event: [pull_request]
@@ -355,7 +424,7 @@ steps:
   # Release-event evidence additionally records the container browser gate,
   # which only runs on trusted events (push/tag/manual).
   - name: release-evidence-release
-    image: rust:bookworm
+    image: rust:1.98.0-bookworm
     depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared, browser-container]
     when:
       - event: [push, tag, manual]

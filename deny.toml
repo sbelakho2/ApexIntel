@@ -1,0 +1,134 @@
+# cargo-deny configuration (audit item 177).
+#
+# CI runs both checks in .woodpecker.yml, split because they have different
+# blocking semantics:
+#   * `cargo deny check licenses` (cargo-deny-licenses) — BLOCKING: every
+#     dependency's license must be on the permissive list below, so an
+#     accidentally GPL/AGPL/SSPL dependency cannot enter the supply chain
+#     unnoticed;
+#   * `cargo deny check advisories` (cargo-deny-advisories) — a NON-BLOCKING
+#     report (`failure: ignore`) while the committed Cargo.lock still resolves
+#     crates with open advisories; a vulnerability therefore cannot silently
+#     pass review, but it does not fail every pipeline until the dependency
+#     bump lands.
+#
+# The allowlist was derived from `cargo deny check licenses` over the committed
+# Cargo.lock. Keep it sorted and keep additions reviewed: adding a license here
+# is a distribution-policy decision, not a build fix.
+
+[advisories]
+version = 2
+# A yanked crate is not necessarily vulnerable, but it cannot be re-fetched
+# from the registry, so the lockfile must be regenerated deliberately. The
+# current lock resolves the yanked `spin 0.9.8` (through lazy_static /
+# num-bigint-dig); warn instead of deny so the non-blocking advisory CI step
+# reports it without treating "run cargo update" as a security failure.
+yanked = "warn"
+# Vulnerabilities are errors. If an advisory cannot be remediated yet, add a
+# short-lived entry here naming the RUSTSEC id and why. The current lock has
+# open advisories (h2, rustls-webpki, quick-xml, lopdf, ...) that require a
+# deliberate dependency-bump change; the CI advisory step is non-blocking
+# (`failure: ignore`) until that lands, so nothing is silently blessed here.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only (plus the OpenSSL license used by the openssl
+# crate and the Unicode data licenses used by unicode-ident/icu data).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "Unlicense",
+    "OpenSSL",
+    "BSL-1.0",
+    "0BSD",
+    "CDLA-Permissive-2.0",
+]
+# Fail on any license that cannot be confidently identified from crate
+# metadata; an unknown license must be classified, not silently allowed.
+confidence-threshold = 0.9
+# Keep the allowlist forward-looking: an allowance no dependency currently uses
+# (e.g. OpenSSL/Unicode-DFS-2016 for a future native-TLS or ICU update) is not
+# a failure.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+# First-party workspace crates. Three of them (apex-investigation,
+# apex-threat-intel, apex-llm) already declare `license = "MIT OR Apache-2.0"`;
+# the rest have no `license` field, so cargo-deny reports them as unlicensed.
+# Clarifying them here (rather than editing every Cargo.toml) keeps the policy
+# check focused on third-party dependencies. The product itself is proprietary;
+# this declaration matches the license the workspace already uses and is not a
+# distribution grant.
+[[licenses.clarify]]
+name = "apex-api"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-crawl"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-graph"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-insights"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-learning"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-parse"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-poi"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-recipes"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-shared"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-stats"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-store"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-triage"
+expression = "MIT OR Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+name = "apex-worker"
+expression = "MIT OR Apache-2.0"
+license-files = []

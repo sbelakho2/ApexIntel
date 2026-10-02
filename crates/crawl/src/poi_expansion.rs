@@ -308,15 +308,15 @@ impl PoiExpansionEngine {
     /// Build the engine.  `proxy_rotator` is optional; if `None` all requests
     /// use the default network interface.
     pub fn new(proxy_rotator: Option<Arc<Mutex<ProxyRotator>>>) -> Result<Self> {
-        // Hardened builder shared with `CrawlClient`: public-only DNS and a
+        // Hardened factory shared with `CrawlClient`: public-only DNS and a
         // redirect policy that refuses private IP literals. See
-        // `crate::client::secure_crawl_builder`.
-        let client = crate::client::secure_crawl_builder(
-            Duration::from_secs(30),
-            "Mozilla/5.0 AppleWebKit/537.36",
-        )
-        .connect_timeout(Duration::from_secs(10))
-        .build()
+        // `crate::http::external_client_with`.
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some("Mozilla/5.0 AppleWebKit/537.36".to_string()),
+            connect_timeout: Some(Duration::from_secs(10)),
+            ..crate::http::ExternalClientOptions::default()
+        })
         .context("PoiExpansionEngine: build client")?;
         Ok(Self {
             client,
@@ -824,13 +824,13 @@ impl PoiExpansionEngine {
         });
 
         let client = if let Some(proxy_url) = proxy.as_ref() {
-            crate::client::secure_crawl_builder(
-                Duration::from_secs(30),
-                "Mozilla/5.0 AppleWebKit/537.36",
-            )
-            .connect_timeout(Duration::from_secs(10))
-            .proxy(reqwest::Proxy::all(proxy_url).context("invalid proxy url")?)
-            .build()
+            crate::http::external_client_with(crate::http::ExternalClientOptions {
+                timeout: Duration::from_secs(30),
+                user_agent: Some("Mozilla/5.0 AppleWebKit/537.36".to_string()),
+                connect_timeout: Some(Duration::from_secs(10)),
+                proxy: Some(reqwest::Proxy::all(proxy_url).context("invalid proxy url")?),
+                ..crate::http::ExternalClientOptions::default()
+            })
             .context("PoiExpansionEngine: build proxied client")?
         } else {
             self.client.clone()

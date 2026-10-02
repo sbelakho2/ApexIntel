@@ -89,7 +89,7 @@ def main():
     # ── Tokenizer ──────────────────────────────────────────────────
     tokenizer = AutoTokenizer.from_pretrained(
         load_path,
-        trust_remote_code=True,
+        trust_remote_code=False,
         padding_side="right",
     )
     if tokenizer.pad_token is None:
@@ -111,7 +111,7 @@ def main():
         load_path,
         dtype=torch.bfloat16,
         attn_implementation=attn,
-        trust_remote_code=True,
+        trust_remote_code=False,
         use_cache=False,
         low_cpu_mem_usage=True,
     )

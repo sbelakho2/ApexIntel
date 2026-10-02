@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use apex_api::config::ApiRuntimeConfig;
 use apex_api::filters::validate_search_text;
 use apex_api::middleware::auth::{auth_error_response, authenticate_api_request};
-use apex_api::rate_limit::RateLimiter;
+use apex_api::rate_limit::{
+    validate_rate_limit_disable, RateLimiter, ALLOW_TEST_RATE_LIMIT_DISABLED_ENV,
+    RATE_LIMIT_DISABLED_ENV,
+};
 use apex_api::responses::{
     aggregate_health, error_response, success, success_with_meta, ApiError, ApiResponse,
     ComponentHealth, ErrorCode, HealthResponse, HealthStatus, PagedResponse, ResponseMeta,
@@ -347,6 +350,19 @@ async fn build_state() -> Result<AppState> {
     // Fail startup on a placeholder/short secret: serving with one would let
     // anyone forge an admin session.
     validate_session_secret(&std::env::var("SESSION_SECRET").unwrap_or_default())?;
+
+    // Refuse to serve with rate limiting disabled unless the explicit test/CI
+    // override is present (same pattern as the session-secret override).
+    // Without this, a single forgotten RATE_LIMIT_DISABLED=true in production
+    // silently removes every per-IP limit.
+    validate_rate_limit_disable(
+        std::env::var(RATE_LIMIT_DISABLED_ENV).ok().as_deref(),
+        std::env::var(ALLOW_TEST_RATE_LIMIT_DISABLED_ENV)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(anyhow::Error::msg)
+    .context("invalid rate-limit disable configuration")?;
 
     let config = ApiRuntimeConfig::from_env()?;
     let validation_errors = config.validate();

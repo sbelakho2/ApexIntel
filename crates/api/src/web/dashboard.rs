@@ -54,8 +54,9 @@ pub struct TopInsight {
     pub id: String,
     pub title: String,
     pub category: String,
-    pub confidence: f64,
-    pub confidence_pct: i64,
+    /// Measured confidence; `None` = not recorded.
+    pub confidence: Option<f64>,
+    pub confidence_pct: Option<i64>,
     pub created_at: String,
 }
 
@@ -203,7 +204,8 @@ pub struct OpportunityCard {
     pub domain: String,
     pub why_now: String,
     pub evidence_count: i64,
-    pub confidence_pct: i64,
+    /// Measured confidence percentage; `None` = not recorded.
+    pub confidence_pct: Option<i64>,
     pub next_move: String,
     pub buyer_name: String,
     pub buyer_role: String,
@@ -418,8 +420,9 @@ pub async fn dashboard(
             id: i.id.to_string(),
             title: i.title.clone(),
             category: i.insight_type.clone().unwrap_or_default(),
-            confidence: i.confidence.unwrap_or(0.0),
-            confidence_pct: ((i.confidence.unwrap_or(0.0) * 100.0).round() as i64),
+            // NULL confidence stays unrecorded; no fabricated 0%.
+            confidence: i.confidence,
+            confidence_pct: i.confidence.map(|c| (c * 100.0).round() as i64),
             created_at: i
                 .created_at
                 .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
@@ -774,7 +777,9 @@ pub async fn dashboard(
         });
     }
     for insight in &insight_queue_rows {
-        let confidence = insight.confidence.unwrap_or(0.0);
+        // NULL confidence is unrecorded: the row is not labelled "low" and
+        // carries no fabricated percentage.
+        let confidence = insight.confidence;
         let entity_id = insight
             .entity_ids
             .as_ref()
@@ -784,8 +789,11 @@ pub async fn dashboard(
             id: insight.id.to_string(),
             kind: "insight".into(),
             title: insight.title.clone(),
-            severity: insight_queue_severity(confidence).into(),
-            confidence_pct: Some((confidence * 100.0).round() as i64),
+            severity: confidence
+                .map(insight_queue_severity)
+                .unwrap_or("unknown")
+                .into(),
+            confidence_pct: confidence.map(|c| (c * 100.0).round() as i64),
             entity_name: entity_id
                 .and_then(|id| queue_company_names.get(&id).cloned())
                 .unwrap_or_else(|| {
@@ -798,11 +806,17 @@ pub async fn dashboard(
             entity_href: entity_id
                 .map(|id| format!("/companies/{id}"))
                 .unwrap_or_default(),
-            reason: format!(
-                "{} signal at {:.0}% confidence",
-                humanize_token(insight.insight_type.as_deref().unwrap_or("analysis")),
-                confidence * 100.0
-            ),
+            reason: match confidence {
+                Some(confidence) => format!(
+                    "{} signal at {:.0}% confidence",
+                    humanize_token(insight.insight_type.as_deref().unwrap_or("analysis")),
+                    confidence * 100.0
+                ),
+                None => format!(
+                    "{} signal; confidence not recorded",
+                    humanize_token(insight.insight_type.as_deref().unwrap_or("analysis"))
+                ),
+            },
             age_label: insight
                 .created_at
                 .map(age_label)
@@ -929,7 +943,8 @@ pub async fn dashboard(
                 domain: row.company_domain.clone().unwrap_or_default(),
                 why_now: row.title.clone(),
                 evidence_count: row.evidence_count,
-                confidence_pct: (row.confidence.unwrap_or(0.0) * 100.0).round() as i64,
+                // NULL confidence stays unrecorded; no fabricated 0%.
+                confidence_pct: row.confidence.map(|c| (c * 100.0).round() as i64),
                 next_move: recommended_next_move(row.summary.as_deref().unwrap_or("")),
                 buyer_name,
                 buyer_role,

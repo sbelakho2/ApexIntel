@@ -102,6 +102,9 @@ pub struct WarningResponse {
     pub confidence_interval: Option<ConfidenceInterval>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_quality_label: Option<String>,
+    /// Optional ranking signal. Where populated this is a heuristic derived
+    /// from stored confidence/severity, not a calibrated information-gain
+    /// measurement; `None` = not measured (never a fabricated default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub information_gain_bits: Option<f64>,
     pub acknowledged: bool,

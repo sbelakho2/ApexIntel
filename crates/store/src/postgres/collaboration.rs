@@ -1573,31 +1573,53 @@ impl PgStore {
     /// fetch the whole workspace table, and matching rows beyond a recent
     /// window are not silently dropped. Accepts both bare id arrays
     /// (`["<uuid>"]`) and object entries (`{"id"|"entity_id": "<uuid>"}`).
+    ///
+    /// Applies the same visibility predicate as
+    /// [`Self::list_visible_investigation_workspaces`] so the dossier never
+    /// reveals private workspaces the viewer cannot open.
     pub async fn list_investigation_workspaces_for_entity(
         &self,
         entity_id: &str,
+        user_id: &str,
+        is_admin: bool,
         limit: i64,
     ) -> Result<Vec<InvestigationWorkspaceRecord>> {
         let limit = clamp_limit(limit);
         Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
             r#"
-            SELECT id, name, description, workspace_type, owner_id, team_id, status,
-                   visibility, tags, entity_focus, findings, conclusions, metadata,
-                   created_at, updated_at, closed_at
-            FROM investigation_workspaces
-            WHERE status NOT IN ('closed', 'archived')
+            SELECT w.id, w.name, w.description, w.workspace_type, w.owner_id, w.team_id,
+                   w.status, w.visibility, w.tags, w.entity_focus, w.findings, w.conclusions,
+                   w.metadata, w.created_at, w.updated_at, w.closed_at
+            FROM investigation_workspaces w
+            WHERE w.status NOT IN ('closed', 'archived')
               AND (
-                    entity_focus @> jsonb_build_array($1::text)
-                 OR entity_focus @> jsonb_build_array(jsonb_build_object('id', $1::text))
-                 OR entity_focus @> jsonb_build_array(jsonb_build_object('entity_id', $1::text))
-                 OR entity_focus->>'id' = $1
-                 OR entity_focus->>'entity_id' = $1
+                    w.entity_focus @> jsonb_build_array($1::text)
+                 OR w.entity_focus @> jsonb_build_array(jsonb_build_object('id', $1::text))
+                 OR w.entity_focus @> jsonb_build_array(jsonb_build_object('entity_id', $1::text))
+                 OR w.entity_focus->>'id' = $1
+                 OR w.entity_focus->>'entity_id' = $1
               )
-            ORDER BY updated_at DESC
-            LIMIT $2
+              AND (
+                    $3::boolean
+                 OR w.owner_id = $2
+                 OR w.visibility IN ('organization', 'public')
+                 OR EXISTS (
+                       SELECT 1 FROM workspace_assignments a
+                       WHERE a.workspace_id = w.id AND a.user_id = $2
+                 )
+                 OR EXISTS (
+                       SELECT 1 FROM investigation_shares s
+                       WHERE s.workspace_id = w.id AND s.shared_with = $2
+                         AND (s.expires_at IS NULL OR s.expires_at > now())
+                 )
+              )
+            ORDER BY w.updated_at DESC
+            LIMIT $4
             "#,
         )
         .bind(entity_id)
+        .bind(user_id)
+        .bind(is_admin)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)

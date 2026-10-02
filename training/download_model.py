@@ -14,6 +14,9 @@ except ImportError as e:
 
 WORK = Path(__file__).resolve().parent.parent
 MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-30B-A3B")
+# Pin to a reviewed commit SHA in production so a compromised or updated
+# upstream repo cannot silently change the weights/tokenizer being trained.
+MODEL_REVISION = os.environ.get("MODEL_REVISION") or None
 OUTPUT_DIR = os.environ.get("MODEL_DIR", str(WORK / "models" / "base"))
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
@@ -61,8 +64,14 @@ def download_model() -> None:
         try:
             snapshot_download(
                 MODEL_ID,
+                revision=MODEL_REVISION,
                 local_dir=OUTPUT_DIR,
-                ignore_patterns=["*.gguf", "*.ggml", "*.ot", "*.msgpack"],
+                # Never fetch repo-supplied Python (remote modeling code) or
+                # pickle-based weights; Qwen3 is native to transformers.
+                ignore_patterns=[
+                    "*.gguf", "*.ggml", "*.ot", "*.msgpack",
+                    "*.py", "*.bin", "*.pt", "*.pth", "*.pkl",
+                ],
                 resume_download=True,
                 local_dir_use_symlinks=False,
             )

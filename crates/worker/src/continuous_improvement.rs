@@ -37,6 +37,65 @@ pub(crate) struct EvaluationStageSummary {
     pub(crate) hallucination_rate: f64,
     pub(crate) total_cases: usize,
     pub(crate) failed_cases: usize,
+    pub(crate) execution_errors: usize,
+}
+
+/// Thresholds of the LLM evaluation quality gate.
+#[cfg(feature = "llm")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EvalGateThresholds {
+    pub(crate) min_pass_rate: f64,
+    pub(crate) min_score: f64,
+    pub(crate) max_hallucination_rate: f64,
+}
+
+/// Decision of the LLM evaluation quality gate.
+#[cfg(feature = "llm")]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum EvalGateDecision {
+    /// No case produced model output (model unreachable): quality was not
+    /// measured, so there is no quality verdict and no regression warning.
+    NotEvaluated,
+    Pass,
+    Breach {
+        severity: &'static str,
+    },
+}
+
+/// Gate the graded cases of an eval run. Cases that could not execute are
+/// already excluded from `pass_rate` / `hallucination_rate` by the report.
+#[cfg(feature = "llm")]
+pub(crate) fn eval_gate_decision(
+    evaluated_cases: usize,
+    pass_rate: f64,
+    avg_judge_score: &Measurement<f64>,
+    hallucination_rate: f64,
+    thresholds: EvalGateThresholds,
+) -> EvalGateDecision {
+    if evaluated_cases == 0 {
+        return EvalGateDecision::NotEvaluated;
+    }
+    // A judge score below threshold is a breach; "not measured" is not a
+    // breach (pass_rate and hallucination rate still gate the suite).
+    let score_breached = matches!(
+        avg_judge_score,
+        Measurement::Measured(value) if *value < thresholds.min_score
+    );
+    if pass_rate < thresholds.min_pass_rate
+        || score_breached
+        || hallucination_rate > thresholds.max_hallucination_rate
+    {
+        let severity = if pass_rate < (thresholds.min_pass_rate - 0.15)
+            || hallucination_rate > (thresholds.max_hallucination_rate + 0.15)
+        {
+            "critical"
+        } else {
+            "high"
+        };
+        EvalGateDecision::Breach { severity }
+    } else {
+        EvalGateDecision::Pass
+    }
 }
 
 /// Measured summary of the critique cycle.
@@ -186,6 +245,8 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
             let eval_pass_rate = eval_report.pass_rate();
             let eval_avg_score = eval_report.avg_judge_score.clone();
             let eval_hallucination_rate = eval_report.estimated_hallucination_rate();
+            let evaluated_cases = eval_report.evaluated_cases();
+            let execution_errors = eval_report.execution_errors;
 
             let failure_ids = eval_report
                 .failures()
@@ -203,13 +264,15 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
             };
 
             let eval_summary = format!(
-                "suite={} run_id={} pass_rate={:.1}% avg_judge_score={} hallucination_rate={:.1}% total_cases={} failed_cases={} ({})",
+                "suite={} run_id={} pass_rate={:.1}% avg_judge_score={} hallucination_rate={:.1}% total_cases={} evaluated_cases={} execution_errors={} failed_cases={} ({})",
                 eval_report.suite_name,
                 eval_report.run_id,
                 eval_pass_rate * 100.0,
                 eval_avg_score.display_fixed(3),
                 eval_hallucination_rate * 100.0,
                 eval_report.total_cases,
+                evaluated_cases,
+                execution_errors,
                 eval_report.failed,
                 failure_preview,
             );
@@ -221,6 +284,8 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 "avg_judge_score_state": eval_avg_score.label(),
                 "hallucination_rate": eval_hallucination_rate,
                 "total_cases": eval_report.total_cases,
+                "evaluated_cases": evaluated_cases,
+                "execution_errors": execution_errors,
                 "passed": eval_report.passed,
                 "failed": eval_report.failed,
                 "failure_preview": failure_preview,
@@ -236,7 +301,7 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 );
             }
 
-            if !eval_avg_score.is_measured() {
+            if !eval_avg_score.is_measured() && evaluated_cases > 0 {
                 tracing::warn!(
                     state = eval_avg_score.label(),
                     "self_improvement_cycle: judge average score not measured; the score threshold is not evaluated"
@@ -244,16 +309,26 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 WORKER_METRICS.record_self_improvement_not_evaluated();
             }
 
-            // A judge score below threshold is a breach; "not measured" is not a
-            // breach (pass_rate and hallucination rate still gate the suite).
-            let eval_score_breached = matches!(
+            let gate = eval_gate_decision(
+                evaluated_cases,
+                eval_pass_rate,
                 &eval_avg_score,
-                Measurement::Measured(value) if *value < min_eval_score
+                eval_hallucination_rate,
+                EvalGateThresholds {
+                    min_pass_rate: min_eval_pass_rate,
+                    min_score: min_eval_score,
+                    max_hallucination_rate,
+                },
             );
-            if eval_pass_rate < min_eval_pass_rate
-                || eval_score_breached
-                || eval_hallucination_rate > max_hallucination_rate
-            {
+            if gate == EvalGateDecision::NotEvaluated {
+                tracing::warn!(
+                    total_cases = eval_report.total_cases,
+                    execution_errors,
+                    "self_improvement_cycle: no eval case executed (model unavailable); quality gate not evaluated"
+                );
+                WORKER_METRICS.record_self_improvement_not_evaluated();
+            }
+            if let EvalGateDecision::Breach { severity } = gate {
                 tracing::warn!(
                     eval_pass_rate,
                     min_eval_pass_rate,
@@ -262,17 +337,11 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                     eval_hallucination_rate,
                     max_hallucination_rate,
                     failed_cases = eval_report.failed,
+                    execution_errors,
                     "self_improvement_cycle: llm eval quality gate breached"
                 );
-                let severity = if eval_pass_rate < (min_eval_pass_rate - 0.15)
-                    || eval_hallucination_rate > (max_hallucination_rate + 0.15)
-                {
-                    "critical"
-                } else {
-                    "high"
-                };
                 let desc = format!(
-                    "LLM quality gate breached. pass_rate={:.1}% (min {:.1}%), avg_score={} (min {:.3}), hallucination={:.1}% (max {:.1}%). failed_cases={}.",
+                    "LLM quality gate breached. pass_rate={:.1}% (min {:.1}%), avg_score={} (min {:.3}), hallucination={:.1}% (max {:.1}%). failed_cases={} of {} graded ({} not executed).",
                     eval_pass_rate * 100.0,
                     min_eval_pass_rate * 100.0,
                     eval_avg_score.display_fixed(3),
@@ -280,6 +349,8 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                     eval_hallucination_rate * 100.0,
                     max_hallucination_rate * 100.0,
                     eval_report.failed,
+                    evaluated_cases,
+                    execution_errors,
                 );
                 match ingress
                     .submit_warning(
@@ -337,7 +408,7 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 )),
             }
 
-            StageResult::success(EvaluationStageSummary {
+            let summary = EvaluationStageSummary {
                 suite_name: eval_report.suite_name,
                 run_id: eval_report.run_id,
                 pass_rate: eval_pass_rate,
@@ -345,7 +416,31 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 hallucination_rate: eval_hallucination_rate,
                 total_cases: eval_report.total_cases,
                 failed_cases: eval_report.failed,
-            })
+                execution_errors,
+            };
+            if gate == EvalGateDecision::NotEvaluated {
+                StageResult::failed(StructuredFailure::new(
+                    "evaluation",
+                    FailureKind::ModelCallFailed,
+                    format!(
+                        "no eval case executed: {execution_errors} of {} cases hit execution errors (model unavailable)",
+                        summary.total_cases
+                    ),
+                ))
+            } else if execution_errors > 0 {
+                StageResult::partial(
+                    summary,
+                    StructuredFailure::new(
+                        "evaluation",
+                        FailureKind::ModelCallFailed,
+                        format!(
+                            "{execution_errors} eval case(s) hit execution errors; gate evaluated on {evaluated_cases} graded case(s)"
+                        ),
+                    ),
+                )
+            } else {
+                StageResult::success(summary)
+            }
         }
         Err(error) => {
             tracing::error!(
@@ -827,7 +922,61 @@ mod tests {
             hallucination_rate: 0.1,
             total_cases: 10,
             failed_cases: 1,
+            execution_errors: 0,
         }
+    }
+
+    const THRESHOLDS: EvalGateThresholds = EvalGateThresholds {
+        min_pass_rate: 0.75,
+        min_score: 0.62,
+        max_hallucination_rate: 0.30,
+    };
+
+    /// Regression: an unreachable LLM produced a critical "LLM quality
+    /// regression detected" broadcast. With zero graded cases the gate must
+    /// report NotEvaluated, never a breach.
+    #[test]
+    fn eval_gate_with_no_graded_case_is_not_evaluated() {
+        assert_eq!(
+            eval_gate_decision(0, 0.0, &Measurement::not_measured(), 0.0, THRESHOLDS),
+            EvalGateDecision::NotEvaluated
+        );
+        assert_eq!(
+            eval_gate_decision(0, 0.0, &Measurement::not_measured(), 1.0, THRESHOLDS),
+            EvalGateDecision::NotEvaluated
+        );
+    }
+
+    #[test]
+    fn eval_gate_passes_healthy_run_with_unmeasured_judge() {
+        assert_eq!(
+            eval_gate_decision(4, 1.0, &Measurement::not_measured(), 0.0, THRESHOLDS),
+            EvalGateDecision::Pass
+        );
+    }
+
+    #[test]
+    fn eval_gate_breach_severity() {
+        assert_eq!(
+            eval_gate_decision(4, 0.70, &Measurement::Measured(0.9), 0.0, THRESHOLDS),
+            EvalGateDecision::Breach { severity: "high" }
+        );
+        assert_eq!(
+            eval_gate_decision(4, 0.25, &Measurement::Measured(0.9), 0.0, THRESHOLDS),
+            EvalGateDecision::Breach {
+                severity: "critical"
+            }
+        );
+        assert_eq!(
+            eval_gate_decision(4, 1.0, &Measurement::Measured(0.5), 0.0, THRESHOLDS),
+            EvalGateDecision::Breach { severity: "high" }
+        );
+        assert_eq!(
+            eval_gate_decision(4, 1.0, &Measurement::Measured(0.9), 0.5, THRESHOLDS),
+            EvalGateDecision::Breach {
+                severity: "critical"
+            }
+        );
     }
 
     fn critique_summary() -> CritiqueStageSummary {

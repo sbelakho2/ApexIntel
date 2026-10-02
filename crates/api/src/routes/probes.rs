@@ -438,6 +438,8 @@ pub async fn probe_llm_endpoint(target: &LlmProbeTarget) -> CapabilityStatus {
     // are not: refuse redirects so a 3xx can never steer this server into
     // fetching arbitrary internal URLs (SSRF), and 307/308 cannot replay the
     // completion POST to a redirect target.
+    // Operator-configured LLM probe endpoint, not crawled content.
+    #[allow(clippy::disallowed_methods)]
     let client = match reqwest::Client::builder()
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())

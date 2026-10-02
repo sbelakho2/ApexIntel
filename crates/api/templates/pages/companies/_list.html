@@ -92,10 +92,10 @@
           <td class="px-4 py-3 font-semibold">{{ c.name }}</td>
           <td class="px-4 py-3 text-rams-muted">{{ c.region }}</td>
           <td class="px-4 py-3 text-rams-muted">{{ c.sector }}</td>
-          <td class="px-4 py-3 text-right font-bold tabular-nums">{% if c.risk_score > 0 %}{{ c.risk_score }}{% else %}—{% endif %}</td>
+          <td class="px-4 py-3 text-right font-bold tabular-nums">{% if let Some(score) = c.risk_score %}{{ score }}{% else %}—{% endif %}</td>
           <td class="px-4 py-3 text-right tabular-nums text-rams-muted">{{ c.warning_count }}</td>
           <td class="px-4 py-3 text-right tabular-nums text-rams-muted">{{ c.insight_count }}</td>
-          <td class="px-4 py-3">{% if c.is_competitor %}<span class="apex-text-competitor">Competitor</span>{% else %}<span class="text-rams-muted">Tracked</span>{% endif %}</td>
+          <td class="px-4 py-3">{% if let Some(competitor) = c.is_competitor %}{% if competitor %}<span class="apex-text-competitor">Competitor</span>{% else %}<span class="text-rams-muted">Tracked</span>{% endif %}{% else %}<span class="text-rams-muted">Not recorded</span>{% endif %}</td>
           <td class="px-4 py-3 tabular-nums text-rams-muted">{{ c.updated_at }}</td>
         </tr>
         {% endfor %}
@@ -121,9 +121,9 @@
           <p class="font-bold text-sm">{{ c.name }}</p>
           <p class="text-[10px] text-rams-muted uppercase mt-1">{{ c.region }} · {{ c.sector }}</p>
         </div>
-        {% if c.risk_score > 0 %}<p class="text-xs">Threat: <span class="font-bold tabular-nums">{{ c.risk_score }}</span></p>{% endif %}
+        {% if c.has_risk_score() %}<p class="text-xs">Threat: <span class="font-bold tabular-nums">{{ c.risk_score_value() }}</span></p>{% endif %}
       </div>
-      {% if c.is_competitor %}<p class="mt-2 text-[10px] font-bold uppercase apex-text-competitor">Competitor</p>{% endif %}
+      {% if let Some(competitor) = c.is_competitor %}{% if competitor %}<p class="mt-2 text-[10px] font-bold uppercase apex-text-competitor">Competitor</p>{% endif %}{% else %}<p class="mt-2 text-[10px] text-rams-muted">Competitor status not recorded</p>{% endif %}
     </a>
     {% endfor %}
   {% endif %}

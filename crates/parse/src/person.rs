@@ -442,7 +442,7 @@ pub struct PersonExtract {
 pub fn extract_person(body_text: &str, url: &str) -> Vec<PersonExtract> {
     let normalized_body = normalizer::normalize_whitespace(body_text);
     // No raw-URL fallback: a hostile or over-long page URL must never survive
-    // extraction (same contract as `html::sanitize_extracted_href`).
+    // extraction (same contract as `html::resolve_href`).
     let normalized_url = normalize_url(url).unwrap_or_default();
     let mut persons = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -650,7 +650,7 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
         let slug = slug_match.as_str();
         let raw_url = raw_url_match.as_str();
         // No raw-URL fallback: an over-long/hostile profile URL must never
-        // survive extraction (same contract as `html::sanitize_extracted_href`).
+        // survive extraction (same contract as `html::resolve_href`).
         let Some(linkedin_url) = normalize_url(raw_url) else {
             continue;
         };

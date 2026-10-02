@@ -1168,7 +1168,13 @@ compiled in and ship alongside the binaries:
 - [x] Old frontend systemd service removed
 - [x] Full system verified (Mar 4, 2026 — API healthy, 45 endpoints, static serving OK)
 
-## Appendix D – Migration Lineage Reconciliation (Aug 27, 2026)
+## Appendix D – Migration Lineage Reconciliation (Aug 27, 2026; historical)
+
+**Historical record.** The one-time reconciliation below describes the schema
+state at that date. The secondary `crates/store/migrations/` lineage referenced
+in this appendix has since been deleted: `migrations/` is the only lineage
+(enforced by `scripts/ci/check_single_migrations_folder.sh`), and the pending
+migration head has moved past version `043`.
 
 Production's `_sqlx_migrations` was built from a **consolidated** set
 (`crates/store/migrations/0001–0014` + `20260701_sales_activation_layer`)

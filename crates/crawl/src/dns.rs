@@ -133,19 +133,11 @@ impl DnsChecker {
 
     /// Create a DNS checker with a custom DoH endpoint
     pub fn with_doh_endpoint(endpoint: &str) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .user_agent("ApexIntel-DnsChecker/1.0")
-            .build()
-            .unwrap_or_else(|error| {
-                // DNS posture checks are best-effort telemetry; a rare HTTP
-                // client construction failure must not panic the worker.
-                tracing::warn!(
-                    %error,
-                    "DnsChecker: failed to build HTTP client; falling back to default client"
-                );
-                Client::new()
-            });
+        let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(10),
+            user_agent: Some("ApexIntel-DnsChecker/1.0".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        });
 
         Self {
             client,
@@ -502,7 +494,12 @@ impl DnsChecker {
             return DnsLookupOutcome::Failure(format!("DoH HTTP {status} for {context}"));
         }
 
-        let doh: DohResponse = match resp.json().await {
+        let doh: DohResponse = match crate::http::read_capped_json(
+            resp,
+            crate::http::MAX_EXTERNAL_BODY_BYTES,
+        )
+        .await
+        {
             Ok(doh) => doh,
             Err(error) => {
                 debug!(domain = %domain, record_type = %record_type, %error, "DoH response parse failed");

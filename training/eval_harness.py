@@ -467,7 +467,7 @@ def load_model(model_dir: str, adapter_path: str | None = None):
     from peft import PeftModel
 
     print(f"Loading model from {model_dir}")
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=False)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -475,7 +475,7 @@ def load_model(model_dir: str, adapter_path: str | None = None):
         model_dir,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        trust_remote_code=True,
+        trust_remote_code=False,
     )
 
     if adapter_path and os.path.isdir(adapter_path):

@@ -24,7 +24,7 @@ def resolve_api_key() -> str:
 def run_endpoint_probe(api: str, key: str) -> int:
     ctx = ssl.create_default_context()
 
-    req = urllib.request.Request(f"{api}/api/endpoints", headers={"X-API-Key": key})
+    req = urllib.request.Request(f"{api}/api/endpoints", headers={"Authorization": f"Bearer {key}"})
     with urllib.request.urlopen(req, context=ctx) as resp:
         data = json.loads(resp.read())
         eps = data if isinstance(data, list) else data.get("data", [])
@@ -53,7 +53,7 @@ def run_endpoint_probe(api: str, key: str) -> int:
     fail = 0
     for route in routes:
         try:
-            req = urllib.request.Request(f"{api}{route}", headers={"X-API-Key": key})
+            req = urllib.request.Request(f"{api}{route}", headers={"Authorization": f"Bearer {key}"})
             with urllib.request.urlopen(req, context=ctx) as resp:
                 print(f"  {resp.status}  {route}")
                 ok += 1

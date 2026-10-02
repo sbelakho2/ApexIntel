@@ -68,8 +68,9 @@ pub struct WarningListItem {
     pub warning_type: String,
     pub company_name: String,
     pub region: String,
-    pub confidence: f64,
-    pub confidence_pct: i64,
+    /// Measured confidence; `None` = not recorded.
+    pub confidence: Option<f64>,
+    pub confidence_pct: Option<i64>,
     pub created_at: String,
     pub acknowledged: bool,
     pub evidence_count: i64,
@@ -281,8 +282,9 @@ pub struct WarningDetailPage {
     pub company_name: String,
     pub company_id: String,
     pub region: String,
-    /// Confidence as a whole percentage for display (0–100).
-    pub confidence_pct: i64,
+    /// Confidence as a whole percentage for display (0–100); `None` = not
+    /// recorded.
+    pub confidence_pct: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
     pub acknowledged: bool,
@@ -620,8 +622,9 @@ pub async fn list_warnings(
                 warning_type: w.warning_type.clone(),
                 company_name,
                 region: w.region.clone().unwrap_or_default(),
-                confidence: w.confidence.unwrap_or(0.0),
-                confidence_pct: confidence_to_pct(w.confidence.unwrap_or(0.0)),
+                // NULL confidence stays unrecorded; no fabricated 0%.
+                confidence: w.confidence,
+                confidence_pct: w.confidence.map(confidence_to_pct),
                 created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
                 acknowledged: w.acknowledged,
                 evidence_count: w.source_urls.as_ref().map_or(0, |v| v.len() as i64),
@@ -1041,13 +1044,11 @@ pub async fn get_warning(
         effective_severity: effective_severity.clone(),
     };
 
-    let confidence_value = warning.confidence.unwrap_or(0.0);
-    let reliability_label = if confidence_value >= 0.8 {
-        "High confidence"
-    } else if confidence_value >= 0.5 {
-        "Moderate confidence"
-    } else {
-        "Low confidence"
+    let reliability_label = match warning.confidence {
+        Some(confidence) if confidence >= 0.8 => "High confidence",
+        Some(confidence) if confidence >= 0.5 => "Moderate confidence",
+        Some(_) => "Low confidence",
+        None => "Confidence not recorded",
     }
     .to_string();
     let corroboration = if source_domains.len() >= 3 {
@@ -1154,7 +1155,7 @@ pub async fn get_warning(
         company_name: primary_company_name,
         company_id: primary_company_id,
         region: warning.region.clone().unwrap_or_default(),
-        confidence_pct: confidence_to_pct(warning.confidence.unwrap_or(0.0)),
+        confidence_pct: warning.confidence.map(confidence_to_pct),
         created_at: warning
             .created_at
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
@@ -1985,7 +1986,7 @@ mod tests {
             company_name: "Northwind Power Systems".into(),
             company_id: "c0ffee00-0000-4000-8000-000000000001".into(),
             region: "US".into(),
-            confidence_pct: 83,
+            confidence_pct: Some(83),
             created_at: "2026-01-15 08:30".into(),
             updated_at: "2026-01-20 11:00".into(),
             acknowledged: false,

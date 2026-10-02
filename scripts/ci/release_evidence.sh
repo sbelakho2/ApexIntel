@@ -7,8 +7,8 @@
 #
 #   exact-sha            HEAD == --sha and the git worktree is clean
 #   rustfmt              cargo fmt --all -- --check
-#   clippy-default       cargo clippy --workspace --all-targets --locked -- -D warnings
-#   clippy-all-features  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+#   clippy-default       cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::disallowed_methods
+#   clippy-all-features  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -W clippy::disallowed_methods
 #   unit-tests           cargo test --workspace --locked --no-fail-fast
 #   all-features-tests   cargo test --workspace --all-features --locked --no-fail-fast
 #   pg-canonical         scripts/ci/run_pg_integration_suites.sh (needs TEST_DATABASE_URL)
@@ -229,9 +229,9 @@ gate_command() { # <gate> -> the exact release command
       printf 'test "$(git rev-parse HEAD)" = "${APEX_EVIDENCE_SHA}" && test -z "$(git status --porcelain)"'
       ;;
     rustfmt) printf 'cargo fmt --all -- --check' ;;
-    clippy-default) printf 'cargo clippy --workspace --all-targets --locked -- -D warnings' ;;
+    clippy-default) printf 'cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::disallowed_methods' ;;
     clippy-all-features)
-      printf 'cargo clippy --workspace --all-targets --all-features --locked -- -D warnings'
+      printf 'cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -W clippy::disallowed_methods'
       ;;
     unit-tests) printf 'cargo test --workspace --locked --no-fail-fast' ;;
     all-features-tests) printf 'cargo test --workspace --all-features --locked --no-fail-fast' ;;

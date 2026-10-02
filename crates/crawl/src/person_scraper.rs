@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::client::{read_body_capped, secure_crawl_builder, url_allowed};
+use crate::client::{read_body_capped, url_allowed};
 use crate::social::reddit::RedditScraper;
 use crate::social::twitter::TwitterScraper;
 
@@ -147,21 +147,25 @@ impl PersonOsintScraper {
     const DEFAULT_TIMEOUT_SECS: u64 = 25;
 
     pub fn new(proxy_url: Option<&str>) -> Result<Self> {
-        // Shared hardened builder: public-only DNS plus a redirect policy that
+        // Shared hardened factory: public-only DNS plus a redirect policy that
         // refuses private IP literals on every hop. Bodies must be read with
         // `read_body_capped` and entry URLs checked with `url_allowed`.
-        let mut builder = secure_crawl_builder(
-            Duration::from_secs(Self::DEFAULT_TIMEOUT_SECS),
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        )
-        .cookie_store(true);
-
-        if let Some(proxy) = proxy_url {
-            builder = builder.proxy(reqwest::Proxy::all(proxy).context("Bad proxy URL")?);
-        }
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(Self::DEFAULT_TIMEOUT_SECS),
+            user_agent: Some(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    .to_string(),
+            ),
+            proxy: proxy_url
+                .map(reqwest::Proxy::all)
+                .transpose()
+                .context("Bad proxy URL")?,
+            cookie_store: true,
+            ..crate::http::ExternalClientOptions::default()
+        })?;
 
         Ok(Self {
-            client: builder.build()?,
+            client,
             proxy_url: proxy_url.map(|s| s.to_string()),
         })
     }
@@ -183,7 +187,14 @@ impl PersonOsintScraper {
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() => match resp.json::<WikipediaSummary>().await {
+            Ok(resp) if resp.status().is_success() => match crate::http::read_capped_json::<
+                WikipediaSummary,
+            >(
+                resp,
+                crate::http::MAX_EXTERNAL_BODY_BYTES,
+            )
+            .await
+            {
                 Ok(summary) => {
                     let mut arts = Vec::new();
                     if let Some(extract) = summary.extract {
@@ -284,13 +295,14 @@ LIMIT 25
             }
         };
 
-        let parsed: WikidataSparqlResult = match resp.json().await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(person=%name, error=%e, "Wikidata parse failed");
-                return vec![];
-            }
-        };
+        let parsed: WikidataSparqlResult =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(person=%name, error=%e, "Wikidata parse failed");
+                    return vec![];
+                }
+            };
 
         let mut artifacts = Vec::new();
         let mut seen_positions = std::collections::HashSet::new();
@@ -403,13 +415,14 @@ LIMIT 25
             }
         };
 
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => j,
-            Err(e) => {
-                warn!(person=%name, error=%e, "OpenCorporates parse failed");
-                return vec![];
-            }
-        };
+        let json: serde_json::Value =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(j) => j,
+                Err(e) => {
+                    warn!(person=%name, error=%e, "OpenCorporates parse failed");
+                    return vec![];
+                }
+            };
 
         let mut artifacts = Vec::new();
         if let Some(officers) = json.pointer("/results/officers").and_then(|o| o.as_array()) {
@@ -499,13 +512,14 @@ LIMIT 25
             }
         };
 
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => j,
-            Err(e) => {
-                warn!(person=%name, error=%e, "Semantic Scholar parse failed");
-                return vec![];
-            }
-        };
+        let json: serde_json::Value =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(j) => j,
+                Err(e) => {
+                    warn!(person=%name, error=%e, "Semantic Scholar parse failed");
+                    return vec![];
+                }
+            };
 
         let mut artifacts = Vec::new();
         if let Some(authors) = json.get("data").and_then(|d| d.as_array()) {
@@ -596,13 +610,14 @@ LIMIT 25
             }
         };
 
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => j,
-            Err(e) => {
-                warn!(person=%name, error=%e, "GDELT parse failed");
-                return vec![];
-            }
-        };
+        let json: serde_json::Value =
+            match crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES).await {
+                Ok(j) => j,
+                Err(e) => {
+                    warn!(person=%name, error=%e, "GDELT parse failed");
+                    return vec![];
+                }
+            };
 
         let mut artifacts = Vec::new();
         if let Some(articles) = json.get("articles").and_then(|a| a.as_array()) {
@@ -1311,14 +1326,14 @@ impl PersonOsintScraper {
             "https://phonebook.cz/?term={}&type=2&target=1",
             name.replace(' ', "+")
         );
-        let html = self
+        let response = self
             .client
             .get(&url)
             .header("Referer", "https://phonebook.cz/")
             .send()
             .await
-            .ok()?
-            .text()
+            .ok()?;
+        let html = crate::http::read_capped(response, crate::http::MAX_EXTERNAL_BODY_BYTES)
             .await
             .ok()?;
 
@@ -1346,7 +1361,7 @@ impl PersonOsintScraper {
             "https://www.google.com/search?q={}",
             query.replace(' ', "+")
         );
-        let html = self
+        let response = self
             .client
             .get(&url)
             .header(
@@ -1355,8 +1370,8 @@ impl PersonOsintScraper {
             )
             .send()
             .await
-            .ok()?
-            .text()
+            .ok()?;
+        let html = crate::http::read_capped(response, crate::http::MAX_EXTERNAL_BODY_BYTES)
             .await
             .ok()?;
 
@@ -1371,7 +1386,10 @@ impl PersonOsintScraper {
             "https://api.gdeltproject.org/api/v2/doc/doc?query={}&mode=artlist&maxrecords=5&format=json",
             query.replace(' ', "%20").replace('"', "%22")
         );
-        let json = self.client.get(&url).send().await.ok()?.text().await.ok()?;
+        let response = self.client.get(&url).send().await.ok()?;
+        let json = crate::http::read_capped(response, crate::http::MAX_EXTERNAL_BODY_BYTES)
+            .await
+            .ok()?;
 
         let li_re =
             regex::Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_%]+)").ok()?;

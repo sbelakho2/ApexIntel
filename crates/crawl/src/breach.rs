@@ -209,12 +209,12 @@ impl BreachMonitor {
     /// - `INTELX_API_KEY` — Intelligence X API key (optional)
     /// - `PASTEBIN_API_DEV_KEY` — Pastebin developer key (optional, Pro only)
     pub fn from_env() -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io)")
-            .build()
-            .context("Build reqwest client")?;
-
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io)".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("Build reqwest client")?;
         Ok(Self {
             client,
             hibp_api_key: std::env::var("HIBP_API_KEY").ok(),
@@ -228,11 +228,12 @@ impl BreachMonitor {
         intelx_api_key: Option<String>,
         pastebin_api_key: Option<String>,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io)")
-            .build()
-            .context("Build reqwest client")?;
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(30),
+            user_agent: Some("ApexIntel/1.0 (+https://apexintel.io)".to_string()),
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .context("Build reqwest client")?;
         Ok(Self {
             client,
             hibp_api_key,
@@ -287,11 +288,16 @@ impl BreachMonitor {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             anyhow::bail!("HIBP domain breach API returned {}: {}", status, body);
         }
 
-        let breaches: Vec<HibpBreach> = resp.json().await.context("Parse HIBP breach response")?;
+        let breaches: Vec<HibpBreach> =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("Parse HIBP breach response")?;
 
         let mut events: Vec<BreachEvent> = breaches
             .into_iter()
@@ -384,10 +390,10 @@ impl BreachMonitor {
             anyhow::bail!("HIBP email breach API returned {}", status);
         }
 
-        let breaches: Vec<HibpBreach> = resp
-            .json()
-            .await
-            .context("Parse HIBP email breach response")?;
+        let breaches: Vec<HibpBreach> =
+            crate::http::read_capped_json(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("Parse HIBP email breach response")?;
 
         let domain = email.split('@').nth(1).unwrap_or("unknown").to_string();
         let events = breaches
@@ -449,7 +455,9 @@ impl BreachMonitor {
             anyhow::bail!("HIBP range API returned {}", resp.status());
         }
 
-        let body = resp.text().await.context("Read HIBP range response")?;
+        let body = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+            .await
+            .context("Read HIBP range response")?;
 
         for line in body.lines() {
             let parts: Vec<&str> = line.splitn(2, ':').collect();
@@ -522,10 +530,10 @@ impl BreachMonitor {
             return Ok(vec![]);
         }
 
-        let search_result: IntelXSearchResponse = search_resp
-            .json()
-            .await
-            .context("Parse IntelX search response")?;
+        let search_result: IntelXSearchResponse =
+            crate::http::read_capped_json(search_resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("Parse IntelX search response")?;
 
         let search_id = match search_result.id {
             Some(id) if !id.is_empty() => id,
@@ -553,10 +561,10 @@ impl BreachMonitor {
             return Ok(vec![]);
         }
 
-        let results: IntelXResultResponse = result_resp
-            .json()
-            .await
-            .context("Parse IntelX results response")?;
+        let results: IntelXResultResponse =
+            crate::http::read_capped_json(result_resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+                .context("Parse IntelX results response")?;
 
         let records = results.records.unwrap_or_default();
         let events: Vec<BreachEvent> = records
@@ -638,6 +646,7 @@ impl BreachMonitor {
             .get(&api_url)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("Pastebin scrape list request")?;
 
         if list_resp.status() == StatusCode::FORBIDDEN {
@@ -650,10 +659,13 @@ impl BreachMonitor {
             return Ok(vec![]);
         }
 
-        let pastes: Vec<PasteInfo> = match list_resp.json().await {
-            Ok(p) => p,
-            Err(_) => return Ok(vec![]),
-        };
+        let pastes: Vec<PasteInfo> =
+            match crate::http::read_capped_json(list_resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                .await
+            {
+                Ok(p) => p,
+                Err(_) => return Ok(vec![]),
+            };
 
         let mut matches = Vec::new();
 
@@ -675,10 +687,13 @@ impl BreachMonitor {
                 continue;
             }
 
-            let content = match content_resp.text().await {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
+            let content =
+                match crate::http::read_capped(content_resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
 
             let content_lower = content.to_lowercase();
             let matched: Vec<String> = keywords

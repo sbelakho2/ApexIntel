@@ -11,7 +11,6 @@
 #
 # Format: <path> | <token> | <count> | <reason>
 crates/api/src/api_handlers/admin.rs | record_audit_event | 3 | audit-trail write after the replay job row was persisted; failure cannot change the already-returned request outcome
-crates/api/src/api_handlers/battlecards.rs | sqlx::query:INSERT activity_feed | 1 | activity-feed echo after the battlecard sections persisted; failure cannot change the regenerated card
 crates/api/src/api_handlers/exports.rs | record_audit_event | 3 | audit-trail write after the export stream was produced; failure cannot change the delivered export
 crates/api/src/api_handlers/exports.rs | record_export_history | 3 | export-history bookkeeping after the CSV stream was produced; failure cannot change the delivered export
 crates/api/src/api_handlers/insights.rs | record_audit_event | 3 | audit-trail write after the primary insight mutation succeeded

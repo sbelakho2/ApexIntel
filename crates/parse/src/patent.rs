@@ -105,7 +105,7 @@ pub fn extract_patent(
     let keywords = crate::multilingual::contains_keywords(body_text, &ems_kws);
 
     // No raw-URL fallback: a hostile or over-long page URL must never survive
-    // extraction (same contract as `html::sanitize_extracted_href`).
+    // extraction (same contract as `html::resolve_href`).
     let normalized_url = normalize_url(url).unwrap_or_default();
 
     PatentExtract {

@@ -124,5 +124,5 @@ fn endpoint_count_matches_the_catalogued_surface() {
     // adding the public `/api/version` provenance endpoint, and after replacing
     // the blocking `/api/warnings/:id/analyze` endpoint with the async enqueue
     // (`/api/warnings/:id/analysis`) plus run-status (`.../:run_id`) pair.
-    assert_eq!(all_endpoints().len(), 105);
+    assert_eq!(all_endpoints().len(), 106);
 }

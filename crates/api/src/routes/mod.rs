@@ -138,6 +138,7 @@ pub enum HttpMethod {
     Get,
     Post,
     Put,
+    Patch,
     Delete,
 }
 
@@ -147,6 +148,7 @@ impl HttpMethod {
             Self::Get => "GET",
             Self::Post => "POST",
             Self::Put => "PUT",
+            Self::Patch => "PATCH",
             Self::Delete => "DELETE",
         }
     }
@@ -919,6 +921,13 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             min_role: "viewer",
         },
         EndpointDef {
+            method: HttpMethod::Patch,
+            path: "/api/battlecards/:id",
+            description: "Update a battlecard's title, status (draft/published/archived) and sections",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
             method: HttpMethod::Put,
             path: "/api/battlecards/:id/section",
             description: "Update a battlecard section",
@@ -935,14 +944,14 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         EndpointDef {
             method: HttpMethod::Post,
             path: "/api/battlecards/:id/regenerate",
-            description: "Regenerate a battlecard or section",
+            description: "Regenerate all battlecard sections from stored data",
             auth_required: true,
             min_role: "analyst",
         },
         EndpointDef {
             method: HttpMethod::Get,
             path: "/api/battlecards/:id/export",
-            description: "Export a battlecard (markdown/slack/pdf)",
+            description: "Export a battlecard as Markdown",
             auth_required: true,
             min_role: "viewer",
         },
@@ -1070,7 +1079,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 105);
+        assert_eq!(eps.len(), 106);
     }
 
     #[test]
@@ -1117,6 +1126,7 @@ mod tests {
         assert_eq!(HttpMethod::Get.label(), "GET");
         assert_eq!(HttpMethod::Post.label(), "POST");
         assert_eq!(HttpMethod::Put.label(), "PUT");
+        assert_eq!(HttpMethod::Patch.label(), "PATCH");
         assert_eq!(HttpMethod::Delete.label(), "DELETE");
     }
 

@@ -35,7 +35,11 @@
 //! navigation URL *and* every redirect hop, subresource, XHR/fetch and
 //! auto-attached iframe/worker request the page triggers are re-checked before
 //! Chromium sends them (a validated entry URL alone would still allow a
-//! hostile page to pivot to cloud metadata or internal services).
+//! hostile page to pivot to cloud metadata or internal services). The
+//! decisive guarantee is nevertheless network-layer: run Chromium (or the
+//! whole worker) in a network namespace/container whose egress denies
+//! RFC1918, link-local, loopback and CGNAT (pair with audit #176); see the
+//! deployment note in the [`validation`] module.
 
 pub mod validation;
 
@@ -59,6 +63,7 @@ pub use renderer::{
 };
 pub use validation::{
     assert_public_resolution, host_from_url, is_private_host, validate_browser_url,
+    validate_redirect_target,
 };
 
 /// A request for one rendered page.

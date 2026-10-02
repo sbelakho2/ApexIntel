@@ -16,6 +16,17 @@
 //!
 //! Shell-metacharacter rejection is kept as defence in depth even though the
 //! URL is passed as a process argument (never through a shell).
+//!
+//! # Deployment backstop
+//!
+//! URL validation and CDP `Fetch` interception both run inside the worker
+//! process, so the strongest guarantee is network-layer isolation. Run
+//! Chromium (or the whole worker) in a network namespace/container whose
+//! egress denies RFC1918 (`10/8`, `172.16/12`, `192.168/16`), link-local
+//! (`169.254/16`, `fe80::/10`), loopback (`127/8`, `::1`) and CGNAT
+//! (`100.64/10`), so that even if a validator check is bypassed the browser
+//! still cannot reach internal services. Pair with audit #176 (egress
+//! firewall); this module is defence in depth, not a substitute for it.
 
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -87,6 +98,50 @@ fn validate_browser_url_inner(url: &str, allow_private: bool) -> Result<Url> {
     Ok(parsed)
 }
 
+/// Validate a single redirect hop before the HTTP client follows it.
+///
+/// Unlike [`validate_browser_url`] this deliberately does **not** screen
+/// shell metacharacters: redirect targets are handed to `reqwest`, never a
+/// shell, and legitimate query strings routinely contain `&` (or `;`). The
+/// security properties that matter for a hop are kept — bounded length,
+/// http(s) only, and no loopback/private/link-local/CGNAT/unique-local/
+/// metadata host. IP-literal hosts are classified directly, so a private
+/// literal is rejected without a DNS lookup; hostname answers are re-checked
+/// by the guarded client's public-only resolver.
+pub fn validate_redirect_target(url: &str) -> Result<Url> {
+    if url.len() > MAX_URL_LENGTH {
+        return Err(anyhow!(
+            "redirect target exceeds maximum allowed length ({MAX_URL_LENGTH}): {:.50}",
+            url
+        ));
+    }
+
+    let parsed =
+        Url::parse(url).map_err(|error| anyhow!("invalid redirect target {:.80}: {error}", url))?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(anyhow!(
+                "redirect target must use the http:// or https:// scheme, got {other:?}: {:.50}",
+                url
+            ));
+        }
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("redirect target has no host: {:.80}", url))?;
+    if is_private_host(host) {
+        return Err(anyhow!(
+            "refusing redirect to private/loopback/metadata host {host}: {:.50}",
+            url
+        ));
+    }
+
+    Ok(parsed)
+}
+
 /// Lowercased host of an http(s) URL, parsed via [`url::Url`].
 pub fn host_from_url(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
@@ -98,15 +153,24 @@ pub fn host_from_url(url: &str) -> Option<String> {
 }
 
 fn is_private_v4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
     ip.is_private()
         || ip.is_loopback()
         || ip.is_link_local()
         || ip.is_unspecified()
         || ip.is_broadcast()
+        // 224.0.0.0/4 multicast (SSDP, mDNS, ...)
+        || ip.is_multicast()
         // 0.0.0.0/8 "this network"
-        || ip.octets()[0] == 0
+        || octets[0] == 0
         // 100.64.0.0/10 carrier-grade NAT
-        || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        // 192.0.0.0/24 IETF protocol assignments
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        // 198.18.0.0/15 benchmarking
+        || (octets[0] == 198 && (octets[1] & 0xfe) == 18)
+        // 240.0.0.0/4 reserved (includes 255.255.255.255)
+        || octets[0] >= 240
 }
 
 fn is_private_v6(ip: Ipv6Addr) -> bool {
@@ -142,16 +206,22 @@ pub fn is_private_host(host: &str) -> bool {
 
 /// Whether the browser renderer may issue one network request.
 ///
-/// Applied to the navigation URL and, through CDP `Fetch` interception, to
-/// every redirect hop, subresource, iframe and worker request the rendered
-/// page triggers — a validated navigation URL alone does not stop a hostile
-/// page from fetching `http://169.254.169.254/` or an internal host.
+/// This is the pure URL-level decision behind the CDP `Fetch.requestPaused`
+/// guard: it parses and classifies the URL and, for http(s) hostnames, applies
+/// the same fail-closed public resolution as [`validate_browser_url`], so it
+/// is unit-testable without Chromium (and, for IP literals and private names,
+/// without DNS). It is applied to the navigation URL and every redirect hop,
+/// subresource, iframe and worker request the rendered page triggers — a
+/// validated navigation URL alone does not stop a hostile page from fetching
+/// `http://169.254.169.254/` or an internal host.
 ///
 /// `data:`/`about:`/`blob:` are local to the renderer and cannot egress;
 /// every other non-http(s) scheme (`file:`, `ftp:`, `javascript:`, …) is
-/// rejected. http(s) requests must resolve to public addresses, and resolution
-/// failures fail closed, mirroring [`validate_browser_url`].
-pub(crate) async fn browser_request_allowed(url: &str, allow_private_hosts: bool) -> bool {
+/// rejected. The shell-metacharacter screen of [`validate_browser_url`] is
+/// deliberately not applied here: intercepted request URLs are handed to
+/// Chromium, never a shell, and legitimate query strings routinely contain
+/// `&`.
+pub(crate) async fn request_allowed(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return false;
     };
@@ -160,10 +230,23 @@ pub(crate) async fn browser_request_allowed(url: &str, allow_private_hosts: bool
         "data" | "about" | "blob" => return true,
         _ => return false,
     }
-    if allow_private_hosts {
-        return true;
-    }
     assert_public_resolution(&parsed).await.is_ok()
+}
+
+/// [`request_allowed`] with the test-only `allow_private_hosts` escape hatch
+/// (mirrors `BrowserConfig::allow_private_hosts`): loopback/private fixture
+/// targets are permitted, but scheme hardening is not bypassed.
+pub(crate) async fn request_allowed_with(url: &str, allow_private_hosts: bool) -> bool {
+    if !allow_private_hosts {
+        return request_allowed(url).await;
+    }
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    matches!(
+        parsed.scheme(),
+        "http" | "https" | "data" | "about" | "blob"
+    )
 }
 
 /// Re-resolve the host immediately before navigating and reject any private
@@ -439,30 +522,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_policy_blocks_private_targets_and_non_http_schemes() {
+    async fn request_allowed_denies_private_targets_and_allows_public_without_dns() {
         for blocked in [
             "http://169.254.169.254/latest/meta-data/",
             "http://127.0.0.1:8080/admin",
+            "http://10.0.0.1/",
+            "http://192.168.0.1/",
             "http://localhost/",
             "http://[::1]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://[fe80::1]/",
+            "http://224.0.0.1/",
+            "http://255.255.255.254/",
+            "http://198.18.0.1/",
+            "http://192.0.0.1/",
+            "http://[ff02::1]/",
             "file:///etc/passwd",
             "ftp://example.com/x",
             "javascript:alert(1)",
             "not a url",
         ] {
             assert!(
-                !browser_request_allowed(blocked, false).await,
+                !request_allowed(blocked).await,
                 "page resource request must be blocked: {blocked}"
             );
         }
 
         // Public IP literals skip DNS, so this holds without network access.
-        assert!(browser_request_allowed("https://93.184.216.34/", false).await);
+        assert!(request_allowed("https://93.184.216.34/").await);
         // Local schemes cannot reach the network and are used by the renderer
         // itself (the self-test `data:` fixture).
-        assert!(browser_request_allowed("data:text/html,<p>x</p>", false).await);
-        assert!(browser_request_allowed("about:blank", false).await);
-        // The explicit test escape hatch mirrors the navigation guard.
-        assert!(browser_request_allowed("http://127.0.0.1:8080/", true).await);
+        assert!(request_allowed("data:text/html,<p>x</p>").await);
+        assert!(request_allowed("about:blank").await);
+        // The explicit test escape hatch mirrors the navigation guard but
+        // still refuses non-http(s) schemes.
+        assert!(request_allowed_with("http://127.0.0.1:8080/", true).await);
+        assert!(!request_allowed_with("file:///etc/passwd", true).await);
+        assert!(!request_allowed_with("ftp://example.com/", true).await);
+    }
+
+    #[test]
+    fn audit_ranges_multicast_reserved_benchmark_and_ietf_are_rejected() {
+        let rejected = [
+            // 224.0.0.0/4 multicast (SSDP, mDNS, ...)
+            "http://224.0.0.1/",
+            "http://239.255.255.250/",
+            // 240.0.0.0/4 reserved
+            "http://240.0.0.1/",
+            "http://255.255.255.254/",
+            // 198.18.0.0/15 benchmarking
+            "http://198.18.0.1/",
+            "http://198.19.255.254/",
+            // 192.0.0.0/24 IETF protocol assignments
+            "http://192.0.0.1/",
+            "http://192.0.0.255/",
+            // ff00::/8 IPv6 multicast
+            "http://[ff02::1]/",
+            "http://[ff05::1:3]/",
+        ];
+        for url in rejected {
+            assert!(
+                validate_browser_url(url).is_err(),
+                "expected rejection for audit range: {url}"
+            );
+        }
+
+        // Neighbouring public addresses are not swept up by the new ranges.
+        for url in [
+            "http://223.0.0.1/",
+            "http://198.20.0.1/",
+            "http://192.0.1.1/",
+        ] {
+            assert!(
+                validate_browser_url(url).is_ok(),
+                "expected acceptance for public address: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_targets_allow_query_metacharacters_but_reject_private_hosts() {
+        let parsed = validate_redirect_target("https://example.com/a?b=1&c=2")
+            .expect("a query string containing '&' is a legitimate redirect target");
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some("example.com"));
+        assert_eq!(parsed.query(), Some("b=1&c=2"));
+
+        for blocked in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8080/admin",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://localhost/",
+            "file:///etc/passwd",
+            "ftp://example.com/x",
+            "not a url",
+        ] {
+            assert!(
+                validate_redirect_target(blocked).is_err(),
+                "expected rejection for redirect target: {blocked}"
+            );
+        }
+
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL_LENGTH));
+        assert!(
+            validate_redirect_target(&long).is_err(),
+            "redirect target must be length-bounded"
+        );
     }
 }
