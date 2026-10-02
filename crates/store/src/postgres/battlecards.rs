@@ -163,8 +163,9 @@ impl PgStore {
         status: Option<&str>,
         competitor_id: Option<Uuid>,
     ) -> Result<i64> {
-        let mut qb =
-            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM battlecards WHERE TRUE");
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT COUNT(*) FROM battlecards WHERE TRUE",
+        );
         push_battlecard_filters(&mut qb, status, competitor_id);
         let (count,): (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
         Ok(count)

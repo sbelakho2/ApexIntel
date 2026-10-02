@@ -406,7 +406,8 @@ fn parse_section_input(text: &str) -> Result<serde_json::Value, String> {
         ));
     }
     if trimmed.starts_with(['{', '[', '"']) {
-        return serde_json::from_str(trimmed).map_err(|error| format!("is not valid JSON ({error})"));
+        return serde_json::from_str(trimmed)
+            .map_err(|error| format!("is not valid JSON ({error})"));
     }
     Ok(serde_json::Value::String(trimmed.to_string()))
 }
@@ -492,7 +493,10 @@ fn markdown_attachment(filename_stem: &str, body: String) -> Response {
                 HeaderValue::from_static("text/markdown; charset=utf-8"),
             ),
             (header::CONTENT_DISPOSITION, disposition),
-            (header::CACHE_CONTROL, HeaderValue::from_static("private, no-store")),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            ),
         ],
         body,
     )
@@ -651,7 +655,10 @@ pub async fn get_battlecard(
     let names = match company_names(&store, &[row.competitor_id, row.our_company_id]).await {
         Ok(names) => names,
         Err(error) => {
-            tracing::error!("company_names failed (web battlecard {}): {error:#}", row.id);
+            tracing::error!(
+                "company_names failed (web battlecard {}): {error:#}",
+                row.id
+            );
             degraded_notice = Some("Company names could not be loaded.".to_string());
             HashMap::new()
         }
@@ -800,7 +807,15 @@ pub async fn new_battlecard_page(
         competitor_id: parse_optional_uuid(query.competitor_id.as_deref()),
         our_company_id: parse_optional_uuid(query.our_company_id.as_deref()),
     };
-    render_new_editor(&store, &session, warning_count, values, None, StatusCode::OK).await
+    render_new_editor(
+        &store,
+        &session,
+        warning_count,
+        values,
+        None,
+        StatusCode::OK,
+    )
+    .await
 }
 
 /// POST /battlecards — create a draft battlecard.
@@ -1092,7 +1107,10 @@ pub async fn update_battlecard(
             warning_count,
             &row,
             submitted(),
-            Some("The form is missing its version marker; reload the editor and try again.".to_string()),
+            Some(
+                "The form is missing its version marker; reload the editor and try again."
+                    .to_string(),
+            ),
             StatusCode::BAD_REQUEST,
         )
         .await;
@@ -1149,7 +1167,10 @@ pub async fn update_battlecard(
             .await
         }
         Err(error) => {
-            tracing::error!("update_battlecard_details {} failed (web): {error:#}", row.id);
+            tracing::error!(
+                "update_battlecard_details {} failed (web): {error:#}",
+                row.id
+            );
             render_edit_editor(
                 &store,
                 &session,
@@ -1468,7 +1489,10 @@ mod tests {
 
     #[test]
     fn section_input_parsing() {
-        assert_eq!(parse_section_input("   \r\n").unwrap(), serde_json::Value::Null);
+        assert_eq!(
+            parse_section_input("   \r\n").unwrap(),
+            serde_json::Value::Null
+        );
         assert_eq!(
             parse_section_input(" We win on service \r\n").unwrap(),
             json!("We win on service")
