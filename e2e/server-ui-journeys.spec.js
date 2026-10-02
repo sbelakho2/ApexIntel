@@ -263,27 +263,66 @@ test.describe('server UI — journey contracts (DB state)', () => {
     await login(page);
     const insight = SEED.insight;
 
-    await page.goto(`/insights/${insight.id}`, { waitUntil: 'domcontentloaded' });
-    await page.getByRole('button', { name: 'Bookmark', exact: true }).click();
-    await expect(page.locator('#bookmark-status button[title="Remove bookmark"]')).toBeVisible({
-      timeout: 15_000,
-    });
-    expect(
-      await scalar(
+    // Re-entrant: a retry after a partially completed toggle must start from a
+    // clean state, otherwise the toggle click would unbookmark immediately and
+    // the flow below could never observe its own writes.
+    await q(
+      'DELETE FROM insight_bookmarks WHERE insight_id = $1::uuid AND user_id = $2',
+      [insight.id, 'admin']
+    );
+
+    const bookmarkCount = () =>
+      scalar(
         'SELECT count(*)::int FROM insight_bookmarks WHERE insight_id = $1::uuid AND user_id = $2',
         [insight.id, 'admin']
-      )
-    ).toBe(1);
+      );
 
-    await page.locator('#bookmark-status button[title="Remove bookmark"]').click();
-    await expectDb(
-      async () =>
-        scalar(
-          'SELECT count(*)::int FROM insight_bookmarks WHERE insight_id = $1::uuid AND user_id = $2',
-          [insight.id, 'admin']
-        ),
-      0
-    );
+    const removeButton = page.locator('#bookmark-status button[title="Remove bookmark"]');
+    const bookmarkButton = page.locator('#bookmark-status button[title="Bookmark"]');
+
+    // htmx can drop a click that lands inside a response-swap window. Retry the
+    // click until the server *response* arrives (never fire a second click
+    // while one is in flight, or the toggle would flip twice); then assert the
+    // persisted row, which is the actual workflow contract.
+    const clickUntilResponse = async (clicker) => {
+      const response = page
+        .waitForResponse((r) => r.url().includes('/bookmark'), { timeout: 5_000 })
+        .catch(() => null);
+      await clicker();
+      const resp = await response;
+      if (resp) {
+        await resp.finished();
+      }
+    };
+
+    await page.goto(`/insights/${insight.id}`, { waitUntil: 'domcontentloaded' });
+    await expect
+      .poll(
+        async () => {
+          if ((await removeButton.count()) === 0) {
+            await clickUntilResponse(() =>
+              page.getByRole('button', { name: 'Bookmark', exact: true }).click()
+            );
+          }
+          return removeButton.count();
+        },
+        { timeout: 60_000 }
+      )
+      .toBe(1);
+    expect(await bookmarkCount()).toBe(1);
+
+    await expect
+      .poll(
+        async () => {
+          if ((await removeButton.count()) > 0) {
+            await clickUntilResponse(() => removeButton.click());
+          }
+          return bookmarkButton.count();
+        },
+        { timeout: 60_000 }
+      )
+      .toBe(1);
+    expect(await bookmarkCount()).toBe(0);
   });
 
   test('creates a recipe and stores it as staging', async ({ page }) => {
