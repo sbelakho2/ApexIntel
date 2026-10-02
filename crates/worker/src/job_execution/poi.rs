@@ -2177,23 +2177,18 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
             "poi_discovery: loaded company coverage seeds"
         );
 
-        let filters = PersonListFilters {
-            regions: vec![],
-            roles: vec![],
-            search: None,
-            min_priority: None,
-            max_priority: None,
-        };
-        let all_persons = match store.list_persons(&filters, None, true, 1000, 0).await {
-            Ok(p) => p,
+        // Every stored name: list_persons is capped at 500 rows, which would
+        // silently let known people past the dedup set.
+        let all_person_names = match store.list_all_person_names().await {
+            Ok(names) => names,
             Err(e) => {
                 run.fail(&format!("poi_discovery: failed to load all persons: {e}"));
                 return run;
             }
         };
-        let mut known_name_keys: HashSet<String> = all_persons
+        let mut known_name_keys: HashSet<String> = all_person_names
             .iter()
-            .map(|person| normalized_person_name_key(&person.name))
+            .map(|name| normalized_person_name_key(name))
             .filter(|name| !name.is_empty())
             .collect();
 

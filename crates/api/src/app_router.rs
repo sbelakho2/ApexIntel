@@ -8,6 +8,25 @@ use axum::{
 };
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
+/// 503 is the deliberate "capability unavailable" answer (readiness probes,
+/// vector search without an embedding provider) and is already reported by
+/// the handler, so it logs at WARN; a probe polling a degraded instance must
+/// not flood ERROR. Every other 5xx and transport failure stays ERROR.
+fn log_response_failure(
+    class: tower_http::classify::ServerErrorsFailureClass,
+    latency: std::time::Duration,
+    _span: &tracing::Span,
+) {
+    use tower_http::classify::ServerErrorsFailureClass;
+    let latency_ms = latency.as_millis();
+    match class {
+        ServerErrorsFailureClass::StatusCode(axum::http::StatusCode::SERVICE_UNAVAILABLE) => {
+            tracing::warn!(latency_ms, "response degraded: 503 Service Unavailable");
+        }
+        other => tracing::error!(classification = %other, latency_ms, "response failed"),
+    }
+}
+
 /// Directory that serves `/static/*`. Defaults to the source tree (local dev);
 /// container images set `APEX_STATIC_DIR` to the copied runtime assets.
 fn static_dir() -> String {
@@ -656,14 +675,16 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(
-            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<_>| {
-                tracing::info_span!(
-                    "http_request",
-                    method = %request.method(),
-                    path = %request.uri().path(),
-                    request_id = %Uuid::new_v4()
-                )
-            }),
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        request_id = %Uuid::new_v4()
+                    )
+                })
+                .on_failure(log_response_failure),
         )
         .with_state(state)
 }

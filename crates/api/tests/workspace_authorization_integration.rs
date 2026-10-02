@@ -45,10 +45,10 @@ use apex_api::auth::ApiRole;
 use apex_api::middleware::session::WebSession;
 use apex_api::responses::ApiError;
 use apex_api::routes::collaboration::{
-    authorize_workspace, store_error, validate_access_level, validate_evidence_type,
-    validate_opportunity_status, validate_probability, validate_reliability_score,
-    validate_risk_category, validate_risk_score, validate_share_type, validate_stage,
-    validate_team_assignment_role, validate_threat_status, validate_visibility,
+    authorize_workspace, resolve_record_owner, store_error, validate_access_level,
+    validate_evidence_type, validate_opportunity_status, validate_probability,
+    validate_reliability_score, validate_risk_category, validate_risk_score, validate_share_type,
+    validate_stage, validate_team_assignment_role, validate_threat_status, validate_visibility,
     validate_workspace_assignment_role, validate_workspace_name, WsAccess,
 };
 use apex_api::web::collaboration as web_collab;
@@ -91,8 +91,19 @@ async fn setup() -> PgPool {
         .run(&pool)
         .await
         .expect("run migrations");
+    // `owner_id`/`created_by` on executive records reference app_users(id)
+    // (migration 101); the fixtures below act as these principals.
+    let store = PgStore::from_pool(pool.clone());
+    for id in [FIXTURE_CREATOR, "owner-1", "owner-2"] {
+        store
+            .ensure_app_user_exists(id, id, "analyst")
+            .await
+            .expect("provision fixture user");
+    }
     pool
 }
+
+const FIXTURE_CREATOR: &str = "verify-wsauthz-creator";
 
 fn marker(prefix: &str) -> String {
     format!("verify-wsauthz-{prefix}-{}", Uuid::new_v4().simple())
@@ -971,9 +982,11 @@ async fn supplier_risk_patch_preserves_mitigation() {
             &json!(["concentration"]),
             Some("retain me"),
             Some("owner-1"),
+            FIXTURE_CREATOR,
         )
         .await
         .expect("create supplier risk");
+    assert_eq!(entry.created_by.as_deref(), Some(FIXTURE_CREATOR));
 
     // PATCH with only risk_score: mitigation and status must survive.
     let after_score = store
@@ -1331,9 +1344,11 @@ async fn opportunity_and_threat_patch_is_partial_and_derives_resolved_at() {
             &json!(["step-one"]),
             Some("owner-1"),
             None,
+            FIXTURE_CREATOR,
         )
         .await
         .expect("create opportunity");
+    assert_eq!(opportunity.created_by.as_deref(), Some(FIXTURE_CREATOR));
 
     let patched = store
         .update_strategic_opportunity(
@@ -1432,6 +1447,7 @@ async fn opportunity_and_threat_patch_is_partial_and_derives_resolved_at() {
             &json!(["mitigate"]),
             Some("owner-2"),
             None,
+            FIXTURE_CREATOR,
         )
         .await
         .expect("create threat");
@@ -1564,6 +1580,7 @@ async fn executive_filters_and_totals_are_computed_in_sql() {
                 &json!([]),
                 None,
                 None,
+                FIXTURE_CREATOR,
             )
             .await
             .expect("create opportunity");
@@ -1589,6 +1606,7 @@ async fn executive_filters_and_totals_are_computed_in_sql() {
                 &json!([]),
                 None,
                 None,
+                FIXTURE_CREATOR,
             )
             .await
             .expect("create threat");
@@ -2272,4 +2290,331 @@ async fn web_500_paths_do_not_echo_database_errors() {
             "500 body leaked database detail '{needle}': {text}"
         );
     }
+}
+
+// ── Record attribution: created_by + validated owner (migration 101) ──────
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn executive_records_carry_attribution_and_a_validated_owner() {
+    let pool = setup().await;
+    let store = Arc::new(PgStore::from_pool(pool.clone()));
+    let session = web_session(FIXTURE_CREATOR, ApiRole::Analyst);
+    let ghost = format!("verify-wsauthz-ghost-{}", Uuid::new_v4().simple());
+
+    // Shared owner resolution: blank -> None, known -> Some, unknown -> a
+    // field validation error (422 on the JSON API).
+    assert_eq!(
+        resolve_record_owner(&store, Some("  ")).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        resolve_record_owner(&store, Some(" owner-1 "))
+            .await
+            .unwrap(),
+        Some("owner-1".to_string())
+    );
+    let unknown = resolve_record_owner(&store, Some(&ghost))
+        .await
+        .expect_err("unknown owner must be rejected");
+    assert_eq!(unknown.http_status(), 422);
+    assert_eq!(
+        unknown
+            .details
+            .as_ref()
+            .and_then(|d| d.get("field"))
+            .map(String::as_str),
+        Some("owner_id")
+    );
+
+    // The foreign key is the backstop when a writer bypasses validation.
+    let fk = store
+        .create_supplier_risk_entry(
+            &marker("supplier-fk"),
+            "financial",
+            0.5,
+            &json!({}),
+            None,
+            Some(&ghost),
+            FIXTURE_CREATOR,
+        )
+        .await;
+    assert!(fk.is_err(), "owner_id must reference app_users");
+    let fk_creator = store
+        .create_pipeline_opportunity(
+            None,
+            &marker("pipeline-fk"),
+            "discovery",
+            None,
+            0.5,
+            None,
+            None,
+            None,
+            &ghost,
+        )
+        .await;
+    assert!(fk_creator.is_err(), "created_by must reference app_users");
+
+    // Web pipeline form: percent input is stored as a fraction, the session
+    // principal is the author, and the selected owner is persisted.
+    let title = marker("pipeline-web");
+    let created = web_collab::create_pipeline_opportunity(
+        Extension(session.clone()),
+        Extension(store.clone()),
+        Form(web_collab::CreatePipelineForm {
+            title: format!("  {title}  "),
+            stage: "qualification".to_string(),
+            value_estimate: Some(1000.0),
+            probability: 75.0,
+            owner_id: Some("owner-1".to_string()),
+            expected_close: None,
+            notes: Some("   ".to_string()),
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(created.status(), StatusCode::SEE_OTHER);
+    let (probability, owner, creator, notes): (
+        f64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT probability::double precision, owner_id, created_by, notes \
+             FROM pipeline_opportunities WHERE title = $1",
+    )
+    .bind(&title)
+    .fetch_one(&pool)
+    .await
+    .expect("pipeline row stored with trimmed title");
+    assert!(
+        (probability - 0.75).abs() < 1e-9,
+        "75% must be stored as 0.75"
+    );
+    assert_eq!(owner.as_deref(), Some("owner-1"));
+    assert_eq!(creator.as_deref(), Some(FIXTURE_CREATOR));
+    assert_eq!(notes, None, "blank notes are not stored");
+
+    // Unknown owner on the web form is a 400 and writes nothing.
+    let ghost_title = marker("pipeline-ghost");
+    let rejected = web_collab::create_pipeline_opportunity(
+        Extension(session.clone()),
+        Extension(store.clone()),
+        Form(web_collab::CreatePipelineForm {
+            title: ghost_title.clone(),
+            stage: "discovery".to_string(),
+            value_estimate: None,
+            probability: 50.0,
+            owner_id: Some(ghost.clone()),
+            expected_close: None,
+            notes: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    let (ghost_rows,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*)::bigint FROM pipeline_opportunities WHERE title = $1")
+            .bind(&ghost_title)
+            .fetch_one(&pool)
+            .await
+            .expect("count ghost rows");
+    assert_eq!(ghost_rows, 0);
+
+    // Web supplier risk form: percent score and attribution.
+    let supplier = marker("supplier-web");
+    let added = web_collab::add_supplier_risk(
+        Extension(session.clone()),
+        Extension(store.clone()),
+        Form(web_collab::AddSupplierRiskForm {
+            supplier_id: supplier.clone(),
+            risk_category: "compliance".to_string(),
+            risk_score: 80.0,
+            risk_factors: None,
+            mitigation: None,
+            owner_id: Some(String::new()),
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(added.status(), StatusCode::SEE_OTHER);
+    let (score, owner, creator): (f64, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT risk_score::double precision, owner_id, created_by FROM supplier_risk WHERE supplier_id = $1",
+    )
+    .bind(&supplier)
+    .fetch_one(&pool)
+    .await
+    .expect("supplier row stored");
+    assert!((score - 0.8).abs() < 1e-9, "80 must be stored as 0.8");
+    assert_eq!(owner, None, "an empty owner select means unassigned");
+    assert_eq!(creator.as_deref(), Some(FIXTURE_CREATOR));
+
+    let over = web_collab::add_supplier_risk(
+        Extension(session.clone()),
+        Extension(store.clone()),
+        Form(web_collab::AddSupplierRiskForm {
+            supplier_id: supplier.clone(),
+            risk_category: "compliance".to_string(),
+            risk_score: 101.0,
+            risk_factors: None,
+            mitigation: None,
+            owner_id: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(over.status(), StatusCode::BAD_REQUEST);
+
+    // Listing resolves attribution ids to user labels.
+    let page = web_collab::list_pipeline(
+        Extension(session.clone()),
+        Extension(store.clone()),
+        axum::http::HeaderMap::new(),
+    )
+    .await
+    .into_response();
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = body_text(page).await;
+    assert!(html.contains(&title));
+    assert!(html.contains("75%"), "probability renders as a percentage");
+    assert!(html.contains(r#"<option value="discovery">Discovery</option>"#));
+    assert!(!html.contains(r#"value="identification""#));
+
+    sqlx::query("DELETE FROM pipeline_opportunities WHERE title = $1")
+        .bind(&title)
+        .execute(&pool)
+        .await
+        .expect("cleanup pipeline");
+    sqlx::query("DELETE FROM supplier_risk WHERE supplier_id = $1")
+        .bind(&supplier)
+        .execute(&pool)
+        .await
+        .expect("cleanup supplier risk");
+    pool.close().await;
+}
+
+// ── entity page "open investigations" respects workspace visibility ─────────
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn entity_workspace_list_hides_invisible_workspaces() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+
+    let entity = Uuid::new_v4().to_string();
+    let owner = marker("eowner");
+    let outsider = marker("eoutsider");
+    let viewer = marker("eviewer");
+
+    let mut ids = Vec::new();
+    for (prefix, visibility, focus) in [
+        ("entity-private", "private", json!([entity.clone()])),
+        (
+            "entity-org",
+            "organization",
+            json!([{ "id": entity.clone() }]),
+        ),
+        (
+            "entity-shared",
+            "private",
+            json!({ "entity_id": entity.clone() }),
+        ),
+    ] {
+        let id = store
+            .create_investigation_workspace(
+                &marker(prefix),
+                None,
+                "structured",
+                &owner,
+                None,
+                visibility,
+                &[],
+                &focus,
+            )
+            .await
+            .expect("create entity workspace")
+            .id;
+        ids.push((prefix, id));
+    }
+    let id_of = |name: &str| {
+        ids.iter()
+            .find(|(prefix, _)| *prefix == name)
+            .map(|(_, id)| *id)
+            .expect("fixture id")
+    };
+    store
+        .create_investigation_share(
+            id_of("entity-shared"),
+            &owner,
+            &viewer,
+            "view",
+            "read",
+            None,
+            None,
+        )
+        .await
+        .expect("share entity workspace");
+
+    let visible = |records: Vec<InvestigationWorkspaceRecord>| {
+        let mut found: Vec<Uuid> = records.into_iter().map(|w| w.id).collect();
+        found.sort();
+        found
+    };
+    let sorted = |mut list: Vec<Uuid>| {
+        list.sort();
+        list
+    };
+
+    let as_owner = store
+        .list_investigation_workspaces_for_entity(&entity, &owner, false, 25)
+        .await
+        .expect("owner list");
+    assert_eq!(
+        visible(as_owner),
+        sorted(ids.iter().map(|(_, id)| *id).collect()),
+        "owner sees every focused workspace in all entity_focus shapes"
+    );
+
+    let as_outsider = store
+        .list_investigation_workspaces_for_entity(&entity, &outsider, false, 25)
+        .await
+        .expect("outsider list");
+    assert_eq!(
+        visible(as_outsider),
+        vec![id_of("entity-org")],
+        "a non-member only sees organization-visible workspaces"
+    );
+
+    let as_viewer = store
+        .list_investigation_workspaces_for_entity(&entity, &viewer, false, 25)
+        .await
+        .expect("viewer list");
+    assert_eq!(
+        visible(as_viewer),
+        sorted(vec![id_of("entity-org"), id_of("entity-shared")]),
+        "a share grants visibility of exactly the shared workspace"
+    );
+
+    let as_admin = store
+        .list_investigation_workspaces_for_entity(&entity, &outsider, true, 25)
+        .await
+        .expect("admin list");
+    assert_eq!(as_admin.len(), 3, "admin sees all focused workspaces");
+
+    let other_entity = store
+        .list_investigation_workspaces_for_entity(&Uuid::new_v4().to_string(), &owner, true, 25)
+        .await
+        .expect("other entity list");
+    assert!(other_entity
+        .iter()
+        .all(|w| !ids.iter().any(|(_, id)| *id == w.id)));
+
+    sqlx::query("DELETE FROM investigation_shares WHERE shared_with = $1")
+        .bind(&viewer)
+        .execute(&pool)
+        .await
+        .expect("cleanup shares");
+    let all: Vec<Uuid> = ids.iter().map(|(_, id)| *id).collect();
+    delete_workspaces(&pool, &all).await;
+    pool.close().await;
 }

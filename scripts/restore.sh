@@ -6,15 +6,28 @@
 # create/restore aborts the script with a non-zero exit instead of falling
 # through to an unconditional "Restore complete."
 
+#
+# Encrypted backups (apexintel.pgdump.age, see scripts/backup.sh) need
+# BACKUP_AGE_IDENTITY set to the age identity file; they are decrypted in a
+# stream so the plaintext dump never touches disk.
+
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/backup_common.sh
+source "${SCRIPT_DIR}/lib/backup_common.sh"
 
 BACKUP_DIR="${1:?Usage: restore.sh /path/to/backup/dir}"
 
 : "${DATABASE_URL:?Set DATABASE_URL before running scripts/restore.sh}"
 
-if [[ ! -f "${BACKUP_DIR}/apexintel.pgdump" ]]; then
-    echo "ERROR: ${BACKUP_DIR}/apexintel.pgdump not found"
-    exit 1
+resolve_dump_path "${BACKUP_DIR}"
+if [[ "${DUMP_PATH}" == *.age ]]; then
+    # Fail before anything is dropped, not halfway through the restore: a
+    # full authenticated decrypt proves the key matches and the file is intact.
+    : "${BACKUP_AGE_IDENTITY:?Set BACKUP_AGE_IDENTITY to decrypt ${DUMP_PATH}}"
+    command -v age >/dev/null || { echo "ERROR: age is not installed" >&2; exit 1; }
+    stream_dump > /dev/null
 fi
 
 echo "[$(date)] Restoring ApexIntel from ${BACKUP_DIR}"
@@ -29,19 +42,9 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Derive the database name and a maintenance URL: DROP/CREATE DATABASE cannot
-# run through a connection to the database being replaced.
-DB_URL_NO_QUERY="${DB_URL%%\?*}"
-DB_QUERY=""
-if [[ "${DB_URL}" == *\?* ]]; then
-    DB_QUERY="?${DB_URL#*\?}"
-fi
-DB_NAME="${DB_URL_NO_QUERY##*/}"
-if [[ -z "${DB_NAME}" || "${DB_NAME}" == "${DB_URL_NO_QUERY}" ]]; then
-    echo "ERROR: cannot derive a database name from DATABASE_URL"
-    exit 1
-fi
-MAINT_URL="${DB_URL_NO_QUERY%/*}/postgres${DB_QUERY}"
+pg_url_split "${DB_URL}"
+DB_NAME="${PG_DB_NAME}"
+MAINT_URL="${PG_MAINT_URL}"
 
 # Terminate existing connections; DROP DATABASE fails while any remain.
 psql "${MAINT_URL}" -v ON_ERROR_STOP=1 -c \
@@ -53,8 +56,7 @@ psql "${MAINT_URL}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${DB_NAME}\""
 
 # Restore database (non-zero exit propagates; success is only printed after).
 echo "[$(date)] Restoring database..."
-pg_restore -d "${DB_URL}" --no-owner --no-acl --clean --if-exists \
-    "${BACKUP_DIR}/apexintel.pgdump"
+stream_dump | pg_restore -d "${DB_URL}" --no-owner --no-acl --clean --if-exists
 
 # Restore config
 if [[ -d "${BACKUP_DIR}/config" ]]; then

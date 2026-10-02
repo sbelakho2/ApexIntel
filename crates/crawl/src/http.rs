@@ -343,6 +343,59 @@ mod tests {
         assert_eq!(body, "ok");
     }
 
+    fn self_redirect_responses(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|hop| {
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: /hop-{hop}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn redirect_chain_is_capped_at_max_redirects() {
+        // An endless redirect loop must end in a redirect error after at most
+        // MAX_REDIRECTS hops instead of following forever.
+        let addr = start_test_server(self_redirect_responses(MAX_REDIRECTS + 3)).await;
+        let client = external_client_with(ExternalClientOptions {
+            timeout: Duration::from_secs(5),
+            allow_private_targets: true,
+            ..ExternalClientOptions::default()
+        })
+        .expect("build client");
+
+        let error = client
+            .get(format!("http://{addr}/start"))
+            .send()
+            .await
+            .expect_err("an unbounded redirect chain must fail");
+        assert!(
+            error.is_redirect(),
+            "expected a redirect error, got {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_none_returns_the_3xx_to_the_caller() {
+        let addr = start_test_server(self_redirect_responses(1)).await;
+        let client = external_client_with(ExternalClientOptions {
+            timeout: Duration::from_secs(5),
+            allow_private_targets: true,
+            redirect: None,
+            ..ExternalClientOptions::default()
+        })
+        .expect("build client");
+
+        let response = client
+            .get(format!("http://{addr}/start"))
+            .send()
+            .await
+            .expect("a disabled redirect policy returns the response");
+        assert_eq!(response.status().as_u16(), 302);
+        assert_eq!(response.url().path(), "/start");
+    }
+
     #[tokio::test]
     async fn read_capped_truncates_at_the_limit() {
         let body = "a".repeat(4096);

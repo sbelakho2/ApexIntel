@@ -64,20 +64,9 @@ pub(super) async fn run_breach_scan(
         .collect();
 
     if domains.is_empty() {
-        let companies = match store
-            .list_companies(
-                &apex_store::postgres::CompanyListFilters {
-                    regions: vec![],
-                    search: None,
-                    is_competitor: None,
-                },
-                Some(apex_store::postgres::CompanyOrderBy::Name),
-                false,
-                500,
-                0,
-            )
-            .await
-        {
+        // Every company: list calls clamp to 500 rows, and a name-ordered
+        // cap would never scan companies past the first page.
+        let companies = match store.list_all_companies().await {
             Ok(companies) => companies,
             Err(error) => {
                 run.fail(&format!(
@@ -188,20 +177,9 @@ pub(super) async fn run_sanctions_screen(
         .collect();
 
     if entity_names.is_empty() {
-        let companies = match store
-            .list_companies(
-                &apex_store::postgres::CompanyListFilters {
-                    regions: vec![],
-                    search: None,
-                    is_competitor: None,
-                },
-                Some(apex_store::postgres::CompanyOrderBy::Name),
-                false,
-                500,
-                0,
-            )
-            .await
-        {
+        // Screen every stored entity: list calls clamp to 500 rows, so a
+        // capped list would silently leave the rest of the book unscreened.
+        let companies = match store.list_all_companies().await {
             Ok(companies) => companies,
             Err(error) => {
                 run.fail(&format!(
@@ -212,22 +190,7 @@ pub(super) async fn run_sanctions_screen(
         };
         entity_names.extend(companies.iter().map(|c| (c.name.clone(), Some(c.id))));
 
-        let persons = match store
-            .list_persons(
-                &apex_store::postgres::PersonListFilters {
-                    regions: vec![],
-                    roles: vec![],
-                    search: None,
-                    min_priority: None,
-                    max_priority: None,
-                },
-                Some(apex_store::postgres::PersonOrderBy::Name),
-                false,
-                500,
-                0,
-            )
-            .await
-        {
+        let persons = match store.list_all_persons().await {
             Ok(persons) => persons,
             Err(error) => {
                 run.fail(&format!(
@@ -667,20 +630,9 @@ pub(super) async fn run_dns_posture_scan(
     let mut run = JobRun::new(kind.clone());
     run.start();
 
-    let companies = match store
-        .list_companies(
-            &apex_store::postgres::CompanyListFilters {
-                regions: vec![],
-                search: None,
-                is_competitor: None,
-            },
-            Some(apex_store::postgres::CompanyOrderBy::Name),
-            false,
-            500,
-            0,
-        )
-        .await
-    {
+    // Every company: list calls clamp to 500 rows, and a name-ordered cap
+    // would never reach companies past the first page.
+    let companies = match store.list_all_companies().await {
         Ok(companies) => companies,
         Err(error) => {
             // Authoritative input: an empty list would silently turn "the
@@ -1410,20 +1362,9 @@ pub(super) async fn run_lookalike_domain_scan(
 ) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
-    let companies = match store
-        .list_companies(
-            &apex_store::postgres::CompanyListFilters {
-                regions: vec![],
-                search: None,
-                is_competitor: None,
-            },
-            Some(apex_store::postgres::CompanyOrderBy::Name),
-            false,
-            500,
-            0,
-        )
-        .await
-    {
+    // Every company: list calls clamp to 500 rows, and a name-ordered cap
+    // would never reach companies past the first page.
+    let companies = match store.list_all_companies().await {
         Ok(companies) => companies,
         Err(error) => {
             run.fail(&format!(

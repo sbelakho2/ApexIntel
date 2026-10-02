@@ -26,6 +26,14 @@ test.beforeAll(async () => {
 });
 
 test.describe('server UI — visual snapshots', () => {
+  // Baselines exist only for Linux font rendering (`*-linux.png`); on other
+  // platforms Playwright would diff against missing `*-darwin.png`/`*-win32.png`
+  // files and fail for reasons unrelated to the UI.
+  test.skip(
+    process.platform !== 'linux',
+    'visual baselines are Linux-rendered; run in the CI container',
+  );
+
   for (const viewport of VIEWPORTS) {
     for (const route of ROUTES) {
       test(`${route.name} @ ${viewport.name}`, async ({ page }) => {

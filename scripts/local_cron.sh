@@ -20,22 +20,25 @@ health_check() {
 # 2. Database backup (daily at 3 AM local time)
 db_backup() {
     echo "[$(date)] Starting DB backup..." >> "$LOG_FILE"
-    pg_dump -Fc -Z 6 -f "${BACKUP_DIR}/apexintel_$(date +%Y%m%d).pgdump" "$DB_NAME" 2>> "$LOG_FILE"
-    echo "[$(date)] Backup complete: $(du -sh ${BACKUP_DIR}/apexintel_$(date +%Y%m%d).pgdump | cut -f1)" >> "$LOG_FILE"
+    # Dumps hold the full dataset: keep them owner-only.
+    local dump
+    dump="${BACKUP_DIR}/apexintel_$(date +%Y%m%d).pgdump"
+    (umask 077 && pg_dump -Fc -Z 6 -f "$dump" "$DB_NAME" 2>> "$LOG_FILE")
+    echo "[$(date)] Backup complete: $(du -sh "$dump" | cut -f1)" >> "$LOG_FILE"
 }
 
 # 3. Backup cleanup (daily at 3:07 AM, keep 30 days)
 backup_cleanup() {
     echo "[$(date)] Cleaning old backups..." >> "$LOG_FILE"
     find "$BACKUP_DIR" -name "apexintel_*.pgdump" -mtime +30 -delete 2>> "$LOG_FILE"
-    echo "[$(date)] Cleanup done. Remaining: $(ls -1 ${BACKUP_DIR}/apexintel_*.pgdump 2>/dev/null | wc -l)" >> "$LOG_FILE"
+    echo "[$(date)] Cleanup done. Remaining: $(find "$BACKUP_DIR" -maxdepth 1 -name 'apexintel_*.pgdump' | wc -l)" >> "$LOG_FILE"
 }
 
 # 4. Worker alive check (every 10 minutes)
 worker_check() {
     if ! pgrep -f "apex-worker" > /dev/null; then
         echo "[$(date)] WARNING: Worker not running! Restarting..." >> "$LOG_FILE"
-        cd "${REPO_ROOT}"
+        cd "${REPO_ROOT}" || { echo "[$(date)] ERROR: cannot cd to ${REPO_ROOT}" >> "$LOG_FILE"; return 1; }
         nohup ./target/release/apex-worker > /tmp/apex-worker.log 2>&1 &
         echo "[$(date)] Worker restarted (PID: $!)" >> "$LOG_FILE"
     fi
@@ -45,7 +48,7 @@ worker_check() {
 api_check() {
     if ! pgrep -f "apex-api" > /dev/null; then
         echo "[$(date)] WARNING: API not running! Restarting..." >> "$LOG_FILE"
-        cd "${REPO_ROOT}"
+        cd "${REPO_ROOT}" || { echo "[$(date)] ERROR: cannot cd to ${REPO_ROOT}" >> "$LOG_FILE"; return 1; }
         nohup ./target/release/apex-api > /tmp/apex-api.log 2>&1 &
         echo "[$(date)] API restarted (PID: $!)" >> "$LOG_FILE"
     fi

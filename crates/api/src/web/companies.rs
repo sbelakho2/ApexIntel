@@ -470,9 +470,12 @@ pub async fn list_companies(
 
     let mut degraded_notice: Option<String> = None;
 
+    // Region/tier filters, stats, region donut and pagination are computed
+    // over the whole matching set, so load every match (a single list call
+    // clamps to 500 rows and would silently truncate all of them).
     let company_rows_state = DataState::from_result(
         store
-            .list_companies(&filters, order_by, desc, 2000, 0)
+            .list_all_companies_matching(&filters, order_by, desc)
             .await,
         "failed to list companies",
         |rows| rows.is_empty(),

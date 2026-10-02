@@ -64,12 +64,12 @@
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Refine POI list:</span>
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Region:</span>
     {% for r in region_filters %}
-      {% call m::filter_chip(r.label, r.href, r.active, "default", "") %}
+      {% call m::filter_chip(r.label, r.href, r.active, "default") %}
     {% endfor %}
     <span class="mx-2 h-4 w-px bg-rams-line"></span>
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Priority:</span>
     {% for p in priority_filters %}
-      {% call m::filter_chip(p.label, p.href, p.active, "default", "") %}
+      {% call m::filter_chip(p.label, p.href, p.active, "default") %}
     {% endfor %}
     <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {{ active_filters }}</span>
     <a href="{{ reset_href }}" class="apex-action-link">Reset Filters</a>
@@ -78,6 +78,9 @@
 
 {% if buying_center_mode %}
 <section class="apex-card mb-4" data-buying-centers>
+  {% if let Some(notice) = buying_center_truncated_notice %}
+  <div class="border-b border-rams-line px-4 py-2 text-[11px] font-semibold text-rams-orange" role="status" data-buying-centers-truncated>{{ notice }}</div>
+  {% endif %}
   <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
     <div>
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Buying centres by account</h2>
@@ -154,6 +157,16 @@
     </table>
   </div>
 </div>
+
+{% if total_pages > 1 %}
+<nav class="mb-4 flex items-center justify-between" aria-label="Persons pagination" data-persons-pagination>
+  <p class="text-[11px] text-rams-muted">{{ total_persons }} total · Page {{ page }} of {{ total_pages }}</p>
+  <div class="flex gap-1">
+    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" rel="prev" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" rel="next" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+  </div>
+</nav>
+{% endif %}
 
 <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
   {% if persons.is_empty() && degraded_notice.is_none() %}

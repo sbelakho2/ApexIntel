@@ -302,9 +302,50 @@ pub struct PersonListQuery {
     /// `buying-centers` renders the Sales Intelligence workspace view over the
     /// same person data: people grouped by organisation with decision roles.
     pub view: Option<String>,
+    /// 1-based page of the analyst table.
+    pub page: Option<i64>,
 }
 
 const PERSON_REGION_FILTERS: [&str; 6] = ["Tunisia", "Morocco", "Israel", "EU", "China", "Global"];
+
+/// Analyst-table page size.
+const PERSONS_PER_PAGE: i64 = 50;
+/// Buying centres group every matching person, read in pages of this size up
+/// to `BUYING_CENTER_MAX_PEOPLE`; beyond that the page says so explicitly.
+const BUYING_CENTER_BATCH: i64 = 500;
+const BUYING_CENTER_MAX_PEOPLE: i64 = 5_000;
+/// Longest accepted search term; longer input is truncated (char-safe).
+const PERSON_SEARCH_MAX_CHARS: usize = 200;
+
+/// Store filters for the page selection. "Global" means every region; a
+/// priority band maps onto the canonical `priority_score` ranges used by
+/// `person_intelligence::priority_band` (A >= 0.8, B in [0.5, 0.8), C < 0.5),
+/// so unmeasured priority is in no band.
+fn person_filters_for(region: &str, priority: &str, search: &str) -> PersonListFilters {
+    let region = region.trim();
+    let search = search.trim();
+    let (min_priority, max_priority) = match priority {
+        "A" => (Some(0.8), None),
+        "B" => (Some(0.5), Some(0.8)),
+        "C" => (None, Some(0.5)),
+        _ => (None, None),
+    };
+    PersonListFilters {
+        regions: if region.is_empty() || region.eq_ignore_ascii_case("global") {
+            vec![]
+        } else {
+            vec![region.to_string()]
+        },
+        roles: vec![],
+        search: if search.is_empty() {
+            None
+        } else {
+            Some(search.chars().take(PERSON_SEARCH_MAX_CHARS).collect())
+        },
+        min_priority,
+        max_priority,
+    }
+}
 
 // ─── Template data ──────────────────────────────────────────────────────────
 
@@ -479,6 +520,12 @@ pub struct PersonsPage {
 
     pub persons: Vec<PersonListCard>,
     pub total_persons: i64,
+    pub page: i64,
+    pub total_pages: i64,
+    /// Current filter href ending in `?` or `&`, ready for `page=N`.
+    pub page_base_href: String,
+    /// Set when the buying-centre view could not group every matching person.
+    pub buying_center_truncated_notice: Option<String>,
     pub priority_a: i64,
     pub priority_b: i64,
     /// Mean measured influence; `None` when nothing is measured.
@@ -547,7 +594,6 @@ fn build_persons_href(
 // ─── Handler ────────────────────────────────────────────────────────────────
 
 pub async fn list_persons(
-    headers: HeaderMap,
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Query(query): Query<PersonListQuery>,
@@ -572,27 +618,10 @@ pub async fn list_persons(
     DegradedNotice::capture(&unack_state, &mut degraded_notice);
     let ctx = PageContext::from_session(&session, route, unack_state.into_loaded_or(0));
 
-    let all_rows_state = DataState::from_result(
-        store
-            .list_persons(
-                &PersonListFilters::default(),
-                Some(PersonOrderBy::UpdatedAt),
-                true,
-                500,
-                0,
-            )
-            .await,
-        "failed to list persons for web page",
-        |rows| rows.is_empty(),
-    );
-    DegradedNotice::capture(&all_rows_state, &mut degraded_notice);
-    let all_rows = all_rows_state.into_items();
-
     let selected_region = query.region.clone().unwrap_or_default();
     let selected_priority = query.priority.clone().unwrap_or_default();
     let selected_q = query.q.clone().unwrap_or_default();
-    let selected_region_lc = selected_region.to_lowercase();
-    let selected_q_lc = selected_q.to_lowercase();
+    let filters = person_filters_for(&selected_region, &selected_priority, &selected_q);
 
     // One canonical intelligence view per row (audit P2-18): priority from the
     // stored vector, influence measured, never conflated.
@@ -606,140 +635,146 @@ pub async fn list_persons(
         )
     };
 
-    let filtered_rows = all_rows
-        .iter()
-        .filter(|row| {
-            if !selected_region_lc.is_empty() {
-                if selected_region_lc == "global" {
-                    // Global means show all regions.
-                } else if row.region.trim().to_lowercase() != selected_region_lc {
-                    return false;
-                }
-            }
+    // Metrics cover every matching person, not just the rendered page.
+    let summary_state = DataState::from_result(
+        store.summarize_persons(&filters).await,
+        "summarize_persons failed (web persons list)",
+        |summary| summary.total == 0,
+    );
+    DegradedNotice::capture(&summary_state, &mut degraded_notice);
+    let summary = summary_state.into_loaded_or_default();
+    let total_persons = summary.total;
 
-            // Band filters match measured priority only: an unmeasured row is
-            // in no band.
-            let band = view_for(row).priority_band;
-            if !match selected_priority.as_str() {
-                "A" => band.as_deref() == Some("A"),
-                "B" => band.as_deref() == Some("B"),
-                "C" => band.as_deref() == Some("C"),
-                _ => true,
-            } {
-                return false;
-            }
+    let total_pages = if total_persons == 0 {
+        0
+    } else {
+        (total_persons + PERSONS_PER_PAGE - 1) / PERSONS_PER_PAGE
+    };
+    let page = query.page.unwrap_or(1).clamp(1, total_pages.max(1));
 
-            if !selected_q_lc.is_empty() {
-                let haystack = format!(
-                    "{} {} {} {}",
-                    row.name,
-                    row.role,
-                    row.organization.as_deref().unwrap_or(""),
-                    row.role_family
+    // Table mode renders one page; the buying-centre view groups every
+    // matching person (bounded, with an explicit notice when truncated).
+    let mut buying_center_truncated_notice: Option<String> = None;
+    let rows = if buying_center_mode {
+        let mut rows = Vec::new();
+        let mut offset = 0_i64;
+        loop {
+            let batch_state = DataState::from_result(
+                store
+                    .list_persons(
+                        &filters,
+                        Some(PersonOrderBy::UpdatedAt),
+                        true,
+                        BUYING_CENTER_BATCH,
+                        offset,
+                    )
+                    .await,
+                "list_persons failed (web buying centres)",
+                Vec::is_empty,
+            );
+            DegradedNotice::capture(&batch_state, &mut degraded_notice);
+            if batch_state.is_degraded() {
+                break;
+            }
+            let batch = batch_state.into_items();
+            let batch_len = batch.len() as i64;
+            rows.extend(batch);
+            offset += batch_len;
+            if batch_len < BUYING_CENTER_BATCH || offset >= BUYING_CENTER_MAX_PEOPLE {
+                break;
+            }
+        }
+        if total_persons > rows.len() as i64 && degraded_notice.is_none() {
+            buying_center_truncated_notice = Some(format!(
+                "Showing buying centres for the {} most recently updated of {} matching people. Narrow the region, priority or search filters to map the rest.",
+                rows.len(),
+                total_persons
+            ));
+        }
+        rows
+    } else {
+        let rows_state = DataState::from_result(
+            store
+                .list_persons(
+                    &filters,
+                    Some(PersonOrderBy::UpdatedAt),
+                    true,
+                    PERSONS_PER_PAGE,
+                    (page - 1) * PERSONS_PER_PAGE,
                 )
-                .to_lowercase();
-                if !haystack.contains(&selected_q_lc) {
-                    return false;
-                }
-            }
+                .await,
+            "list_persons failed (web persons list)",
+            Vec::is_empty,
+        );
+        DegradedNotice::capture(&rows_state, &mut degraded_notice);
+        rows_state.into_items()
+    };
 
-            true
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-
-    let total_persons = filtered_rows.len() as i64;
-
-    let mut priority_a = 0_i64;
-    let mut priority_b = 0_i64;
-    let mut influence_sum = 0_i64;
-    let mut groups = [0_i64; 5];
-
-    let mut influence_measured = 0_i64;
-    let mut influence_unmeasured = 0_i64;
-    for row in &filtered_rows {
-        let view = view_for(row);
-        match view.priority_band.as_deref() {
-            Some("A") => priority_a += 1,
-            Some("B") => priority_b += 1,
-            _ => {}
-        }
-
-        match view.influence_score {
-            Some(score) => {
-                influence_sum += score;
-                influence_measured += 1;
-                match score {
-                    x if x < 20 => groups[0] += 1,
-                    x if x < 40 => groups[1] += 1,
-                    x if x < 60 => groups[2] += 1,
-                    x if x < 80 => groups[3] += 1,
-                    _ => groups[4] += 1,
-                }
-            }
-            None => influence_unmeasured += 1,
-        }
-    }
-
-    let avg_influence = if influence_measured > 0 {
-        Some(influence_sum / influence_measured)
+    let priority_a = summary.priority_a;
+    let priority_b = summary.priority_b;
+    let influence_unmeasured = summary.total - summary.influence_measured;
+    let avg_influence = if summary.influence_measured > 0 {
+        Some(summary.influence_pct_sum / summary.influence_measured)
     } else {
         None
     };
-    let _ = total_persons;
 
-    let max_group = groups.iter().copied().max().unwrap_or(0).max(1);
-    let influence_groups = vec![
-        InfluenceGroup {
-            range: "0-20".into(),
-            count: groups[0],
-            pct: ((groups[0] * 100) / max_group).max(6),
-        },
-        InfluenceGroup {
-            range: "20-40".into(),
-            count: groups[1],
-            pct: ((groups[1] * 100) / max_group).max(6),
-        },
-        InfluenceGroup {
-            range: "40-60".into(),
-            count: groups[2],
-            pct: ((groups[2] * 100) / max_group).max(6),
-        },
-        InfluenceGroup {
-            range: "60-80".into(),
-            count: groups[3],
-            pct: ((groups[3] * 100) / max_group).max(6),
-        },
-        InfluenceGroup {
-            range: "80-100".into(),
-            count: groups[4],
-            pct: ((groups[4] * 100) / max_group).max(6),
-        },
+    let groups = [
+        summary.influence_0_20,
+        summary.influence_20_40,
+        summary.influence_40_60,
+        summary.influence_60_80,
+        summary.influence_80_100,
     ];
-
-    let persons = filtered_rows
+    let max_group = groups.iter().copied().max().unwrap_or(0).max(1);
+    let influence_groups = ["0-20", "20-40", "40-60", "60-80", "80-100"]
         .iter()
-        .map(|row| {
-            let view = view_for(row);
-            let mut tags = Vec::new();
-            if !row.role_family.trim().is_empty() {
-                tags.push(row.role_family.clone());
-            }
-            if !row.country.trim().is_empty() {
-                tags.push(row.country.clone());
-            }
-            PersonListCard {
-                id: row.id.to_string(),
-                name: row.name.clone(),
-                role: row.role.clone(),
-                organization: row.organization.clone(),
-                region: row.region.clone(),
-                priority: view.priority_band,
-                influence_score: view.influence_score,
-                tags,
-            }
+        .zip(groups)
+        .map(|(range, count)| InfluenceGroup {
+            range: (*range).to_string(),
+            count,
+            pct: ((count * 100) / max_group).max(6),
         })
         .collect::<Vec<_>>();
+
+    let persons = if buying_center_mode {
+        Vec::new()
+    } else {
+        rows.iter()
+            .map(|row| {
+                let view = view_for(row);
+                let mut tags = Vec::new();
+                if !row.role_family.trim().is_empty() {
+                    tags.push(row.role_family.clone());
+                }
+                if !row.country.trim().is_empty() {
+                    tags.push(row.country.clone());
+                }
+                PersonListCard {
+                    id: row.id.to_string(),
+                    name: row.name.clone(),
+                    role: row.role.clone(),
+                    organization: row.organization.clone(),
+                    region: row.region.clone(),
+                    priority: view.priority_band,
+                    influence_score: view.influence_score,
+                    tags,
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let current_filters_href = build_persons_href(
+        route,
+        Some(&selected_region),
+        Some(&selected_priority),
+        Some(&selected_q),
+    );
+    let page_base_href = if current_filters_href.contains('?') {
+        format!("{current_filters_href}&")
+    } else {
+        format!("{current_filters_href}?")
+    };
 
     let region_filters = PERSON_REGION_FILTERS
         .iter()
@@ -794,7 +829,7 @@ pub async fn list_persons(
     let buying_centers: Vec<BuyingCenterGroup> = {
         use std::collections::BTreeMap;
         let mut grouped: BTreeMap<String, (String, Vec<BuyingCenterPerson>)> = BTreeMap::new();
-        for row in &filtered_rows {
+        for row in &rows {
             // No linked organization is displayed as "Not recorded": absence
             // of a link is not evidence of being unaffiliated.
             let organization = match row.organization.as_deref().map(str::trim) {
@@ -854,6 +889,10 @@ pub async fn list_persons(
         degraded_notice,
         persons,
         total_persons,
+        page,
+        total_pages,
+        page_base_href,
+        buying_center_truncated_notice,
         priority_a,
         priority_b,
         avg_influence_display: avg_influence.map_or_else(|| "—".to_string(), |v| v.to_string()),
@@ -869,7 +908,6 @@ pub async fn list_persons(
         buying_centers,
     };
 
-    let _ = is_htmx_request(&headers);
     super::render_template(&tpl)
 }
 
@@ -878,13 +916,12 @@ pub async fn list_persons(
 /// first-class route (not a query on /persons) so navigation active states and
 /// deep links are unambiguous.
 pub async fn list_buying_centers(
-    headers: HeaderMap,
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Query(mut query): Query<PersonListQuery>,
 ) -> impl IntoResponse {
     query.view = Some("buying-centers".to_string());
-    list_persons(headers, session, Extension(store), Query(query)).await
+    list_persons(session, Extension(store), Query(query)).await
 }
 
 /// GET /persons/:id — person of interest detail page.

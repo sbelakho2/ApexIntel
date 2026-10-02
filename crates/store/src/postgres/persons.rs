@@ -290,6 +290,10 @@ fn append_person_filters(qb: &mut QueryBuilder<Postgres>, filters: &PersonListFi
         qb.push("(p.name ILIKE ");
         qb.push_bind(pattern.clone());
         qb.push(" OR c.name ILIKE ");
+        qb.push_bind(pattern.clone());
+        qb.push(" OR p.\"current_role\" ILIKE ");
+        qb.push_bind(pattern.clone());
+        qb.push(" OR p.role_family ILIKE ");
         qb.push_bind(pattern);
         qb.push(")");
     }
@@ -770,6 +774,55 @@ impl PgStore {
         Ok(())
     }
 
+    /// Aggregate metrics over every person matching `filters` (not just one
+    /// page): priority bands from the canonical `priority_score` (A >= 0.8,
+    /// B in [0.5, 0.8)) and the measured-influence histogram on the 0..=100
+    /// scale, rounded exactly like `PersonIntelligenceView`. Unmeasured
+    /// influence stays out of the histogram and the sum.
+    pub async fn summarize_persons(
+        &self,
+        filters: &PersonListFilters,
+    ) -> Result<PersonListSummary> {
+        let mut qb = QueryBuilder::new(
+            "WITH scored AS (
+                 SELECT p.priority_score,
+                        CASE WHEN p.influence_score IS NULL THEN NULL
+                             ELSE ROUND((LEAST(GREATEST(p.influence_score, 0), 1) * 100)::numeric)::bigint
+                        END AS influence_pct
+                 FROM persons p
+                 LEFT JOIN companies c ON p.primary_org_id = c.id",
+        );
+        append_person_filters(&mut qb, filters);
+        qb.push(
+            ")
+             SELECT COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE priority_score >= 0.8) AS priority_a,
+                    COUNT(*) FILTER (WHERE priority_score >= 0.5 AND priority_score < 0.8) AS priority_b,
+                    COUNT(influence_pct) AS influence_measured,
+                    COALESCE(SUM(influence_pct), 0)::bigint AS influence_pct_sum,
+                    COUNT(*) FILTER (WHERE influence_pct < 20) AS influence_0_20,
+                    COUNT(*) FILTER (WHERE influence_pct >= 20 AND influence_pct < 40) AS influence_20_40,
+                    COUNT(*) FILTER (WHERE influence_pct >= 40 AND influence_pct < 60) AS influence_40_60,
+                    COUNT(*) FILTER (WHERE influence_pct >= 60 AND influence_pct < 80) AS influence_60_80,
+                    COUNT(*) FILTER (WHERE influence_pct >= 80) AS influence_80_100
+             FROM scored",
+        );
+        let summary = qb
+            .build_query_as::<PersonListSummary>()
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(summary)
+    }
+
+    /// Every stored person name, unpaged. Used for name-level dedup where a
+    /// capped list would silently miss existing people.
+    pub async fn list_all_person_names(&self) -> Result<Vec<String>> {
+        let names: Vec<(String,)> = sqlx::query_as("SELECT name FROM persons")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(names.into_iter().map(|(name,)| name).collect())
+    }
+
     pub async fn count_persons(&self, filters: &PersonListFilters) -> Result<i64> {
         let mut qb = QueryBuilder::new(
             "SELECT COUNT(*) FROM persons p LEFT JOIN companies c ON p.primary_org_id = c.id",
@@ -833,6 +886,22 @@ impl PgStore {
         let query = qb.build_query_as::<PersonListRow>();
         let rows = query.fetch_all(&self.pool).await?;
         Ok(rows)
+    }
+
+    /// Every person, read in keyset pages (list calls clamp to
+    /// `MAX_LIST_LIMIT`, so "all" must page rather than ask for a big limit).
+    pub async fn list_all_persons(&self) -> Result<Vec<PersonListRow>> {
+        let mut rows = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self.list_persons_after(after, MAX_LIST_LIMIT).await?;
+            let page_len = page.len() as i64;
+            after = page.last().map(|row| row.id);
+            rows.extend(page);
+            if page_len < MAX_LIST_LIMIT {
+                return Ok(rows);
+            }
+        }
     }
 
     /// Keyset page ordered by `p.id` for exports (no duplicates/skips under

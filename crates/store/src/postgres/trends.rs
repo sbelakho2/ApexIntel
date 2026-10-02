@@ -413,14 +413,16 @@ impl PgStore {
 
         // Per-company warning counts
         let company_warn_rows = sqlx::query_as::<_, (uuid::Uuid, i64)>(
-            r#"SELECT unnest(entity_ids) AS entity_id, COUNT(*)::BIGINT AS cnt
-               FROM warnings
-               WHERE entity_ids IS NOT NULL
-                 AND deleted_at IS NULL
-                 AND array_length(entity_ids, 1) > 0
-                 AND COALESCE(created_at, ts_utc) >= $1
-                 AND COALESCE(created_at, ts_utc) <= $2
-               GROUP BY entity_id"#,
+            // Distinct name for the unnested element: `warnings.entity_id`
+            // would otherwise capture the GROUP BY reference.
+            r#"SELECT u.eid, COUNT(*)::BIGINT AS cnt
+               FROM warnings w
+               CROSS JOIN LATERAL unnest(w.entity_ids) AS u(eid)
+               WHERE w.entity_ids IS NOT NULL
+                 AND w.deleted_at IS NULL
+                 AND COALESCE(w.created_at, w.ts_utc) >= $1
+                 AND COALESCE(w.created_at, w.ts_utc) <= $2
+               GROUP BY u.eid"#,
         )
         .bind(since)
         .bind(until)

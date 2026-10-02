@@ -287,7 +287,12 @@ impl CrawlClient {
                         self.report_proxy_failure(proxy).await;
                     }
                     if self
-                        .handle_retryable_error(&rate_limit_key, &error, attempt)
+                        .handle_retryable_error(
+                            &rate_limit_key,
+                            &error,
+                            attempt,
+                            proxy_url.is_some(),
+                        )
                         .await
                     {
                         last_error = Some(error);
@@ -301,7 +306,12 @@ impl CrawlClient {
                         self.report_proxy_failure(proxy).await;
                     }
                     if self
-                        .handle_retryable_error(&rate_limit_key, &error, attempt)
+                        .handle_retryable_error(
+                            &rate_limit_key,
+                            &error,
+                            attempt,
+                            proxy_url.is_some(),
+                        )
                         .await
                     {
                         last_error = Some(error);
@@ -324,6 +334,7 @@ impl CrawlClient {
         rate_limit_key: &str,
         error: &CrawlError,
         attempt: usize,
+        fresh_egress_next_attempt: bool,
     ) -> bool {
         let is_soft = matches!(
             error.category(),
@@ -332,7 +343,14 @@ impl CrawlClient {
         let mut rate_limits = self.config.rate_limits.lock().await;
         rate_limits.record_failure(rate_limit_key, is_soft);
 
-        if !error.is_retryable() || attempt >= self.config.max_retries {
+        // Each attempt acquires its own proxy, so a proxied 403 (often an IP
+        // block) is worth retrying through a different egress.
+        let retryable = if fresh_egress_next_attempt {
+            error.is_retryable_with_fresh_egress()
+        } else {
+            error.is_retryable()
+        };
+        if !retryable || attempt >= self.config.max_retries {
             return false;
         }
 

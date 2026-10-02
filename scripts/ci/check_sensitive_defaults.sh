@@ -88,9 +88,9 @@ file_cutoff() {
 }
 
 # Test-only files (dedicated test modules / fixtures) are exempt by name.
-files="$(find "${SCOPE[@]}" -name '*.rs' -type f 2>/dev/null \
+files="$(find "${SCOPE[@]}" -name '*.rs' -type f \
   ! -name 'tests.rs' ! -name 'test_*.rs' ! -name '*_test.rs' \
-  ! -path '*/tests/*' | sort)"
+  ! -path '*/tests/*' 2>/dev/null | sort)"
 
 # ── Pass 1: single-line shapes (including row.try_get defaults). ────────────
 while IFS= read -r file; do

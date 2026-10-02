@@ -256,17 +256,11 @@ impl Default for AutocompleteIndex {
 pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<AutocompleteIndex> {
     let mut entries: Vec<AutocompleteEntry> = Vec::new();
 
+    // List calls clamp to MAX_LIST_LIMIT, so every source is read in full
+    // pages; a large `limit` alone would silently index only the first page.
+
     // 1. Company names
-    if let Ok(companies) = store
-        .list_companies(
-            &crate::postgres::CompanyListFilters::default(),
-            None,
-            false,
-            10_000,
-            0,
-        )
-        .await
-    {
+    if let Ok(companies) = store.list_all_companies().await {
         for company in &companies {
             let score = company
                 .threat_score
@@ -303,16 +297,7 @@ pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<Aut
     }
 
     // 2. Person names
-    if let Ok(persons) = store
-        .list_persons(
-            &crate::postgres::PersonListFilters::default(),
-            None,
-            false,
-            10_000,
-            0,
-        )
-        .await
-    {
+    if let Ok(persons) = store.list_all_persons().await {
         for person in &persons {
             // Autocomplete relevance from measured influence; unmeasured
             // entities receive the neutral base score rather than a zero.
@@ -336,10 +321,17 @@ pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<Aut
     }
 
     // 3. Insight titles
-    if let Ok(insights) = store
-        .list_insights(&crate::postgres::InsightListFilters::default(), 10_000, 0)
+    let mut insight_offset = 0_i64;
+    while let Ok(insights) = store
+        .list_insights(
+            &crate::postgres::InsightListFilters::default(),
+            crate::postgres::MAX_LIST_LIMIT,
+            insight_offset,
+        )
         .await
     {
+        let page_len = insights.len() as i64;
+        insight_offset += page_len;
         for insight in &insights {
             let score = insight.confidence.unwrap_or(0.5).clamp(0.0, 10.0);
             let subtext = insight.insight_type.clone();
@@ -352,10 +344,19 @@ pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<Aut
                 subtext,
             });
         }
+        if page_len < crate::postgres::MAX_LIST_LIMIT {
+            break;
+        }
     }
 
     // 4. Competitor names from competitive intelligence engine
-    if let Ok(competitors) = store.list_competitors(10_000, 0).await {
+    let mut competitor_offset = 0_i64;
+    while let Ok(competitors) = store
+        .list_competitors(crate::postgres::MAX_LIST_LIMIT, competitor_offset)
+        .await
+    {
+        let page_len = competitors.len() as i64;
+        competitor_offset += page_len;
         for competitor in &competitors {
             let score = competitor.threat_score.unwrap_or(5.0).clamp(0.0, 10.0);
             entries.push(AutocompleteEntry {
@@ -365,6 +366,9 @@ pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<Aut
                 score,
                 subtext: competitor.region.clone(),
             });
+        }
+        if page_len < crate::postgres::MAX_LIST_LIMIT {
+            break;
         }
     }
 

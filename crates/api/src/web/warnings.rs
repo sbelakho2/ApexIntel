@@ -572,13 +572,18 @@ pub async fn list_warnings(
     DegradedNotice::capture(&warning_rows_state, &mut degraded_notice);
     let warning_rows = warning_rows_state.into_items();
 
-    let all_warning_rows_state = DataState::from_result(
-        store.list_warnings(&filters, order_by, desc, 1500, 0).await,
-        "list_warnings (aggregates) failed (web warnings list)",
-        Vec::is_empty,
+    // Severity cards, type/region chips and the 30-day trend are exact SQL
+    // aggregates over every matching warning (a row sample would be clamped
+    // to 500 rows and silently undercount).
+
+    let trend_start = chrono::Utc::now().date_naive() - chrono::Duration::days(29);
+    let summary_state = DataState::from_result(
+        store.summarize_warnings(&filters, trend_start).await,
+        "summarize_warnings failed (web warnings list)",
+        |_| false,
     );
-    DegradedNotice::capture(&all_warning_rows_state, &mut degraded_notice);
-    let all_warning_rows = all_warning_rows_state.into_items();
+    DegradedNotice::capture(&summary_state, &mut degraded_notice);
+    let summary = summary_state.into_loaded_or_default();
 
     // Resolve entity_ids → company names in one batch query
     let all_entity_ids: Vec<Uuid> = warning_rows
@@ -632,33 +637,22 @@ pub async fn list_warnings(
         })
         .collect();
 
-    let critical_count = all_warning_rows
-        .iter()
-        .filter(|w| w.severity == "critical" && !w.acknowledged)
-        .count() as i64;
-    let high_count = all_warning_rows
-        .iter()
-        .filter(|w| w.severity == "high" && !w.acknowledged)
-        .count() as i64;
-    let medium_count = all_warning_rows
-        .iter()
-        .filter(|w| w.severity == "medium" && !w.acknowledged)
-        .count() as i64;
-    let low_count = all_warning_rows
-        .iter()
-        .filter(|w| w.severity == "low" && !w.acknowledged)
-        .count() as i64;
+    let unacked = |severity: &str| {
+        summary
+            .unacked_by_severity
+            .get(severity)
+            .copied()
+            .unwrap_or(0)
+    };
+    let critical_count = unacked("critical");
+    let high_count = unacked("high");
+    let medium_count = unacked("medium");
+    let low_count = unacked("low");
 
     // Build dynamic type filter chips from actual warning types in result set
-    let mut seen_types: Vec<String> = all_warning_rows
-        .iter()
-        .map(|w| w.warning_type.clone())
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
-    seen_types.sort();
+    let seen_types = &summary.warning_types;
     let mut type_filter_values: Vec<&str> = vec![""];
-    for t in &seen_types {
+    for t in seen_types {
         type_filter_values.push(t.as_str());
     }
     let type_filters = type_filter_values
@@ -700,17 +694,9 @@ pub async fn list_warnings(
         .collect::<Vec<_>>();
 
     // Build dynamic region filter chips
-    let mut seen_regions: Vec<String> = all_warning_rows
-        .iter()
-        .filter_map(|w| w.region.as_ref())
-        .filter(|r: &&String| !r.is_empty())
-        .cloned()
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
-    seen_regions.sort();
+    let seen_regions = &summary.regions;
     let mut region_filter_values: Vec<&str> = vec![""];
-    for r in &seen_regions {
+    for r in seen_regions {
         region_filter_values.push(r.as_str());
     }
     let region_filters = region_filter_values
@@ -753,16 +739,15 @@ pub async fn list_warnings(
 
     // Generate real 30-day trend data from warnings in DB.
     let warning_trend: Vec<WarningTrendDay> = {
-        use chrono::{Duration, Utc};
-        let mut by_day: BTreeMap<String, WarningTrendDay> = BTreeMap::new();
+        // Keyed by calendar date (not the "%b %d" label, which sorts
+        // alphabetically and scrambles the chart across a month boundary).
+        let mut by_day: BTreeMap<chrono::NaiveDate, WarningTrendDay> = BTreeMap::new();
         for i in 0..30 {
-            let label = (Utc::now() - Duration::days(29 - i))
-                .format("%b %d")
-                .to_string();
+            let day = trend_start + chrono::Duration::days(i);
             by_day.insert(
-                label.clone(),
+                day,
                 WarningTrendDay {
-                    date_label: label,
+                    date_label: day.format("%b %d").to_string(),
                     critical: 0,
                     high: 0,
                     medium: 0,
@@ -776,14 +761,13 @@ pub async fn list_warnings(
                 },
             );
         }
-        for w in &all_warning_rows {
-            let key = w.ts_utc.format("%b %d").to_string();
-            if let Some(day) = by_day.get_mut(&key) {
-                match w.severity.as_str() {
-                    "critical" => day.critical += 1,
-                    "high" => day.high += 1,
-                    "medium" => day.medium += 1,
-                    _ => day.low += 1,
+        for (date, severity, n) in &summary.daily_by_severity {
+            if let Some(day) = by_day.get_mut(date) {
+                match severity.as_str() {
+                    "critical" => day.critical += n,
+                    "high" => day.high += n,
+                    "medium" => day.medium += n,
+                    _ => day.low += n,
                 }
             }
         }

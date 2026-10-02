@@ -482,6 +482,45 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Every company matching `filters` in the requested order. Pages through
+    /// `list_companies` (whose order always ends in `id ASC`, so offset pages
+    /// are stable) because a single list call clamps to `MAX_LIST_LIMIT`.
+    pub async fn list_all_companies_matching(
+        &self,
+        filters: &CompanyListFilters,
+        order_by: Option<CompanyOrderBy>,
+        desc: bool,
+    ) -> Result<Vec<CompanyRow>> {
+        let mut rows = Vec::new();
+        loop {
+            let offset = rows.len() as i64;
+            let page = self
+                .list_companies(filters, order_by, desc, MAX_LIST_LIMIT, offset)
+                .await?;
+            let page_len = page.len() as i64;
+            rows.extend(page);
+            if page_len < MAX_LIST_LIMIT {
+                return Ok(rows);
+            }
+        }
+    }
+
+    /// Every company, read in keyset pages (list calls clamp to
+    /// `MAX_LIST_LIMIT`, so "all" must page rather than ask for a big limit).
+    pub async fn list_all_companies(&self) -> Result<Vec<CompanyRow>> {
+        let mut rows = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self.list_companies_after(after, MAX_LIST_LIMIT).await?;
+            let page_len = page.len() as i64;
+            after = page.last().map(|row| row.id);
+            rows.extend(page);
+            if page_len < MAX_LIST_LIMIT {
+                return Ok(rows);
+            }
+        }
+    }
+
     /// Keyset page ordered by `id`: `WHERE id > after_id ORDER BY id ASC`.
     ///
     /// Exports use this instead of `OFFSET` paging: offset over a non-unique

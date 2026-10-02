@@ -281,7 +281,22 @@ pub(crate) fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::Seed
             !transform.field.trim().is_empty()
                 && apex_recipes::engine::is_supported_transform(&transform.transform_type)
         });
-    if !parsed_transforms.is_empty() && !transforms_are_mappable {
+    // Field-less entries are discovery/backtest window directives (the seed
+    // library's `Lag`/`Count`), consumed by promotion gates — expected config,
+    // so they are dropped quietly. A transform that names a field but still
+    // cannot be mapped is a genuine misconfiguration and stays at WARN. The
+    // per-run aggregate in `build_engine_recipes` still reports the count.
+    let declares_field_mapping = parsed_transforms
+        .iter()
+        .any(|transform| !transform.field.trim().is_empty());
+    if !parsed_transforms.is_empty() && !transforms_are_mappable && !declares_field_mapping {
+        tracing::debug!(
+            recipe = %sr.id,
+            declared_transforms = parsed_transforms.len(),
+            "recipe_loader: transforms are window directives without a feature field; \
+             not applied at runtime (kept in the definition and DB columns)"
+        );
+    } else if !parsed_transforms.is_empty() && !transforms_are_mappable {
         tracing::warn!(
             recipe = %sr.id,
             declared_transforms = parsed_transforms.len(),

@@ -24,20 +24,9 @@ pub(super) async fn run_threat_intel_refresh(
     run.start();
     let total_start = Instant::now();
 
-    let companies = match store
-        .list_companies(
-            &apex_store::postgres::CompanyListFilters {
-                regions: vec![],
-                search: None,
-                is_competitor: None,
-            },
-            Some(apex_store::postgres::CompanyOrderBy::Name),
-            false,
-            500,
-            0,
-        )
-        .await
-    {
+    // Every company: list calls clamp to 500 rows, and a name-ordered cap
+    // would never reach companies past the first page.
+    let companies = match store.list_all_companies().await {
         Ok(companies) => companies,
         Err(error) => {
             run.fail(&format!(

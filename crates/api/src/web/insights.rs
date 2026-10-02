@@ -647,8 +647,11 @@ pub async fn list_insights(
 
     let mut degraded_notice: Option<String> = None;
 
+    // Impact/confidence filters, stats and pagination are computed over the
+    // whole matching set: a single list call clamps to 500 rows and would
+    // silently truncate them.
     let all_insight_rows_state = DataState::from_result(
-        store.list_insights(&filters, 1500, 0).await,
+        store.list_all_insights_matching(&filters).await,
         "list_insights failed (web insights list)",
         Vec::is_empty,
     );
@@ -666,7 +669,7 @@ pub async fn list_insights(
         })
         .collect();
 
-    let mut all_insights: Vec<InsightListItem> = visible_insight_rows
+    let all_insights: Vec<InsightListItem> = visible_insight_rows
         .iter()
         .map(|i| {
             let confidence = i.confidence;
@@ -708,18 +711,36 @@ pub async fn list_insights(
         })
         .collect();
 
-    all_insights.sort_by(|a, b| {
-        let category_cmp = a.category == b.category;
-        if !category_cmp {
-            return std::cmp::Ordering::Equal;
+    // Within each category, order by confidence (highest first) while keeping
+    // the slots each category occupies in the recency order. A comparator that
+    // calls cross-category pairs `Equal` is not a total order (sorting with it
+    // can panic), so permute per category instead.
+    let all_insights = {
+        let mut slots: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (index, item) in all_insights.iter().enumerate() {
+            slots.entry(item.category.clone()).or_default().push(index);
         }
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+        let mut source: Vec<Option<InsightListItem>> = all_insights.into_iter().map(Some).collect();
+        let mut ordered: Vec<Option<InsightListItem>> =
+            std::iter::repeat_with(|| None).take(source.len()).collect();
+        for positions in slots.values() {
+            let mut by_confidence = positions.clone();
+            by_confidence.sort_by(|a, b| {
+                cmp_confidence(
+                    source[*b].as_ref().and_then(|i| i.confidence),
+                    source[*a].as_ref().and_then(|i| i.confidence),
+                )
+            });
+            for (slot, from) in positions.iter().zip(by_confidence) {
+                ordered[*slot] = source[from].take();
+            }
+        }
+        ordered.into_iter().flatten().collect::<Vec<_>>()
+    };
 
     let mut diversified = Vec::with_capacity(all_insights.len());
-    let mut remaining = all_insights;
+    let mut remaining: std::collections::VecDeque<InsightListItem> = all_insights.into();
     let mut last_category: Option<String> = None;
     let mut consecutive = 0usize;
     while !remaining.is_empty() {
@@ -730,7 +751,9 @@ pub async fn list_insights(
                 _ => true,
             })
             .unwrap_or(0);
-        let selected = remaining.remove(selected_idx);
+        let Some(selected) = remaining.remove(selected_idx) else {
+            break;
+        };
         if last_category.as_deref() == Some(selected.category.as_str()) {
             consecutive += 1;
         } else {
@@ -774,17 +797,9 @@ pub async fn list_insights(
         }
         "confidence" => {
             if sort_dir == "asc" {
-                all_insights.sort_by(|a, b| {
-                    a.confidence
-                        .partial_cmp(&b.confidence)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                all_insights.sort_by(|a, b| cmp_confidence(a.confidence, b.confidence));
             } else {
-                all_insights.sort_by(|a, b| {
-                    b.confidence
-                        .partial_cmp(&a.confidence)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                all_insights.sort_by(|a, b| cmp_confidence(b.confidence, a.confidence));
             }
         }
         _ => {} // keep diversification order for unknown sort fields
@@ -837,12 +852,12 @@ pub async fn list_insights(
         use chrono::{Duration, Utc};
         use std::collections::BTreeMap;
         // 8 buckets: demand, competitive, supply, security, macro, regulatory, predictive, pricing
-        let mut by_day: BTreeMap<String, [i64; 8]> = BTreeMap::new();
+        // Keyed by calendar date (not the "%b %d" label, which sorts
+        // alphabetically and scrambles the chart across a month boundary).
+        let mut by_day: BTreeMap<chrono::NaiveDate, [i64; 8]> = BTreeMap::new();
+        let today = Utc::now().date_naive();
         for i in 0..30 {
-            let label = (Utc::now() - Duration::days(29 - i))
-                .format("%b %d")
-                .to_string();
-            by_day.insert(label, [0; 8]);
+            by_day.insert(today - Duration::days(29 - i), [0; 8]);
         }
         for row in &visible_insight_rows {
             // Unmeasured rows match no confidence band, matching the list
@@ -857,7 +872,7 @@ pub async fn list_insights(
             let Some(event_time) = insight_display_time(row) else {
                 continue;
             };
-            let date = event_time.format("%b %d").to_string();
+            let date = event_time.date_naive();
             if let Some(buckets) = by_day.get_mut(&date) {
                 let kind = row.insight_type.clone().unwrap_or_default();
                 match trend_bucket(&kind) {
@@ -872,7 +887,10 @@ pub async fn list_insights(
                 }
             }
         }
-        let raw: Vec<(String, [i64; 8])> = by_day.into_iter().collect();
+        let raw: Vec<(String, [i64; 8])> = by_day
+            .into_iter()
+            .map(|(day, buckets)| (day.format("%b %d").to_string(), buckets))
+            .collect();
 
         let max_total = raw
             .iter()
@@ -1260,6 +1278,17 @@ fn confidence_to_pct(value: f64) -> i64 {
         (value * 100.0).round() as i64
     } else {
         value.round() as i64
+    }
+}
+
+/// Total order over optional confidences (unmeasured sorts lowest; NaN is
+/// ordered by `total_cmp`), safe to hand to `sort_by`.
+fn cmp_confidence(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.total_cmp(&b),
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
     }
 }
 

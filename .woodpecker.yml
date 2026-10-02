@@ -1,5 +1,9 @@
 # Woodpecker CI pipeline for ApexIntel.
 #
+# Container images are pinned by tag AND digest so a re-tagged upstream cannot
+# change what CI runs. To bump an image: change the tag and refresh the digest
+# with `docker buildx imagetools inspect <image>:<tag> --format '{{json .Manifest.Digest}}'`.
+#
 # Contract — every step must be green:
 #   1. rustfmt check
 #   2. clippy over all targets with warnings denied, for the default feature
@@ -64,7 +68,7 @@ labels:
 # UI e2e run. Must provide `vector`, `pg_trgm`, `btree_gist`, `uuid-ossp`.
 services:
   database:
-    image: timescale/timescaledb:2.30.1-pg16
+    image: timescale/timescaledb:2.30.1-pg16@sha256:f495f2bc25ca7596ca8e1606c6241ca250ccc56a0c082b9f2ec0d290e0126cd9
     environment:
       POSTGRES_DB: apex_ci
       POSTGRES_USER: apex
@@ -72,12 +76,12 @@ services:
   # Verifies the optional Redis login-throttle backend (used when REDIS_URL is
   # configured in production).
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
 
 steps:
   # Fails if unrelated-project artifacts or generated output are tracked.
   - name: repo-contamination
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache git bash
       - bash scripts/ci/check_repo_contamination.sh
@@ -86,7 +90,7 @@ steps:
   # canonical PostgreSQL runner does not execute — adding a suite can never
   # silently skip CI again.
   - name: pg-suite-registration
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash grep findutils
       - bash scripts/ci/check_pg_test_coverage.sh
@@ -94,7 +98,7 @@ steps:
   # Fails if a worker job bypasses the shared warning ingress and calls
   # `store.insert_warning(...)` directly (skipping semantic triage dedup).
   - name: warning-ingress-guard
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_warning_ingress.sh
@@ -102,7 +106,7 @@ steps:
   # Fails if storage failures are converted into neutral defaults in the
   # sensitive request/job paths (audit P0 #22).
   - name: sensitive-defaults-guard
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_sensitive_defaults.sh
@@ -110,7 +114,7 @@ steps:
   # Fails if DEPLOYMENT.md loses the docs contract (build flags, placeholders,
   # two-role DB contract, redacted production identifiers).
   - name: docs-contract
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_docs_contract.sh
@@ -118,7 +122,7 @@ steps:
   # Backstop against fabricated analytics in production handlers/templates
   # (seeded arrays, demo values, trigonometric "trends").
   - name: fabricated-metrics-guard
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash grep python3
       - bash scripts/ci/check_fabricated_metrics.sh
@@ -131,7 +135,7 @@ steps:
   # discard. Identifier decodes may never fall back to the nil UUID / a fresh
   # UUID / zero/empty defaults for id-like fields.
   - name: false-success-guard
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash python3
       - bash scripts/ci/check_false_success.sh --self-test
@@ -146,7 +150,7 @@ steps:
   # own explicit transaction (sqlx wraps each migration) and on a second
   # migrations folder reappearing anywhere in the workspace.
   - name: migration-headers
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_migration_headers.sh migrations
@@ -156,7 +160,7 @@ steps:
   # `publish_alert(...)` call from a job/pipeline loses the crash/retry/
   # dead-letter guarantees).
   - name: alert-publish-guard
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache bash grep
       - bash scripts/ci/check_alert_publish.sh
@@ -165,7 +169,7 @@ steps:
   # membership, CI, tests, or docs. Production UI is the server-rendered
   # Askama + HTMX application in `crates/api`.
   - name: single-frontend-guard
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     commands:
       - apk add --no-cache git bash grep
       - bash scripts/ci/check_frontend_removed.sh
@@ -175,7 +179,7 @@ steps:
   # the default rule set and allowlists only documented test fixtures and
   # generated directories. Non-interactive; leaks exit 1.
   - name: gitleaks
-    image: zricethezav/gitleaks:v8.30.1
+    image: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
     commands:
       - gitleaks detect --source . --no-git --config .gitleaks.toml --exit-code 1 --redact --verbose
 
@@ -187,7 +191,7 @@ steps:
   # depends_on run in parallel, and two concurrent installs must not race on
   # the same output directory.
   - name: cargo-deny-licenses
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     environment:
       CARGO_TERM_COLOR: always
     commands:
@@ -202,7 +206,7 @@ steps:
   # is visible immediately. deny.toml keeps `yanked = "warn"` for the same
   # reason.
   - name: cargo-deny-advisories
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     failure: ignore
     environment:
       CARGO_TERM_COLOR: always
@@ -217,7 +221,7 @@ steps:
   #   RUSTFLAGS="-W unreachable_pub" cargo +nightly check --workspace --all-targets
   #   cargo +nightly udeps --workspace --all-targets
   - name: rust
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     environment:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: "1"
@@ -247,7 +251,7 @@ steps:
       - cargo build --release --bins -p apex-api -p apex-worker --features llm --locked
 
   - name: ui-assets
-    image: node:20-bookworm
+    image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
     commands:
       - npm ci
       # The compiled stylesheet is committed; rebuild it to prove the Tailwind
@@ -258,7 +262,7 @@ steps:
   # release-evidence `wasm-shared` gate is only truthful if a step actually
   # compiles it for wasm32, so a native-only regression fails CI here.
   - name: wasm-shared
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     commands:
       - rustup target add wasm32-unknown-unknown
       - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
@@ -269,7 +273,7 @@ steps:
   # login) plus the learning evaluation gate. The suite list lives in the
   # canonical runner so local `npm run test:pg` and CI cannot drift.
   - name: migrations
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     depends_on: [rust]
     environment:
       TEST_DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
@@ -282,7 +286,7 @@ steps:
   # image also has Node), starts it against the database service, and drives a
   # real browser across every navigation route at mobile + desktop.
   - name: e2e-server-ui-smoke
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     depends_on: [rust, migrations]
     environment:
       DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
@@ -295,6 +299,8 @@ steps:
       APEX_ALLOW_TEST_SESSION_SECRET: "1"
       # Service key for authenticated metadata checks (>= 32 chars).
       API_KEY_1: ci-features-check-key-0123456789abcdef,ci-check,service,ci-service
+      # Admin key for the full GET-route sweep (admin-only /api routes).
+      API_KEY_2: ci-sweep-admin-key-0123456789abcdef0123,ci-sweep,admin,admin
       SEARCH_INDEX_PATH: /tmp/apex-index
       # Test-only: the server refuses to start with rate limiting disabled
       # unless this explicit override is also present (same pattern as
@@ -303,6 +309,7 @@ steps:
       APEX_ALLOW_TEST_RATE_LIMIT_DISABLED: "1"
       HOST: 127.0.0.1
       PORT: "9095"
+      NO_COLOR: "1"
     commands:
       # Container networks can be flaky; retry the package fetch and use
       # apt's own retry support before giving up.
@@ -316,7 +323,9 @@ steps:
       - npx playwright install --with-deps chromium
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
       - cargo build --release --bin apex-api --features llm --locked
-      - ./target/release/apex-api & sleep 6
+      # Server output is kept in the CI log and in a file the route sweep
+      # scans for ERROR lines emitted while it runs.
+      - (./target/release/apex-api 2>&1 | tee /tmp/apex-api.log) & sleep 6
       - curl -sf http://127.0.0.1:9095/api/health
       # Production artifact must advertise the LLM capability. `/api/features`
       # is authenticated (audit P0-8), so the service key is presented. The API
@@ -325,12 +334,15 @@ steps:
       # Deployment provenance route must answer with the running service identity.
       - curl -sf http://127.0.0.1:9095/api/version | grep -q '"service":"apex-api"'
       - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs
+      # Every registered GET route (web + API) with seeded ids: no 5xx, no
+      # 404 for a seeded detail page, no server-side ERROR log lines.
+      - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword SWEEP_ADMIN_KEY=ci-sweep-admin-key-0123456789abcdef0123 SERVER_LOG=/tmp/apex-api.log node scripts/ci/e2e_route_sweep.mjs
 
   # JOURNEY CONTRACTS — Playwright specs that drive the real UI and then assert
   # the PostgreSQL rows the actions must have produced (not just rendered
   # success). Separate stage from the route sweep on purpose.
   - name: e2e-server-ui-journeys
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     depends_on: [rust, migrations, e2e-server-ui-smoke]
     environment:
       BASE_URL: http://127.0.0.1:9095
@@ -380,7 +392,7 @@ steps:
   # + seccomp=unconfined are test-only (see browser_container_check.sh); the
   # deployed worker uses Chromium's seccomp profile instead (Dockerfile.worker).
   - name: browser-container
-    image: docker:27-cli
+    image: docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
     depends_on: [rust]
     when:
       - event: [push, tag, manual]
@@ -399,7 +411,7 @@ steps:
   # claimed. CI_COMMIT_SHA / CI_PIPELINE_NUMBER / CI_PIPELINE_CREATED are
   # injected by Woodpecker and feed /api/version via the printed exports.
   - name: release-evidence
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared]
     when:
       - event: [pull_request]
@@ -424,7 +436,7 @@ steps:
   # Release-event evidence additionally records the container browser gate,
   # which only runs on trusted events (push/tag/manual).
   - name: release-evidence-release
-    image: rust:1.98.0-bookworm
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared, browser-container]
     when:
       - event: [push, tag, manual]

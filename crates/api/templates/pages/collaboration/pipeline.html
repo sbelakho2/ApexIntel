@@ -25,23 +25,29 @@
         <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-rams-muted">Track strategic opportunities through the pipeline stages.</p>
       </div>
     </div>
+    {% if can_write %}
     <div>
       <details class="inline-block">
         <summary class="apex-btn apex-btn-primary cursor-pointer">New Opportunity</summary>
         <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
           <form action="/pipeline" method="post" class="space-y-2">
             <input type="text" name="title" placeholder="Opportunity title" required class="apex-input">
-            <select name="stage" required class="apex-input">
-              <option value="identification">Identification</option>
-              <option value="qualification">Qualification</option>
-              <option value="proposal">Proposal</option>
-              <option value="negotiation">Negotiation</option>
-              <option value="closed_won">Closed Won</option>
-              <option value="closed_lost">Closed Lost</option>
+            <label class="sr-only" for="pipeline-stage">Stage</label>
+            <select id="pipeline-stage" name="stage" required class="apex-input">
+              {% for (value, label) in stage_options %}
+              <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
             </select>
             <input type="number" name="value_estimate" step="0.01" placeholder="Estimated value" class="apex-input">
-            <input type="number" name="probability" min="0" max="100" step="1" value="50" placeholder="Probability %" class="apex-input">
-            <input type="text" name="owner_id" placeholder="Owner ID" class="apex-input">
+            <label class="sr-only" for="pipeline-probability">Probability (%)</label>
+            <input id="pipeline-probability" type="number" name="probability" min="0" max="100" step="1" value="50" required placeholder="Probability %" class="apex-input">
+            <label class="sr-only" for="pipeline-owner">Owner</label>
+            <select id="pipeline-owner" name="owner_id" class="apex-input">
+              <option value="">Unassigned</option>
+              {% for (id, label) in owner_options %}
+              <option value="{{ id }}">{{ label }}</option>
+              {% endfor %}
+            </select>
             <input type="date" name="expected_close" class="apex-input">
             <textarea name="notes" placeholder="Notes" rows="2" class="apex-input"></textarea>
             <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Create</button>
@@ -49,6 +55,7 @@
         </div>
       </details>
     </div>
+    {% endif %}
   </div>
 
   <div class="apex-stat">
@@ -69,8 +76,9 @@
           <th class="text-right">Value</th>
           <th class="text-right">Probability</th>
           <th>Owner</th>
+          <th>Created By</th>
           <th class="text-right">Expected Close</th>
-          <th>Action</th>
+          {% if can_write %}<th>Action</th>{% endif %}
         </tr>
       </thead>
       <tbody>
@@ -78,7 +86,7 @@
         <tr>
           <td class="font-bold max-w-xs truncate">{{ o.title }}</td>
           <td>
-            <span class="apex-chip apex-chip-idle">{{ o.stage }}</span>
+            <span class="apex-chip apex-chip-idle">{{ o.stage_label }}</span>
           </td>
           <td class="text-right font-mono text-rams-foreground">
             {% if !o.value_estimate.is_empty() %}
@@ -87,27 +95,27 @@
             <span class="text-rams-muted">—</span>
             {% endif %}
           </td>
-          <td class="text-right tabular-nums">{{ "{:.0}"|format(o.probability) }}%</td>
-          <td class="text-rams-muted">{{ o.owner_id }}</td>
+          <td class="text-right tabular-nums">{{ "{:.0}"|format(o.probability_pct) }}%</td>
+          <td class="text-rams-muted">{% if o.owner.is_empty() %}—{% else %}{{ o.owner }}{% endif %}</td>
+          <td class="text-rams-muted">{% if o.created_by.is_empty() %}—{% else %}{{ o.created_by }}{% endif %}</td>
           <td class="text-right text-[10px] text-rams-muted">{{ o.expected_close }}</td>
+          {% if can_write %}
           <td>
             <details class="inline-block">
               <summary class="cursor-pointer text-[10px] font-black uppercase tracking-[0.1em] text-rams-orange">Update</summary>
               <div class="absolute z-30 mt-1 w-48 rounded-rams-sm border border-rams-line bg-rams-module p-3">
                 <form action="/pipeline/{{ o.id }}/stage" method="post" class="space-y-2">
-                  <select name="stage" required class="apex-input text-[10px]">
-                    <option value="identification"{% if o.stage == "identification" %} selected{% endif %}>Identification</option>
-                    <option value="qualification"{% if o.stage == "qualification" %} selected{% endif %}>Qualification</option>
-                    <option value="proposal"{% if o.stage == "proposal" %} selected{% endif %}>Proposal</option>
-                    <option value="negotiation"{% if o.stage == "negotiation" %} selected{% endif %}>Negotiation</option>
-                    <option value="closed_won"{% if o.stage == "closed_won" %} selected{% endif %}>Closed Won</option>
-                    <option value="closed_lost"{% if o.stage == "closed_lost" %} selected{% endif %}>Closed Lost</option>
+                  <select name="stage" required aria-label="Stage for {{ o.title }}" class="apex-input text-[10px]">
+                    {% for (value, label) in stage_options %}
+                    <option value="{{ value }}"{% if o.stage.as_str() == value.as_str() %} selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
                   </select>
                   <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Update</button>
                 </form>
               </div>
             </details>
           </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>

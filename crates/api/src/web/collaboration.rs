@@ -20,12 +20,13 @@ use uuid::Uuid;
 use apex_store::postgres::PgStore;
 
 use crate::middleware::session::WebSession;
+use crate::responses::{ApiError, ErrorCode};
 use crate::routes::collaboration::{
-    authorize_workspace, fmt_json_value, format_activity_details, validate_access_level,
-    validate_evidence_type, validate_priority, validate_probability, validate_reliability_score,
-    validate_risk_category, validate_risk_score, validate_share_type, validate_stage,
-    validate_team_assignment_role, validate_workspace_assignment_role, validate_workspace_name,
-    WsAccess,
+    authorize_workspace, fmt_json_value, format_activity_details, resolve_record_owner,
+    validate_access_level, validate_evidence_type, validate_priority, validate_probability,
+    validate_reliability_score, validate_risk_category, validate_risk_score, validate_share_type,
+    validate_stage, validate_team_assignment_role, validate_workspace_assignment_role,
+    validate_workspace_name, WsAccess, PIPELINE_STAGES, RISK_CATEGORIES,
 };
 use crate::web::{render_template, PageContext};
 
@@ -76,6 +77,7 @@ pub struct ActivityFeedQuery {
 pub struct AddSupplierRiskForm {
     pub supplier_id: String,
     pub risk_category: String,
+    /// Percent (0–100) as entered in the form; stored as a 0.0–1.0 fraction.
     pub risk_score: f64,
     pub risk_factors: Option<String>,
     pub mitigation: Option<String>,
@@ -87,6 +89,7 @@ pub struct CreatePipelineForm {
     pub title: String,
     pub stage: String,
     pub value_estimate: Option<f64>,
+    /// Percent (0–100) as entered in the form; stored as a 0.0–1.0 fraction.
     pub probability: f64,
     pub owner_id: Option<String>,
     pub expected_close: Option<String>,
@@ -184,10 +187,12 @@ pub struct SupplierRiskItem {
     pub id: String,
     pub supplier_id: String,
     pub risk_category: String,
-    pub risk_score: f64,
+    /// Stored 0.0–1.0 score scaled to percent for display.
+    pub risk_score_pct: f64,
     pub risk_factors: String,
     pub mitigation: String,
-    pub owner_id: String,
+    pub owner: String,
+    pub created_by: String,
     pub status: String,
     pub last_reviewed: String,
     pub next_review: String,
@@ -199,9 +204,12 @@ pub struct PipelineOpportunityItem {
     pub id: String,
     pub title: String,
     pub stage: String,
+    pub stage_label: String,
     pub value_estimate: String,
-    pub probability: f64,
-    pub owner_id: String,
+    /// Stored 0.0–1.0 probability scaled to percent for display.
+    pub probability_pct: f64,
+    pub owner: String,
+    pub created_by: String,
     pub expected_close: String,
     pub actual_close: String,
     pub notes: String,
@@ -335,6 +343,8 @@ pub(crate) struct SupplierRiskPage {
     pub entries: Vec<SupplierRiskItem>,
     pub total: usize,
     pub active_count: usize,
+    pub category_options: Vec<(String, String)>,
+    pub owner_options: Vec<(String, String)>,
 }
 
 #[derive(Template)]
@@ -349,6 +359,8 @@ pub(crate) struct PipelinePage {
     pub status_strip: crate::system_status::StatusStrip,
     pub opportunities: Vec<PipelineOpportunityItem>,
     pub total: usize,
+    pub stage_options: Vec<(String, String)>,
+    pub owner_options: Vec<(String, String)>,
 }
 
 #[derive(Template)]
@@ -383,6 +395,87 @@ pub(crate) struct TeamAssignmentsPage {
 
 fn fmt_opt(s: &Option<String>) -> String {
     s.as_deref().unwrap_or("").to_string()
+}
+
+/// `(value, label)` pairs for a `<select>` rendered from the canonical value
+/// set the API validates against, so the form can never offer a value the
+/// handler rejects. `closed_won` is labelled "Closed Won".
+fn select_options(values: &[&str]) -> Vec<(String, String)> {
+    values
+        .iter()
+        .map(|value| ((*value).to_string(), humanize_token(value)))
+        .collect()
+}
+
+/// `closed_won` -> "Closed Won".
+fn humanize_token(value: &str) -> String {
+    value
+        .split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// Provisioned users for record attribution: enabled users become the
+/// owner `<select>` options, and every user (enabled or not) resolves an id
+/// to a display label in the list.
+struct UserDirectory {
+    owner_options: Vec<(String, String)>,
+    labels: std::collections::HashMap<String, String>,
+}
+
+impl UserDirectory {
+    async fn load(store: &PgStore) -> anyhow::Result<Self> {
+        let users = store.list_app_users().await?;
+        let mut owner_options = Vec::new();
+        let mut labels = std::collections::HashMap::new();
+        for user in users {
+            let label = if user.display_name.trim().is_empty() {
+                user.username.clone()
+            } else {
+                user.display_name.clone()
+            };
+            if user.enabled {
+                owner_options.push((user.id.clone(), label.clone()));
+            }
+            labels.insert(user.id, label);
+        }
+        owner_options.sort_by_cached_key(|(_, label)| label.to_lowercase());
+        Ok(Self {
+            owner_options,
+            labels,
+        })
+    }
+
+    /// Display label for an attribution id; ids of users that no longer
+    /// exist fall back to the raw id rather than disappearing.
+    fn label(&self, id: &Option<String>) -> String {
+        match id.as_deref() {
+            Some(id) => self
+                .labels
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string()),
+            None => String::new(),
+        }
+    }
+}
+
+/// Maps an owner-resolution failure to a plain-text web response: unknown
+/// users are a 400, store failures keep their 5xx status and incident id.
+fn owner_error_response(error: ApiError) -> axum::response::Response {
+    if error.code == ErrorCode::ValidationError {
+        return (StatusCode::BAD_REQUEST, "Owner must be an existing user").into_response();
+    }
+    let status =
+        StatusCode::from_u16(error.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, error.message).into_response()
 }
 
 fn fmt_opt_date(d: &Option<chrono::DateTime<chrono::Utc>>) -> String {
@@ -1452,6 +1545,19 @@ pub async fn list_supplier_risks(
         }
     };
 
+    let users = match UserDirectory::load(&store).await {
+        Ok(users) => users,
+        Err(error) => {
+            tracing::error!("load users failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
+
     let total = entries.len();
     let active_count = entries.iter().filter(|e| e.status == "active").count();
 
@@ -1461,10 +1567,11 @@ pub async fn list_supplier_risks(
             id: e.id.to_string(),
             supplier_id: e.supplier_id,
             risk_category: e.risk_category,
-            risk_score: e.risk_score,
+            risk_score_pct: e.risk_score * 100.0,
             risk_factors: fmt_json_value(&e.risk_factors),
             mitigation: fmt_opt(&e.mitigation),
-            owner_id: fmt_opt(&e.owner_id),
+            owner: users.label(&e.owner_id),
+            created_by: users.label(&e.created_by),
             status: e.status,
             last_reviewed: fmt_opt_date(&e.last_reviewed),
             next_review: fmt_opt_date(&e.next_review),
@@ -1483,6 +1590,8 @@ pub async fn list_supplier_risks(
         entries: s_items,
         total,
         active_count,
+        category_options: select_options(&RISK_CATEGORIES),
+        owner_options: users.owner_options,
     };
 
     render_template(&page)
@@ -1490,7 +1599,7 @@ pub async fn list_supplier_risks(
 
 /// POST /supplier-risk — add a supplier risk entry.
 pub async fn add_supplier_risk(
-    _session: Extension<WebSession>,
+    session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<AddSupplierRiskForm>,
 ) -> impl IntoResponse {
@@ -1500,8 +1609,15 @@ pub async fn add_supplier_risk(
     if let Err(error) = validate_risk_category(&form.risk_category) {
         return (StatusCode::BAD_REQUEST, error.message).into_response();
     }
-    if let Err(error) = validate_risk_score(form.risk_score) {
-        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    // The form collects a percentage; the API, the store and the
+    // `chk_risk_score` constraint all use a 0.0–1.0 fraction.
+    let risk_score = form.risk_score / 100.0;
+    if validate_risk_score(risk_score).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Risk score must be a number between 0 and 100",
+        )
+            .into_response();
     }
 
     let risk_factors: serde_json::Value = form
@@ -1520,15 +1636,23 @@ pub async fn add_supplier_risk(
     if supplier_id.is_empty() {
         return (StatusCode::BAD_REQUEST, "Supplier ID is required").into_response();
     }
+    let owner_id = match resolve_record_owner(&store, form.owner_id.as_deref()).await {
+        Ok(owner_id) => owner_id,
+        Err(error) => return owner_error_response(error),
+    };
 
     if let Err(error) = store
         .create_supplier_risk_entry(
             supplier_id,
-            &form.risk_category,
-            form.risk_score,
+            form.risk_category.trim(),
+            risk_score,
             &risk_factors,
-            form.mitigation.as_deref(),
-            form.owner_id.as_deref(),
+            form.mitigation
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+            owner_id.as_deref(),
+            session.user_id.as_str(),
         )
         .await
     {
@@ -1584,6 +1708,19 @@ pub async fn list_pipeline(
         }
     };
 
+    let users = match UserDirectory::load(&store).await {
+        Ok(users) => users,
+        Err(error) => {
+            tracing::error!("load users failed (web collaboration): {error:#}");
+            return super::errors::internal_error_with_context(
+                &session.username,
+                0,
+                "Failed to load collaboration data",
+                "web-collaboration",
+            );
+        }
+    };
+
     let total = opportunities.len();
 
     let p_items: Vec<PipelineOpportunityItem> = opportunities
@@ -1591,10 +1728,12 @@ pub async fn list_pipeline(
         .map(|o| PipelineOpportunityItem {
             id: o.id.to_string(),
             title: o.title,
+            stage_label: humanize_token(&o.stage),
             stage: o.stage,
             value_estimate: fmt_opt_f64(&o.value_estimate),
-            probability: o.probability,
-            owner_id: fmt_opt(&o.owner_id),
+            probability_pct: o.probability * 100.0,
+            owner: users.label(&o.owner_id),
+            created_by: users.label(&o.created_by),
             expected_close: fmt_opt_naive_date(&o.expected_close),
             actual_close: fmt_opt_naive_date(&o.actual_close),
             notes: fmt_opt(&o.notes),
@@ -1613,6 +1752,8 @@ pub async fn list_pipeline(
         theme: ctx.theme,
         opportunities: p_items,
         total,
+        stage_options: select_options(&PIPELINE_STAGES),
+        owner_options: users.owner_options,
     };
 
     render_template(&page)
@@ -1620,7 +1761,7 @@ pub async fn list_pipeline(
 
 /// POST /pipeline — create a pipeline opportunity.
 pub async fn create_pipeline_opportunity(
-    _session: Extension<WebSession>,
+    session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreatePipelineForm>,
 ) -> impl IntoResponse {
@@ -1628,8 +1769,19 @@ pub async fn create_pipeline_opportunity(
     if let Err(error) = validate_stage(&form.stage) {
         return (StatusCode::BAD_REQUEST, error.message).into_response();
     }
-    if let Err(error) = validate_probability(form.probability) {
-        return (StatusCode::BAD_REQUEST, error.message).into_response();
+    // The form collects a percentage; the API, the store and the
+    // `chk_probability` constraint all use a 0.0–1.0 fraction.
+    let probability = form.probability / 100.0;
+    if validate_probability(probability).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Probability must be a number between 0 and 100",
+        )
+            .into_response();
+    }
+    let title = form.title.trim();
+    if title.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Title is required").into_response();
     }
     // `value_estimate` has no range of its own, but the form parses it with
     // `serde_urlencoded`, which happily turns "NaN"/"inf" into an f64, and
@@ -1659,22 +1811,31 @@ pub async fn create_pipeline_opportunity(
         None => None,
     };
 
+    let owner_id = match resolve_record_owner(&store, form.owner_id.as_deref()).await {
+        Ok(owner_id) => owner_id,
+        Err(error) => return owner_error_response(error),
+    };
+
     // Authoritative persistence: a failed insert must not redirect as if the
     // opportunity had been created.
     if let Err(error) = store
         .create_pipeline_opportunity(
             None, // opportunity_id
-            &form.title,
-            &form.stage,
+            title,
+            form.stage.trim(),
             form.value_estimate,
-            form.probability,
-            form.owner_id.as_deref(),
+            probability,
+            owner_id.as_deref(),
             expected_close,
-            form.notes.as_deref(),
+            form.notes
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+            session.user_id.as_str(),
         )
         .await
     {
-        tracing::error!(%error, title = %form.title, "create_pipeline_opportunity: write failed");
+        tracing::error!(%error, title = %title, "create_pipeline_opportunity: write failed");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to create pipeline opportunity",
@@ -1703,7 +1864,10 @@ pub async fn update_pipeline_stage(
     if let Err(error) = validate_stage(&form.stage) {
         return (StatusCode::BAD_REQUEST, error.message).into_response();
     }
-    if let Err(error) = store.update_pipeline_stage(uuid, &form.stage, None).await {
+    if let Err(error) = store
+        .update_pipeline_stage(uuid, form.stage.trim(), None)
+        .await
+    {
         // Authoritative persistence: the redirect must not claim the
         // stage change was stored when the write failed.
         tracing::error!(%error, opportunity_id = %id, "update_pipeline_stage: write failed");
@@ -2043,6 +2207,62 @@ mod tests {
         Arc::new(PgStore::from_pool(pool))
     }
 
+    #[test]
+    fn select_options_cover_the_validated_value_sets() {
+        let stages = select_options(&PIPELINE_STAGES);
+        assert_eq!(stages.len(), PIPELINE_STAGES.len());
+        for (value, _) in &stages {
+            assert!(validate_stage(value).is_ok(), "{value} must validate");
+        }
+        assert!(stages
+            .iter()
+            .any(|(value, label)| value == "closed_won" && label == "Closed Won"));
+
+        let categories = select_options(&RISK_CATEGORIES);
+        assert_eq!(categories.len(), RISK_CATEGORIES.len());
+        for (value, _) in &categories {
+            assert!(
+                validate_risk_category(value).is_ok(),
+                "{value} must validate"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn add_supplier_risk_rejects_fractional_scale_overflow() {
+        // The form is on a 0–100 scale; 150 must be rejected before the store.
+        let mut form = supplier_risk_form("sup-001");
+        form.risk_score = 150.0;
+        let response = add_supplier_risk(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(form),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_pipeline_opportunity_rejects_blank_title() {
+        let response = create_pipeline_opportunity(
+            Extension(test_session()),
+            Extension(lazy_store()),
+            Form(CreatePipelineForm {
+                title: "   ".to_string(),
+                stage: "discovery".to_string(),
+                value_estimate: None,
+                probability: 50.0,
+                owner_id: None,
+                expected_close: None,
+                notes: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     fn test_session() -> WebSession {
         WebSession {
             user_id: apex_core::identity::UserId::new("test-user"),
@@ -2118,7 +2338,7 @@ mod tests {
         AddSupplierRiskForm {
             supplier_id: supplier_id.to_string(),
             risk_category: "financial".to_string(),
-            risk_score: 0.5,
+            risk_score: 50.0,
             risk_factors: None,
             mitigation: None,
             owner_id: None,
@@ -2225,7 +2445,7 @@ mod tests {
                 title: "New opportunity".to_string(),
                 stage: "discovery".to_string(),
                 value_estimate: None,
-                probability: 0.5,
+                probability: 50.0,
                 owner_id: None,
                 expected_close: None,
                 notes: None,
@@ -2245,7 +2465,7 @@ mod tests {
                 title: "New opportunity".to_string(),
                 stage: "discovery".to_string(),
                 value_estimate: None,
-                probability: 0.5,
+                probability: 50.0,
                 owner_id: None,
                 expected_close: Some("31/12/2026".to_string()),
                 notes: None,

@@ -1091,9 +1091,9 @@ impl PgStore {
     ) -> Result<Vec<StrategicOpportunityRecord>> {
         let limit = clamp_limit(limit);
         let query = if include_closed {
-            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities ORDER BY priority_score DESC, created_at DESC LIMIT $1"
+            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, created_by, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities ORDER BY priority_score DESC, created_at DESC LIMIT $1"
         } else {
-            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE status NOT IN ('completed', 'abandoned') ORDER BY priority_score DESC, created_at DESC LIMIT $1"
+            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, created_by, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE status NOT IN ('completed', 'abandoned') ORDER BY priority_score DESC, created_at DESC LIMIT $1"
         };
         Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(query)
             .bind(limit)
@@ -1116,7 +1116,7 @@ impl PgStore {
             r#"
             SELECT id, title, description, opportunity_type, priority_score::double precision,
                    confidence::double precision, entity_id, entity_type, region,
-                   estimated_value::double precision, recommended_actions, owner_id, status,
+                   estimated_value::double precision, recommended_actions, owner_id, created_by, status,
                    due_date, metadata, created_at, updated_at
             FROM strategic_opportunities
             WHERE ($1::boolean OR status NOT IN ('completed', 'abandoned'))
@@ -1207,12 +1207,13 @@ impl PgStore {
         recommended_actions: &Value,
         owner_id: Option<&str>,
         due_date: Option<DateTime<Utc>>,
+        created_by: &str,
     ) -> Result<StrategicOpportunityRecord> {
         Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
             r#"INSERT INTO strategic_opportunities
-                 (title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, due_date)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-               RETURNING id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at"#,
+                 (title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, due_date, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+               RETURNING id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, created_by, status, due_date, metadata, created_at, updated_at"#,
         )
         .bind(title)
         .bind(description)
@@ -1226,6 +1227,7 @@ impl PgStore {
         .bind(recommended_actions)
         .bind(owner_id)
         .bind(due_date)
+        .bind(created_by)
         .fetch_one(&self.pool)
         .await?)
     }
@@ -1235,7 +1237,7 @@ impl PgStore {
         id: Uuid,
     ) -> Result<Option<StrategicOpportunityRecord>> {
         Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
-            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE id = $1",
+            "SELECT id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, created_by, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1250,7 +1252,7 @@ impl PgStore {
         Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
             r#"UPDATE strategic_opportunities SET status = $2, updated_at = NOW()
                WHERE id = $1
-               RETURNING id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at"#,
+               RETURNING id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, created_by, status, due_date, metadata, created_at, updated_at"#,
         )
         .bind(id)
         .bind(status)
@@ -1296,7 +1298,7 @@ impl PgStore {
                  status = COALESCE($14, status),
                  updated_at = NOW()
                WHERE id = $1
-               RETURNING id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at"#,
+               RETURNING id, title, description, opportunity_type, priority_score::double precision, confidence::double precision, entity_id, entity_type, region, estimated_value::double precision, recommended_actions, owner_id, created_by, status, due_date, metadata, created_at, updated_at"#,
         )
         .bind(id)
         .bind(title)
@@ -1324,7 +1326,7 @@ impl PgStore {
     pub async fn list_critical_threats(&self, limit: i64) -> Result<Vec<CriticalThreatRecord>> {
         let limit = clamp_limit(limit);
         Ok(sqlx::query_as::<_, CriticalThreatRecord>(
-            "SELECT id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE status = 'active' ORDER BY impact_score DESC, created_at DESC LIMIT $1",
+            "SELECT id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, created_by, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE status = 'active' ORDER BY impact_score DESC, created_at DESC LIMIT $1",
         )
         .bind(limit)
         .fetch_all(&self.pool)
@@ -1345,7 +1347,7 @@ impl PgStore {
             r#"
             SELECT id, title, description, threat_type, severity,
                    impact_score::double precision, confidence::double precision,
-                   entity_id, entity_type, region, mitigation_steps, owner_id, status,
+                   entity_id, entity_type, region, mitigation_steps, owner_id, created_by, status,
                    sla_deadline, resolved_at, metadata, created_at, updated_at
             FROM critical_threats
             WHERE status = 'active'
@@ -1378,12 +1380,13 @@ impl PgStore {
         mitigation_steps: &Value,
         owner_id: Option<&str>,
         sla_deadline: Option<DateTime<Utc>>,
+        created_by: &str,
     ) -> Result<CriticalThreatRecord> {
         Ok(sqlx::query_as::<_, CriticalThreatRecord>(
             r#"INSERT INTO critical_threats
-                 (title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, sla_deadline)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-               RETURNING id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#,
+                 (title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, sla_deadline, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+               RETURNING id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, created_by, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#,
         )
         .bind(title)
         .bind(description)
@@ -1397,13 +1400,14 @@ impl PgStore {
         .bind(mitigation_steps)
         .bind(owner_id)
         .bind(sla_deadline)
+        .bind(created_by)
         .fetch_one(&self.pool)
         .await?)
     }
 
     pub async fn get_critical_threat(&self, id: Uuid) -> Result<Option<CriticalThreatRecord>> {
         Ok(sqlx::query_as::<_, CriticalThreatRecord>(
-            "SELECT id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE id = $1",
+            "SELECT id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, created_by, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1480,7 +1484,7 @@ impl PgStore {
                  END,
                  updated_at = NOW()
                WHERE id = $1
-               RETURNING id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#,
+               RETURNING id, title, description, threat_type, severity, impact_score::double precision, confidence::double precision, entity_id, entity_type, region, mitigation_steps, owner_id, created_by, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#,
         )
         .bind(id)
         .bind(title)
@@ -1504,26 +1508,13 @@ impl PgStore {
 
     // ─── Investigation Workspaces ─────────────────────────────────────────────
 
-    pub async fn list_investigation_workspaces(
-        &self,
-        limit: i64,
-    ) -> Result<Vec<InvestigationWorkspaceRecord>> {
-        let limit = clamp_limit(limit);
-        Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
-            "SELECT id, name, description, workspace_type, owner_id, team_id, status, visibility, tags, entity_focus, findings, conclusions, metadata, created_at, updated_at, closed_at FROM investigation_workspaces ORDER BY updated_at DESC LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?)
-    }
-
     /// Workspaces visible to one principal, filtered in SQL so `LIMIT` cannot
     /// truncate before the visibility filter (which returned short pages).
     ///
     /// Admin sees everything; otherwise a workspace is visible when the user
     /// owns it, it is organization/public, or the user holds an unexpired
-    /// share or an assignment. `team` visibility is not enforced until a team
-    /// membership model exists, so it grants nothing on its own.
+    /// share or an assignment. `team`/`private` grant nothing on their own: a
+    /// workspace's team is its assignees and share recipients.
     pub async fn list_visible_investigation_workspaces(
         &self,
         user_id: &str,
@@ -2019,7 +2010,7 @@ impl PgStore {
     ) -> Result<Vec<SupplierRiskEntryRecord>> {
         let limit = clamp_limit(limit);
         Ok(sqlx::query_as::<_, SupplierRiskEntryRecord>(
-            "SELECT id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at FROM supplier_risk WHERE ($1::text IS NULL OR status = $1) ORDER BY risk_score DESC, created_at DESC LIMIT $2",
+            "SELECT id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, created_by, status, last_reviewed, next_review, created_at, updated_at FROM supplier_risk WHERE ($1::text IS NULL OR status = $1) ORDER BY risk_score DESC, created_at DESC LIMIT $2",
         )
         .bind(status)
         .bind(limit)
@@ -2035,12 +2026,13 @@ impl PgStore {
         risk_factors: &Value,
         mitigation: Option<&str>,
         owner_id: Option<&str>,
+        created_by: &str,
     ) -> Result<SupplierRiskEntryRecord> {
         Ok(sqlx::query_as::<_, SupplierRiskEntryRecord>(
             r#"INSERT INTO supplier_risk
-                 (supplier_id, risk_category, risk_score, risk_factors, mitigation, owner_id)
-               VALUES ($1, $2, $3, $4, $5, $6)
-               RETURNING id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at"#,
+                 (supplier_id, risk_category, risk_score, risk_factors, mitigation, owner_id, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, created_by, status, last_reviewed, next_review, created_at, updated_at"#,
         )
         .bind(supplier_id)
         .bind(risk_category)
@@ -2048,6 +2040,7 @@ impl PgStore {
         .bind(risk_factors)
         .bind(mitigation)
         .bind(owner_id)
+        .bind(created_by)
         .fetch_one(&self.pool)
         .await?)
     }
@@ -2074,7 +2067,7 @@ impl PgStore {
                  last_reviewed = NOW(),
                  updated_at = NOW()
                WHERE id = $1
-               RETURNING id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at"#,
+               RETURNING id, supplier_id, risk_category, risk_score::double precision, risk_factors, mitigation, owner_id, created_by, status, last_reviewed, next_review, created_at, updated_at"#,
         )
         .bind(id)
         .bind(risk_score)
@@ -2096,7 +2089,7 @@ impl PgStore {
     ) -> Result<Vec<PipelineOpportunityRecord>> {
         let limit = clamp_limit(limit);
         Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(
-            "SELECT id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at FROM pipeline_opportunities WHERE ($1::text IS NULL OR stage = $1) AND ($2::text IS NULL OR owner_id = $2) ORDER BY created_at DESC LIMIT $3",
+            "SELECT id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, created_by, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at FROM pipeline_opportunities WHERE ($1::text IS NULL OR stage = $1) AND ($2::text IS NULL OR owner_id = $2) ORDER BY created_at DESC LIMIT $3",
         )
         .bind(stage)
         .bind(owner_id)
@@ -2114,7 +2107,7 @@ impl PgStore {
     ) -> Result<Vec<PipelineOpportunityRecord>> {
         let limit = clamp_limit(limit);
         Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(
-            "SELECT id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at FROM pipeline_opportunities WHERE company_id = $1 ORDER BY created_at DESC LIMIT $2",
+            "SELECT id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, created_by, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at FROM pipeline_opportunities WHERE company_id = $1 ORDER BY created_at DESC LIMIT $2",
         )
         .bind(company_id)
         .bind(limit)
@@ -2132,12 +2125,13 @@ impl PgStore {
         owner_id: Option<&str>,
         expected_close: Option<NaiveDate>,
         notes: Option<&str>,
+        created_by: &str,
     ) -> Result<PipelineOpportunityRecord> {
         Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(
             r#"INSERT INTO pipeline_opportunities
-                 (opportunity_id, title, stage, value_estimate, probability, owner_id, expected_close, notes)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-               RETURNING id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at"#,
+                 (opportunity_id, title, stage, value_estimate, probability, owner_id, expected_close, notes, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               RETURNING id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, created_by, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at"#,
         )
         .bind(opportunity_id)
         .bind(title)
@@ -2147,6 +2141,7 @@ impl PgStore {
         .bind(owner_id)
         .bind(expected_close)
         .bind(notes)
+        .bind(created_by)
         .fetch_one(&self.pool)
         .await?)
     }
@@ -2170,7 +2165,7 @@ impl PgStore {
                  closed_at = {closed_at_expr},
                  updated_at = NOW()
                WHERE id = $1
-               RETURNING id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at"#
+               RETURNING id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, created_by, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at"#
         );
         Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(&sql)
             .bind(id)

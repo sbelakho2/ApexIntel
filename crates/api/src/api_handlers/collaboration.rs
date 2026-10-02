@@ -5,14 +5,14 @@
 use apex_api::destructive_actions::ApiAuthContext;
 use apex_api::responses::{success, ApiError, ApiResponse};
 use apex_api::routes::collaboration::{
-    authorize_workspace, store_error, validate_access_level, validate_confidence,
-    validate_evidence_type, validate_impact_score, validate_opportunity_status, validate_priority,
-    validate_priority_score, validate_probability, validate_reliability_score,
-    validate_risk_category, validate_risk_score, validate_severity, validate_share_type,
-    validate_stage, validate_team_assignment_role, validate_threat_status, validate_visibility,
-    validate_workspace_assignment_role, validate_workspace_name, validate_workspace_request,
-    ActivityEntry, ActivityFeedQuery, AddEvidenceRequest, AddSupplierRiskRequest,
-    AddToQueueRequest, AssignUserRequest, CreateOpportunityRequest,
+    authorize_workspace, resolve_record_owner, store_error, validate_access_level,
+    validate_confidence, validate_evidence_type, validate_impact_score,
+    validate_opportunity_status, validate_priority, validate_priority_score, validate_probability,
+    validate_reliability_score, validate_risk_category, validate_risk_score, validate_severity,
+    validate_share_type, validate_stage, validate_team_assignment_role, validate_threat_status,
+    validate_visibility, validate_workspace_assignment_role, validate_workspace_name,
+    validate_workspace_request, ActivityEntry, ActivityFeedQuery, AddEvidenceRequest,
+    AddSupplierRiskRequest, AddToQueueRequest, AssignUserRequest, CreateOpportunityRequest,
     CreatePipelineOpportunityRequest, CreateTeamAssignmentRequest, CreateThreatRequest,
     CreateWorkspaceRequest, CriticalThreat, InvestigationShare, InvestigationWorkspace,
     PipelineOpportunity, PriorityQueueItem, RecordActivityRequest, ShareWorkspaceRequest,
@@ -410,12 +410,17 @@ pub struct ListOpportunitiesQuery {
 /// Create a new strategic opportunity
 pub async fn create_opportunity(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreateOpportunityRequest>,
 ) -> Result<Json<ApiResponse<StrategicOpportunity>>, ApiError> {
     validate_confidence(req.confidence)?;
     validate_priority_score(req.priority_score)?;
+    if req.title.trim().is_empty() {
+        return Err(ApiError::validation("title", "cannot be empty"));
+    }
 
     let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
+    let owner_id = resolve_record_owner(&state.store, req.owner_id.as_deref()).await?;
 
     let record = state
         .store
@@ -430,8 +435,9 @@ pub async fn create_opportunity(
             req.region.as_deref(),
             req.estimated_value.as_deref(),
             &req.recommended_actions,
-            req.owner_id.as_deref(),
+            owner_id.as_deref(),
             req.due_date,
+            auth.user_id.as_str(),
         )
         .await
         .map_err(store_err)?;
@@ -478,13 +484,18 @@ pub struct ListThreatsQuery {
 /// Create a new critical threat
 pub async fn create_threat(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreateThreatRequest>,
 ) -> Result<Json<ApiResponse<CriticalThreat>>, ApiError> {
     validate_confidence(req.confidence)?;
     validate_impact_score(req.impact_score)?;
     validate_severity(&req.severity)?;
+    if req.title.trim().is_empty() {
+        return Err(ApiError::validation("title", "cannot be empty"));
+    }
 
     let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
+    let owner_id = resolve_record_owner(&state.store, req.owner_id.as_deref()).await?;
 
     let record = state
         .store
@@ -499,8 +510,9 @@ pub async fn create_threat(
             req.entity_type.as_deref(),
             req.region.as_deref(),
             &req.mitigation_steps,
-            req.owner_id.as_deref(),
+            owner_id.as_deref(),
             req.sla_deadline,
+            auth.user_id.as_str(),
         )
         .await
         .map_err(store_err)?;
@@ -552,6 +564,7 @@ pub async fn update_opportunity(
     let uuid = parse_uuid(&id, "id")?;
     let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
     let title = req.title.as_deref().map(str::trim);
+    let owner_id = resolve_record_owner(&state.store, req.owner_id.as_deref()).await?;
 
     let record = state
         .store
@@ -567,7 +580,7 @@ pub async fn update_opportunity(
             req.region.as_deref(),
             req.estimated_value.as_deref(),
             req.recommended_actions.as_ref(),
-            req.owner_id.as_deref(),
+            owner_id.as_deref(),
             req.due_date,
             req.status.as_deref(),
         )
@@ -631,6 +644,8 @@ pub async fn update_threat(
         .map(str::to_lowercase);
     let title = req.title.as_deref().map(str::trim);
 
+    let owner_id = resolve_record_owner(&state.store, req.owner_id.as_deref()).await?;
+
     let record = state
         .store
         .update_critical_threat(
@@ -645,7 +660,7 @@ pub async fn update_threat(
             req.entity_type.as_deref(),
             req.region.as_deref(),
             req.mitigation_steps.as_ref(),
-            req.owner_id.as_deref(),
+            owner_id.as_deref(),
             req.sla_deadline,
             req.status.as_deref(),
         )
@@ -1069,20 +1084,26 @@ pub struct ListSupplierRisksQuery {
 /// Add supplier risk entry
 pub async fn add_supplier_risk(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<AddSupplierRiskRequest>,
 ) -> Result<Json<ApiResponse<SupplierRiskEntry>>, ApiError> {
     validate_risk_score(req.risk_score)?;
     validate_risk_category(&req.risk_category)?;
+    if req.supplier_id.trim().is_empty() {
+        return Err(ApiError::validation("supplier_id", "cannot be empty"));
+    }
+    let owner_id = resolve_record_owner(&state.store, req.owner_id.as_deref()).await?;
 
     let record = state
         .store
         .create_supplier_risk_entry(
-            &req.supplier_id,
-            &req.risk_category,
+            req.supplier_id.trim(),
+            req.risk_category.trim(),
             req.risk_score,
             &req.risk_factors,
             req.mitigation.as_deref(),
-            req.owner_id.as_deref(),
+            owner_id.as_deref(),
+            auth.user_id.as_str(),
         )
         .await
         .map_err(store_err)?;
@@ -1107,6 +1128,7 @@ pub async fn update_supplier_risk(
     }
 
     let uuid = parse_uuid(&id, "id")?;
+    let owner_id = resolve_record_owner(&state.store, req.owner_id.as_deref()).await?;
 
     let record = state
         .store
@@ -1115,7 +1137,7 @@ pub async fn update_supplier_risk(
             req.risk_score,
             req.risk_factors.as_ref(),
             req.mitigation.as_deref(),
-            req.owner_id.as_deref(),
+            owner_id.as_deref(),
             req.status.as_deref(),
         )
         .await
@@ -1161,24 +1183,30 @@ pub struct ListPipelineQuery {
 /// Create pipeline opportunity
 pub async fn create_pipeline_opportunity(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreatePipelineOpportunityRequest>,
 ) -> Result<Json<ApiResponse<PipelineOpportunity>>, ApiError> {
     validate_stage(&req.stage)?;
     validate_probability(req.probability)?;
+    if req.title.trim().is_empty() {
+        return Err(ApiError::validation("title", "cannot be empty"));
+    }
 
     let expected_close = parse_optional_date(&req.expected_close)?;
+    let owner_id = resolve_record_owner(&state.store, req.owner_id.as_deref()).await?;
 
     let record = state
         .store
         .create_pipeline_opportunity(
             req.opportunity_id.as_deref(),
-            &req.title,
-            &req.stage,
+            req.title.trim(),
+            req.stage.trim(),
             req.value_estimate,
             req.probability,
-            req.owner_id.as_deref(),
+            owner_id.as_deref(),
             expected_close,
             req.notes.as_deref(),
+            auth.user_id.as_str(),
         )
         .await
         .map_err(store_err)?;
@@ -1199,7 +1227,7 @@ pub async fn update_pipeline_stage(
 
     let record = state
         .store
-        .update_pipeline_stage(uuid, &req.stage, req.notes.as_deref())
+        .update_pipeline_stage(uuid, req.stage.trim(), req.notes.as_deref())
         .await
         .map_err(store_err)?
         .ok_or_else(|| ApiError::not_found("pipeline_opportunity", &id))?;

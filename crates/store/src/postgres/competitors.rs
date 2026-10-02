@@ -29,7 +29,7 @@ impl PgStore {
             "SELECT * FROM companies \
              WHERE is_competitor = TRUE \
                 OR lower(metadata->>'is_competitor') IN ('true', 't', '1') \
-             ORDER BY name ASC LIMIT $1 OFFSET $2",
+             ORDER BY name ASC, id ASC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
@@ -132,11 +132,13 @@ impl PgStore {
         }
 
         let warning_rows: Vec<(Uuid, i64)> = sqlx::query_as(
-            "SELECT entity_id, COUNT(*)::BIGINT \
-             FROM warnings w, \
-                  unnest(COALESCE(w.entity_ids, ARRAY[]::UUID[])) AS entity_id \
-             WHERE w.deleted_at IS NULL AND entity_id = ANY($1) \
-             GROUP BY entity_id",
+            // `warnings` has its own scalar `entity_id` column, so the
+            // unnested element gets a distinct name to stay unambiguous.
+            "SELECT u.eid, COUNT(*)::BIGINT \
+             FROM warnings w \
+             CROSS JOIN LATERAL unnest(COALESCE(w.entity_ids, ARRAY[]::UUID[])) AS u(eid) \
+             WHERE w.deleted_at IS NULL AND w.entity_ids && $1 AND u.eid = ANY($1) \
+             GROUP BY u.eid",
         )
         .bind(competitor_ids)
         .fetch_all(&self.pool)

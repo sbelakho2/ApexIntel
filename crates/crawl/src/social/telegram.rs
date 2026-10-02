@@ -21,6 +21,7 @@ const MAX_PAGES: usize = 5;
 /// Telegram channel scraper.
 pub struct TelegramScraper {
     client: Client,
+    base_url: String,
 }
 
 impl TelegramScraper {
@@ -35,7 +36,10 @@ impl TelegramScraper {
             ..crate::http::ExternalClientOptions::default()
         })?;
 
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            base_url: TELEGRAM_WEB.to_string(),
+        })
     }
 
     /// Fetch recent posts from a public Telegram channel.
@@ -49,9 +53,9 @@ impl TelegramScraper {
         let encoded_channel = urlencoding::encode(channel);
         for page in 0..MAX_PAGES {
             let url = if let Some(id) = before_id {
-                format!("{}/{}?before={}", TELEGRAM_WEB, encoded_channel, id)
+                format!("{}/{}?before={}", self.base_url, encoded_channel, id)
             } else {
-                format!("{}/{}", TELEGRAM_WEB, encoded_channel)
+                format!("{}/{}", self.base_url, encoded_channel)
             };
 
             debug!(url=%url, page, "Fetching Telegram channel page");
@@ -217,6 +221,111 @@ fn strip_html_tags(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
+
+    /// Serves `responses` in order, one per connection, and records each
+    /// request line so pagination can be asserted.
+    async fn scripted_server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut queue: VecDeque<String> = responses.into();
+        let seen = requests.clone();
+        tokio::spawn(async move {
+            while let Some(response) = queue.pop_front() {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = [0_u8; 2048];
+                let read = stream.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]);
+                seen.lock()
+                    .await
+                    .push(request.lines().next().unwrap_or_default().to_string());
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}/s"), requests)
+    }
+
+    fn http_response(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn post_html(channel: &str, ids: &[u64]) -> String {
+        ids.iter()
+            .map(|id| {
+                format!(
+                    r#"<div class="tgme_widget_message_wrap"><div data-post="{channel}/{id}"><div class="tgme_widget_message_text">post {id}</div></div></div>"#
+                )
+            })
+            .collect()
+    }
+
+    fn local_scraper(base_url: String) -> TelegramScraper {
+        let client = crate::http::external_client_with(crate::http::ExternalClientOptions {
+            timeout: Duration::from_secs(5),
+            allow_private_targets: true,
+            ..crate::http::ExternalClientOptions::default()
+        })
+        .expect("build client");
+        TelegramScraper { client, base_url }
+    }
+
+    #[tokio::test]
+    async fn first_page_http_error_is_surfaced() {
+        let (base, _) = scripted_server(vec![http_response("503 Service Unavailable", "")]).await;
+        let error = local_scraper(base)
+            .channel_posts("chan", 10)
+            .await
+            .expect_err("an unreachable channel must not look like an empty one");
+        assert!(error.to_string().contains("503"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn first_page_transport_error_is_surfaced() {
+        // Bind then drop: the port refuses connections.
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind")
+            .local_addr()
+            .expect("addr");
+        let result = local_scraper(format!("http://{addr}/s"))
+            .channel_posts("chan", 10)
+            .await;
+        assert!(result.is_err(), "a refused first page must be an error");
+    }
+
+    #[tokio::test]
+    async fn later_page_error_keeps_partial_results_and_paginates() {
+        let (base, requests) = scripted_server(vec![
+            http_response("200 OK", &post_html("chan", &[105, 104])),
+            http_response("500 Internal Server Error", ""),
+        ])
+        .await;
+        let posts = local_scraper(base)
+            .channel_posts("chan", 10)
+            .await
+            .expect("a later-page failure keeps the first page");
+        let ids: Vec<&str> = posts.iter().map(|p| p.post_id.as_str()).collect();
+        assert_eq!(ids, ["105", "104"]);
+        let requests = requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /s/chan "), "{}", requests[0]);
+        assert!(
+            requests[1].starts_with("GET /s/chan?before=103 "),
+            "{}",
+            requests[1]
+        );
+    }
 
     #[test]
     fn scraper_builds() {

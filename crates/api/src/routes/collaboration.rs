@@ -1007,6 +1007,28 @@ pub fn store_error(error: anyhow::Error) -> ApiError {
     ApiError::internal(format!("internal error · incident {incident}"))
 }
 
+/// Resolves a caller-supplied record owner to a provisioned `app_users.id`.
+///
+/// Blank means "no owner" (`None`; on updates the stored owner is kept). Any
+/// other value must name an existing user: `owner_id` on opportunities,
+/// threats, supplier risk and pipeline rows references `app_users(id)`
+/// (migration 101), so an unknown id is a 400, never a constraint 500.
+pub async fn resolve_record_owner(
+    store: &PgStore,
+    owner_id: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(owner_id) = owner_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    match store.get_app_user(owner_id).await.map_err(store_error)? {
+        Some(user) => Ok(Some(user.id)),
+        None => Err(ApiError::validation(
+            "owner_id",
+            "must be an existing user id",
+        )),
+    }
+}
+
 // ────────────────────────────────────────────
 // Workspace authorization
 // ────────────────────────────────────────────
@@ -1029,8 +1051,9 @@ pub enum WsAccess {
 ///   * a workspace assignment grants read, owner/lead/contributor write,
 ///     owner/lead manage;
 ///   * `organization`/`public` visibility grants read to everyone.
-///     (`team` visibility cannot be enforced until a team-membership model
-///     exists; it is documented as organization-wide in the UI.)
+///   * `team` and `private` grant nothing beyond the rules above: a
+///     workspace's team is its assignees and share recipients (there is no
+///     separate team-membership model), and the create form says so.
 pub async fn authorize_workspace(
     store: &PgStore,
     id: uuid::Uuid,

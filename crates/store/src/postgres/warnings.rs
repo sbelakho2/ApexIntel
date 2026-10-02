@@ -63,6 +63,113 @@ fn push_hygiene_filter(qb: &mut QueryBuilder<Postgres>, has_where: &mut bool, ex
     *has_where = true;
 }
 
+/// Exact aggregates for the warnings list page (see `summarize_warnings`).
+#[derive(Debug, Clone, Default)]
+pub struct WarningListSummary {
+    /// Unacknowledged warning count per stored severity.
+    pub unacked_by_severity: std::collections::HashMap<String, i64>,
+    /// Distinct warning types, sorted.
+    pub warning_types: Vec<String>,
+    /// Distinct non-empty regions, sorted.
+    pub regions: Vec<String>,
+    /// `(UTC day, severity, count)` for days on/after the trend start.
+    pub daily_by_severity: Vec<(NaiveDate, String, i64)>,
+}
+
+/// `WITH dedup AS (...)` — one row per logical warning (latest revision),
+/// followed by `select_tail`, which must read `FROM dedup` last so
+/// `push_warning_filters` can append its `WHERE` clause.
+fn warning_dedup_query<'a>(
+    include_deleted: bool,
+    select_tail: &'static str,
+) -> QueryBuilder<'a, Postgres> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        r#"WITH dedup AS (
+               SELECT * FROM (
+                   SELECT w.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY
+                               CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
+                               lower(trim(regexp_replace(w.title, '^\[[^]]+\]\s*', ''))),
+                               lower(trim(w.warning_type)),
+                               lower(trim(w.severity)),
+                               coalesce(lower(w.region), ''),
+                               left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380)
+                           ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
+                       ) AS rn
+                   FROM warnings w
+                   WHERE ("#,
+    );
+    qb.push_bind(include_deleted);
+    qb.push(
+        r#" OR w.deleted_at IS NULL)
+               ) ranked
+               WHERE ranked.rn = 1
+           )
+           "#,
+    );
+    qb.push(select_tail);
+    qb
+}
+
+/// Append the list filters as a `WHERE` clause over the `dedup` rows.
+fn push_warning_filters<'a>(qb: &mut QueryBuilder<'a, Postgres>, filters: &'a WarningListFilters) {
+    let mut has_where = false;
+    if !filters.regions.is_empty() {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("region = ANY(")
+            .push_bind(&filters.regions)
+            .push(")");
+        has_where = true;
+    }
+
+    if !filters.severities.is_empty() {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("severity = ANY(")
+            .push_bind(&filters.severities)
+            .push(")");
+        has_where = true;
+    }
+
+    if !filters.warning_types.is_empty() {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("warning_type = ANY(")
+            .push_bind(&filters.warning_types)
+            .push(")");
+        has_where = true;
+    }
+
+    push_hygiene_filter(qb, &mut has_where, filters.exclude_hygiene_signals);
+
+    if let Some(ack) = filters.acknowledged {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("acknowledged = ").push_bind(ack);
+        has_where = true;
+    }
+
+    if let Some(date_from) = filters.date_from {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("ts_utc >= ").push_bind(date_from);
+        has_where = true;
+    }
+
+    if let Some(date_to) = filters.date_to {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("ts_utc <= ").push_bind(date_to);
+        has_where = true;
+    }
+
+    if let Some(search) = &filters.search {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        let pattern = ilike_pattern(search);
+        qb.push("(title ILIKE ")
+            .push_bind(pattern.clone())
+            .push(" OR description ILIKE ")
+            .push_bind(pattern)
+            .push(")");
+    }
+}
+
 impl PgStore {
     pub async fn list_warnings(
         &self,
@@ -73,90 +180,15 @@ impl PgStore {
         offset: i64,
     ) -> Result<Vec<WarningRow>> {
         let (limit, offset) = normalize_warning_window(limit, offset);
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-            r#"WITH dedup AS (
-                   SELECT * FROM (
-                       SELECT w.*,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY
-                                   CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
-                                   lower(trim(regexp_replace(w.title, '^\[[^]]+\]\s*', ''))),
-                                   lower(trim(w.warning_type)),
-                                   lower(trim(w.severity)),
-                                   coalesce(lower(w.region), ''),
-                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380)
-                               ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
-                           ) AS rn
-                       FROM warnings w
-                       WHERE ("#,
-        );
-        qb.push_bind(filters.include_deleted);
-        qb.push(
-            r#" OR w.deleted_at IS NULL)
-                   ) ranked
-                   WHERE ranked.rn = 1
-               )
-               SELECT id, recipe_code, warning_type, title, description, severity, region,
+        let mut qb = warning_dedup_query(
+            filters.include_deleted,
+            r#"SELECT id, recipe_code, warning_type, title, description, severity, region,
                       source_urls, entity_ids, confidence, impact, actions, ts_utc, acknowledged,
                       acknowledged_by, acknowledged_at, acknowledged_note,
                       review_outcome, reviewed_by, reviewed_at, deleted_at, created_at, updated_at
                FROM dedup"#,
         );
-
-        let mut has_where = false;
-        if !filters.regions.is_empty() {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("region = ANY(")
-                .push_bind(&filters.regions)
-                .push(")");
-            has_where = true;
-        }
-
-        if !filters.severities.is_empty() {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("severity = ANY(")
-                .push_bind(&filters.severities)
-                .push(")");
-            has_where = true;
-        }
-
-        if !filters.warning_types.is_empty() {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("warning_type = ANY(")
-                .push_bind(&filters.warning_types)
-                .push(")");
-            has_where = true;
-        }
-
-        push_hygiene_filter(&mut qb, &mut has_where, filters.exclude_hygiene_signals);
-
-        if let Some(ack) = filters.acknowledged {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("acknowledged = ").push_bind(ack);
-            has_where = true;
-        }
-
-        if let Some(date_from) = filters.date_from {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("ts_utc >= ").push_bind(date_from);
-            has_where = true;
-        }
-
-        if let Some(date_to) = filters.date_to {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("ts_utc <= ").push_bind(date_to);
-            has_where = true;
-        }
-
-        if let Some(search) = &filters.search {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            let pattern = ilike_pattern(search);
-            qb.push("(title ILIKE ")
-                .push_bind(pattern.clone())
-                .push(" OR description ILIKE ")
-                .push_bind(pattern)
-                .push(")");
-        }
+        push_warning_filters(&mut qb, filters);
 
         let order_by = order_by.unwrap_or(WarningOrderBy::CreatedAt);
         qb.push(" ORDER BY ");
@@ -180,89 +212,63 @@ impl PgStore {
     }
 
     pub async fn count_warnings(&self, filters: &WarningListFilters) -> Result<i64> {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-            r#"WITH dedup AS (
-                   SELECT * FROM (
-                       SELECT w.*,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY
-                                   CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
-                                   lower(trim(regexp_replace(w.title, '^\[[^]]+\]\s*', ''))),
-                                   lower(trim(w.warning_type)),
-                                   lower(trim(w.severity)),
-                                   coalesce(lower(w.region), ''),
-                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380)
-                               ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
-                           ) AS rn
-                       FROM warnings w
-                       WHERE ("#,
-        );
-        qb.push_bind(filters.include_deleted);
-        qb.push(
-            r#" OR w.deleted_at IS NULL)
-                   ) ranked
-                   WHERE ranked.rn = 1
-               )
-               SELECT COUNT(*) FROM dedup"#,
-        );
-        let mut has_where = false;
-
-        if !filters.regions.is_empty() {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("region = ANY(")
-                .push_bind(&filters.regions)
-                .push(")");
-            has_where = true;
-        }
-
-        if !filters.severities.is_empty() {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("severity = ANY(")
-                .push_bind(&filters.severities)
-                .push(")");
-            has_where = true;
-        }
-
-        if !filters.warning_types.is_empty() {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("warning_type = ANY(")
-                .push_bind(&filters.warning_types)
-                .push(")");
-            has_where = true;
-        }
-
-        push_hygiene_filter(&mut qb, &mut has_where, filters.exclude_hygiene_signals);
-
-        if let Some(ack) = filters.acknowledged {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("acknowledged = ").push_bind(ack);
-            has_where = true;
-        }
-
-        if let Some(date_from) = filters.date_from {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("ts_utc >= ").push_bind(date_from);
-            has_where = true;
-        }
-
-        if let Some(date_to) = filters.date_to {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("ts_utc <= ").push_bind(date_to);
-            has_where = true;
-        }
-
-        if let Some(search) = &filters.search {
-            qb.push(if has_where { " AND " } else { " WHERE " });
-            let pattern = ilike_pattern(search);
-            qb.push("(title ILIKE ")
-                .push_bind(pattern.clone())
-                .push(" OR description ILIKE ")
-                .push_bind(pattern)
-                .push(")");
-        }
+        let mut qb = warning_dedup_query(filters.include_deleted, "SELECT COUNT(*) FROM dedup");
+        push_warning_filters(&mut qb, filters);
 
         let row: (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
         Ok(row.0)
+    }
+
+    /// Exact aggregates over every deduplicated warning matching `filters`
+    /// (the list page's severity cards, type/region chips and 30-day trend).
+    /// Computed in SQL so they never depend on a clamped row sample.
+    pub async fn summarize_warnings(
+        &self,
+        filters: &WarningListFilters,
+        trend_since: NaiveDate,
+    ) -> Result<WarningListSummary> {
+        let mut qb = warning_dedup_query(
+            filters.include_deleted,
+            ", filtered AS (SELECT severity, acknowledged, warning_type, region, ts_utc FROM dedup",
+        );
+        push_warning_filters(&mut qb, filters);
+        qb.push(
+            r#")
+               SELECT 'severity' AS kind, severity AS key, NULL::date AS day, COUNT(*)::bigint AS n
+               FROM filtered WHERE NOT acknowledged GROUP BY severity
+               UNION ALL
+               SELECT 'type', warning_type, NULL::date, COUNT(*)::bigint
+               FROM filtered GROUP BY warning_type
+               UNION ALL
+               SELECT 'region', region, NULL::date, COUNT(*)::bigint
+               FROM filtered WHERE COALESCE(region, '') <> '' GROUP BY region
+               UNION ALL
+               SELECT 'day', severity, (ts_utc AT TIME ZONE 'UTC')::date, COUNT(*)::bigint
+               FROM filtered WHERE (ts_utc AT TIME ZONE 'UTC')::date >= "#,
+        );
+        qb.push_bind(trend_since);
+        qb.push(" GROUP BY severity, (ts_utc AT TIME ZONE 'UTC')::date");
+
+        let rows: Vec<(String, Option<String>, Option<NaiveDate>, i64)> =
+            qb.build_query_as().fetch_all(&self.pool).await?;
+        let mut summary = WarningListSummary::default();
+        for (kind, key, day, n) in rows {
+            let key = key.unwrap_or_default();
+            match (kind.as_str(), day) {
+                ("severity", _) => {
+                    *summary.unacked_by_severity.entry(key).or_insert(0) += n;
+                }
+                ("type", _) => summary.warning_types.push(key),
+                ("region", _) => summary.regions.push(key),
+                ("day", Some(day)) => summary.daily_by_severity.push((day, key, n)),
+                _ => {}
+            }
+        }
+        summary.warning_types.sort();
+        summary.warning_types.dedup();
+        summary.regions.sort();
+        summary.regions.dedup();
+        Ok(summary)
     }
 
     /// Cheap non-deduplicated warning count for badge counters and capability

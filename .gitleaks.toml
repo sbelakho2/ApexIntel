@@ -49,6 +49,8 @@ regexes = [
   '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
   # CI-only service key in .woodpecker.yml.
   '''ci-features-check-key-0123456789abcdef''',
+  # CI-only admin key for the route sweep in .woodpecker.yml.
+  '''ci-sweep-admin-key-0123456789abcdef0123''',
   # Local development defaults that must never be used in production.
   '''change-me-local-dev''',
   '''change-me-minio-local-dev''',

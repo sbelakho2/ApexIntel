@@ -18,7 +18,7 @@ fn ilike_pattern(raw: &str) -> String {
     format!("%{}%", escaped)
 }
 
-const MAX_LIST_LIMIT: i64 = 500;
+pub(crate) const MAX_LIST_LIMIT: i64 = 500;
 
 fn clamp_limit(limit: i64) -> i64 {
     limit.clamp(1, MAX_LIST_LIMIT)
@@ -293,7 +293,7 @@ mod warning_analysis;
 mod warning_evidence;
 mod warnings;
 pub use warning_evidence::{link_warning_evidence_on, WarningEvidenceRef, WarningEvidenceRow};
-pub use warnings::WarningInsertOutcome;
+pub use warnings::{WarningInsertOutcome, WarningListSummary};
 
 // Source-runtime scheduling row types and backoff policy (migration 047).
 pub use sources::{
@@ -1204,6 +1204,23 @@ pub struct RecipeEntityContextRow {
     pub industry_tags: Vec<String>,
 }
 
+/// Filter-wide person metrics from `PgStore::summarize_persons`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, sqlx::FromRow, serde::Serialize)]
+pub struct PersonListSummary {
+    pub total: i64,
+    pub priority_a: i64,
+    pub priority_b: i64,
+    /// People with a measured influence score.
+    pub influence_measured: i64,
+    /// Sum of measured influence on the 0..=100 scale.
+    pub influence_pct_sum: i64,
+    pub influence_0_20: i64,
+    pub influence_20_40: i64,
+    pub influence_40_60: i64,
+    pub influence_60_80: i64,
+    pub influence_80_100: i64,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct PersonListRow {
     pub id: Uuid,
@@ -1896,6 +1913,8 @@ pub struct StrategicOpportunityRecord {
     pub estimated_value: Option<String>,
     pub recommended_actions: serde_json::Value,
     pub owner_id: Option<String>,
+    /// `app_users.id` of the creating principal (migration 101).
+    pub created_by: Option<String>,
     pub status: String,
     pub due_date: Option<DateTime<Utc>>,
     pub metadata: serde_json::Value,
@@ -1918,6 +1937,8 @@ pub struct CriticalThreatRecord {
     pub region: Option<String>,
     pub mitigation_steps: serde_json::Value,
     pub owner_id: Option<String>,
+    /// `app_users.id` of the creating principal (migration 101).
+    pub created_by: Option<String>,
     pub status: String,
     pub sla_deadline: Option<DateTime<Utc>>,
     pub resolved_at: Option<DateTime<Utc>>,
@@ -2017,6 +2038,8 @@ pub struct SupplierRiskEntryRecord {
     pub risk_factors: serde_json::Value,
     pub mitigation: Option<String>,
     pub owner_id: Option<String>,
+    /// `app_users.id` of the creating principal (migration 101).
+    pub created_by: Option<String>,
     pub status: String,
     pub last_reviewed: Option<DateTime<Utc>>,
     pub next_review: Option<DateTime<Utc>>,
@@ -2034,6 +2057,8 @@ pub struct PipelineOpportunityRecord {
     pub value_estimate: Option<f64>,
     pub probability: f64,
     pub owner_id: Option<String>,
+    /// `app_users.id` of the creating principal (migration 101).
+    pub created_by: Option<String>,
     pub expected_close: Option<NaiveDate>,
     pub actual_close: Option<NaiveDate>,
     pub notes: Option<String>,

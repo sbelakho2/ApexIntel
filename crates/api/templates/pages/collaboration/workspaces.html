@@ -49,9 +49,9 @@
   </div>
 
   <div class="flex flex-wrap gap-2">
-    {% call m::filter_chip("All", "/workspaces", current_status == "all", "default", "") %}
-    {% call m::filter_chip("Open", "/workspaces?status=open", current_status == "open", "accent", "") %}
-    {% call m::filter_chip("Closed", "/workspaces?status=closed", current_status == "closed", "default", "") %}
+    {% call m::filter_chip("All", "/workspaces", current_status == "all", "default") %}
+    {% call m::filter_chip("Open", "/workspaces?status=open", current_status == "open", "accent") %}
+    {% call m::filter_chip("Closed", "/workspaces?status=closed", current_status == "closed", "default") %}
   </div>
 
   {% if workspaces.is_empty() %}

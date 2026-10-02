@@ -31,16 +31,19 @@ impl PgStore {
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, i64, i64)>> {
         let rows = sqlx::query_as::<_, (Uuid, i64, i64)>(
-            r#"SELECT unnest(entity_ids) AS entity_id,
-                      DATE_PART('day', date_trunc('day', COALESCE(created_at, ts_utc)) - date_trunc('day', $1))::BIGINT AS day_offset,
+            // `warnings` has a scalar `entity_id` column; grouping by an
+            // output alias of the same name resolves to that column, so the
+            // unnested element is named `eid` instead.
+            r#"SELECT u.eid,
+                      DATE_PART('day', date_trunc('day', COALESCE(w.created_at, w.ts_utc)) - date_trunc('day', $1))::BIGINT AS day_offset,
                       COUNT(*)::BIGINT AS cnt
-               FROM warnings
-               WHERE entity_ids IS NOT NULL
-                                 AND deleted_at IS NULL
-                 AND array_length(entity_ids, 1) > 0
-                 AND COALESCE(created_at, ts_utc) >= $1
-               GROUP BY entity_id, day_offset
-               ORDER BY entity_id, day_offset"#,
+               FROM warnings w
+               CROSS JOIN LATERAL unnest(w.entity_ids) AS u(eid)
+               WHERE w.entity_ids IS NOT NULL
+                 AND w.deleted_at IS NULL
+                 AND COALESCE(w.created_at, w.ts_utc) >= $1
+               GROUP BY u.eid, day_offset
+               ORDER BY u.eid, day_offset"#,
         )
         .bind(since)
         .fetch_all(&self.pool)

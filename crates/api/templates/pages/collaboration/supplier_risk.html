@@ -25,30 +25,36 @@
         <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-rams-muted">Track and manage supply chain risk across suppliers.</p>
       </div>
     </div>
+    {% if can_write %}
     <div>
       <details class="inline-block">
         <summary class="apex-btn apex-btn-primary cursor-pointer">Add Entry</summary>
         <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
           <form action="/supplier-risk" method="post" class="space-y-2">
             <input type="text" name="supplier_id" placeholder="Supplier ID" required class="apex-input">
-            <select name="risk_category" required class="apex-input">
-              <option value="financial">Financial</option>
-              <option value="operational">Operational</option>
-              <option value="geopolitical">Geopolitical</option>
-              <option value="regulatory">Regulatory</option>
-              <option value="cybersecurity">Cybersecurity</option>
-              <option value="environmental">Environmental</option>
-              <option value="concentration">Concentration</option>
+            <label class="sr-only" for="supplier-risk-category">Risk category</label>
+            <select id="supplier-risk-category" name="risk_category" required class="apex-input">
+              {% for (value, label) in category_options %}
+              <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
             </select>
-            <input type="number" name="risk_score" min="0" max="100" step="0.1" value="50" class="apex-input">
+            <label class="sr-only" for="supplier-risk-score">Risk score (0–100)</label>
+            <input id="supplier-risk-score" type="number" name="risk_score" min="0" max="100" step="0.1" value="50" required placeholder="Risk score (0–100)" class="apex-input">
             <textarea name="risk_factors" placeholder="Risk factors (JSON or text)" rows="2" class="apex-input"></textarea>
             <textarea name="mitigation" placeholder="Mitigation plan" rows="2" class="apex-input"></textarea>
-            <input type="text" name="owner_id" placeholder="Owner ID" class="apex-input">
+            <label class="sr-only" for="supplier-risk-owner">Owner</label>
+            <select id="supplier-risk-owner" name="owner_id" class="apex-input">
+              <option value="">Unassigned</option>
+              {% for (id, label) in owner_options %}
+              <option value="{{ id }}">{{ label }}</option>
+              {% endfor %}
+            </select>
             <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Add Entry</button>
           </form>
         </div>
       </details>
     </div>
+    {% endif %}
   </div>
 
   <div class="grid w-full gap-3 sm:grid-cols-2 lg:max-w-sm">
@@ -76,6 +82,7 @@
           <th class="text-right">Score</th>
           <th>Status</th>
           <th>Owner</th>
+          <th>Created By</th>
           <th>Mitigation</th>
           <th class="text-right">Reviewed</th>
         </tr>
@@ -88,22 +95,23 @@
             <span class="font-mono uppercase text-[10px] text-rams-muted">{{ e.risk_category }}</span>
           </td>
           <td class="text-right">
-            {% if e.risk_score >= 70.0 %}
-            <span class="apex-badge apex-badge-critical">{{ "{:.0}"|format(e.risk_score) }}</span>
-            {% else if e.risk_score >= 40.0 %}
-            <span class="apex-badge apex-badge-high">{{ "{:.0}"|format(e.risk_score) }}</span>
+            {% if e.risk_score_pct >= 70.0 %}
+            <span class="apex-badge apex-badge-critical">{{ "{:.0}"|format(e.risk_score_pct) }}</span>
+            {% else if e.risk_score_pct >= 40.0 %}
+            <span class="apex-badge apex-badge-high">{{ "{:.0}"|format(e.risk_score_pct) }}</span>
             {% else %}
-            <span class="apex-badge apex-badge-neutral">{{ "{:.0}"|format(e.risk_score) }}</span>
+            <span class="apex-badge apex-badge-neutral">{{ "{:.0}"|format(e.risk_score_pct) }}</span>
             {% endif %}
           </td>
           <td>
-            {% if e.status == "active" %}
-            <span class="apex-badge apex-badge-high">Active</span>
+            {% if e.status == "active" || e.status == "escalated" %}
+            <span class="apex-badge apex-badge-high">{{ e.status|capitalize }}</span>
             {% else %}
-            <span class="apex-badge apex-badge-neutral">Mitigated</span>
+            <span class="apex-badge apex-badge-neutral">{{ e.status|capitalize }}</span>
             {% endif %}
           </td>
-          <td class="text-rams-muted">{{ e.owner_id }}</td>
+          <td class="text-rams-muted">{% if e.owner.is_empty() %}—{% else %}{{ e.owner }}{% endif %}</td>
+          <td class="text-rams-muted">{% if e.created_by.is_empty() %}—{% else %}{{ e.created_by }}{% endif %}</td>
           <td class="max-w-xs truncate text-rams-muted">{{ e.mitigation }}</td>
           <td class="text-right text-[10px] text-rams-muted">{{ e.last_reviewed }}</td>
         </tr>

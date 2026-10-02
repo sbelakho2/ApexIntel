@@ -8,6 +8,20 @@ fn normalize_insight_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
 
+/// Keep the first row per (title, type, region) key, preserving order.
+fn dedup_insight_rows(rows: Vec<InsightRow>) -> Vec<InsightRow> {
+    let mut seen = std::collections::HashSet::<String>::new();
+    rows.into_iter()
+        .filter(|row| {
+            seen.insert(insight_dedup_key(
+                &row.title,
+                row.insight_type.as_deref(),
+                row.region.as_deref(),
+            ))
+        })
+        .collect()
+}
+
 impl PgStore {
     /// Stored severity signal for an insight: the worker's written
     /// `metadata.severity` when present, otherwise the legacy `impact` column.
@@ -187,6 +201,41 @@ impl PgStore {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<InsightRow>> {
+        let rows = self.query_insight_rows(filters, limit, offset).await?;
+        Ok(dedup_insight_rows(filter_visible_insights(rows)))
+    }
+
+    /// Every insight matching `filters` (visible and deduplicated across the
+    /// whole set, newest first). Pages through the SQL query because a single
+    /// list call clamps to `MAX_LIST_LIMIT`; the page-end test uses the raw
+    /// SQL row count, since visibility filtering and dedup shrink a page.
+    pub async fn list_all_insights_matching(
+        &self,
+        filters: &InsightListFilters,
+    ) -> Result<Vec<InsightRow>> {
+        let mut rows = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let page = self
+                .query_insight_rows(filters, MAX_LIST_LIMIT, offset)
+                .await?;
+            let page_len = page.len() as i64;
+            offset += page_len;
+            rows.extend(page);
+            if page_len < MAX_LIST_LIMIT {
+                return Ok(dedup_insight_rows(filter_visible_insights(rows)));
+            }
+        }
+    }
+
+    /// One raw SQL page of `list_insights` (before visibility filtering and
+    /// dedup). The order ends in `id ASC`, so offset pages are stable.
+    async fn query_insight_rows(
+        &self,
+        filters: &InsightListFilters,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<InsightRow>> {
         let (limit, offset) = normalize_insight_window(limit, offset);
 
         let mut qb: QueryBuilder<Postgres> = if let Some(bookmarked_by) =
@@ -282,25 +331,10 @@ impl PgStore {
         qb.push(" LIMIT ").push_bind(limit);
         qb.push(" OFFSET ").push_bind(offset);
 
-        let rows = filter_visible_insights(
-            qb.build_query_as::<InsightRow>()
-                .fetch_all(&self.pool)
-                .await?,
-        );
-
-        let mut deduped: Vec<InsightRow> = Vec::with_capacity(rows.len());
-        let mut seen = std::collections::HashSet::<String>::new();
-        for row in rows {
-            let key = insight_dedup_key(
-                &row.title,
-                row.insight_type.as_deref(),
-                row.region.as_deref(),
-            );
-            if seen.insert(key) {
-                deduped.push(row);
-            }
-        }
-        Ok(deduped)
+        Ok(qb
+            .build_query_as::<InsightRow>()
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     pub async fn count_insights(&self, filters: &InsightListFilters) -> Result<i64> {

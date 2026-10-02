@@ -108,10 +108,19 @@ impl CrawlError {
                     CrawlFailureCategory::Network | CrawlFailureCategory::Timeout
                 )
             }
-            Self::HttpStatus { status, .. } => matches!(*status, 403 | 408 | 425 | 429 | 500..=599),
+            // 403 is excluded: repeating the identical request from the same
+            // egress only hammers a host that has already refused us.
+            Self::HttpStatus { status, .. } => matches!(*status, 408 | 425 | 429 | 500..=599),
             Self::CircuitBreakerOpen { .. } | Self::CircuitBreakerFallback { .. } => false,
             _ => false,
         }
+    }
+
+    /// Like [`Self::is_retryable`], but for a retry that will go out through a
+    /// freshly acquired proxy: a 403 is often an IP block, so a new egress
+    /// can legitimately succeed.
+    pub fn is_retryable_with_fresh_egress(&self) -> bool {
+        self.is_retryable() || matches!(self, Self::HttpStatus { status: 403, .. })
     }
 
     pub fn retry_after(&self) -> Option<Duration> {
@@ -265,6 +274,26 @@ mod tests {
         assert_eq!(error.category(), CrawlFailureCategory::RateLimited);
         assert!(error.is_retryable());
         assert_eq!(error.retry_after(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn http_status_403_is_not_retryable() {
+        let error = CrawlError::HttpStatus {
+            url: "https://example.com".to_string(),
+            status: 403,
+            retry_after_secs: None,
+            body_excerpt: None,
+        };
+        assert!(!error.is_retryable());
+        assert!(error.is_retryable_with_fresh_egress());
+
+        let not_found = CrawlError::HttpStatus {
+            url: "https://example.com".to_string(),
+            status: 404,
+            retry_after_secs: None,
+            body_excerpt: None,
+        };
+        assert!(!not_found.is_retryable_with_fresh_egress());
     }
 
     #[test]

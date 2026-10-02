@@ -121,11 +121,22 @@ pub fn build_boosted_query(query: &str, boosts: &FieldBoosts) -> String {
     )
 }
 
-/// Sanitize user query to prevent injection into Tantivy query parser.
+/// Upper bound on a sanitized search query, matching `validate_search_query`.
+pub const MAX_SEARCH_QUERY_CHARS: usize = 500;
+
+/// Upper bound on the terms a query expands into: each term fans out into
+/// several per-field (partly fuzzy) Tantivy clauses, so an unbounded term list
+/// lets one request burn arbitrary CPU.
+pub const MAX_SEARCH_TERMS: usize = 32;
+
+/// Sanitize user query to prevent injection into Tantivy query parser, and
+/// cap it at [`MAX_SEARCH_QUERY_CHARS`]: the web `/search` page and
+/// `/api/search/semantic` have no other length check.
 pub fn sanitize_query(query: &str) -> String {
     query
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_' || *c == '.')
+        .take(MAX_SEARCH_QUERY_CHARS)
         .collect::<String>()
         .trim()
         .to_string()
@@ -202,6 +213,7 @@ pub fn extract_terms(query: &str) -> Vec<String> {
         .split_whitespace()
         .filter(|t| t.len() >= 2)
         .map(|t| t.to_lowercase())
+        .take(MAX_SEARCH_TERMS)
         .collect()
 }
 
@@ -220,6 +232,13 @@ mod tests {
         assert_eq!(sanitize_query("hello world"), "hello world");
         assert_eq!(sanitize_query("test<script>alert"), "testscriptalert");
         assert_eq!(sanitize_query("IATF-16949"), "IATF-16949");
+    }
+
+    #[test]
+    fn sanitize_query_and_terms_are_bounded() {
+        let long = "ab ".repeat(10_000);
+        assert!(sanitize_query(&long).chars().count() <= MAX_SEARCH_QUERY_CHARS);
+        assert_eq!(extract_terms(&long).len(), MAX_SEARCH_TERMS);
     }
 
     #[test]

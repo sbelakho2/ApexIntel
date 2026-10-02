@@ -53,11 +53,11 @@
         </label>
         <label class="flex flex-col gap-1">
           <span class="text-[9px] font-bold uppercase text-rams-muted">Visibility</span>
-          <select name="visibility" class="apex-select">
-            <option value="team">Team</option>
-            <option value="private">Private</option>
+          <select name="visibility" class="apex-select" aria-describedby="workspace-visibility-help">
+            <option value="team">Members only</option>
             <option value="organization">Organization</option>
           </select>
+          <span id="workspace-visibility-help" class="text-[10px] text-rams-muted">Members only: you, assigned analysts and people you share with. Organization: every analyst can read.</span>
         </label>
       </div>
 

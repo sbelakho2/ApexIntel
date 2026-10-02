@@ -4,6 +4,8 @@
 <svg class="{{ class }}"><use href="/static/icons/sprite.svg#icon-{{ name }}"/></svg>
 {% endmacro %}
 
+{# `actions` is rendered unescaped: pass only template-literal markup, never
+   request or database data. #}
 {% macro page_header(title, icon_name, subtitle, actions) %}
 <div class="apex-card page-header p-4 mb-6 flex items-start justify-between gap-4">
   <div class="page-header-main flex items-start gap-3">
@@ -27,8 +29,8 @@
 </div>
 {% endmacro %}
 
-{% macro filter_chip(label, href, active, variant, extra_attrs) %}
-<a href="{{ href }}" {{ extra_attrs|safe }} class="apex-chip {% if active %}{% if variant == "accent" %}apex-chip-accent{% else %}apex-chip-active{% endif %}{% else %}apex-chip-idle{% endif %}">{{ label }}</a>
+{% macro filter_chip(label, href, active, variant) %}
+<a href="{{ href }}" class="apex-chip {% if active %}{% if variant == "accent" %}apex-chip-accent{% else %}apex-chip-active{% endif %}{% else %}apex-chip-idle{% endif %}">{{ label }}</a>
 {% endmacro %}
 
 {% macro legend_item(label, swatch_class, size) %}

@@ -22,6 +22,8 @@ fi
 
 echo "[ops] host=$HOST hours=$HOURS insight_minutes=$INSIGHT_MINUTES"
 
+# HOURS/INSIGHT_MINUTES are validated integers above and must expand locally.
+# shellcheck disable=SC2087
 ssh -o ServerAliveInterval=20 -o ServerAliveCountMax=3 "$HOST" \
   'DB_URL=$(sudo grep "^DATABASE_URL=" /opt/apexintel/config/.env | cut -d= -f2-); psql "$DB_URL" -v ON_ERROR_STOP=1 -P pager=off -f -' <<SQL
 \echo '=== snapshot_meta ==='

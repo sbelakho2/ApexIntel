@@ -335,7 +335,8 @@ sudo systemctl stop apexintel-api apexintel-worker
 ls -la /opt/apexintel/backups/
 
 # 3. Restore from latest backup
-./scripts/restore.sh /opt/apexintel/backups/LATEST
+# (encrypted backups also need BACKUP_AGE_IDENTITY=/path/to/apexintel-backup.key)
+./scripts/restore.sh "$(ls -d /opt/apexintel/backups/*_*/ | tail -1)"
 
 # 4. Verify data integrity
 psql "$DATABASE_URL" -c "SELECT count(*) FROM entities;"
@@ -403,7 +404,9 @@ journalctl -u apexintel-api -f | grep -i tantivy
 ### Redis Cache Issues
 
 ```bash
-# Flush all cache (safe — will rebuild)
+# Redis also holds security state (login_throttle:* lockouts and rate-limit
+# counters). FLUSHALL clears active lockouts — only use it deliberately, e.g.
+# to recover from corrupted state, and expect throttling to restart from zero.
 redis-cli -u "$REDIS_URL" FLUSHALL
 
 # Verify connection
@@ -465,9 +468,11 @@ ExecStart=/opt/apexintel/llama-server \
 # Monitor memory usage
 redis-cli -u "$REDIS_URL" INFO memory
 
-# Set eviction policy for cache
+# Raise the memory cap if needed, but keep `noeviction`: an evicting policy
+# (e.g. allkeys-lru) silently drops login_throttle:* keys under memory
+# pressure, erasing brute-force lockouts.
 redis-cli -u "$REDIS_URL" CONFIG SET maxmemory 2gb
-redis-cli -u "$REDIS_URL" CONFIG SET maxmemory-policy allkeys-lru
+redis-cli -u "$REDIS_URL" CONFIG GET maxmemory-policy   # expect: noeviction
 ```
 
 ### Nginx
@@ -702,9 +707,26 @@ systemctl list-timers apexintel-backup.timer
 # Manual run
 sudo systemctl start apexintel-backup.service
 
-# Retention: 7 daily + 4 weekly + 3 monthly
+# Retention: timestamped run directories older than 30 days are pruned
 # Verify: ls -la /opt/apexintel/backups/
 ```
+
+Each run writes `/opt/apexintel/backups/<YYYYmmdd_HHMMSS>/` (mode 700, files
+600). The unit exits non-zero, and leaves no directory behind, when the dump,
+its `pg_restore --list` integrity check or encryption fails.
+
+**Encryption (recommended).** Generate a key pair once, keep the identity
+(private key) off the server, and point the backup at the public recipients:
+
+```bash
+age-keygen -o apexintel-backup.key            # store offline / in a vault
+age-keygen -y apexintel-backup.key | sudo tee /opt/apexintel/config/backup.recipients
+# /opt/apexintel/config/.env
+BACKUP_AGE_RECIPIENTS_FILE=/opt/apexintel/config/backup.recipients
+```
+
+The data dump is then stored only as `apexintel.pgdump.age`. Without the
+variable the dump is plaintext and every run logs a warning.
 
 ### Restore Validation
 
@@ -712,7 +734,10 @@ sudo systemctl start apexintel-backup.service
 # Validate the most recent backup end-to-end on a scratch database
 DATABASE_URL=postgresql://... \
 RESTORE_VALIDATE_DATABASE_URL=postgresql://.../apexintel_restore_check \
-bash scripts/restore_validate.sh /opt/apexintel/backups/LATEST
+BACKUP_AGE_IDENTITY=/path/to/apexintel-backup.key \
+bash scripts/restore_validate.sh "$(ls -d /opt/apexintel/backups/*_*/ | tail -1)"
+# The scratch database is dropped and recreated; the script refuses to run
+# when it names the same server/database as DATABASE_URL.
 
 # Continuous uptime probe with paging webhook
 HEALTHCHECK_URL=https://<PRODUCTION_DOMAIN>/api/health/deep \
@@ -740,6 +765,8 @@ bash scripts/uptime_check.sh
 | `API_PORT` | No | `8080` | API server port |
 | `LOG_LEVEL` | No | `info` | Log level (trace/debug/info/warn/error) |
 | `BACKUP_DIR` | No | `/opt/apexintel/backups` | Backup directory |
+| `BACKUP_AGE_RECIPIENTS_FILE` | No | — | age recipients file; when set, `scripts/backup.sh` stores the dump encrypted (`apexintel.pgdump.age`) |
+| `BACKUP_AGE_IDENTITY` | For encrypted restores | — | age identity file used by `scripts/restore.sh` / `scripts/restore_validate.sh` |
 | `PAGE_WEBHOOK_URL` | No | — | Webhook used by uptime checks and restore validation failures |
 | `HEALTHCHECK_URL` | No | `http://127.0.0.1:8080/api/health/deep` | Endpoint probed by `scripts/uptime_check.sh` |
 | `DATA_RETENTION_DAYS` | No | `365` | Days before observation archival |
