@@ -67,10 +67,9 @@
       border-radius: 2px;
       padding: 0.45rem 0.7rem;
       color: rgb(var(--rams-foreground));
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
     }
   </style>
 </head>
@@ -80,7 +79,6 @@
     <span data-theme-toggle-text>System</span>
     <span class="text-[9px] text-rams-muted" data-theme-toggle-state>Day</span>
   </button>
-  <div class="apex-standalone-frame hidden md:block" aria-hidden="true"></div>
   <div class="relative min-h-screen">
     {% block content %}{% endblock %}
   </div>
@@ -89,9 +87,7 @@
       const buttons = Array.from(document.querySelectorAll('[data-theme-toggle]'));
       const updateButtons = () => {
         const detail = window.__apexThemeState || { theme: 'system', resolved: 'light' };
-        const label = detail.theme === 'system'
-          ? `System ${detail.resolved === 'dark' ? 'Dark' : 'Light'}`
-          : detail.theme.charAt(0).toUpperCase() + detail.theme.slice(1);
+        const label = 'Theme';
         const resolvedLabel = detail.resolved === 'dark' ? 'Night' : 'Day';
         buttons.forEach((button) => {
           button.querySelector('[data-theme-toggle-text]').textContent = label;

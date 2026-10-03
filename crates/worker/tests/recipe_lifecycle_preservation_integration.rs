@@ -79,6 +79,61 @@ async fn read_state(pool: &sqlx::PgPool, code: &str) -> (String, Option<f64>) {
         .expect("read recipe state")
 }
 
+/// #158: the lifecycle decisions the weekly promotion board / deprecation
+/// audit derive must actually change the persisted `recipes.status` — the
+/// promotion used to only compute and log its decision, leaving the row in
+/// `staging` forever and a deprecated recipe still firing.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn promotion_and_deprecation_change_the_persisted_status() {
+    let pool = setup().await;
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+
+    let code = format!("LIF{}", uuid::Uuid::new_v4().simple());
+    insert_fixture(&pool, &code, "staging", 0.8).await;
+
+    assert!(
+        store.promote_recipe(&code).await.expect("promote_recipe"),
+        "a staging recipe must be promoted"
+    );
+    let (status, _) = read_state(&pool, &code).await;
+    assert_eq!(
+        status, "production",
+        "promotion must change the persisted status"
+    );
+    // Idempotent: a second promotion changes no row.
+    assert!(
+        !store.promote_recipe(&code).await.expect("second promotion"),
+        "promoting an already-promoted recipe must report no row changed"
+    );
+
+    assert!(
+        store
+            .deprecate_recipe(&code)
+            .await
+            .expect("deprecate_recipe"),
+        "a production recipe must be deprecated"
+    );
+    let (status, _) = read_state(&pool, &code).await;
+    assert_eq!(
+        status, "deprecated",
+        "deprecation must change the persisted status"
+    );
+    assert!(
+        !store
+            .deprecate_recipe(&code)
+            .await
+            .expect("second deprecation"),
+        "deprecating an already-deprecated recipe must report no row changed"
+    );
+
+    sqlx::query("DELETE FROM recipes WHERE code = $1")
+        .bind(&code)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+}
+
 /// The seed bootstrap is idempotent and lifecycle-preserving.
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]

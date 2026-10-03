@@ -12,7 +12,7 @@ use askama::Template;
 use axum::{
     extract::{Path, Query, RawQuery},
     http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     Extension, Form,
 };
 use serde::Deserialize;
@@ -820,6 +820,7 @@ pub async fn new_battlecard_page(
 
 /// POST /battlecards — create a draft battlecard.
 pub async fn create_battlecard(
+    headers: HeaderMap,
     Extension(store): Extension<Arc<PgStore>>,
     Extension(session): Extension<WebSession>,
     Form(form): Form<CreateBattlecardForm>,
@@ -878,10 +879,10 @@ pub async fn create_battlecard(
         .await
     {
         Ok(CreateBattlecardOutcome::Created(id)) => {
-            Redirect::to(&format!("/battlecards/{id}?notice=created")).into_response()
+            super::redirect_or_hx_redirect(&headers, &format!("/battlecards/{id}?notice=created"))
         }
         Ok(CreateBattlecardOutcome::Duplicate(id)) => {
-            Redirect::to(&format!("/battlecards/{id}?notice=exists")).into_response()
+            super::redirect_or_hx_redirect(&headers, &format!("/battlecards/{id}?notice=exists"))
         }
         Ok(CreateBattlecardOutcome::UnknownCompany) => {
             reject(
@@ -1015,6 +1016,7 @@ pub async fn edit_battlecard_page(
 
 /// POST /battlecards/:id — save title, status and edited sections.
 pub async fn update_battlecard(
+    headers: HeaderMap,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
     Extension(session): Extension<WebSession>,
@@ -1127,9 +1129,10 @@ pub async fn update_battlecard(
         )
         .await
     {
-        Ok(BattlecardWriteOutcome::Updated) => {
-            Redirect::to(&format!("/battlecards/{}?notice=saved", row.id)).into_response()
-        }
+        Ok(BattlecardWriteOutcome::Updated) => super::redirect_or_hx_redirect(
+            &headers,
+            &format!("/battlecards/{}?notice=saved", row.id),
+        ),
         Ok(BattlecardWriteOutcome::NotFound) => {
             super::errors::not_found_with_context(&session.username, &path, warning_count)
         }
@@ -1189,6 +1192,7 @@ pub async fn update_battlecard(
 
 /// POST /battlecards/:id/delete
 pub async fn delete_battlecard(
+    headers: HeaderMap,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
     Extension(session): Extension<WebSession>,
@@ -1197,7 +1201,7 @@ pub async fn delete_battlecard(
         return (StatusCode::BAD_REQUEST, "Invalid battlecard ID").into_response();
     };
     match store.delete_battlecard(uid).await {
-        Ok(true) => Redirect::to("/battlecards?notice=deleted").into_response(),
+        Ok(true) => super::redirect_or_hx_redirect(&headers, "/battlecards?notice=deleted"),
         Ok(false) => super::errors::not_found_with_context(
             &session.username,
             &format!("/battlecards/{id}"),
@@ -1449,6 +1453,7 @@ mod tests {
     #[tokio::test]
     async fn delete_rejects_malformed_id_without_touching_the_store() {
         let response = delete_battlecard(
+            HeaderMap::new(),
             Extension(unreachable_store()),
             Path("nope".to_string()),
             Extension(session(crate::auth::ApiRole::Admin)),

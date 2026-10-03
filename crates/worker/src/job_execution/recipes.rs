@@ -786,71 +786,6 @@ fn recipe_warning_severity(
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Slack notification helper
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Send a Slack notification for a high- or critical-severity warning emitted
-/// by the recipe engine.
-///
-/// This is a best-effort helper: failures are logged but not propagated so the
-/// recipe pipeline continues uninterrupted.
-async fn notify_slack_high_severity(
-    warning_severity: &str,
-    title: &str,
-    description: &str,
-    entity_name: Option<&str>,
-    category: &str,
-    recipe_code: &str,
-) {
-    let severity_lower = warning_severity.trim().to_ascii_lowercase();
-    if severity_lower != "high" && severity_lower != "critical" {
-        return;
-    }
-
-    let config = apex_worker::slack::SlackConfig::from_env();
-    let Ok(webhook) = apex_worker::slack::SlackWebhook::new(&config) else {
-        tracing::warn!("recipes: failed to build SlackWebhook for high-severity alert");
-        return;
-    };
-
-    let slack_severity = apex_worker::slack::SlackMessageSeverity::from_str(warning_severity);
-    let alert_type = match category {
-        "security" | "security_breach" | "cyber" => apex_worker::slack::AlertType::Security,
-        "insight" | "competitive_intel" => apex_worker::slack::AlertType::Insight,
-        "recipe_match" | "opportunity" | "demand_procurement" => {
-            apex_worker::slack::AlertType::RecipeMatch
-        }
-        "poi_update" | "poi" | "talent_movement" => apex_worker::slack::AlertType::PoiUpdate,
-        "warning" | "verification" => apex_worker::slack::AlertType::Warning,
-        _ => apex_worker::slack::AlertType::General,
-    };
-
-    let mut msg =
-        apex_worker::slack::SlackMessage::new(slack_severity, alert_type, title, description)
-            .with_field("Recipe", recipe_code)
-            .with_field("Category", category);
-
-    if let Some(name) = entity_name {
-        msg = msg.with_entity(name);
-    }
-
-    if let Err(e) = webhook.send(&msg).await {
-        tracing::warn!(
-            recipe = %recipe_code,
-            severity = %warning_severity,
-            error = %e,
-            "recipes: failed to send Slack notification for high-severity warning"
-        );
-    } else {
-        tracing::info!(
-            recipe = %recipe_code,
-            severity = %warning_severity,
-            "recipes: Slack notification sent for high-severity warning"
-        );
-    }
-}
-
 /// Tracks recipe feature-input loads and preserves explicit failure evidence.
 ///
 /// A failed store read must never collapse into an empty feature set: this
@@ -4963,16 +4898,6 @@ pub(super) async fn run_recipe_fire(
             match ingress.submit_warning(warning).await {
                 Ok(_) => {
                     warnings_inserted += 1;
-                    // Send Slack notification for high/critical severity warnings.
-                    notify_slack_high_severity(
-                        warning_severity,
-                        &warn_title,
-                        &diversified_action,
-                        Some(&entity_label),
-                        &c.category,
-                        &c.recipe_code,
-                    )
-                    .await;
                 }
                 Err(error) => {
                     warning_ingest_failures += 1;
@@ -5019,16 +4944,6 @@ pub(super) async fn run_recipe_fire(
             match ingress.submit_warning(warning).await {
                 Ok(_) => {
                     warnings_inserted += 1;
-                    // Send Slack notification for high/critical severity warnings.
-                    notify_slack_high_severity(
-                        warning_severity,
-                        &warn_title,
-                        &diversified_action,
-                        Some(&entity_label),
-                        &c.category,
-                        &c.recipe_code,
-                    )
-                    .await;
                 }
                 Err(error) => {
                     warning_ingest_failures += 1;

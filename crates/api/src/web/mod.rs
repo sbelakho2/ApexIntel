@@ -63,6 +63,31 @@ pub fn is_htmx_request(headers: &axum::http::HeaderMap) -> bool {
         && !headers.contains_key("hx-history-restore-request")
 }
 
+/// Redirect after a mutation, answering HTMX callers with `HX-Redirect`
+/// instead of a 3xx. HTMX would otherwise fetch the redirect target and swap
+/// the *whole page* into the fragment target; `HX-Redirect` makes the browser
+/// perform a real navigation (#154). The response is a 200 with an empty body.
+pub fn redirect_or_hx_redirect(headers: &axum::http::HeaderMap, location: &str) -> Response {
+    if is_htmx_request(headers) {
+        let mut response = StatusCode::OK.into_response();
+        match axum::http::HeaderValue::from_str(location) {
+            Ok(value) => {
+                response.headers_mut().insert(
+                    axum::http::header::HeaderName::from_static("hx-redirect"),
+                    value,
+                );
+                response
+            }
+            Err(_) => {
+                tracing::error!(%location, "refusing to use an invalid HX-Redirect location");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect target").into_response()
+            }
+        }
+    } else {
+        axum::response::Redirect::to(location).into_response()
+    }
+}
+
 pub fn render_template<T: Template>(template: &T) -> Response {
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -343,5 +368,31 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn hx_redirect_header_is_used_for_htmx_callers_only() {
+        use axum::http::{HeaderMap, HeaderValue, StatusCode};
+
+        let mut headers = HeaderMap::new();
+        headers.insert("hx-request", HeaderValue::from_static("true"));
+        let response = super::redirect_or_hx_redirect(&headers, "/triage/abc");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("hx-redirect")
+                .and_then(|value| value.to_str().ok()),
+            Some("/triage/abc")
+        );
+
+        let response = super::redirect_or_hx_redirect(&HeaderMap::new(), "/triage/abc");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/triage/abc")
+        );
     }
 }

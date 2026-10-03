@@ -553,9 +553,9 @@ async function login(page) {
   const pass = process.env.ADMIN_PASS || 'adminpassword';
 
   await page.goto(`${baseURL}/login`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('textbox', { name: /operator id/i }).fill(user);
-  await page.getByRole('textbox', { name: /access key/i }).fill(pass);
-  await page.getByRole('button', { name: /access platform/i }).click();
+  await page.getByLabel(/^username$/i).fill(user);
+  await page.getByLabel(/^password$/i).fill(pass);
+  await page.getByRole('button', { name: /sign in/i }).click();
   await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 15_000 });
 }
 

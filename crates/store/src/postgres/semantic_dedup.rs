@@ -114,6 +114,19 @@ impl PgStore {
         Ok(())
     }
 
+    /// Prune dedup-candidate rows whose last update is older than
+    /// `retention_days` (migration 102's `cleanup_semantic_dedup_items`).
+    /// Dedup comparisons only look at recent rows, so expired candidates can
+    /// never match again and the table stays bounded.
+    pub async fn prune_semantic_dedup_items(&self, retention_days: i32) -> Result<u64> {
+        let deleted: i64 = sqlx::query_scalar("SELECT cleanup_semantic_dedup_items($1)")
+            .bind(retention_days.max(0))
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to prune semantic dedup items")?;
+        Ok(deleted.max(0) as u64)
+    }
+
     /// Read the recorded dedup state. `Ok(None)` means no row exists (the API
     /// falls back to [`SemanticDedupState::unrecorded`]); an `Err` is a real
     /// storage failure and must not be rendered as a normal state.

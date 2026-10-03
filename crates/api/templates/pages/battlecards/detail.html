@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li><a href="/battlecards" class="hover:text-rams-foreground">Battlecards</a></li>
@@ -60,7 +60,9 @@
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       <span>Regenerate</span>
     </button>
-    <form method="post" action="/battlecards/{{ id }}/delete" class="inline" data-confirm="Delete this battlecard? This cannot be undone.">
+    <form method="post" action="/battlecards/{{ id }}/delete"
+          hx-post="/battlecards/{{ id }}/delete" hx-swap="none"
+          class="inline" data-confirm="Delete this battlecard? This cannot be undone.">
       <button type="submit" class="apex-btn apex-btn-secondary text-[10px] text-rams-red" data-battlecard-delete>Delete</button>
     </form>
     {% endif %}

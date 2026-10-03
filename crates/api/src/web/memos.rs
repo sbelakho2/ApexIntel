@@ -22,13 +22,23 @@ pub struct MemoSection {
 }
 
 #[derive(Clone, Debug)]
+pub struct MemoActionItem {
+    pub text: String,
+    /// Priority exactly as stored on the memo action item ("P1", "high", ...).
+    pub priority: String,
+    pub assignee: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct MemoListItem {
     pub id: String,
     pub title: String,
     pub week_start: String,
     pub week_end: String,
     pub summary: String,
-    pub key_findings: Vec<String>,
+    /// Real action items with their stored priorities — the template used to
+    /// hard-code "P1" for every finding (#149).
+    pub actions: Vec<MemoActionItem>,
     pub sections: Vec<MemoSection>,
     pub warning_count: i64,
     pub insight_count: i64,
@@ -60,6 +70,19 @@ pub struct MemoQuery {
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
+
+/// Map stored action items to the view model, preserving priority and
+/// assignee instead of flattening to text and inventing a priority later.
+fn memo_action_items(items: &[apex_store::postgres::WeeklyMemoActionItem]) -> Vec<MemoActionItem> {
+    items
+        .iter()
+        .map(|item| MemoActionItem {
+            text: item.text.clone(),
+            priority: item.priority.clone(),
+            assignee: item.assignee.clone(),
+        })
+        .collect()
+}
 
 /// GET /memos — weekly intelligence memo list.
 pub async fn list_memos(
@@ -97,7 +120,7 @@ pub async fn list_memos(
             week_start: m.week_start.clone(),
             week_end: m.week_end.clone(),
             summary: m.executive_summary.clone(),
-            key_findings: m.action_items.iter().map(|a| a.text.clone()).collect(),
+            actions: memo_action_items(&m.action_items),
             sections: m
                 .sections
                 .iter()
@@ -165,7 +188,7 @@ pub async fn list_memos_partial(
             week_start: m.week_start.clone(),
             week_end: m.week_end.clone(),
             summary: m.executive_summary.clone(),
-            key_findings: m.action_items.iter().map(|a| a.text.clone()).collect(),
+            actions: memo_action_items(&m.action_items),
             sections: m
                 .sections
                 .iter()
@@ -195,4 +218,98 @@ pub struct MemosListPartial {
     pub memos: Vec<MemoListItem>,
     pub total: i64,
     pub degraded_notice: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use apex_store::postgres::WeeklyMemoActionItem;
+
+    #[test]
+    fn memo_actions_keep_their_stored_priority() {
+        let items = vec![
+            WeeklyMemoActionItem {
+                text: "Contact supplier".to_string(),
+                priority: "P2".to_string(),
+                assignee: Some("alice".to_string()),
+            },
+            WeeklyMemoActionItem {
+                text: "Review contract".to_string(),
+                priority: "high".to_string(),
+                assignee: None,
+            },
+        ];
+        let mapped = memo_action_items(&items);
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].priority, "P2");
+        assert_eq!(mapped[0].assignee.as_deref(), Some("alice"));
+        assert_eq!(mapped[1].priority, "high");
+        assert!(mapped[1].assignee.is_none());
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use askama::Template;
+
+    fn page(memos: Vec<MemoListItem>) -> MemosPage {
+        MemosPage {
+            current_path: "/memos".to_string(),
+            can_admin: false,
+            can_write: false,
+            username: "analyst".to_string(),
+            warning_count: 0,
+            theme: "dark".to_string(),
+            status_strip: crate::system_status::StatusStrip::unknown(),
+            briefing_mode: false,
+            memos,
+            total: 0,
+            degraded_notice: None,
+        }
+    }
+
+    /// #149: the full page must render the list server-side (single load) and
+    /// show the current memo's executive summary plus its stored priorities.
+    #[test]
+    fn memos_page_renders_actions_and_summary_once() {
+        let html = page(vec![MemoListItem {
+            id: "m1".to_string(),
+            title: "Weekly Memo".to_string(),
+            week_start: "2026-09-21".to_string(),
+            week_end: "2026-09-28".to_string(),
+            summary: "Executive summary line one.\nLine two.".to_string(),
+            actions: vec![
+                MemoActionItem {
+                    text: "Call supplier".to_string(),
+                    priority: "P2".to_string(),
+                    assignee: Some("alice".to_string()),
+                },
+                MemoActionItem {
+                    text: "Review contract".to_string(),
+                    priority: "high".to_string(),
+                    assignee: None,
+                },
+            ],
+            sections: vec![MemoSection {
+                heading: "Market".to_string(),
+                body: "Body one.\nBody two.".to_string(),
+            }],
+            warning_count: 3,
+            insight_count: 2,
+            created_at: "2026-09-28".to_string(),
+        }])
+        .render()
+        .expect("memos page renders");
+
+        assert!(html.contains("Executive summary line one."));
+        assert!(html.contains(">P2<"), "stored priority missing: {html}");
+        assert!(html.contains(">high<"));
+        assert!(html.contains("Call supplier"));
+        assert!(!html.contains(">P1<"), "hard-coded P1 must be gone");
+    }
 }

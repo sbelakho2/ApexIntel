@@ -5,11 +5,11 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
-    <li class="select-none">/</li>
+    <li aria-hidden="true">/</li>
     <li><a href="/recipes" class="hover:text-rams-foreground">Recipes</a></li>
-    <li class="select-none">/</li>
+    <li aria-hidden="true">/</li>
     <li class="text-rams-foreground" aria-current="page">New</li>
   </ol>
 </nav>
@@ -17,100 +17,196 @@
 
 {% block content %}
 <div class="max-w-3xl">
-  {% call m::page_header("Create Recipe", "sparkles", "Submit a recipe definition with plain HTML inputs. JSON sections replace the old JavaScript builder.", "") %}
+  {% call m::page_header("New recipe", "sparkles", "Define a detection rule: what to watch, how to transform it, and when it fires.", "") %}
 
-  <div class="apex-alert apex-alert-info mb-4">
-    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Zero-JavaScript Mode</p>
-    <p class="mt-2 text-sm text-rams-muted">Enter the signal, transform, threshold, and action arrays as JSON. This replaces the retired client-side recipe builder.</p>
-  </div>
+  {% if let Some(error) = form_error %}
+  <div class="apex-alert apex-alert-danger mb-4" role="alert">{{ error }}</div>
+  {% endif %}
 
   <form method="post" action="/recipes/create-form" class="space-y-4">
+    {# ── Step 1: identity ── #}
     <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-3">Basic Information</h3>
-      <div class="grid gap-3 sm:grid-cols-2">
-        <label class="flex flex-col gap-0.5">
-          <span class="text-[9px] font-bold uppercase text-rams-muted">Recipe Name</span>
-          <input type="text" name="name" required placeholder="e.g. Competitor Patent Surge"
-            class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-rams-line w-full">
+      <h2 class="mb-4">1 · Basic information</h2>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="flex flex-col gap-1 sm:col-span-2">
+          <span class="text-[13px] font-semibold text-rams-foreground">Recipe name</span>
+          <input type="text" name="name" required maxlength="200" placeholder="e.g. Competitor patent surge"
+            value="{{ form.name }}" class="apex-input">
+          <span class="text-[12px] text-rams-muted">A short, human-readable name. The internal code is generated from it.</span>
         </label>
-        <div class="flex gap-3">
-          <label class="flex flex-col gap-0.5">
-            <span class="text-[9px] font-bold uppercase text-rams-muted">Severity</span>
-            <select name="severity" class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs">
-              <option value="critical">critical</option>
-              <option value="high">high</option>
-              <option value="medium" selected>medium</option>
-              <option value="low">low</option>
-              <option value="info">info</option>
+        <label class="flex flex-col gap-1">
+          <span class="text-[13px] font-semibold text-rams-foreground">Category</span>
+          <select name="category" class="apex-select" required>
+            {% for option in categories %}
+            <option value="{{ option.0 }}"{% if option.1 %} selected{% endif %}>{{ option.0 }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-[13px] font-semibold text-rams-foreground">Join entity <span class="font-normal text-rams-muted">(optional)</span></span>
+          <input type="text" name="join_type" placeholder="e.g. company" value="{{ form.join_type }}" class="apex-input">
+        </label>
+        <label class="flex flex-col gap-1 sm:col-span-2">
+          <span class="text-[13px] font-semibold text-rams-foreground">Alert narrative</span>
+          <textarea name="narrative_template" rows="2" required class="apex-input">{{ form.narrative_template }}</textarea>
+          <span class="text-[12px] text-rams-muted">
+            Shown on the alert. Available variables:
+            <code>{% raw %}{{entity_name}}{% endraw %}</code>,
+            <code>{% raw %}{{recipe_name}}{% endraw %}</code>,
+            <code>{% raw %}{{summary}}{% endraw %}</code>,
+            <code>{% raw %}{{severity}}{% endraw %}</code>,
+            <code>{% raw %}{{timestamp}}{% endraw %}</code>,
+            <code>{% raw %}{{metric_value}}{% endraw %}</code>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    {# ── Step 2: signals ── #}
+    <div class="apex-card p-4">
+      <h2 class="mb-1">2 · What to watch</h2>
+      <p class="mb-4 text-[13px] text-rams-muted">Each row is one condition on ingested observations. Blank rows are ignored; fill at least one.</p>
+      <div class="space-y-3">
+        {% for row in form.signal_rows %}
+        <fieldset class="rounded-rams-sm border border-rams-line bg-rams-panel/50 p-3">
+          <legend class="px-1 text-[11px] font-bold uppercase tracking-[0.08em] text-rams-muted">Signal {{ loop.index }}</legend>
+          <div class="grid gap-3 sm:grid-cols-12">
+            <label class="flex flex-col gap-1 sm:col-span-4">
+              <span class="text-[12px] font-semibold text-rams-foreground">Observation type</span>
+              <input type="text" name="signal_observation" list="observation-types" placeholder="e.g. JobPost" value="{{ row.observation }}" class="apex-input">
+            </label>
+            <label class="flex flex-col gap-1 sm:col-span-3">
+              <span class="text-[12px] font-semibold text-rams-foreground">Field</span>
+              <input type="text" name="signal_field" list="signal-fields" placeholder="count" value="{{ row.field }}" class="apex-input">
+            </label>
+            <label class="flex flex-col gap-1 sm:col-span-2">
+              <span class="text-[12px] font-semibold text-rams-foreground">Change</span>
+              <select name="signal_operator" class="apex-select">
+                <option value="above"{% if row.operator == "above" %} selected{% endif %}>above</option>
+                <option value="below"{% if row.operator == "below" %} selected{% endif %}>below</option>
+                <option value="increase"{% if row.operator == "increase" %} selected{% endif %}>increase</option>
+                <option value="decrease"{% if row.operator == "decrease" %} selected{% endif %}>decrease</option>
+                <option value="equals"{% if row.operator == "equals" %} selected{% endif %}>equals</option>
+                <option value="contains"{% if row.operator == "contains" %} selected{% endif %}>contains</option>
+              </select>
+            </label>
+            <label class="flex flex-col gap-1 sm:col-span-1">
+              <span class="text-[12px] font-semibold text-rams-foreground">Value</span>
+              <input type="number" step="any" name="signal_threshold" placeholder="3" value="{{ row.threshold }}" class="apex-input">
+            </label>
+            <label class="flex flex-col gap-1 sm:col-span-2">
+              <span class="text-[12px] font-semibold text-rams-foreground">Window (days)</span>
+              <input type="number" name="signal_window_days" placeholder="30" value="{{ row.window_days }}" class="apex-input">
+            </label>
+          </div>
+        </fieldset>
+        {% endfor %}
+      </div>
+      <datalist id="observation-types">
+        <option value="JobPost"></option>
+        <option value="NewsArticle"></option>
+        <option value="Filing"></option>
+        <option value="PatentFiling"></option>
+        <option value="SocialPost"></option>
+        <option value="WebChange"></option>
+      </datalist>
+      <datalist id="signal-fields">
+        <option value="count"></option>
+        <option value="sentiment"></option>
+        <option value="engagement"></option>
+        <option value="price"></option>
+      </datalist>
+    </div>
+
+    {# ── Step 3: transforms (optional) ── #}
+    <details class="apex-card p-4">
+      <summary class="cursor-pointer text-[14px] font-semibold text-rams-foreground">3 · Statistical transforms <span class="font-normal text-rams-muted">(optional — advanced)</span></summary>
+      <div class="mt-4 space-y-3">
+        {% for row in form.transform_rows %}
+        <div class="grid gap-3 sm:grid-cols-12">
+          <label class="flex flex-col gap-1 sm:col-span-4">
+            <span class="text-[12px] font-semibold text-rams-foreground">Type</span>
+            <select name="transform_kind" class="apex-select">
+              <option value=""></option>
+              <option value="zscore"{% if row.kind == "zscore" %} selected{% endif %}>z-score</option>
+              <option value="pct_change"{% if row.kind == "pct_change" %} selected{% endif %}>percent change</option>
+              <option value="count"{% if row.kind == "count" %} selected{% endif %}>count</option>
+              <option value="diff"{% if row.kind == "diff" %} selected{% endif %}>difference</option>
             </select>
           </label>
-          <label class="flex flex-col gap-0.5">
-            <span class="text-[9px] font-bold uppercase text-rams-muted">Cooldown (hrs)</span>
-            <input type="number" name="cooldown_hours" value="24" min="1" max="720"
-              class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs w-20">
+          <label class="flex flex-col gap-1 sm:col-span-4">
+            <span class="text-[12px] font-semibold text-rams-foreground">Field</span>
+            <input type="text" name="transform_field" placeholder="count" value="{{ row.field }}" class="apex-input">
           </label>
-          <label class="flex flex-col gap-0.5 justify-end">
-            <span class="text-[9px] font-bold uppercase text-rams-muted">Enabled</span>
-            <input type="checkbox" name="enabled" checked class="h-4 w-4 rounded border-rams-line">
+          <label class="flex flex-col gap-1 sm:col-span-4">
+            <span class="text-[12px] font-semibold text-rams-foreground">Window (days)</span>
+            <input type="number" name="transform_window_days" placeholder="30" value="{{ row.window_days }}" class="apex-input">
           </label>
         </div>
+        {% endfor %}
       </div>
-      <label class="flex flex-col gap-0.5 mt-2">
-        <span class="text-[9px] font-bold uppercase text-rams-muted">Description</span>
-        <textarea name="description" rows="3" placeholder="What does this recipe detect?"
-          class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-rams-line"></textarea>
-      </label>
+    </details>
+
+    {# ── Step 4: thresholds (optional) ── #}
+    <details class="apex-card p-4">
+      <summary class="cursor-pointer text-[14px] font-semibold text-rams-foreground">4 · Alert thresholds <span class="font-normal text-rams-muted">(optional — advanced)</span></summary>
+      <div class="mt-4 space-y-3">
+        {% for row in form.threshold_rows %}
+        <div class="grid gap-3 sm:grid-cols-12">
+          <label class="flex flex-col gap-1 sm:col-span-5">
+            <span class="text-[12px] font-semibold text-rams-foreground">Metric</span>
+            <input type="text" name="threshold_metric" placeholder="count" value="{{ row.metric }}" class="apex-input">
+          </label>
+          <label class="flex flex-col gap-1 sm:col-span-3">
+            <span class="text-[12px] font-semibold text-rams-foreground">Condition</span>
+            <select name="threshold_operator" class="apex-select">
+              <option value=">="{% if row.operator == ">=" %} selected{% endif %}>≥</option>
+              <option value=">"{% if row.operator == ">" %} selected{% endif %}>&gt;</option>
+              <option value="=="{% if row.operator == "==" %} selected{% endif %}>=</option>
+              <option value="<"{% if row.operator == "<" %} selected{% endif %}>&lt;</option>
+              <option value="<="{% if row.operator == "<=" %} selected{% endif %}>≤</option>
+            </select>
+          </label>
+          <label class="flex flex-col gap-1 sm:col-span-4">
+            <span class="text-[12px] font-semibold text-rams-foreground">Value</span>
+            <input type="number" step="any" name="threshold_value" value="{{ row.value }}" class="apex-input">
+          </label>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+
+    {# ── Step 5: actions ── #}
+    <div class="apex-card p-4">
+      <h2 class="mb-1">5 · Recommended actions</h2>
+      <p class="mb-4 text-[13px] text-rams-muted">Playbook steps attached to the alert. Blank rows are ignored; fill at least one.</p>
+      <div class="space-y-2">
+        {% for row in form.action_rows %}
+        <input type="text" name="action_row" class="apex-input" value="{{ row }}" placeholder="e.g. Review the matched signals and decide whether to engage.">
+        {% endfor %}
+      </div>
     </div>
 
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Signals JSON</h3>
-      <textarea name="signals_json" rows="6" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
-  {"source_type":"observation","entity_type":"company","keywords":"capacity, expansion","match_mode":"any"}
-]</textarea>
-    </div>
-
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Transforms JSON</h3>
-      <textarea name="transforms_json" rows="5" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
-  {"kind":"count","window_days":7,"aggregation":"sum"}
-]</textarea>
-    </div>
-
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Thresholds JSON</h3>
-      <textarea name="thresholds_json" rows="5" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
-  {"metric":"count","operator":">=","value":3}
-]</textarea>
-    </div>
-
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Narrative Template</h3>
-      <textarea name="narrative_template" rows="3"
-        class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-rams-line">{% raw %}{{entity_name}} triggered {{recipe_name}}: {{summary}}{% endraw %}</textarea>
-      <p class="text-[9px] text-rams-muted mt-1">
-        Variables: <code class="text-[9px]">{% raw %}{{entity_name}}{% endraw %}</code>,
-        <code class="text-[9px]">{% raw %}{{recipe_name}}{% endraw %}</code>,
-        <code class="text-[9px]">{% raw %}{{summary}}{% endraw %}</code>,
-        <code class="text-[9px]">{% raw %}{{severity}}{% endraw %}</code>,
-        <code class="text-[9px]">{% raw %}{{timestamp}}{% endraw %}</code>,
-        <code class="text-[9px]">{% raw %}{{metric_value}}{% endraw %}</code>
-      </p>
-    </div>
-
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Actions JSON</h3>
-      <textarea name="actions_json" rows="5" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
-  {"kind":"warning","target":"analyst"}
-]</textarea>
-    </div>
+    {% if !form.signals_json.is_empty() || !form.transforms_json.is_empty() || !form.thresholds_json.is_empty() || !form.actions_json.is_empty() %}
+    <details class="apex-card p-4">
+      <summary class="cursor-pointer text-[14px] font-semibold text-rams-foreground">Submitted definition (JSON)</summary>
+      <div class="mt-3 grid gap-3 text-[12px]">
+        <label class="flex flex-col gap-1"><span class="font-semibold text-rams-muted">Signals</span>
+          <textarea name="signals_json" rows="3" class="apex-input font-mono">{{ form.signals_json }}</textarea></label>
+        <label class="flex flex-col gap-1"><span class="font-semibold text-rams-muted">Transforms</span>
+          <textarea name="transforms_json" rows="2" class="apex-input font-mono">{{ form.transforms_json }}</textarea></label>
+        <label class="flex flex-col gap-1"><span class="font-semibold text-rams-muted">Thresholds</span>
+          <textarea name="thresholds_json" rows="2" class="apex-input font-mono">{{ form.thresholds_json }}</textarea></label>
+        <label class="flex flex-col gap-1"><span class="font-semibold text-rams-muted">Actions</span>
+          <textarea name="actions_json" rows="2" class="apex-input font-mono">{{ form.actions_json }}</textarea></label>
+      </div>
+    </details>
+    {% endif %}
 
     <div class="flex items-center gap-3 pt-2 pb-8">
-      <button type="submit" class="apex-btn apex-btn-primary disabled:opacity-40">
-        Create Recipe
-      </button>
-      <a href="/recipes" class="apex-btn apex-btn-secondary">
-        Cancel
-      </a>
+      <button type="submit" class="apex-btn apex-btn-primary">Create recipe</button>
+      <a href="/recipes" class="apex-btn apex-btn-secondary">Cancel</a>
+      <span class="text-[12px] text-rams-muted">New recipes start in <strong>staging</strong> and are promoted explicitly.</span>
     </div>
   </form>
 </div>

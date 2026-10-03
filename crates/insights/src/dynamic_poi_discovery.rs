@@ -695,6 +695,18 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     None
 }
 
+/// Whole tokens of at least three characters from a lowercased name.
+///
+/// Used to compare proper nouns without substring false positives: the token
+/// set for "foxconn subsidiary" shares "foxconn" with "foxconn", while "ace"
+/// shares nothing with "spacex".
+fn significant_name_tokens(name_lower: &str) -> HashSet<&str> {
+    name_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| token.chars().count() >= 3)
+        .collect()
+}
+
 /// Extract entity mentions from observation text using simple regex/NER patterns.
 ///
 /// This is a lightweight NER replacement that looks for capitalized words,
@@ -954,13 +966,17 @@ impl DynamicPoiDiscovery {
         }
 
         // Factor 2: Compute co-occurrence density
-        // Count how many tracked entities are "close" to this entity
-        // (simplified: check if entity name contains or is contained in known names)
+        // Count how many tracked entities are "close" to this entity. Names
+        // are compared as whole tokens of >= 3 chars (never substrings), so
+        // "Ace" does not look close to "SpaceX" and "Iran" does not match
+        // "Iranian".
+        let entity_tokens = significant_name_tokens(&entity_lower);
         let mut proximity_score: f64 = 0.0;
         let mut co_occurrence_count = 0;
         for tracked_name in registry.entity_names() {
             let tracked_lower = tracked_name.to_lowercase();
-            if entity_lower.contains(&tracked_lower) || tracked_lower.contains(&entity_lower) {
+            let tracked_tokens = significant_name_tokens(&tracked_lower);
+            if !entity_tokens.is_disjoint(&tracked_tokens) {
                 proximity_score += 0.25;
                 co_occurrence_count += 1;
             }
@@ -1804,6 +1820,27 @@ mod tests {
             result,
             "Entity closely related to tracked entities should be tracked"
         );
+    }
+
+    #[test]
+    fn test_should_track_ignores_substring_only_name_overlap() {
+        let registry = EntityRegistry::from_yaml_config();
+
+        // "Lex" is a substring of "Flex" / "Plexus" but not a whole token of
+        // either; substring proximity used to make this look related.
+        assert!(
+            !DynamicPoiDiscovery::should_track("Lex", &registry),
+            "substring-only overlap must not count as entity proximity"
+        );
+    }
+
+    #[test]
+    fn test_significant_name_tokens_are_whole_tokens_of_three_chars() {
+        let tokens = significant_name_tokens("foxconn subsidiary co.");
+        assert!(tokens.contains("foxconn"));
+        assert!(tokens.contains("subsidiary"));
+        assert!(!tokens.contains("co"));
+        assert!(significant_name_tokens("lex").is_disjoint(&significant_name_tokens("plexus")));
     }
 
     // ── New: compute_velocities test ─────────────────────────────────────

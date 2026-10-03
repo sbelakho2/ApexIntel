@@ -173,6 +173,13 @@ pub(crate) fn build_digest_text(
     out
 }
 
+/// Whether the SMTP host is the local loopback interface (plaintext is only
+/// acceptable there).
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim().trim_matches(|c| c == '[' || c == ']');
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
 pub(crate) async fn send_digest_email(
     recipients: &[String],
     subject: &str,
@@ -192,11 +199,54 @@ pub(crate) async fn send_digest_email(
         .ok()
         .map(|v| parse_truthy_flag(&v))
         .unwrap_or(false);
+    let allow_plaintext = std::env::var("EMAIL_DIGEST_SMTP_ALLOW_PLAINTEXT")
+        .ok()
+        .map(|v| parse_truthy_flag(&v))
+        .unwrap_or(false);
+
+    // #74: no plaintext SMTP to a non-loopback host, and never plaintext
+    // credentials. The digest transport previously used `builder_dangerous`
+    // unconditionally whenever STARTTLS was off.
+    let has_credentials = !smtp_user.trim().is_empty();
+    if allow_plaintext && !smtp_starttls && has_credentials {
+        anyhow::bail!(
+            "EMAIL_DIGEST_SMTP_ALLOW_PLAINTEXT=1 cannot be combined with SMTP credentials; \
+             remove EMAIL_DIGEST_SMTP_USER or enable EMAIL_DIGEST_SMTP_STARTTLS"
+        );
+    }
+    if !is_loopback_host(&smtp_host) && !smtp_starttls && !allow_plaintext {
+        anyhow::bail!(
+            "refusing plaintext SMTP to non-loopback host '{smtp_host}': set \
+             EMAIL_DIGEST_SMTP_STARTTLS=1, or EMAIL_DIGEST_SMTP_ALLOW_PLAINTEXT=1 with no credentials"
+        );
+    }
+
+    // #126: digest recipients are restricted to approved company domains.
+    // An address stored before the allowlist existed (or after it tightened)
+    // is refused here rather than silently mailed.
+    let allowed_domains = apex_core::email_policy::allowed_domains_from_env();
+    let mut approved: Vec<&String> = Vec::with_capacity(recipients.len());
+    for recipient in recipients {
+        if apex_core::email_policy::is_approved_recipient(recipient, &allowed_domains) {
+            approved.push(recipient);
+        } else {
+            tracing::warn!(
+                recipient_domain = %apex_core::email_policy::recipient_domain(recipient).unwrap_or_default(),
+                "email digest: recipient outside the approved company domains was refused"
+            );
+        }
+    }
+    if approved.is_empty() {
+        anyhow::bail!(
+            "no digest recipient is on an approved company domain \
+             (APEX_DIGEST_ALLOWED_DOMAINS)"
+        );
+    }
 
     let mut builder = Message::builder()
         .from(from_address.parse::<Mailbox>()?)
         .subject(subject);
-    for to in recipients {
+    for to in &approved {
         builder = builder.to(to.parse::<Mailbox>()?);
     }
 

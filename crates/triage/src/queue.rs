@@ -42,6 +42,136 @@ const BAND_COUNTS_SQL: &str = r#"
     ORDER BY band DESC
 "#;
 
+/// Merge SQL used by `IngestQueue::merge_submission`.
+///
+/// Bind order: `$1` target id, `$2` observation ids, `$3` source urls, `$4`
+/// incoming severity, `$5` escalate-critical threshold, `$6` escalate-high
+/// threshold. Recomputes severity from the post-increment occurrence count and
+/// reopens resolved/dismissed rows; score dimensions are intentionally left
+/// untouched (only `enqueue` with fresh dimensions overwrites them).
+const MERGE_SUBMISSION_SQL: &str = r#"
+    UPDATE triage_queue
+    SET occurrence_count = triage_queue.occurrence_count + 1,
+        last_seen_at = NOW(),
+        updated_at = NOW(),
+        merged_observation_ids = (
+            SELECT COALESCE(array_agg(DISTINCT obs), ARRAY[]::uuid[])
+            FROM unnest(triage_queue.merged_observation_ids || $2::uuid[]) AS obs
+        ),
+        merged_source_urls = (
+            SELECT COALESCE(array_agg(DISTINCT url), ARRAY[]::text[])
+            FROM unnest(triage_queue.merged_source_urls || $3::text[]) AS url
+        ),
+        static_severity = (
+            CASE GREATEST(
+                CASE lower(btrim(coalesce(triage_queue.static_severity, '')))
+                    WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                CASE lower(btrim(coalesce($4, '')))
+                    WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                CASE WHEN triage_queue.occurrence_count + 1 >= $5 THEN 3
+                     WHEN triage_queue.occurrence_count + 1 >= $6 THEN 2
+                     ELSE -1 END
+            )
+            WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
+            WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
+            ELSE triage_queue.static_severity END
+        ),
+        -- A new sighting of a resolved/dismissed row reopens it so it cannot be
+        -- absorbed into a closed item and disappear.
+        status = CASE
+                     WHEN triage_queue.status IN ('resolved', 'dismissed') THEN
+                         CASE WHEN triage_queue.composite_score > 0.0
+                              THEN 'triaged' ELSE 'pending' END
+                     ELSE triage_queue.status
+                 END,
+        triaged_at = CASE
+                         WHEN triage_queue.status IN ('resolved', 'dismissed')
+                              AND triage_queue.composite_score > 0.0 THEN NOW()
+                         WHEN triage_queue.status IN ('resolved', 'dismissed') THEN NULL
+                         ELSE triage_queue.triaged_at
+                     END,
+        acknowledged_at = CASE
+                              WHEN triage_queue.status IN ('resolved', 'dismissed') THEN NULL
+                              ELSE triage_queue.acknowledged_at
+                          END
+    WHERE id = $1
+    RETURNING {INGEST_SELECT_COLUMNS}
+"#;
+
+/// Upsert used by [`TriageQueue::enqueue`].
+///
+/// Bind order: `$1` item_type, `$2` source_id, `$3` title, `$4` description,
+/// `$5` entity_id, `$6` entity_name, `$7` static_severity, `$8..$12` the five
+/// score dimensions, `$13` composite score, `$14` now, `$15` escalate-high
+/// threshold, `$16` escalate-critical threshold, `$17` whether the caller
+/// supplied dimensions.
+///
+/// Two merge-contract rules are encoded here:
+/// - score dimensions are only overwritten when `$17` is true (re-enqueuing a
+///   duplicate without new dimensions must not zero out an existing score);
+/// - a new sighting of a resolved/dismissed row reopens it (`triaged` when a
+///   score is available, `pending` when it still needs scoring).
+const ENQUEUE_UPSERT_SQL: &str = r#"
+    INSERT INTO triage_queue
+        (item_type, source_id, title, description, entity_id, entity_name,
+         static_severity, urgency, impact, actionability, novelty, confidence,
+         composite_score, status, created_at)
+    VALUES
+        ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14)
+    ON CONFLICT (item_type, source_id) DO UPDATE SET
+        title             = EXCLUDED.title,
+        description       = EXCLUDED.description,
+        entity_id         = COALESCE(EXCLUDED.entity_id, triage_queue.entity_id),
+        entity_name       = COALESCE(EXCLUDED.entity_name, triage_queue.entity_name),
+        static_severity   = (
+            CASE GREATEST(
+                CASE lower(btrim(coalesce(triage_queue.static_severity, '')))
+                    WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                CASE lower(btrim(coalesce(EXCLUDED.static_severity, '')))
+                    WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                CASE WHEN triage_queue.occurrence_count + 1 >= $16 THEN 3
+                     WHEN triage_queue.occurrence_count + 1 >= $15 THEN 2
+                     ELSE -1 END
+            )
+            WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
+            WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
+            ELSE triage_queue.static_severity END
+        ),
+        occurrence_count  = triage_queue.occurrence_count + 1,
+        last_seen_at      = NOW(),
+        urgency           = CASE WHEN $17 THEN EXCLUDED.urgency ELSE triage_queue.urgency END,
+        impact            = CASE WHEN $17 THEN EXCLUDED.impact ELSE triage_queue.impact END,
+        actionability     = CASE WHEN $17 THEN EXCLUDED.actionability ELSE triage_queue.actionability END,
+        novelty           = CASE WHEN $17 THEN EXCLUDED.novelty ELSE triage_queue.novelty END,
+        confidence        = CASE WHEN $17 THEN EXCLUDED.confidence ELSE triage_queue.confidence END,
+        composite_score   = CASE WHEN $17 THEN EXCLUDED.composite_score ELSE triage_queue.composite_score END,
+        status            = CASE
+                                WHEN triage_queue.status IN ('resolved', 'dismissed') THEN
+                                    CASE WHEN $17 OR triage_queue.composite_score > 0.0
+                                         THEN 'triaged' ELSE 'pending' END
+                                ELSE triage_queue.status
+                            END,
+        triaged_at        = CASE
+                                WHEN triage_queue.status IN ('resolved', 'dismissed') AND $17 THEN NOW()
+                                WHEN triage_queue.status IN ('resolved', 'dismissed') THEN NULL
+                                ELSE triage_queue.triaged_at
+                            END,
+        acknowledged_at   = CASE
+                                WHEN triage_queue.status IN ('resolved', 'dismissed') THEN NULL
+                                ELSE triage_queue.acknowledged_at
+                            END,
+        updated_at        = $14
+    RETURNING
+        id, item_type, source_id, title, description, entity_id, entity_name,
+        static_severity, urgency, impact, actionability, novelty, confidence,
+        composite_score, is_overridden, override_score,
+        status::text, created_at, triaged_at, acknowledged_at
+"#;
+
 // ─── TriageQueue ──────────────────────────────────────────────────────────────
 
 /// Manages the triage queue with DB-backed persistence.
@@ -110,6 +240,7 @@ impl TriageQueue {
 
         let item_type_str = item_type.as_str();
         let now = Utc::now();
+        let has_dimensions = dimensions.is_some();
 
         // Compute score from dimensions, or default to 0.0 for unscored items.
         let (urgency, impact, actionability, novelty, confidence, composite) =
@@ -127,70 +258,26 @@ impl TriageQueue {
                 (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             };
 
-        let row = sqlx::query_as::<_, TriageQueueItemRow>(
-            r#"
-            INSERT INTO triage_queue
-                (item_type, source_id, title, description, entity_id, entity_name,
-                 static_severity, urgency, impact, actionability, novelty, confidence,
-                 composite_score, status, created_at)
-            VALUES
-                ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14)
-            ON CONFLICT (item_type, source_id) DO UPDATE SET
-                title             = EXCLUDED.title,
-                description       = EXCLUDED.description,
-                entity_id         = COALESCE(EXCLUDED.entity_id, triage_queue.entity_id),
-                entity_name       = COALESCE(EXCLUDED.entity_name, triage_queue.entity_name),
-                static_severity   = (
-                    CASE GREATEST(
-                        CASE lower(btrim(coalesce(triage_queue.static_severity, '')))
-                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
-                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
-                        CASE lower(btrim(coalesce(EXCLUDED.static_severity, '')))
-                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
-                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
-                        CASE WHEN triage_queue.occurrence_count + 1 >= $16 THEN 3
-                             WHEN triage_queue.occurrence_count + 1 >= $15 THEN 2
-                             ELSE -1 END
-                    )
-                    WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
-                    WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
-                    ELSE triage_queue.static_severity END
-                ),
-                occurrence_count  = triage_queue.occurrence_count + 1,
-                last_seen_at      = NOW(),
-                urgency           = EXCLUDED.urgency,
-                impact            = EXCLUDED.impact,
-                actionability     = EXCLUDED.actionability,
-                novelty           = EXCLUDED.novelty,
-                confidence        = EXCLUDED.confidence,
-                composite_score   = EXCLUDED.composite_score,
-                status            = CASE WHEN triage_queue.status = 'pending' THEN 'pending' ELSE triage_queue.status END,
-                updated_at        = $14
-            RETURNING
-                id, item_type, source_id, title, description, entity_id, entity_name,
-                static_severity, urgency, impact, actionability, novelty, confidence,
-                composite_score, is_overridden, override_score,
-                status::text, created_at, triaged_at, acknowledged_at
-            "#,
-        )
-        .bind(item_type_str)
-        .bind(source_id)
-        .bind(title)
-        .bind(description)
-        .bind(entity_id)
-        .bind(entity_name)
-        .bind(static_severity)
-        .bind(urgency)
-        .bind(impact)
-        .bind(actionability)
-        .bind(novelty)
-        .bind(confidence)
-        .bind(composite)
-        .bind(now)
-        .bind(crate::semantic_dedup::DEFAULT_ESCALATE_HIGH_AT)
-        .bind(crate::semantic_dedup::DEFAULT_ESCALATE_CRITICAL_AT)
-        .fetch_one(&self.pool)
-        .await?;
+        let row = sqlx::query_as::<_, TriageQueueItemRow>(ENQUEUE_UPSERT_SQL)
+            .bind(item_type_str)
+            .bind(source_id)
+            .bind(title)
+            .bind(description)
+            .bind(entity_id)
+            .bind(entity_name)
+            .bind(static_severity)
+            .bind(urgency)
+            .bind(impact)
+            .bind(actionability)
+            .bind(novelty)
+            .bind(confidence)
+            .bind(composite)
+            .bind(now)
+            .bind(crate::semantic_dedup::DEFAULT_ESCALATE_HIGH_AT)
+            .bind(crate::semantic_dedup::DEFAULT_ESCALATE_CRITICAL_AT)
+            .bind(has_dimensions)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(row.into_item(&self.thresholds))
     }
@@ -681,40 +768,7 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
         // Severity is escalated from the post-increment occurrence count in a
         // single UPDATE, so concurrent merges cannot persist a level below the
         // one the final count requires.
-        let sql = format!(
-            r#"
-            UPDATE triage_queue
-            SET occurrence_count = triage_queue.occurrence_count + 1,
-                last_seen_at = NOW(),
-                updated_at = NOW(),
-                merged_observation_ids = (
-                    SELECT COALESCE(array_agg(DISTINCT obs), ARRAY[]::uuid[])
-                    FROM unnest(triage_queue.merged_observation_ids || $2::uuid[]) AS obs
-                ),
-                merged_source_urls = (
-                    SELECT COALESCE(array_agg(DISTINCT url), ARRAY[]::text[])
-                    FROM unnest(triage_queue.merged_source_urls || $3::text[]) AS url
-                ),
-                static_severity = (
-                    CASE GREATEST(
-                        CASE lower(btrim(coalesce(triage_queue.static_severity, '')))
-                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
-                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
-                        CASE lower(btrim(coalesce($4, '')))
-                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
-                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
-                        CASE WHEN triage_queue.occurrence_count + 1 >= $5 THEN 3
-                             WHEN triage_queue.occurrence_count + 1 >= $6 THEN 2
-                             ELSE -1 END
-                    )
-                    WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
-                    WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
-                    ELSE triage_queue.static_severity END
-                )
-            WHERE id = $1
-            RETURNING {INGEST_SELECT_COLUMNS}
-            "#
-        );
+        let sql = MERGE_SUBMISSION_SQL.replace("{INGEST_SELECT_COLUMNS}", INGEST_SELECT_COLUMNS);
 
         let row = sqlx::query_as::<_, IngestQueueRow>(&sql)
             .bind(target_id)
@@ -995,6 +1049,67 @@ mod tests {
         assert!(!BAND_COUNTS_SQL.contains("0.80"));
         assert!(!BAND_COUNTS_SQL.contains("0.60"));
         assert!(!BAND_COUNTS_SQL.contains("0.40"));
+    }
+
+    #[test]
+    fn test_enqueue_preserves_dimensions_when_none_supplied() {
+        // Every dimension column must be guarded by the has-dimensions bind so
+        // re-enqueuing a duplicate without dimensions cannot zero a score.
+        for column in [
+            "urgency",
+            "impact",
+            "actionability",
+            "novelty",
+            "confidence",
+            "composite_score",
+        ] {
+            assert!(
+                ENQUEUE_UPSERT_SQL.contains(&format!(
+                    "WHEN $17 THEN EXCLUDED.{column} ELSE triage_queue.{column} END"
+                )),
+                "column {column} must be conditionally overwritten"
+            );
+        }
+        // The old unconditional overwrite must be gone.
+        assert!(!ENQUEUE_UPSERT_SQL.contains("urgency           = EXCLUDED.urgency"));
+    }
+
+    #[test]
+    fn test_ingest_merge_reopens_closed_rows_and_keeps_dimensions() {
+        // The ingest merge path (TriageIngestor) must reopen closed rows too,
+        // and must never touch score dimensions on merge.
+        assert!(
+            MERGE_SUBMISSION_SQL.contains("status = CASE")
+                && MERGE_SUBMISSION_SQL
+                    .contains("WHEN triage_queue.status IN ('resolved', 'dismissed') THEN"),
+            "merge must reopen resolved/dismissed rows"
+        );
+        for column in [
+            "urgency",
+            "impact",
+            "actionability",
+            "novelty",
+            "confidence",
+        ] {
+            assert!(
+                !MERGE_SUBMISSION_SQL.contains(&format!("{column} = ")),
+                "merge must not overwrite {column} when dimensions are not part of the update"
+            );
+        }
+    }
+
+    #[test]
+    fn test_enqueue_reopens_closed_rows() {
+        assert!(
+            ENQUEUE_UPSERT_SQL.contains("WHEN triage_queue.status IN ('resolved', 'dismissed')"),
+            "closed rows must be reopened on a new sighting"
+        );
+        assert!(
+            ENQUEUE_UPSERT_SQL.contains("THEN 'triaged' ELSE 'pending' END"),
+            "reopened rows with a score are triaged; unscored rows return to pending"
+        );
+        // A pending row stays pending; other active states are preserved.
+        assert!(ENQUEUE_UPSERT_SQL.contains("ELSE triage_queue.status"));
     }
 
     #[test]

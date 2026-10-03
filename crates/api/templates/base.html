@@ -146,10 +146,9 @@
       border-radius: 2px;
       padding: 0.45rem 0.7rem;
       color: var(--rams-foreground);
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
       white-space: nowrap;
     }
     .apex-theme-toggle:hover {
@@ -157,7 +156,8 @@
     }
     .apex-theme-toggle-state {
       color: var(--rams-muted);
-      font-size: 9px;
+      font-size: 10px;
+      font-weight: 600;
     }
 
     /* ── Mobile Tab Bar — safe area inset ─────────────────────────────────────── */
@@ -167,10 +167,10 @@
 
     /* ── Primary nav: grouped sections (desktop sidebar + mobile drawer) ─────── */
     .apex-nav-group-label {
-      padding: 0.9rem 0.75rem 0.3rem;
+      padding: 0.85rem 0.75rem 0.3rem;
       font-size: 10px;
-      font-weight: 900;
-      letter-spacing: 0.14em;
+      font-weight: 700;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
       color: var(--rams-muted);
     }
@@ -194,10 +194,9 @@
       border-radius: 2px;
       padding: 0.4rem 0.6rem;
       color: var(--rams-foreground);
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
     }
     .apex-user-menu > summary::-webkit-details-marker {
       display: none;
@@ -233,10 +232,9 @@
       border: 0;
       background: transparent;
       color: var(--rams-foreground);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
       text-align: left;
       cursor: pointer;
     }
@@ -417,8 +415,8 @@
       <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-40 flex w-[min(18rem,82vw)] flex-col border-r border-rams-line bg-rams-module lg:hidden" aria-label="Mobile navigation" aria-hidden="true" inert>
         <div class="flex items-center justify-between gap-3 border-b border-rams-line px-4 py-3">
           <div class="min-w-0">
-            <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Navigation</p>
-            <p class="truncate text-sm font-black uppercase tracking-[0.08em] text-rams-foreground">Menu</p>
+            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Navigation</p>
+            <p class="truncate text-sm font-bold text-rams-foreground">Menu</p>
           </div>
           <button type="button" id="mobile-nav-close" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel text-rams-foreground" aria-label="Close navigation menu">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
@@ -435,9 +433,9 @@
             </button>
           </div>
           <div class="mt-3 space-y-1">
-            {% call nav_item("/settings", "Settings") %}
-            {% call nav_item("/settings/alerts", "Alert Settings") %}
-            {% call nav_item("/notifications", "Inbox") %}
+            {% call nav_item("/settings", "Settings", "settings") %}
+            {% call nav_item("/settings/alerts", "Alert Settings", "bell") %}
+            {% call nav_item("/notifications", "Inbox", "bell") %}
           </div>
           <div class="mt-3 px-2">
             <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Operator</p>
@@ -480,20 +478,13 @@
               </div>
             </div>
             <!-- Desktop header: slim structural strip with the command bar -->
-            <div class="hidden min-h-14 items-center justify-between gap-4 border-b border-rams-line py-2.5 lg:flex">
-              <div class="min-w-0 shrink-0">
-                <div class="flex items-center gap-3">
-                  <p class="text-sm font-black uppercase tracking-[0.08em] text-rams-foreground">ApexIntel</p>
-                  <span class="text-[10px] font-bold uppercase tracking-[0.12em] text-rams-muted">Competitive Intelligence</span>
-                </div>
-              </div>
-              <form action="/search" method="get" role="search" class="apex-command-search max-w-xl" aria-label="Command bar search">
+            <div class="hidden min-h-14 items-center gap-4 border-b border-rams-line py-2.5 lg:flex">
+              <form action="/search" method="get" role="search" class="apex-command-search flex-1 max-w-2xl" aria-label="Search ApexIntel">
                 <label for="command-search" class="sr-only">Search</label>
                 <input id="command-search" type="search" name="q" placeholder="Search companies, persons, warnings, insights…" autocomplete="off" />
                 <button type="submit" aria-label="Search">Search</button>
               </form>
               <div class="flex shrink-0 items-center gap-2">
-                <span class="hidden text-[10px] font-bold uppercase tracking-[0.12em] text-rams-muted xl:inline">{{ username }}</span>
                 {% call command_palette_trigger("full") %}
                 <!-- Notification bell -->
                 <a href="/notifications"
@@ -633,12 +624,10 @@
 
       const updateThemeButtons = () => {
         const detail = window.__apexThemeState || { theme: 'system', resolved: 'light' };
-        const label = detail.theme === 'system'
-          ? `System ${detail.resolved === 'dark' ? 'Dark' : 'Light'}`
-          : detail.theme.charAt(0).toUpperCase() + detail.theme.slice(1);
+        const label = 'Theme';
         const resolvedLabel = detail.resolved === 'dark' ? 'Night' : 'Day';
         themeButtons.forEach((button) => {
-          button.setAttribute('aria-label', `Theme ${label}. Activate to toggle dark mode.`);
+          button.setAttribute('aria-label', `Theme: ${resolvedLabel}. Activate to cycle System, Dark, Light.`);
           const text = button.querySelector('[data-theme-toggle-text]');
           const state = button.querySelector('[data-theme-toggle-state]');
           if (text) {
@@ -989,71 +978,73 @@
 {% macro primary_nav() %}
 <div class="apex-nav-group">
   {% call nav_group("Command Center") %}
-  {% call nav_item("/", "Overview") %}
-  {% call nav_item("/executive", "Executive") %}
+  {% call nav_item("/", "Overview", "activity") %}
+  {% call nav_item("/executive", "Executive", "bar-chart-3") %}
   {# Triage shows no warning badge: the badge belongs to /warnings and
      showing the warnings count on Triage made the two indistinguishable. #}
-  {% call nav_item("/triage", "Triage") %}
-  {% call nav_item("/queue", "Queue") %}
-  {% call nav_item("/activity", "Activity") %}
+  {% call nav_item("/triage", "Triage", "list") %}
+  {% call nav_item("/queue", "Queue", "clock") %}
+  {% call nav_item("/activity", "Activity", "history") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Entities") %}
-  {% call nav_item("/companies", "Companies") %}
-  {% call nav_item("/competitors", "Competitors") %}
-  {% call nav_item("/persons", "People") %}
+  {% call nav_item("/companies", "Companies", "folder") %}
+  {% call nav_item("/competitors", "Competitors", "target") %}
+  {% call nav_item("/persons", "People", "users") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Signals") %}
-  {% call nav_item_badge("/warnings", "Warnings") %}
-  {% call nav_item("/insights", "Insights") %}
-  {% call nav_item("/trends", "Trends") %}
-  {% call nav_item("/security", "Security") %}
-  {% call nav_item("/supplier-risk", "Supplier Risk") %}
+  {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
+  {% call nav_item("/insights", "Insights", "eye") %}
+  {% call nav_item("/trends", "Trends", "trending-up") %}
+  {% call nav_item("/security", "Security", "shield") %}
+  {% call nav_item("/supplier-risk", "Supplier Risk", "map-pin") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Investigations") %}
-  {% call nav_item("/workspaces", "Workspaces") %}
-  {% call nav_item("/evidence", "Evidence") %}
-  {% call nav_item("/graph", "Graph") %}
-  {% call nav_item("/memos", "Memos") %}
-  {% call nav_item("/team-assignments", "Team Assignments") %}
+  {% call nav_item("/workspaces", "Workspaces", "layers") %}
+  {% call nav_item("/evidence", "Evidence", "file-text") %}
+  {% call nav_item("/graph", "Graph", "share") %}
+  {% call nav_item("/memos", "Memos", "file") %}
+  {% call nav_item("/team-assignments", "Team Assignments", "check-circle-2") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Sales Intelligence") %}
-  {% call nav_item("/buying-centers", "Buying Centres") %}
-  {% call nav_item("/pipeline", "Pipeline") %}
-  {% call nav_item("/battlecards", "Battlecards") %}
+  {% call nav_item("/buying-centers", "Buying Centres", "boxes") %}
+  {% call nav_item("/pipeline", "Pipeline", "arrow-up-down") %}
+  {% call nav_item("/battlecards", "Battlecards", "zap") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Automations") %}
-  {% call nav_item("/recipes", "Recipes") %}
+  {% call nav_item("/recipes", "Recipes", "sparkles") %}
   {% if can_admin %}
-  {% call nav_item("/admin#source-coverage", "Sources") %}
-  {% call nav_item("/admin#workflow-runs", "Jobs") %}
+  {% call nav_item("/admin#source-coverage", "Sources", "database") %}
+  {% call nav_item("/admin#workflow-runs", "Jobs", "cpu") %}
   {% endif %}
 </div>
 {% if can_admin %}
 <div class="apex-nav-group">
   {% call nav_group("Admin") %}
-  {% call nav_item("/admin", "Admin Panel") %}
+  {% call nav_item("/admin", "Admin Panel", "server") %}
 </div>
 {% endif %}
 {% endmacro %}
 
-{% macro nav_item(href, label) %}
+{% macro nav_item(href, label, icon_name) %}
 <a href="{{ href }}"
    class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(format!("{}/", href).as_str())) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
-  {{ label }}
+  <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><use href="/static/icons/sprite.svg#icon-{{ icon_name }}"/></svg>
+  <span class="min-w-0 flex-1 truncate">{{ label }}</span>
 </a>
 {% endmacro %}
 
-{% macro nav_item_badge(href, label) %}
+{% macro nav_item_badge(href, label, icon_name) %}
 <a href="{{ href }}"
    class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(format!("{}/", href).as_str())) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
-  {{ label }}
+  <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><use href="/static/icons/sprite.svg#icon-{{ icon_name }}"/></svg>
+  <span class="min-w-0 flex-1 truncate">{{ label }}</span>
   {# B310: class, not id — the badge is rendered twice (mobile + desktop
      sidebars) and duplicate ids meant getElementById always found the
      hidden mobile one, so live updates never reached the visible badge. #}

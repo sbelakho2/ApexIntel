@@ -85,35 +85,174 @@ pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) 
         &Default::default(),
         &Default::default(),
     );
-    // Surface each promoted recipe in the activity feed so analysts can see
-    // the promotion board acting in real time (previously these events were
-    // computed but never logged — the log_recipe_promoted method was dead code).
-    if let Some(promo) = report.promotion_result.as_ref() {
-        for (recipe_code, _reason) in &promo.promoted {
-            ctx.activity_logger
-                .log_recipe_promoted(recipe_code, "promotion_board")
-                .await;
+    // #158: the promotion board / deprecation audit used to only compute and
+    // log its decisions — the recipe rows were never transitioned, so a recipe
+    // that passed the board stayed `staging` forever and a deprecated recipe
+    // kept firing. Apply the decision to the recipes table, and only treat the
+    // run as successful when every decision was either applied or already
+    // satisfied by the database.
+    let actions = recipe_lifecycle_actions(kind, &report);
+    let applied = match apply_recipe_lifecycle(store, &ctx.activity_logger, &actions).await {
+        Ok(applied) => applied,
+        Err(error) => {
+            run.fail(&error);
+            return run;
         }
-    }
+    };
     if report.overall_success {
-        let items = match kind {
-            JobKind::PromotionBoard => report
-                .promotion_result
-                .as_ref()
-                .map(|r| r.promoted.len() as u64)
-                .unwrap_or(0),
-            JobKind::RecipeDeprecation => report
-                .deprecation_result
-                .as_ref()
-                .map(|r| r.deprecated.len() as u64)
-                .unwrap_or(0),
-            _ => 0,
-        };
-        run.succeed(items, &report.summary());
+        run.succeed(applied, &report.summary());
     } else {
         run.fail(&report.summary());
     }
     run
+}
+
+/// Which lifecycle transition a weekly report asks the worker to apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RecipeLifecycleOp {
+    Promote,
+    Deprecate,
+}
+
+/// A single recipe transition derived from the pure weekly report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RecipeLifecycleAction {
+    pub(super) recipe_code: String,
+    pub(super) op: RecipeLifecycleOp,
+}
+
+/// Pure decision helper: map a weekly report + job kind to the transitions the
+/// worker must persist. `PromotionBoard` applies every promoted recipe;
+/// `RecipeDeprecation` applies every deprecated recipe. Other weekly kinds ask
+/// for no lifecycle transition.
+pub(super) fn recipe_lifecycle_actions(
+    kind: &JobKind,
+    report: &apex_worker::weekly::WeeklyReport,
+) -> Vec<RecipeLifecycleAction> {
+    match kind {
+        JobKind::PromotionBoard => report
+            .promotion_result
+            .as_ref()
+            .map(|result| {
+                result
+                    .promoted
+                    .iter()
+                    .map(|(recipe_code, _reason)| RecipeLifecycleAction {
+                        recipe_code: recipe_code.clone(),
+                        op: RecipeLifecycleOp::Promote,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        JobKind::RecipeDeprecation => report
+            .deprecation_result
+            .as_ref()
+            .map(|result| {
+                result
+                    .deprecated
+                    .iter()
+                    .map(|(recipe_code, _reason)| RecipeLifecycleAction {
+                        recipe_code: recipe_code.clone(),
+                        op: RecipeLifecycleOp::Deprecate,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Apply the lifecycle transitions, returning how many rows actually changed.
+///
+/// Activity-feed logging and the `audit_log` record are written ONLY when the
+/// store reports `Ok(true)` (the row really transitioned). `Ok(false)` means
+/// the row was already in the target state (or vanished); it is logged at
+/// debug level and does not fail the run. Any store error fails the run — a
+/// promotion/deprecation that could not be persisted must never be reported as
+/// a success.
+async fn apply_recipe_lifecycle(
+    store: &Arc<PgStore>,
+    activity_logger: &ActivityLogger,
+    actions: &[RecipeLifecycleAction],
+) -> Result<u64, String> {
+    let mut applied = 0u64;
+    for action in actions {
+        match action.op {
+            RecipeLifecycleOp::Promote => match store.promote_recipe(&action.recipe_code).await {
+                Ok(true) => {
+                    activity_logger
+                        .log_recipe_promoted(&action.recipe_code, "promotion_board")
+                        .await;
+                    if let Err(error) = store
+                        .record_audit_event(
+                            "worker",
+                            "recipe_promoted",
+                            &serde_json::json!({
+                                "recipe_code": action.recipe_code,
+                                "source": "weekly_promotion_board",
+                            }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            recipe_code = %action.recipe_code,
+                            %error,
+                            "weekly_pipeline: failed to write promotion audit event"
+                        );
+                    }
+                    applied += 1;
+                }
+                Ok(false) => tracing::debug!(
+                    recipe_code = %action.recipe_code,
+                    "weekly_pipeline: promotion already applied; no row changed"
+                ),
+                Err(error) => {
+                    return Err(format!(
+                        "weekly_pipeline: failed to promote recipe {}: {error}",
+                        action.recipe_code
+                    ));
+                }
+            },
+            RecipeLifecycleOp::Deprecate => {
+                match store.deprecate_recipe(&action.recipe_code).await {
+                    Ok(true) => {
+                        activity_logger
+                            .log_recipe_deprecated(&action.recipe_code, "deprecation_audit")
+                            .await;
+                        if let Err(error) = store
+                            .record_audit_event(
+                                "worker",
+                                "recipe_deprecated",
+                                &serde_json::json!({
+                                    "recipe_code": action.recipe_code,
+                                    "source": "weekly_deprecation_audit",
+                                }),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                recipe_code = %action.recipe_code,
+                                %error,
+                                "weekly_pipeline: failed to write deprecation audit event"
+                            );
+                        }
+                        applied += 1;
+                    }
+                    Ok(false) => tracing::debug!(
+                        recipe_code = %action.recipe_code,
+                        "weekly_pipeline: deprecation already applied; no row changed"
+                    ),
+                    Err(error) => {
+                        return Err(format!(
+                            "weekly_pipeline: failed to deprecate recipe {}: {error}",
+                            action.recipe_code
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(applied)
 }
 
 pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
@@ -439,4 +578,106 @@ pub(super) async fn run_update_email_digest(store: &Arc<PgStore>) -> JobRun {
         Err(e) => run.fail(&format!("update_email_digest failed: {e}")),
     }
     run
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::{recipe_lifecycle_actions, RecipeLifecycleAction, RecipeLifecycleOp};
+    use crate::JobKind;
+    use apex_worker::weekly::{DeprecationResult, PromotionBoardResult, WeeklyReport};
+
+    fn report_with(
+        promoted: Vec<(String, String)>,
+        deprecated: Vec<(String, String)>,
+    ) -> WeeklyReport {
+        let mut report = WeeklyReport::new();
+        report.promotion_result = Some(PromotionBoardResult {
+            promoted,
+            kept: Vec::new(),
+            rejected: Vec::new(),
+        });
+        report.deprecation_result = Some(DeprecationResult {
+            deprecated,
+            kept: Vec::new(),
+        });
+        report
+    }
+
+    /// #158: every promoted recipe in the report must become a promote action,
+    /// so the recipes table is actually transitioned (previously only logged).
+    #[test]
+    fn promotion_board_maps_every_promoted_recipe() {
+        let report = report_with(
+            vec![
+                ("recipe_a".to_string(), "precision ok".to_string()),
+                ("recipe_b".to_string(), "precision ok".to_string()),
+            ],
+            vec![("stale_recipe".to_string(), "inactive".to_string())],
+        );
+
+        let actions = recipe_lifecycle_actions(&JobKind::PromotionBoard, &report);
+
+        assert_eq!(
+            actions,
+            vec![
+                RecipeLifecycleAction {
+                    recipe_code: "recipe_a".to_string(),
+                    op: RecipeLifecycleOp::Promote,
+                },
+                RecipeLifecycleAction {
+                    recipe_code: "recipe_b".to_string(),
+                    op: RecipeLifecycleOp::Promote,
+                },
+            ]
+        );
+    }
+
+    /// #158: every deprecated recipe in the report must become a deprecate
+    /// action, and promotion decisions must not leak into this job.
+    #[test]
+    fn deprecation_audit_maps_every_deprecated_recipe() {
+        let report = report_with(
+            vec![("recipe_a".to_string(), "precision ok".to_string())],
+            vec![
+                ("stale_recipe".to_string(), "inactive".to_string()),
+                ("bad_recipe".to_string(), "high FPR".to_string()),
+            ],
+        );
+
+        let actions = recipe_lifecycle_actions(&JobKind::RecipeDeprecation, &report);
+
+        assert_eq!(
+            actions,
+            vec![
+                RecipeLifecycleAction {
+                    recipe_code: "stale_recipe".to_string(),
+                    op: RecipeLifecycleOp::Deprecate,
+                },
+                RecipeLifecycleAction {
+                    recipe_code: "bad_recipe".to_string(),
+                    op: RecipeLifecycleOp::Deprecate,
+                },
+            ]
+        );
+    }
+
+    /// #158: weekly jobs that are not the promotion board or the deprecation
+    /// audit (e.g. strategy memo) must never mutate recipe lifecycle state.
+    #[test]
+    fn other_weekly_kinds_request_no_lifecycle_transition() {
+        let report = report_with(
+            vec![("recipe_a".to_string(), "precision ok".to_string())],
+            vec![("stale_recipe".to_string(), "inactive".to_string())],
+        );
+
+        assert!(recipe_lifecycle_actions(&JobKind::StrategyMemo, &report).is_empty());
+    }
+
+    #[test]
+    fn missing_results_request_no_lifecycle_transition() {
+        let report = WeeklyReport::new();
+        assert!(recipe_lifecycle_actions(&JobKind::PromotionBoard, &report).is_empty());
+        assert!(recipe_lifecycle_actions(&JobKind::RecipeDeprecation, &report).is_empty());
+    }
 }

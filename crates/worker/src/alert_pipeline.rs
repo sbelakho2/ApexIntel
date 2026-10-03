@@ -333,27 +333,96 @@ impl OutboxEventPublisher for NatsAlertEventPublisher {
             );
         }
 
-        if let Some(evaluator) = &self.evaluator {
-            let domain = Self::domain_event_for(event);
-            for rule_alert in evaluator.evaluate(&domain).await {
+        let Some(evaluator) = &self.evaluator else {
+            return self.transport.publish_event(event, msg_id).await;
+        };
+
+        let domain = Self::domain_event_for(event);
+        let rule_alerts = evaluator.evaluate(&domain).await;
+        if rule_alerts.is_empty() {
+            return self.transport.publish_event(event, msg_id).await;
+        }
+
+        // #103: `evaluate` records each fired rule's cooldown BEFORE its
+        // publish. ANY later failure in this row's publication — a rule alert
+        // publish, the base alert publish, or cancellation by the per-message
+        // publish timeout — must release those cooldowns, otherwise the outbox
+        // retry would evaluate the rules, see them "already fired", and
+        // silently drop the rule alerts.
+        let mut release_guard = CooldownReleaseGuard::new(Arc::clone(evaluator), domain.clone());
+
+        let publish_result = async {
+            for rule_alert in rule_alerts {
                 // Rule-derived alerts get their own stable id derived from the
                 // outbox row, so a retry of the same row deduplicates too.
                 let rule_msg_id = format!("{msg_id}:rule:{}", rule_alert.id);
-                if let Err(error) = self
-                    .transport
+                self.transport
                     .publish_event(&rule_alert, &rule_msg_id)
                     .await
-                {
-                    // The evaluator already recorded the rule's cooldown before
-                    // the publish; release it so the outbox retry redelivers the
-                    // rule alert instead of silently suppressing it.
-                    evaluator.forget_firings(&domain).await;
-                    return Err(error).context("failed to publish rule-derived alert");
-                }
+                    .context("failed to publish rule-derived alert")?;
+            }
+
+            self.transport.publish_event(event, msg_id).await
+        }
+        .await;
+
+        match publish_result {
+            Ok(()) => {
+                release_guard.disarm();
+                Ok(())
+            }
+            Err(error) => {
+                release_guard.release_now().await;
+                Err(error)
             }
         }
+    }
+}
 
-        self.transport.publish_event(event, msg_id).await
+/// Releases the alert-rule cooldowns recorded by an `evaluate` call unless the
+/// publication succeeded. The `Drop` implementation covers cancellation (the
+/// caller's publish timeout drops the future), where an explicit error branch
+/// never runs; a detached task performs the async release.
+struct CooldownReleaseGuard {
+    evaluator: Arc<AlertEvaluator>,
+    domain: DomainEvent,
+    armed: bool,
+}
+
+impl CooldownReleaseGuard {
+    fn new(evaluator: Arc<AlertEvaluator>, domain: DomainEvent) -> Self {
+        Self {
+            evaluator,
+            domain,
+            armed: true,
+        }
+    }
+
+    /// The publication succeeded: keep the cooldowns.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// The publication failed: release the cooldowns before returning.
+    async fn release_now(mut self) {
+        self.armed = false;
+        self.evaluator.forget_firings(&self.domain).await;
+    }
+}
+
+impl Drop for CooldownReleaseGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let evaluator = Arc::clone(&self.evaluator);
+        let domain = self.domain.clone();
+        handle.spawn(async move {
+            evaluator.forget_firings(&domain).await;
+        });
     }
 }
 
@@ -1202,6 +1271,85 @@ rules:
         assert!(ids[0].as_deref().unwrap().contains(outbox_id.as_str()));
         assert!(ids[0].as_deref().unwrap().contains(":rule:"));
         assert_eq!(ids[2].as_deref(), Some(event.id.to_string().as_str()));
+    }
+
+    /// Transport that ACKs rule-derived alerts but fails the base alert while
+    /// `fail_base` is set, so a failure *after* the rule cooldowns were
+    /// recorded must still release them.
+    #[derive(Default)]
+    struct BaseFailTransport {
+        calls: Arc<AtomicUsize>,
+        succeeded: Arc<AtomicUsize>,
+        fail_base: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl JetStreamTransport for BaseFailTransport {
+        async fn publish(
+            &self,
+            _subject: String,
+            msg_id: Option<String>,
+            _payload: Vec<u8>,
+        ) -> anyhow::Result<Box<dyn PendingPublishAck>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let is_rule_alert = msg_id
+                .as_deref()
+                .map(|id| id.contains(":rule:"))
+                .unwrap_or(false);
+            Ok(Box::new(RecordingAck {
+                succeeded: Arc::clone(&self.succeeded),
+                will_fail: !is_rule_alert
+                    && self.fail_base.load(std::sync::atomic::Ordering::SeqCst),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn base_alert_failure_after_rule_publication_releases_cooldowns() {
+        let evaluator = Arc::new(
+            AlertEvaluator::load_from_yaml(
+                r#"
+version: 1
+rules:
+  - name: any-warning
+    source: warning
+    condition: "true"
+    severity: info
+    for: 1h
+    notify: []
+"#,
+            )
+            .unwrap(),
+        );
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        let transport = BaseFailTransport::default();
+        let counters = (
+            Arc::clone(&transport.calls),
+            Arc::clone(&transport.succeeded),
+        );
+        let fail_base = Arc::clone(&transport.fail_base);
+        fail_base.store(true, Ordering::SeqCst);
+        let nats = NatsPublisher::with_transport(Arc::new(transport), false);
+        let publisher = NatsAlertEventPublisher::new(nats, Some(evaluator));
+
+        // First drain: the rule alert ACKs, the base alert fails — the failure
+        // happens after `evaluate`, so the rule cooldown must be released.
+        let outcome = drain_once(&store, &publisher, "drain-1", 10).await.unwrap();
+        assert_eq!(outcome.failed, 1);
+        assert_eq!(counters.0.load(Ordering::SeqCst), 2);
+
+        // Retry: the rule alert must be attempted again despite its 1h
+        // cooldown, and the base alert then succeeds.
+        fail_base.store(false, Ordering::SeqCst);
+        let outcome = drain_once(&store, &publisher, "drain-2", 10).await.unwrap();
+        assert_eq!(outcome.published, 1);
+        assert_eq!(counters.0.load(Ordering::SeqCst), 4);
+        assert_eq!(counters.1.load(Ordering::SeqCst), 3);
+        assert!(store.published_ids().contains(&event.id));
     }
 
     #[tokio::test]

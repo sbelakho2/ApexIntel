@@ -583,20 +583,34 @@ impl PgStore {
                                  WHERE deleted_at IS NULL
                                      AND lower(trim(regexp_replace(title, '^\[[^]]+\]\s*', ''))) = lower(trim($1))
                    AND lower(trim(warning_type)) = lower(trim($2))
-                   AND lower(trim(severity)) = lower(trim($3))
                    AND coalesce(lower(region), '') = coalesce(lower($4), '')
                    AND (
-                       coalesce(lower(trim(description)), '') = coalesce(lower(trim($5)), '')
+                       -- Exact duplicate: same fingerprint, same severity and
+                       -- same entity set.
+                       (
+                           lower(trim(severity)) = lower(trim($3))
+                           AND coalesce(lower(trim(description)), '') = coalesce(lower(trim($5)), '')
+                           AND COALESCE(entity_ids, ARRAY[]::uuid[]) = COALESCE($7, ARRAY[]::uuid[])
+                       )
+                       -- Lexical near-duplicate (normalized-title + entity
+                       -- fingerprint): same entity set is mandatory, and a
+                       -- differing incoming severity is escalated by the merge
+                       -- instead of being buried.
                        OR (
                            $6 IS NOT NULL
                            AND COALESCE(entity_ids, ARRAY[]::uuid[]) = COALESCE($7, ARRAY[]::uuid[])
                            AND created_at > NOW() - $8::INTERVAL
                            AND left(trim(regexp_replace(regexp_replace(lower(coalesce(description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380) = $6
                        )
+                       -- Same entity within the window AND genuinely similar
+                       -- text. A bare entity+window match merged unrelated
+                       -- signals about one company into a single row.
                        OR (
                            COALESCE($7, ARRAY[]::uuid[]) <> ARRAY[]::uuid[]
                            AND COALESCE(entity_ids, ARRAY[]::uuid[]) = COALESCE($7, ARRAY[]::uuid[])
                            AND created_at > NOW() - $8::INTERVAL
+                           AND $5 IS NOT NULL
+                           AND similarity(lower(coalesce(description, '')), lower($5)) >= 0.45
                        )
                    )
                  ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, ts_utc DESC, id DESC
@@ -616,6 +630,22 @@ impl PgStore {
             sqlx::query(
                 r#"UPDATE warnings
                    SET confidence = GREATEST(COALESCE(confidence, 0), COALESCE($2, 0)),
+                       -- Recurrences never lower severity: a more severe
+                       -- incoming signal escalates the merged row instead of
+                       -- being absorbed by a milder one.
+                       severity = CASE GREATEST(
+                               CASE lower(trim(coalesce(warnings.severity, '')))
+                                   WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                                   WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                               CASE lower(trim(coalesce($6, '')))
+                                   WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                                   WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END
+                           )
+                           WHEN 3 THEN 'critical'
+                           WHEN 2 THEN 'high'
+                           WHEN 1 THEN 'medium'
+                           WHEN 0 THEN 'low'
+                           ELSE warnings.severity END,
                        source_urls = (
                            SELECT ARRAY(
                                SELECT DISTINCT u
@@ -642,6 +672,7 @@ impl PgStore {
             .bind(&normalized_source_urls)
             .bind(&normalized_entity_ids)
             .bind(is_system_broadcast)
+            .bind(severity)
             .execute(&mut *conn)
             .await?;
 

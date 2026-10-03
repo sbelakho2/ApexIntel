@@ -62,6 +62,10 @@ impl<'a> From<&'a crate::alert_router::AlertEvent> for ClientAlert<'a> {
 
 /// Server-built destination for a notification click. Only ids the server
 /// itself persisted are used, so a client cannot choose a redirect target.
+///
+/// N1: the alert's own id is NOT a warning or insight id, so an alert without
+/// a persisted `warning_id`/`insight_id` gets no link instead of a fabricated
+/// URL that 404s.
 fn alert_client_link(alert: &crate::alert_router::AlertEvent) -> Option<String> {
     let id_field = |key: &str| {
         alert
@@ -76,12 +80,6 @@ fn alert_client_link(alert: &crate::alert_router::AlertEvent) -> Option<String> 
     }
     if let Some(insight_id) = id_field("insight_id") {
         return Some(format!("/insights/{insight_id}"));
-    }
-    if alert.event_type.as_str().contains("insight") {
-        return Some(format!("/insights/{}", alert.id));
-    }
-    if alert.event_type.as_str().contains("warning") {
-        return Some(format!("/warnings/{}", alert.id));
     }
     None
 }
@@ -831,6 +829,41 @@ mod tests {
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         }
+    }
+
+    // ── N1: links only for persisted warning/insight ids ────────────────
+
+    #[test]
+    fn alert_link_uses_persisted_warning_or_insight_id() {
+        let mut alert = alert_for(Uuid::new_v4(), "Warning");
+        alert.metadata = serde_json::json!({ "warning_id": "w-123" });
+        assert_eq!(
+            alert_client_link(&alert).as_deref(),
+            Some("/warnings/w-123")
+        );
+
+        let mut alert = alert_for(Uuid::new_v4(), "Insight");
+        alert.event_type = AlertEventType::NewInsight;
+        alert.metadata = serde_json::json!({ "insight_id": "i-456" });
+        assert_eq!(
+            alert_client_link(&alert).as_deref(),
+            Some("/insights/i-456")
+        );
+    }
+
+    #[test]
+    fn alert_link_is_none_without_a_persisted_id() {
+        // The alert id is not a warning/insight id: no fabricated link.
+        let alert = alert_for(Uuid::new_v4(), "No metadata");
+        assert_eq!(alert_client_link(&alert), None);
+
+        let mut insight_alert = alert_for(Uuid::new_v4(), "Insight-shaped");
+        insight_alert.event_type = AlertEventType::NewInsight;
+        assert_eq!(alert_client_link(&insight_alert), None);
+
+        let mut blank = alert_for(Uuid::new_v4(), "Blank id");
+        blank.metadata = serde_json::json!({ "warning_id": "   ", "insight_id": null });
+        assert_eq!(alert_client_link(&blank), None);
     }
 
     #[test]

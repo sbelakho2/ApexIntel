@@ -11,13 +11,13 @@
 {% if !region_slices.is_empty() %}
 <div class="grid gap-4 lg:grid-cols-3 mb-6">
   <div class="lg:col-span-2 apex-card p-4">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-4">Coverage by Region</h2>
+    <h2 class="mb-4">Coverage by region</h2>
     <div class="apex-chart-frame">
       {% call m::region_donut_chart(region_slices, 140, 18, 70, 58) %}
     </div>
   </div>
   <div class="apex-card p-4">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Quick Links</h2>
+    <h2 class="mb-3">Quick links</h2>
     <div class="space-y-2">
       {% for q in quick_links %}
       <a href="/companies/{{ q.id }}" class="flex items-center justify-between rounded-rams-sm border border-rams-line bg-rams-panel px-3 py-2 text-sm hover:bg-rams-panel">
@@ -65,7 +65,7 @@
 <div class="apex-card overflow-hidden mb-4">
   <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
     <div>
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
+      <h2>All companies</h2>
       <p class="mt-1 text-[11px] text-rams-muted">Compact company view for ranking by threat, region coverage, and recent updates.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
@@ -104,30 +104,12 @@
   </div>
 </div>
 
-<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-  {% if let Some(notice) = degraded_notice %}
-    <div class="col-span-full apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
-  {% endif %}
-  {% if companies.is_empty() && degraded_notice.is_none() %}
-  <div class="col-span-full">
-    {% call m::empty_state("No companies found", "Try broadening your filter.") %}
-  </div>
-  {% else if !companies.is_empty() %}
-    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
-    {% for c in companies %}
-    <a href="/companies/{{ c.id }}" class="apex-card p-4 hover:bg-rams-panel block">
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <p class="font-bold text-sm">{{ c.name }}</p>
-          <p class="text-[10px] text-rams-muted uppercase mt-1">{{ c.region }} · {{ c.sector }}</p>
-        </div>
-        {% if c.has_risk_score() %}<p class="text-xs">Threat: <span class="font-bold tabular-nums">{{ c.risk_score_value() }}</span></p>{% endif %}
-      </div>
-      {% if let Some(competitor) = c.is_competitor %}{% if competitor %}<p class="mt-2 text-[10px] font-bold uppercase apex-text-competitor">Competitor</p>{% endif %}{% else %}<p class="mt-2 text-[10px] text-rams-muted">Competitor status not recorded</p>{% endif %}
-    </a>
-    {% endfor %}
-  {% endif %}
-</div>
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-4 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+{% if companies.is_empty() && degraded_notice.is_none() %}
+{% call m::empty_state("No companies found", "Try broadening your filter.") %}
+{% endif %}
 
 {% if total_pages > 1 %}
 <div class="mt-4 flex items-center justify-between">

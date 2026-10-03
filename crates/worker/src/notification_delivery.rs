@@ -78,11 +78,12 @@ pub const DELIVERY_LEASE_SECS: f64 = 120.0;
 
 /// Default rows claimed per cycle.
 ///
-/// Bounded by the lease invariant: `ceil(batch / DELIVERY_CONCURRENCY) *
-/// SMTP_TIMEOUT_SECS <= DELIVERY_LEASE_SECS` (audit #76). The previous value
-/// of 50 produced a 140s worst case against a 120s lease, so late rows could
-/// be reclaimed and re-sent while still in flight.
-pub const DEFAULT_DELIVERY_BATCH: i64 = 40;
+/// #107: the retry processor is a short control-plane lane, so it claims a
+/// small batch (~8, matching `DELIVERY_CONCURRENCY`) instead of monopolizing a
+/// worker slot for a long tail of slow destinations. Bounded by the lease
+/// invariant: `ceil(batch / DELIVERY_CONCURRENCY) * SMTP_TIMEOUT_SECS <=
+/// DELIVERY_LEASE_SECS` (audit #76).
+pub const DEFAULT_DELIVERY_BATCH: i64 = 8;
 
 /// How a failed attempt must be treated.
 #[derive(Debug, Clone, PartialEq, Eq)]

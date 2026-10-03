@@ -93,6 +93,8 @@ pub struct GraphEdgeRow {
     pub last_confirmed: String,
     /// `None` = not recorded (rendered as such, never as 0 ev.).
     pub evidence_count: Option<i64>,
+    /// Rendered evidence phrase ("1 source", "3 sources", "evidence not recorded").
+    pub evidence_display: String,
     pub source: String,
 }
 
@@ -826,10 +828,15 @@ pub async fn graph_page(
             first_seen: short_timestamp(e.first_seen.as_deref()),
             last_confirmed: short_timestamp(e.last_confirmed.as_deref()),
             evidence_count: e.evidence_count,
+            evidence_display: match e.evidence_count {
+                Some(1) => "1 source".to_string(),
+                Some(count) => format!("{count} sources"),
+                None => "evidence not recorded".to_string(),
+            },
             source: e
                 .source_label
                 .clone()
-                .unwrap_or_else(|| "graph_edges".to_string()),
+                .unwrap_or_else(|| "inferred".to_string()),
         })
         .collect();
 

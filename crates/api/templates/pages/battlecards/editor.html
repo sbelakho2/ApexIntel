@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li><a href="/battlecards" class="hover:text-rams-foreground">Battlecards</a></li>
@@ -33,7 +33,9 @@
 </div>
 {% endif %}
 
-<form method="post" action="{% if is_new %}/battlecards{% else %}/battlecards/{{ battlecard_id }}{% endif %}" class="space-y-6 pb-8" data-battlecard-form>
+<form method="post" action="{% if is_new %}/battlecards{% else %}/battlecards/{{ battlecard_id }}{% endif %}"
+      hx-post="{% if is_new %}/battlecards{% else %}/battlecards/{{ battlecard_id }}{% endif %}" hx-swap="none"
+      class="space-y-6 pb-8" data-battlecard-form>
   {% if !is_new %}
   <input type="hidden" name="version" value="{{ version }}">
   {% endif %}

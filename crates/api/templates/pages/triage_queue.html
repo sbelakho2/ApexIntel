@@ -2,7 +2,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li aria-hidden="true">/</li>
     <li class="text-rams-foreground" aria-current="page">Triage Queue</li>
@@ -10,56 +10,65 @@
 </nav>
 {% endblock %}
 
+{% import "macros.html" as m %}
+
 {% block content %}
+{% call m::page_header("Triage", "list", "Scored signal queue — acknowledge, investigate, or dismiss.", "") %}
+
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="metric-rail-slate"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Total</div>
-    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.total }}</div>
-  </div>
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="metric-rail-red"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Critical</div>
-    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.critical_count }}</div>
-  </div>
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="metric-rail-amber"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">High / Medium</div>
-    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.high_count + stats.medium_count }}</div>
-  </div>
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="metric-rail-green"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Resolved</div>
-    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.resolved }}</div>
-  </div>
+  {% call m::metric_card("Total", stats.total.to_string(), "metric-rail-steel") %}
+  {% call m::metric_card("Critical", stats.critical_count.to_string(), "metric-rail-red") %}
+  {% call m::metric_card("High / Medium", (stats.high_count + stats.medium_count).to_string(), "metric-rail-amber") %}
+  {% call m::metric_card("Resolved", stats.resolved.to_string(), "metric-rail-green") %}
 </div>
 
 <div class="apex-card p-4 mb-6">
-  <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Triage Band Distribution</h2>
-  </div>
-  <div class="apex-chart-legend">
-    <span class="apex-legend-item"><span class="metric-swatch-red"></span> Critical (≥0.80)</span>
-    <span class="apex-legend-item"><span class="metric-swatch-amber"></span> High (≥0.60)</span>
-    <span class="apex-legend-item"><span class="metric-swatch-blue"></span> Medium (≥0.40)</span>
-    <span class="apex-legend-item"><span class="metric-swatch-slate"></span> Low (<0.40)</span>
+  <h2 class="mb-4">Score band distribution</h2>
+  <div class="space-y-3">
+    <div class="flex items-center gap-3">
+      <span class="w-20 shrink-0 text-[11px] font-bold uppercase tracking-[0.08em] text-rams-muted">Critical</span>
+      <div class="h-2.5 flex-1 rounded-sm bg-rams-panel"><div class="h-full rounded-sm bg-rams-red" style="width: {{ stats.critical_pct() }}%"></div></div>
+      <span class="w-10 shrink-0 text-right text-[12px] font-bold tabular-nums">{{ stats.critical_count }}</span>
+      <span class="w-14 shrink-0 text-right text-[11px] tabular-nums text-rams-muted">≥ 0.80</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <span class="w-20 shrink-0 text-[11px] font-bold uppercase tracking-[0.08em] text-rams-muted">High</span>
+      <div class="h-2.5 flex-1 rounded-sm bg-rams-panel"><div class="h-full rounded-sm bg-rams-orange" style="width: {{ stats.high_pct() }}%"></div></div>
+      <span class="w-10 shrink-0 text-right text-[12px] font-bold tabular-nums">{{ stats.high_count }}</span>
+      <span class="w-14 shrink-0 text-right text-[11px] tabular-nums text-rams-muted">≥ 0.60</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <span class="w-20 shrink-0 text-[11px] font-bold uppercase tracking-[0.08em] text-rams-muted">Medium</span>
+      <div class="h-2.5 flex-1 rounded-sm bg-rams-panel"><div class="h-full rounded-sm" style="width: {{ stats.medium_pct() }}%; background: color-mix(in srgb, var(--rams-orange) 55%, var(--rams-muted));"></div></div>
+      <span class="w-10 shrink-0 text-right text-[12px] font-bold tabular-nums">{{ stats.medium_count }}</span>
+      <span class="w-14 shrink-0 text-right text-[11px] tabular-nums text-rams-muted">≥ 0.40</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <span class="w-20 shrink-0 text-[11px] font-bold uppercase tracking-[0.08em] text-rams-muted">Low</span>
+      <div class="h-2.5 flex-1 rounded-sm bg-rams-panel"><div class="h-full rounded-sm bg-rams-steel" style="width: {{ stats.low_pct() }}%"></div></div>
+      <span class="w-10 shrink-0 text-right text-[12px] font-bold tabular-nums">{{ stats.low_count }}</span>
+      <span class="w-14 shrink-0 text-right text-[11px] tabular-nums text-rams-muted">≥ 0.20</span>
+    </div>
   </div>
 </div>
 
 <div class="mb-4 apex-card p-3">
-  <form method="get" action="/triage" class="mb-3 flex flex-wrap items-center gap-2"
+  <form method="get" action="/triage" class="flex flex-wrap items-center gap-2"
         hx-get="/triage" hx-target="#triage-list" hx-push-url="true" hx-trigger="change, submit">
     <input type="hidden" name="page" value="1">
-    <select name="status" class="apex-select text-xs">
-      <option value="" {% if current_status == "all" %}selected{% endif %}>All Statuses</option>
+    <label for="triage-status" class="text-[12px] font-semibold text-rams-foreground">Status</label>
+    <select id="triage-status" name="status" class="apex-select text-xs">
+      <option value="" {% if current_status == "all" %}selected{% endif %}>All statuses</option>
       <option value="pending" {% if current_status == "pending" %}selected{% endif %}>Pending</option>
       <option value="triaged" {% if current_status == "triaged" %}selected{% endif %}>Triaged</option>
       <option value="acknowledged" {% if current_status == "acknowledged" %}selected{% endif %}>Acknowledged</option>
       <option value="resolved" {% if current_status == "resolved" %}selected{% endif %}>Resolved</option>
       <option value="dismissed" {% if current_status == "dismissed" %}selected{% endif %}>Dismissed</option>
     </select>
+    <noscript><button type="submit" class="apex-btn apex-btn-secondary">Apply</button></noscript>
   </form>
 </div>
+
 
 <div id="triage-list">
   {% if let Some(notice) = degraded_notice %}

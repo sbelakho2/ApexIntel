@@ -9,7 +9,7 @@ use askama::Template;
 use axum::{
     extract::{Path, Query},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Redirect},
+    response::IntoResponse,
     Extension, Form,
 };
 use serde::Deserialize;
@@ -100,6 +100,28 @@ pub(crate) struct TriageDetailPage {
     pub actionability_pct: Option<i64>,
     pub novelty_pct: Option<i64>,
     pub confidence_pct: Option<i64>,
+}
+
+impl QueueStats {
+    fn band_pct(count: u64, total: u64) -> i64 {
+        if total == 0 {
+            0
+        } else {
+            ((count as f64 / total as f64) * 100.0).round() as i64
+        }
+    }
+    pub fn critical_pct(&self) -> i64 {
+        Self::band_pct(self.critical_count, self.total)
+    }
+    pub fn high_pct(&self) -> i64 {
+        Self::band_pct(self.high_count, self.total)
+    }
+    pub fn medium_pct(&self) -> i64 {
+        Self::band_pct(self.medium_count, self.total)
+    }
+    pub fn low_pct(&self) -> i64 {
+        Self::band_pct(self.low_count, self.total)
+    }
 }
 
 pub(crate) struct QueueStats {
@@ -325,34 +347,28 @@ pub async fn get_triage_item(
         }
         Ok(None) => {
             let pctx = PageContext::from_session(&session, "/triage", 0);
-            crate::web::errors::not_found_with_context(
-                &pctx.username,
-                "/triage",
-                pctx.warning_count,
-            )
+            crate::web::errors::not_found_for(&pctx, "/triage")
         }
         Err(e) => {
             tracing::error!("Failed to fetch triage item {id}: {e}");
             let pctx = PageContext::from_session(&session, "/triage", 0);
-            crate::web::errors::internal_error_with_context(
-                &pctx.username,
-                pctx.warning_count,
-                "Failed to load triage item",
-                "",
-            )
+            // No correlation id at this call site: `internal_error_for`
+            // generates a unique incident id so one is always shown (#152).
+            crate::web::errors::internal_error_for(&pctx, "")
         }
     }
 }
 
 /// POST /triage/:id/acknowledge — acknowledge via HTMX then redirect.
 pub async fn acknowledge_triage_html(
+    headers: HeaderMap,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let queue = make_queue(store);
 
     match queue.acknowledge(id).await {
-        Ok(_) => Redirect::to(&format!("/triage/{}", id)).into_response(),
+        Ok(_) => crate::web::redirect_or_hx_redirect(&headers, &format!("/triage/{id}")),
         Err(e) => {
             tracing::error!("Failed to acknowledge triage item {id}: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to acknowledge").into_response()
@@ -362,13 +378,14 @@ pub async fn acknowledge_triage_html(
 
 /// POST /triage/:id/resolve — resolve via HTMX then redirect.
 pub async fn resolve_triage_html(
+    headers: HeaderMap,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let queue = make_queue(store);
 
     match queue.resolve(id).await {
-        Ok(_) => Redirect::to(&format!("/triage/{}", id)).into_response(),
+        Ok(_) => crate::web::redirect_or_hx_redirect(&headers, &format!("/triage/{id}")),
         Err(e) => {
             tracing::error!("Failed to resolve triage item {id}: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to resolve").into_response()
@@ -378,13 +395,14 @@ pub async fn resolve_triage_html(
 
 /// POST /triage/:id/dismiss — dismiss via HTMX then redirect.
 pub async fn dismiss_triage_html(
+    headers: HeaderMap,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let queue = make_queue(store);
 
     match queue.dismiss(id).await {
-        Ok(_) => Redirect::to(&format!("/triage/{}", id)).into_response(),
+        Ok(_) => crate::web::redirect_or_hx_redirect(&headers, &format!("/triage/{id}")),
         Err(e) => {
             tracing::error!("Failed to dismiss triage item {id}: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to dismiss").into_response()
@@ -394,6 +412,7 @@ pub async fn dismiss_triage_html(
 
 /// POST /triage/:id/override — override score via HTMX then redirect.
 pub async fn override_triage_html(
+    headers: HeaderMap,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<Uuid>,
     Form(form): Form<OverrideForm>,
@@ -408,7 +427,7 @@ pub async fn override_triage_html(
         .override_score(id, form.score, form.reason.as_deref().unwrap_or(""))
         .await
     {
-        Ok(_) => Redirect::to(&format!("/triage/{}", id)).into_response(),
+        Ok(_) => crate::web::redirect_or_hx_redirect(&headers, &format!("/triage/{id}")),
         Err(e) => {
             tracing::error!("Failed to override triage item {id}: {e}");
             (

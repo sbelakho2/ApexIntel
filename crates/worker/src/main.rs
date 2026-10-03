@@ -690,6 +690,13 @@ async fn main() -> Result<()> {
     let scheduler = Arc::new(TokioMutex::new(scheduler_state));
     let tick_guard = Arc::new(TokioMutex::new(()));
     let trigger_guard = Arc::new(TokioMutex::new(()));
+    // #104: detached job tasks report completion through this shared tracker,
+    // which is also what the shutdown drain waits on (replacing the old
+    // guard-held-across-the-whole-tick scheme).
+    let run_tracker = runtime::RunTracker::default();
+    let dispatcher = Arc::new(TokioMutex::new(runtime::Dispatcher::from_env(
+        run_tracker.clone(),
+    )));
     let manual_trigger_concurrency = std::env::var("MANUAL_TRIGGER_CONCURRENCY")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -733,30 +740,39 @@ async fn main() -> Result<()> {
                 let store = Arc::clone(&store);
                 let scheduler = Arc::clone(&scheduler);
                 let tick_guard = Arc::clone(&tick_guard);
+                let dispatcher = Arc::clone(&dispatcher);
                 let progress = Arc::clone(&scheduler_progress);
                 let job_context = job_context.clone();
                 let instance_id = instance_id.clone();
                 tokio::spawn(async move {
-                    let Ok(_guard) = tick_guard.try_lock() else {
-                        tracing::warn!("tick_scheduler: previous run still active; skipping tick");
-                        return;
-                    };
+                    // The guard is held for one dispatch pass (drain + spawn),
+                    // never across the jobs themselves — ticks no longer skip
+                    // when a long job is running (#104).
+                    let _guard = tick_guard.lock().await;
                     progress.record_progress();
 
                     let mut scheduler = scheduler.lock().await;
-                    // Job-level panics are contained inside tick_scheduler
-                    // (each job runs in an observed spawn, B325), so the tick
-                    // body itself only does bookkeeping.
-                    runtime::tick_scheduler(&mut scheduler, &store, &job_context, &progress, &instance_id).await;
+                    let mut dispatcher = dispatcher.lock().await;
+                    runtime::tick_scheduler(
+                        &mut scheduler,
+                        &store,
+                        &job_context,
+                        &progress,
+                        &instance_id,
+                        &mut dispatcher,
+                    )
+                    .await;
                     progress.record_progress();
                 });
             }
             _ = trigger_interval.tick() => {
                 let store = Arc::clone(&store);
+                let scheduler = Arc::clone(&scheduler);
                 let trigger_guard = Arc::clone(&trigger_guard);
                 let manual_trigger_semaphore = Arc::clone(&manual_trigger_semaphore);
                 let job_context = job_context.clone();
                 let instance_id = instance_id.clone();
+                let run_tracker = run_tracker.clone();
                 tokio::spawn(async move {
                     let Ok(_guard) = trigger_guard.try_lock() else {
                         tracing::debug!("poll_trigger_queue: previous poll still active; skipping tick");
@@ -765,11 +781,13 @@ async fn main() -> Result<()> {
 
                     runtime::poll_trigger_queue(
                         &store,
+                        &scheduler,
                         &manual_trigger_semaphore,
                         manual_max_claims_per_poll,
                         manual_trigger_timeout_secs,
                         &job_context,
                         &instance_id,
+                        &run_tracker,
                     )
                     .await;
                 });
@@ -786,33 +804,41 @@ async fn main() -> Result<()> {
     }
     // ─── Graceful drain (audit #64, B324) ─────────────────────────────────
     // The SIGTERM/SIGINT branch above stopped the select loop, so no new tick
-    // or trigger poll can start. Each spawned tick/poll task holds its guard
-    // for the whole run, and `tick_scheduler` awaits every job handle it
-    // spawned, so acquiring BOTH guards proves the in-flight scheduled jobs
-    // finished and can still persist their `worker_job_state` /
-    // `worker_job_history` rows before the pool closes.
+    // or trigger poll can start. The guards are held only for one dispatch
+    // pass now (#104), so acquiring BOTH proves no tick is mid-dispatch and no
+    // trigger poll is claiming; the detached job tasks are then drained via
+    // `run_tracker`, which counts every run the dispatcher spawned.
     //
     // The wait is bounded: jobs may legitimately run for hours (their own
     // enforced timeouts), and a container stop must not hang for that long.
-    // On timeout the pool would otherwise close with rows still marked
-    // 'running', so this instance's rows are reconciled to 'interrupted' first
-    // (migrations 096/098); other replicas' live rows are never touched.
+    // Anything still in flight past the deadline is aborted and this
+    // instance's rows are reconciled to 'interrupted' (migrations 096/098);
+    // other replicas' live rows are never touched.
     const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
     // Let any tick/trigger task spawned just before the signal run first:
     // acquiring an uncontended guard completes without yielding, and without
     // this a not-yet-polled task could take the guard after the drain already
     // released it (its `try_lock` would then succeed against a closing pool).
     tokio::task::yield_now().await;
-    let drain_outcome = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, async {
+    let drain_started = std::time::Instant::now();
+    let barrier_outcome = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, async {
         let _tick = tick_guard.lock().await;
         let _trigger = trigger_guard.lock().await;
     })
     .await;
-    if drain_outcome.is_err() {
+    let remaining = SHUTDOWN_DRAIN_TIMEOUT.saturating_sub(drain_started.elapsed());
+    let jobs_drained = if barrier_outcome.is_ok() {
+        run_tracker.wait_for_all(remaining).await
+    } else {
+        false
+    };
+    if barrier_outcome.is_err() || !jobs_drained {
         tracing::warn!(
             timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
-            "shutdown drain timed out waiting for in-flight jobs; marking their rows interrupted"
+            in_flight = run_tracker.in_flight(),
+            "shutdown drain timed out waiting for in-flight jobs; aborting tasks and marking their rows interrupted"
         );
+        run_tracker.abort_all();
         match store.mark_running_jobs_interrupted(&instance_id).await {
             Ok(updated) => tracing::warn!(
                 updated,
@@ -824,6 +850,15 @@ async fn main() -> Result<()> {
             ),
         }
     } else {
+        // Persist runs that finished after the last tick: with detached
+        // dispatch (#104) their completion messages may still be queued.
+        {
+            let mut scheduler = scheduler.lock().await;
+            let mut dispatcher = dispatcher.lock().await;
+            dispatcher
+                .drain_pending(&mut scheduler, &store, &scheduler_progress, &instance_id)
+                .await;
+        }
         tracing::info!("shutdown drain complete: no scheduler work in flight");
     }
     pool.close().await;

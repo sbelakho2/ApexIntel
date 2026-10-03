@@ -137,6 +137,11 @@ impl InferenceConfig {
     }
 
     /// Create a config tuned for structured JSON output.
+    ///
+    /// The doubled determinism call is **opt-in**: it costs a second full
+    /// inference per request, so enable it explicitly with
+    /// [`with_structural_determinism`](Self::with_structural_determinism) where
+    /// the stability guarantee is worth the latency.
     pub fn json_structured() -> Self {
         Self {
             temperature: 0.0,
@@ -144,9 +149,19 @@ impl InferenceConfig {
             json_mode: true,
             seed: Some(0),
             suppress_thinking: true,
-            enforce_structural_determinism: true,
+            enforce_structural_determinism: false,
             ..Default::default()
         }
+    }
+
+    /// Opt in to the doubled structural-determinism call.
+    ///
+    /// When enabled (and `json_mode` is on with `temperature == 0.0`),
+    /// [`LlmClient::complete_with_config`] repeats the request and fails if the
+    /// structural signature of the two responses differs.
+    pub fn with_structural_determinism(mut self) -> Self {
+        self.enforce_structural_determinism = true;
+        self
     }
 
     /// Create a config tuned for creative narrative generation.
@@ -189,6 +204,12 @@ impl InferenceConfig {
 pub struct CompletionResponse {
     /// The model's text output (thinking tokens stripped if present).
     pub text: String,
+    /// Provider-reported reason the model stopped (`stop`, `length`, …).
+    ///
+    /// `Some("length")` means the response was cut off by `max_tokens`; the
+    /// JSON is almost certainly truncated, so callers should not treat a parse
+    /// failure as a schema problem.
+    pub finish_reason: Option<String>,
     /// Prompt tokens consumed.
     pub prompt_tokens: u32,
     /// Completion tokens consumed.
@@ -204,9 +225,24 @@ pub struct CompletionResponse {
 }
 
 impl CompletionResponse {
+    /// True when the model stopped because it hit `max_tokens`.
+    pub fn was_truncated(&self) -> bool {
+        self.finish_reason
+            .as_deref()
+            .is_some_and(|reason| reason.eq_ignore_ascii_case("length"))
+    }
+
     /// Parse the text as JSON, stripping any remaining think tags first.
     pub fn parse_json<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
         let clean = strip_think_tags(&self.text);
+        if self.was_truncated() {
+            // Surface the real cause: a length-truncated response is not a
+            // schema violation and retrying the parse will not help.
+            anyhow::bail!(
+                "LLM response was truncated at max_tokens (finish_reason=length); \
+                 increase max_tokens or shorten the prompt"
+            );
+        }
         let extracted = crate::validators::extract_json(&clean)
             .ok_or_else(|| anyhow!("No JSON found in LLM response"))?;
         serde_json::from_str(&extracted).with_context(|| {
@@ -256,6 +292,8 @@ struct UsageInfo {
 #[derive(Deserialize)]
 struct Choice {
     message: MessageContent,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -389,6 +427,9 @@ impl LlmClient {
             );
         };
         let mut last_err = anyhow!("No retries attempted");
+        // A timed-out generation is expensive to repeat; retry it at most once
+        // regardless of max_retries.
+        let mut timeout_retries: u32 = 0;
 
         for attempt in 0..=config.max_retries {
             if attempt > 0 {
@@ -406,6 +447,17 @@ impl LlmClient {
 
             let result = req.send().await;
             match result {
+                Err(e) if e.is_timeout() => {
+                    if timeout_retries >= 1 {
+                        bail!(
+                            "LLM request timed out after one retry (attempt {}): {e}",
+                            attempt
+                        );
+                    }
+                    timeout_retries += 1;
+                    last_err = anyhow!("HTTP timeout on attempt {}: {}", attempt, e);
+                    continue;
+                }
                 Err(e) => {
                     last_err = anyhow!("HTTP send error on attempt {}: {}", attempt, e);
                     continue;
@@ -434,12 +486,18 @@ impl LlmClient {
                     let chat_resp: ChatResponse = serde_json::from_slice(&body_bytes)
                         .with_context(|| "Failed to deserialize OpenAI response")?;
 
-                    let raw_text = chat_resp
-                        .choices
-                        .into_iter()
-                        .next()
-                        .and_then(|c| c.message.content)
-                        .unwrap_or_default();
+                    let choice = chat_resp.choices.into_iter().next();
+                    let finish_reason = choice.as_ref().and_then(|c| c.finish_reason.clone());
+                    if finish_reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.eq_ignore_ascii_case("length"))
+                    {
+                        warn!(
+                            %prompt_hash,
+                            "LLM response hit max_tokens (finish_reason=length); output is truncated"
+                        );
+                    }
+                    let raw_text = choice.and_then(|c| c.message.content).unwrap_or_default();
 
                     let text = strip_think_tags(&raw_text);
                     let response_hash = hash_text(&text);
@@ -462,6 +520,7 @@ impl LlmClient {
 
                     return Ok(CompletionResponse {
                         text,
+                        finish_reason,
                         prompt_tokens: usage.prompt_tokens.unwrap_or(0),
                         completion_tokens: usage.completion_tokens.unwrap_or(0),
                         total_tokens: usage.total_tokens.unwrap_or(0),
@@ -705,10 +764,42 @@ mod tests {
     }
 
     #[test]
-    fn json_structured_enables_seed_and_determinism() {
+    fn json_structured_enables_seed_without_doubling_the_call() {
         let cfg = InferenceConfig::json_structured();
         assert_eq!(cfg.seed, Some(0));
+        assert!(
+            !cfg.enforce_structural_determinism,
+            "the doubled determinism call must be opt-in, not a json_structured default"
+        );
+    }
+
+    #[test]
+    fn structural_determinism_doubling_is_opt_in() {
+        let cfg = InferenceConfig::json_structured().with_structural_determinism();
         assert!(cfg.enforce_structural_determinism);
+        assert_eq!(cfg.seed, Some(0));
+    }
+
+    #[test]
+    fn completion_response_reads_finish_reason() {
+        let resp = CompletionResponse {
+            text: r#"{"partial": "#.into(),
+            finish_reason: Some("length".into()),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            latency: Duration::from_secs(0),
+            prompt_hash: "p".into(),
+            response_hash: "r".into(),
+        };
+        assert!(resp.was_truncated());
+        let error = resp
+            .parse_json::<serde_json::Value>()
+            .expect_err("truncated response must not parse");
+        assert!(
+            error.to_string().contains("truncated"),
+            "error must name the truncation: {error}"
+        );
     }
 
     #[test]
@@ -769,6 +860,7 @@ mod tests {
     fn completion_response_parse_json_works() {
         let resp = CompletionResponse {
             text: r#"{"score": 0.9, "label": "risk"}"#.into(),
+            finish_reason: Some("stop".into()),
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
@@ -786,6 +878,7 @@ mod tests {
     fn completion_response_parse_json_strips_fences() {
         let resp = CompletionResponse {
             text: "```json\n{\"k\": 1}\n```".into(),
+            finish_reason: Some("stop".into()),
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,

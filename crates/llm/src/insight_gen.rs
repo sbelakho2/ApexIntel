@@ -483,6 +483,112 @@ pub struct SupplyChainRiskNarrative {
 // Generator
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Allowed labels for the finite enum-like narrative fields.
+const VALID_SEVERITIES: [&str; 3] = ["critical", "warning", "info"];
+const VALID_CATEGORIES: [&str; 7] = [
+    "supply_chain",
+    "geopolitical",
+    "competitive",
+    "regulatory",
+    "financial",
+    "technology",
+    "personnel",
+];
+const VALID_TIME_HORIZONS: [&str; 4] = ["immediate", "near_term", "medium_term", "long_term"];
+const VALID_IMPACT_MAGNITUDES: [&str; 4] = ["critical", "high", "medium", "low"];
+
+/// Normalize a label field to lowercase and reject values outside the enum.
+fn normalize_label(value: &str, allowed: &[&str], field: &str) -> Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if allowed.contains(&normalized.as_str()) {
+        Ok(normalized)
+    } else {
+        anyhow::bail!(
+            "insight narrative field '{field}' has invalid label '{value}'; expected one of: {}",
+            allowed.join("|")
+        )
+    }
+}
+
+/// Validate (and normalize) the finite label fields of a narrative.
+///
+/// Free-text fields are left alone; only the fields whose values are consumed
+/// as enums by downstream routing/consensus are checked, so an off-schema
+/// label can never silently propagate (e.g. "urgent" as a severity).
+fn validate_narrative_labels(narrative: &mut LlmInsightNarrative) -> Result<()> {
+    narrative.severity = normalize_label(&narrative.severity, &VALID_SEVERITIES, "severity")?;
+    narrative.category = normalize_label(&narrative.category, &VALID_CATEGORIES, "category")?;
+    narrative.time_horizon = normalize_label(
+        &narrative.time_horizon,
+        &VALID_TIME_HORIZONS,
+        "time_horizon",
+    )?;
+    narrative.impact_magnitude = normalize_label(
+        &narrative.impact_magnitude,
+        &VALID_IMPACT_MAGNITUDES,
+        "impact_magnitude",
+    )?;
+    Ok(())
+}
+
+/// Apply majority consensus from independently sampled assessments.
+///
+/// `narratives` always includes the base assessment first. When both severity
+/// and category reach a majority (at least two of three agreeing), the base
+/// narrative adopts the consensus and is marked as such; otherwise it keeps
+/// its original assessment and is flagged `consensus_reached = false` for
+/// human review. Dissenting assessments are preserved either way. A short
+/// `narratives` slice (e.g. only the base because corroboration calls failed)
+/// can never reach a majority, so the base labels are kept.
+fn apply_consensus(narrative: &mut LlmInsightNarrative, narratives: &[LlmInsightNarrative]) {
+    let consensus_severity = majority_label(
+        &narratives
+            .iter()
+            .map(|n| n.severity.clone())
+            .collect::<Vec<_>>(),
+    );
+    let consensus_category = majority_label(
+        &narratives
+            .iter()
+            .map(|n| n.category.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    let dissenting_opinions: Vec<DissentingOpinion> = narratives
+        .iter()
+        .filter(|n| {
+            let sev_dissents = consensus_severity
+                .as_ref()
+                .map(|s| n.severity != *s)
+                .unwrap_or(true);
+            let cat_dissents = consensus_category
+                .as_ref()
+                .map(|c| n.category != *c)
+                .unwrap_or(true);
+            sev_dissents || cat_dissents
+        })
+        .map(|n| DissentingOpinion {
+            severity: n.severity.clone(),
+            category: n.category.clone(),
+            confidence: n.confidence,
+            rationale_summary: truncate_detailed_analysis(&n.detailed_analysis, 200),
+        })
+        .collect();
+
+    match (consensus_severity, consensus_category) {
+        (Some(sev), Some(cat)) => {
+            narrative.severity = sev;
+            narrative.category = cat;
+            narrative.consensus_reached = true;
+        }
+        _ => {
+            narrative.consensus_reached = false;
+        }
+    }
+
+    narrative.dissenting_opinions = dissenting_opinions;
+}
+
 /// LLM-powered insight generator.
 pub struct InsightGenerator {
     client: LlmClient,
@@ -533,6 +639,7 @@ impl InsightGenerator {
             )
         })?;
         narrative.confidence = narrative.confidence.clamp(0.0, 1.0);
+        validate_narrative_labels(&mut narrative)?;
         Ok(narrative)
     }
 
@@ -646,68 +753,32 @@ Respond ONLY with valid JSON:
             for offset in 1..=2 {
                 let mut consensus_config = config.clone();
                 consensus_config.seed = Some(prompt_seed(&base_prompt_hash, offset));
-                narratives.push(
-                    self.complete_narrative_with_config(
+                match self
+                    .complete_narrative_with_config(
                         signal_type,
                         base_messages.clone(),
                         &consensus_config,
                         &nonce,
                     )
-                    .await?,
-                );
-            }
-
-            // Capture dissenting opinions before applying consensus
-            let consensus_severity = majority_label(
-                &narratives
-                    .iter()
-                    .map(|n| n.severity.clone())
-                    .collect::<Vec<_>>(),
-            );
-            let consensus_category = majority_label(
-                &narratives
-                    .iter()
-                    .map(|n| n.category.clone())
-                    .collect::<Vec<_>>(),
-            );
-
-            // Build dissenting opinions list - narratives that disagree with consensus
-            let dissenting_opinions: Vec<DissentingOpinion> = narratives
-                .iter()
-                .filter(|n| {
-                    let sev_matches = consensus_severity
-                        .as_ref()
-                        .map(|s| n.severity != *s)
-                        .unwrap_or(true);
-                    let cat_matches = consensus_category
-                        .as_ref()
-                        .map(|c| n.category != *c)
-                        .unwrap_or(true);
-                    sev_matches || cat_matches
-                })
-                .map(|n| DissentingOpinion {
-                    severity: n.severity.clone(),
-                    category: n.category.clone(),
-                    confidence: n.confidence,
-                    rationale_summary: truncate_detailed_analysis(&n.detailed_analysis, 200),
-                })
-                .collect();
-
-            // Apply consensus if reached, otherwise keep original
-            match (consensus_severity, consensus_category) {
-                (Some(sev), Some(cat)) => {
-                    narrative.severity = sev;
-                    narrative.category = cat;
-                    narrative.consensus_reached = true;
-                }
-                _ => {
-                    // No consensus - flag for human review but keep original assessment
-                    narrative.consensus_reached = false;
+                    .await
+                {
+                    Ok(assessment) => narratives.push(assessment),
+                    Err(error) => {
+                        // A failed corroboration call must not discard the
+                        // base assessment: consensus is simply not established
+                        // from that sample and the remaining assessments are
+                        // used (the base keeps its original labels).
+                        tracing::warn!(
+                            %error,
+                            offset,
+                            signal_type,
+                            "consensus narrative failed; continuing with available assessments"
+                        );
+                    }
                 }
             }
 
-            // Always preserve dissenting opinions for analyst review
-            narrative.dissenting_opinions = dissenting_opinions;
+            apply_consensus(&mut narrative, &narratives);
         } else {
             narrative.consensus_reached = true; // Single assessment, trivially consensus
         }
@@ -1404,6 +1475,74 @@ mod tests {
             make("info", "financial"),
         ]);
         assert!(result.is_err());
+    }
+
+    fn test_narrative(severity: &str, category: &str) -> LlmInsightNarrative {
+        LlmInsightNarrative {
+            headline: "h".into(),
+            executive_summary: "e".into(),
+            detailed_analysis: "A detailed analysis sentence long enough to truncate.".into(),
+            recommendation: "r".into(),
+            severity: severity.into(),
+            category: category.into(),
+            regions: vec!["TN".into()],
+            confidence: 0.7,
+            time_horizon: "near_term".into(),
+            impact_magnitude: "high".into(),
+            temporal_claims: vec![],
+            temporal_validation: None,
+            flavor: InsightFlavor::default(),
+            dissenting_opinions: vec![],
+            consensus_reached: true,
+        }
+    }
+
+    #[test]
+    fn narrative_labels_are_normalized_and_validated() {
+        let mut narrative = test_narrative("CRITICAL", "Supply_Chain");
+        validate_narrative_labels(&mut narrative)
+            .unwrap_or_else(|error| panic!("case-insensitive labels must validate: {error}"));
+        assert_eq!(narrative.severity, "critical");
+        assert_eq!(narrative.category, "supply_chain");
+
+        let mut invalid = test_narrative("urgent", "supply_chain");
+        assert!(
+            validate_narrative_labels(&mut invalid).is_err(),
+            "off-schema severity must be rejected"
+        );
+
+        let mut invalid_category = test_narrative("warning", "misc");
+        assert!(
+            validate_narrative_labels(&mut invalid_category).is_err(),
+            "off-schema category must be rejected"
+        );
+    }
+
+    #[test]
+    fn apply_consensus_without_corroboration_keeps_base_labels() {
+        let base = test_narrative("critical", "supply_chain");
+        let mut narrative = base.clone();
+        apply_consensus(&mut narrative, &[base]);
+        assert!(
+            !narrative.consensus_reached,
+            "a single assessment cannot establish consensus"
+        );
+        assert_eq!(narrative.severity, "critical");
+        assert_eq!(narrative.category, "supply_chain");
+    }
+
+    #[test]
+    fn apply_consensus_accepts_majority_and_records_dissent() {
+        let base = test_narrative("critical", "supply_chain");
+        let second = test_narrative("critical", "supply_chain");
+        let dissent = test_narrative("warning", "geopolitical");
+        let mut narrative = base.clone();
+        apply_consensus(&mut narrative, &[base, second, dissent]);
+        assert!(narrative.consensus_reached);
+        assert_eq!(narrative.severity, "critical");
+        assert_eq!(narrative.category, "supply_chain");
+        assert_eq!(narrative.dissenting_opinions.len(), 1);
+        assert_eq!(narrative.dissenting_opinions[0].severity, "warning");
     }
 
     #[test]

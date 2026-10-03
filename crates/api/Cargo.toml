@@ -20,6 +20,7 @@ apex-core = { path = "../core" }
 apex-store = { path = "../store" }
 apex-crawl = { path = "../crawl" }
 apex-shared = { path = "../shared" }
+apex-recipes = { path = "../recipes" }
 apex-insights = { path = "../insights" }
 apex-investigation = { path = "../investigation" }
 apex-triage = { path = "../triage" }

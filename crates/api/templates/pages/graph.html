@@ -8,7 +8,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Graph</li>
@@ -17,7 +17,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Graph Explorer", "radio", "Interactive relationship map with pan, zoom, search, and node inspection.", "") %}
+{% call m::page_header("Graph", "share", "Relationship map with pan, zoom, search, and node inspection.", "") %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-error-state" role="alert" data-degraded="true">
@@ -276,18 +276,17 @@
   </section>
 
   <section class="apex-card p-4">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Relationships</h2>
+    <h2>Relationships</h2>
     <div class="mt-3 divide-y divide-rams-line">
       {% for edge in edge_rows %}
-      <div class="flex items-center justify-between gap-3 py-2 text-sm">
-        <span class="font-semibold">{{ edge.source_short }} → {{ edge.target_short }}</span>
-        <span class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">
-          <span>{{ edge.edge_type }}</span>
-          <span class="apex-chip apex-chip-idle">{{ edge.confidence }}</span>
-          <span title="First seen">{{ edge.first_seen }}</span>
-          <span title="Last confirmed">{{ edge.last_confirmed }}</span>
-          <span title="Evidence count">{% if let Some(count) = edge.evidence_count %}{{ count }} ev.{% else %}evidence count not recorded{% endif %}</span>
-          <span title="Source">{{ edge.source }}</span>
+      <div class="flex flex-col gap-1 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <span class="min-w-0 font-semibold">{{ edge.source_short }} → {{ edge.target_short }}</span>
+        <span class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-rams-muted">
+          <span class="font-medium">{{ edge.edge_type }}</span>
+          <span class="tabular-nums">{{ edge.confidence }} confidence</span>
+          <span class="tabular-nums">{{ edge.evidence_display }}</span>
+          <span class="tabular-nums" title="First seen">{{ edge.first_seen }}</span>
+          <span class="text-[10px] uppercase tracking-[0.06em]">{{ edge.source }}</span>
         </span>
       </div>
       {% endfor %}

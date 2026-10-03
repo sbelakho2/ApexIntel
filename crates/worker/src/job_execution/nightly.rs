@@ -2156,6 +2156,9 @@ async fn generate_and_stage_hypotheses(
     let mut existing_set: HashSet<String> = existing_codes.iter().cloned().collect();
 
     let client = crate::build_quality_llm_client();
+    // #92: hypothesis generation issues model calls for the whole batch under
+    // one process-wide permit.
+    let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
     let results = generate_hypotheses_batch(client.as_ref(), candidates, &existing_codes).await;
 
     for (result, candidate) in results.iter().zip(candidates.iter()) {

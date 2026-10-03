@@ -2,7 +2,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li aria-hidden="true">/</li>
     <li><a href="/triage" class="hover:text-rams-foreground">Triage Queue</a></li>
@@ -107,15 +107,20 @@
     <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Actions</h2>
     <div class="flex flex-wrap gap-2">
       {% if item.status.as_str() == "pending" || item.status.as_str() == "triaged" %}
-        <form method="post" action="/triage/{{ item.id }}/acknowledge" data-confirm="Acknowledge this triage item?" style="display:inline">
+        <form method="post" action="/triage/{{ item.id }}/acknowledge"
+              hx-post="/triage/{{ item.id }}/acknowledge" hx-swap="none"
+              data-confirm="Acknowledge this triage item?" style="display:inline">
           <button type="submit" class="apex-btn-primary px-4 py-2 text-xs">Acknowledge</button>
         </form>
       {% endif %}
       {% if item.status.as_str() != "resolved" && item.status.as_str() != "dismissed" %}
-        <form method="post" action="/triage/{{ item.id }}/resolve" data-confirm="Resolve this triage item?" style="display:inline">
+        <form method="post" action="/triage/{{ item.id }}/resolve"
+              hx-post="/triage/{{ item.id }}/resolve" hx-swap="none"
+              data-confirm="Resolve this triage item?" style="display:inline">
           <button type="submit" class="apex-btn-secondary px-4 py-2 text-xs">Resolve</button>
         </form>
         <form method="post" action="/triage/{{ item.id }}/dismiss" style="display:inline"
+              hx-post="/triage/{{ item.id }}/dismiss" hx-swap="none"
               onsubmit="return confirm('Dismiss this triage item?')">
           <button type="submit" class="apex-btn-ghost px-4 py-2 text-xs text-rams-muted">Dismiss</button>
         </form>
@@ -125,7 +130,9 @@
     <!-- Override form -->
     <div class="mt-4 pt-4 border-t border-rams-line">
       <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-2">Override Score</h3>
-      <form method="post" action="/triage/{{ item.id }}/override" class="flex items-center gap-2">
+      <form method="post" action="/triage/{{ item.id }}/override"
+            hx-post="/triage/{{ item.id }}/override" hx-swap="none"
+            class="flex items-center gap-2">
         <input type="number" name="score" min="0" max="1" step="0.05"
                value="{{ item.composite_score }}"
                class="apex-input w-24 text-xs">

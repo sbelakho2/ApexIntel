@@ -591,67 +591,15 @@ impl VerificationSummary {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Slack integration — notify on confirmed High / Critical warnings
+// Slack integration
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Send a Slack notification when a verified warning is **Confirmed** with
-/// **High** or **Critical** severity.
-///
-/// This bridges the verification pipeline with the Block Kit Slack module.
-/// No-op when the verification status is not `Confirmed` or when the severity
-/// is below High.
-///
-/// # Errors
-///
-/// Propagates errors from the Slack webhook client.
-pub async fn notify_slack_on_confirmed_warning(
-    result: &VerificationResult,
-    severity: &str,
-    title: &str,
-    webhook: &crate::slack::SlackWebhook,
-) -> anyhow::Result<()> {
-    if result.status != VerificationStatus::Confirmed {
-        return Ok(());
-    }
-
-    let severity_lower = severity.trim().to_ascii_lowercase();
-    if severity_lower != "high" && severity_lower != "critical" {
-        return Ok(());
-    }
-
-    let slack_severity = crate::slack::SlackMessageSeverity::from_str(severity);
-    let alert_type = crate::slack::AlertType::Warning;
-
-    let mut msg =
-        crate::slack::SlackMessage::new(slack_severity, alert_type, title, &result.detail)
-            .with_field("Confidence", format!("{:.0}%", result.confidence * 100.0))
-            .with_field("Verifier", &result.verifier)
-            .with_source_url(format!(
-                "https://apexintel.io/warnings/{}",
-                result.warning_id
-            ));
-
-    if result.confidence >= 0.8 {
-        msg = msg.with_field("Status", "✅ Confirmed (high confidence)");
-    }
-
-    webhook.send(&msg).await
-}
-
-/// Convenience wrapper that builds a [`SlackWebhook`] from environment and
-/// calls [`notify_slack_on_confirmed_warning`].
-///
-/// Useful when the caller does not already hold a webhook client.
-pub async fn notify_slack_on_confirmed_warning_from_env(
-    result: &VerificationResult,
-    severity: &str,
-    title: &str,
-) -> anyhow::Result<()> {
-    let config = crate::slack::SlackConfig::from_env();
-    let webhook = crate::slack::SlackWebhook::new(&config)
-        .map_err(|e| anyhow::anyhow!("failed to create Slack webhook client: {e}"))?;
-    notify_slack_on_confirmed_warning(result, severity, title, &webhook).await
-}
+//
+// audit #81: the direct Slack send helpers that used to live here
+// (`notify_slack_on_confirmed_warning*`) were a second Slack delivery pipeline
+// that bypassed leases, retries and dead-lettering. Every Slack alert now goes
+// through the canonical durable path: warning ingress -> notification outbox ->
+// `notification_delivery` router (`WebhookFormat::Slack`). Do not reintroduce a
+// direct `webhook.send` call here.
 
 // ─── Tests ─────────────────────────────────────────────────────────────
 

@@ -29,6 +29,35 @@ use crate::quality_gates::{
 
 // Quality gate types and functions extracted to llm_orchestration module
 
+/// #97: an LLM request that timed out is retried at most this many times. A
+/// timeout means the endpoint is saturated or the model is too slow — replaying
+/// the same expensive request up to `LLM_MAX_RETRIES` times only deepens the
+/// overload. (Errors that are not timeouts keep the existing behavior.)
+const MAX_TIMEOUT_RETRIES: u32 = 1;
+
+/// Detect a timeout in an `anyhow` error chain by its message.
+///
+/// `apex_llm::inference::LlmClient` surfaces reqwest timeouts as opaque
+/// `anyhow` errors, so the chain text is the only stable marker available at
+/// this call site.
+fn is_timeout_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        message.contains("timed out") || message.contains("timeout")
+    })
+}
+
+/// #96/#97: independent consensus re-sampling for critical insights nearly
+/// doubles model load, so it is opt-in via `LLM_CONSENSUS_REVIEW` (default
+/// off). Failed consensus calls are tolerated: they are logged and the primary
+/// assessment is preserved.
+fn consensus_review_enabled() -> bool {
+    std::env::var("LLM_CONSENSUS_REVIEW")
+        .ok()
+        .map(|value| apex_core::env::parse_truthy_flag(&value))
+        .unwrap_or(false)
+}
+
 /// Extract key facts from evidence text using pattern matching.
 /// Returns a list of specific facts (names, dates, numbers, locations).
 #[cfg(feature = "llm")]
@@ -812,10 +841,25 @@ REQUIREMENTS:
             "high" => "high",
             "warning" | "medium" => "medium",
             "info" | "low" => "low",
-            _ if confidence >= 0.8 => "critical",
-            _ if confidence >= 0.7 => "high",
-            _ if confidence >= 0.4 => "medium",
-            _ => "low",
+            // #98: validate the label enum. A model that invents a label must
+            // not leak it into stored metadata; derive a valid label from the
+            // confidence and surface the invalid label for observability.
+            other => {
+                tracing::warn!(
+                    label = %other,
+                    confidence,
+                    "LLM returned an unrecognized severity label; deriving severity from confidence"
+                );
+                if confidence >= 0.8 {
+                    "critical"
+                } else if confidence >= 0.7 {
+                    "high"
+                } else if confidence >= 0.4 {
+                    "medium"
+                } else {
+                    "low"
+                }
+            }
         }
     }
 
@@ -847,6 +891,9 @@ REQUIREMENTS:
     ];
 
     let mut previous_failure_reasons: Vec<&'static str> = Vec::new();
+    // #97: count timeout-only retries separately; they are capped at
+    // MAX_TIMEOUT_RETRIES regardless of LLM_MAX_RETRIES.
+    let mut timeout_retries: u32 = 0;
     for attempt in 1..=*crate::config::LLM_MAX_RETRIES {
         // Exponential backoff: 0s on first attempt, 1s, 2s, 4s...
         if attempt > 1 {
@@ -862,10 +909,29 @@ REQUIREMENTS:
         if let Some(guidance) = retry_guidance.as_deref() {
             messages.push(ChatMessage::user(guidance));
         }
-        let mut resp = llm_client
-            .complete_with_config(messages, &config)
-            .await
-            .with_context(|| format!("LLM insight generation failed for {}", entity_ctx.name))?;
+        // #92: hold a process-wide model-call permit only around the request.
+        let mut resp = {
+            let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
+            match llm_client.complete_with_config(messages, &config).await {
+                Ok(resp) => resp,
+                Err(error) if is_timeout_error(&error) && timeout_retries < MAX_TIMEOUT_RETRIES => {
+                    timeout_retries += 1;
+                    tracing::warn!(
+                        entity = %entity_ctx.name,
+                        attempt,
+                        %error,
+                        "LLM request timed out; retrying once (timeouts are not retried beyond that)"
+                    );
+                    crate::observability::WORKER_METRICS.record_llm_retry();
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("LLM insight generation failed for {}", entity_ctx.name)
+                    });
+                }
+            }
+        };
 
         tracing::info!(
             entity = %entity_ctx.name,
@@ -1225,9 +1291,13 @@ REQUIREMENTS:
             let assessment_severity =
                 normalize_assessment_severity(&parsed.severity, parsed_confidence);
             let mut consensus_reached = true;
+            let mut consensus_samples_failed: u32 = 0;
             let mut dissenting_opinions = Vec::new();
 
-            if assessment_severity == "critical" {
+            // #96/#97: consensus review is opt-in (LLM_CONSENSUS_REVIEW). A
+            // failed sample is tolerated — it is counted and the primary
+            // assessment is preserved rather than rejecting the insight.
+            if assessment_severity == "critical" && consensus_review_enabled() {
                 for sample_idx in 1..=2 {
                     let sample_instruction = format!(
                         "Independent review sample {}. Reassess the evidence from scratch, remain evidence-bound, and return the same JSON schema.",
@@ -1239,10 +1309,14 @@ REQUIREMENTS:
                         ChatMessage::user(sample_instruction),
                     ];
 
-                    match llm_client
-                        .complete_with_config(sample_messages, &config)
-                        .await
-                    {
+                    // #92: one permit per consensus model call.
+                    let sample_response = {
+                        let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
+                        llm_client
+                            .complete_with_config(sample_messages, &config)
+                            .await
+                    };
+                    match sample_response {
                         Ok(sample_resp) => match sample_resp.parse_json::<LlmInsightResponse>() {
                             Ok(sample) => {
                                 let sample_confidence = sample.confidence.clamp(0.0, 1.0);
@@ -1264,20 +1338,22 @@ REQUIREMENTS:
                                 }
                             }
                             Err(error) => {
+                                consensus_samples_failed += 1;
                                 tracing::warn!(
                                     entity = %entity_ctx.name,
                                     sample_idx,
                                     %error,
-                                    "LLM consensus sample JSON parse failed"
+                                    "LLM consensus sample JSON parse failed; primary assessment preserved"
                                 );
                             }
                         },
                         Err(error) => {
+                            consensus_samples_failed += 1;
                             tracing::warn!(
                                 entity = %entity_ctx.name,
                                 sample_idx,
                                 %error,
-                                "LLM consensus sample request failed"
+                                "LLM consensus sample request failed; primary assessment preserved"
                             );
                         }
                     }
@@ -1288,6 +1364,7 @@ REQUIREMENTS:
                 "assessment_severity": assessment_severity,
                 "assessment_category": category,
                 "consensus_reached": consensus_reached,
+                "consensus_samples_failed": consensus_samples_failed,
                 "dissenting_opinions": dissenting_opinions,
             });
             return Ok((

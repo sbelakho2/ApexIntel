@@ -848,6 +848,58 @@ impl PgStore {
             .await?)
     }
 
+    /// Paged variant used by the browser inbox: `limit`/`offset` keep a
+    /// long-lived account from rendering thousands of rows at once.
+    pub async fn list_notifications_paged(
+        &self,
+        user_id: &str,
+        include_read: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<AnalystNotificationRecord>> {
+        let limit = clamp_limit(limit);
+        let mut qb = QueryBuilder::<Postgres>::new(
+            "SELECT id, user_id, category, title, body, entity_type, entity_id, action_url, is_read, read_at, created_at FROM analyst_notifications WHERE user_id = ",
+        );
+        qb.push_bind(user_id);
+        if !include_read {
+            qb.push(" AND is_read = FALSE");
+        }
+        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset.max(0));
+
+        Ok(qb
+            .build_query_as::<AnalystNotificationRecord>()
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
+    pub async fn count_notifications(&self, user_id: &str, include_read: bool) -> Result<i64> {
+        let mut qb = QueryBuilder::<Postgres>::new(
+            "SELECT COUNT(*)::bigint FROM analyst_notifications WHERE user_id = ",
+        );
+        qb.push_bind(user_id);
+        if !include_read {
+            qb.push(" AND is_read = FALSE");
+        }
+        let (count,): (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
+        Ok(count)
+    }
+
+    /// Marks every unread notification read for the user; returns the number
+    /// of rows updated (0 when the inbox was already clear).
+    pub async fn mark_all_notifications_read(&self, user_id: &str) -> Result<u64> {
+        let result = sqlx::query(
+            "UPDATE analyst_notifications SET is_read = TRUE, read_at = COALESCE(read_at, now()) WHERE user_id = $1 AND is_read = FALSE",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn unread_notification_count(&self, user_id: &str) -> Result<i64> {
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*)::bigint FROM analyst_notifications WHERE user_id = $1 AND is_read = FALSE",
@@ -870,6 +922,44 @@ impl PgStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete one notification the caller owns. Returns `false` when the id
+    /// does not exist or belongs to another user (never deleted cross-user).
+    pub async fn delete_notification(&self, user_id: &str, id: Uuid) -> Result<bool> {
+        let result =
+            sqlx::query("DELETE FROM analyst_notifications WHERE id = $1 AND user_id = $2")
+                .bind(id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete every notification in the caller's inbox, read or unread, and
+    /// return how many rows were removed.
+    ///
+    /// Marking read does not make an inbox of thousands "go away" — the rows
+    /// stay visible under the `all` filter and keep growing. Clearing is a
+    /// real `DELETE`, scoped to the session principal so one user can never
+    /// clear another's inbox.
+    pub async fn delete_all_notifications(&self, user_id: &str) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM analyst_notifications WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Delete only the already-read notifications in the caller's inbox,
+    /// preserving unread ones.
+    pub async fn delete_read_notifications(&self, user_id: &str) -> Result<u64> {
+        let result =
+            sqlx::query("DELETE FROM analyst_notifications WHERE user_id = $1 AND is_read = TRUE")
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn record_export_history(
@@ -1532,7 +1622,15 @@ impl PgStore {
             FROM investigation_workspaces w
             WHERE (
                     $2::boolean
+                 -- Owner match accepts both stored forms during the
+                 -- username → user-id transition (see migration 103):
+                 -- owner holding the id, or the username of that id.
                  OR w.owner_id = $1
+                 OR w.owner_id IN (SELECT au.id FROM app_users au WHERE au.username = $1)
+                 OR EXISTS (
+                       SELECT 1 FROM app_users au
+                       WHERE au.username = w.owner_id AND au.id = $1
+                 )
                  OR w.visibility IN ('organization', 'public')
                  OR EXISTS (
                        SELECT 1 FROM workspace_assignments a
@@ -1592,7 +1690,14 @@ impl PgStore {
               )
               AND (
                     $3::boolean
+                 -- Owner match accepts both stored forms during the
+                 -- username → user-id transition (see migration 103).
                  OR w.owner_id = $2
+                 OR w.owner_id IN (SELECT au.id FROM app_users au WHERE au.username = $2)
+                 OR EXISTS (
+                       SELECT 1 FROM app_users au
+                       WHERE au.username = w.owner_id AND au.id = $2
+                 )
                  OR w.visibility IN ('organization', 'public')
                  OR EXISTS (
                        SELECT 1 FROM workspace_assignments a
@@ -1818,6 +1923,13 @@ impl PgStore {
                        WHERE w.id = a.workspace_id
                          AND (
                                w.owner_id = $1
+                            -- Both stored owner forms during the
+                            -- username → user-id transition (migration 103).
+                            OR w.owner_id IN (SELECT au.id FROM app_users au WHERE au.username = $1)
+                            OR EXISTS (
+                                  SELECT 1 FROM app_users au
+                                  WHERE au.username = w.owner_id AND au.id = $1
+                               )
                             OR w.visibility IN ('organization', 'public')
                             OR EXISTS (
                                   SELECT 1 FROM workspace_assignments wa

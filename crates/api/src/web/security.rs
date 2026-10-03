@@ -334,6 +334,10 @@ pub async fn security_page(
     );
     DegradedNotice::capture(&lookalike_state, &mut degraded_notice);
     let lookalike_obs = lookalike_state.into_items();
+    // #143: the same lookalike/target pair is written by every scan, so the
+    // raw observation list repeats it; keep only the newest row per pair
+    // (observations are ordered newest-first).
+    let mut seen_lookalike_pairs = std::collections::HashSet::new();
     let lookalike_domains: Vec<LookalikeDomain> = lookalike_obs
         .iter()
         .map(|o| {
@@ -372,6 +376,13 @@ pub async fn security_page(
                 is_active: v.get("active").and_then(|b| b.as_bool()).unwrap_or(false),
                 risk_level: risk_level.to_string(),
             }
+        })
+        .filter(|view| {
+            !view.domain.is_empty()
+                && seen_lookalike_pairs.insert((
+                    view.domain.to_ascii_lowercase(),
+                    view.target_domain.to_ascii_lowercase(),
+                ))
         })
         .collect();
 

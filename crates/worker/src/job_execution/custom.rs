@@ -177,6 +177,13 @@ mod tests {
             "CUSTOM_JOB_COMMAND_ENVCLEAR",
             &format!("{} {}", capture.display(), captured.display()),
         );
+        // Pre-warm first-exec: macOS Gatekeeper's assessment of a freshly
+        // written script can exceed the 5s job timeout, which made this test
+        // flake (the process was killed during assessment, not by the job).
+        // Run it once to completion, then clear the artifact so the assertion
+        // below still proves env_clear (the pre-warm inherits the secret).
+        let _ = std::process::Command::new(&capture).arg(&captured).status();
+        let _ = std::fs::remove_file(&captured);
         let run = run_custom_job("envclear").await;
         assert!(
             matches!(run.status, JobStatus::Succeeded { .. }),

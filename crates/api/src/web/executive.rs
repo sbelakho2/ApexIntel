@@ -5,7 +5,7 @@
 //! Reuses existing [`PgStore`] methods for dashboard stats, strategic opportunities,
 //! critical threats, and insights.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use askama::Template;
@@ -112,6 +112,62 @@ pub struct ExecutiveDashboardPage {
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
+/// Case-insensitive whole-word containment. Tracked competitor names must
+/// match as whole words: "Apex" must not match "ApexIntel" (audit #156).
+fn contains_whole_word(haystack: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    let haystack_lower = haystack.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    let mut search_from = 0;
+    while let Some(relative) = haystack_lower[search_from..].find(&needle_lower) {
+        let start = search_from + relative;
+        let end = start + needle_lower.len();
+        let before_ok = haystack_lower[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric());
+        let after_ok = haystack_lower[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = start + needle_lower.chars().next().map_or(1, char::len_utf8);
+        if search_from >= haystack_lower.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// Whether an insight mentions a tracked competitor: a resolved entity id
+/// whose name matches, or a whole-word occurrence in its title, summary, or
+/// tags.
+fn insight_mentions_competitor(
+    insight: &apex_store::postgres::InsightRow,
+    competitor: &str,
+    entity_names: &HashMap<String, String>,
+) -> bool {
+    let entity_match = insight.entity_ids.as_ref().is_some_and(|ids| {
+        ids.iter().any(|id| {
+            entity_names
+                .get(&id.to_string())
+                .is_some_and(|name| name.eq_ignore_ascii_case(competitor))
+        })
+    });
+    entity_match
+        || contains_whole_word(&insight.title, competitor)
+        || contains_whole_word(&insight.summary, competitor)
+        || insight
+            .tags
+            .as_ref()
+            .is_some_and(|tags| tags.iter().any(|tag| contains_whole_word(tag, competitor)))
+}
+
 /// Classify a stored `strategic_opportunities.status` for the wins/losses
 /// panel. The table's `chk_opportunity_status` constraint stores a terminal
 /// win as `completed` and a loss as `abandoned`; `won`/`lost` are accepted so
@@ -205,34 +261,78 @@ pub async fn executive_dashboard(
         .map(|c| c.name)
         .collect();
 
+    // #156: resolve referenced entity ids to names once, so competitor
+    // attribution and the risks/wins panels show names, not raw UUIDs.
+    let mut entity_ids: Vec<uuid::Uuid> = Vec::new();
+    entity_ids.extend(
+        recent_insights
+            .iter()
+            .flat_map(|insight| insight.entity_ids.clone().unwrap_or_default()),
+    );
+    for raw in threats.iter().map(|t| t.entity_id.as_deref()).chain(
+        opportunities
+            .iter()
+            .map(|o| o.entity_id.as_deref())
+            .chain(closed_opportunities.iter().map(|o| o.entity_id.as_deref())),
+    ) {
+        if let Some(id) = raw.and_then(|value| uuid::Uuid::parse_str(value).ok()) {
+            entity_ids.push(id);
+        }
+    }
+    entity_ids.sort();
+    entity_ids.dedup();
+
+    let company_entity_state = DataState::from_result(
+        store.get_company_names_by_ids(&entity_ids).await,
+        "get_company_names_by_ids failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&company_entity_state, &mut degraded_notice);
+    let mut entity_names: HashMap<String, String> = HashMap::new();
+    for (id, name, _, _) in company_entity_state.into_items() {
+        entity_names.insert(id.to_string(), name);
+    }
+    let person_entity_state = DataState::from_result(
+        store.get_person_names_by_ids(&entity_ids).await,
+        "get_person_names_by_ids failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&person_entity_state, &mut degraded_notice);
+    for (id, name, _) in person_entity_state.into_items() {
+        entity_names.entry(id.to_string()).or_insert(name);
+    }
+
+    let resolve_entity_name = |raw: Option<&str>| -> Option<String> {
+        match raw {
+            None => None,
+            Some(value) => match uuid::Uuid::parse_str(value) {
+                Ok(id) => entity_names.get(&id.to_string()).cloned(),
+                // Not a UUID: the stored value is already a human label.
+                Err(_) => Some(value.to_string()),
+            },
+        }
+    };
+
     let unack_warnings = stats_data.unacknowledged_warnings as i64;
     let ctx = PageContext::from_session(&session, "/executive", unack_warnings);
 
     // ── Build stat cards ─────────────────────────────────────────────────
 
-    let total_opportunities = opportunities.len();
-    let active_threats = threats.len();
-    // `list_critical_threats` returns every *active* threat regardless of
-    // severity, so the critical count must come from the severities rather
-    // than reusing the total.
-    let critical_threats = threats
-        .iter()
-        .filter(|threat| threat.severity.eq_ignore_ascii_case("critical"))
-        .count();
+    // #156: headline counts are SQL COUNT(*)/AVG aggregates from the store,
+    // not the length of the capped page (totals previously froze at the page
+    // limit and "Avg Confidence" ignored every row beyond it).
+    let aggregates_state = DataState::from_result(
+        store
+            .executive_dashboard_aggregates(true, true, 0.7, None)
+            .await,
+        "executive_dashboard_aggregates failed (web executive dashboard)",
+        |(opportunities, threats, _, _, _)| *opportunities == 0 && *threats == 0,
+    );
+    DegradedNotice::capture(&aggregates_state, &mut degraded_notice);
+    let (total_opportunities, active_threats, high_priority_count, avg_confidence, _regions) =
+        aggregates_state.into_loaded_or((0_i64, 0_i64, 0_i64, 0.0_f64, Vec::new()));
+
     let companies_tracked = stats_data.total_companies;
-    let avg_confidence = {
-        let confidence_values: Vec<f64> = opportunities
-            .iter()
-            .map(|o| o.confidence)
-            .chain(threats.iter().map(|t| t.confidence))
-            .collect();
-        if confidence_values.is_empty() {
-            0.0
-        } else {
-            let sum: f64 = confidence_values.iter().sum();
-            (sum / confidence_values.len() as f64 * 100.0).round() / 100.0
-        }
-    };
 
     let stat_cards = vec![
         ExecutiveStatCard {
@@ -240,20 +340,17 @@ pub async fn executive_dashboard(
             value: total_opportunities.to_string(),
             icon: "trending-up".into(),
             accent_class: "metric-rail-green".into(),
-            delta: Some(format!("{} open", total_opportunities)),
-            direction: "up".into(),
+            delta: None,
+            direction: "flat".into(),
         },
         ExecutiveStatCard {
             label: "Active Threats".into(),
             value: active_threats.to_string(),
             icon: "alert-triangle".into(),
             accent_class: "metric-rail-red".into(),
-            delta: Some(if critical_threats == active_threats {
-                format!("{critical_threats} critical")
-            } else {
-                format!("{critical_threats} critical · {active_threats} active")
-            }),
-            direction: "up".into(),
+            delta: (high_priority_count > 0)
+                .then(|| format!("{high_priority_count} high priority")),
+            direction: "flat".into(),
         },
         ExecutiveStatCard {
             label: "Companies Tracked".into(),
@@ -275,44 +372,24 @@ pub async fn executive_dashboard(
 
     // ── Build competitor mention-volume ──────────────────────────────────
 
-    // Compute mention-counts from insight entity references (tags/entities)
-    let mut mention_counts: BTreeMap<String, i64> = BTreeMap::new();
-    for insight in &recent_insights {
-        if let Some(ref tags) = insight.tags {
-            for tag in tags {
-                *mention_counts.entry(tag.clone()).or_default() += 1;
-            }
-        }
-        // Also scan entity_ids for competitor references
-        if let Some(ref entity_ids) = insight.entity_ids {
-            for _eid in entity_ids {
-                // We can't resolve entity names without another query; use tags for now
-            }
-        }
-    }
-    // Fallback: if no tag-based mentions, extract from insight titles using
-    // the tracked competitor set (B312 — previously a hardcoded demo list).
-    for name in &competitor_names {
-        if name.trim().is_empty() {
-            continue;
-        }
-        let count = recent_insights
-            .iter()
-            .filter(|i| {
-                i.title.contains(name.as_str())
-                    || i.summary.contains(name.as_str())
-                    || i.tags
-                        .as_ref()
-                        .is_some_and(|t| t.iter().any(|tag| tag.contains(name.as_str())))
-            })
-            .count() as i64;
-        if count > 0 {
-            *mention_counts.entry(name.clone()).or_default() += count;
-        }
-    }
-
-    let mut sorted_competitors: Vec<(String, i64)> = mention_counts.into_iter().collect();
-    sorted_competitors.sort_by_key(|a| std::cmp::Reverse(a.1));
+    // #156: mention volume comes from resolved entity references plus
+    // whole-word text matches against the tracked competitor set. The old
+    // tag-counting loop summed substring matches and counted the same
+    // insight twice (tag pass + text pass).
+    let mut sorted_competitors: Vec<(String, i64)> = competitor_names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            let count = recent_insights
+                .iter()
+                .filter(|insight| insight_mentions_competitor(insight, name, &entity_names))
+                .count() as i64;
+            (name.to_string(), count)
+        })
+        .filter(|(_, count)| *count > 0)
+        .collect();
+    sorted_competitors.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     sorted_competitors.truncate(5);
 
     let max_mention = sorted_competitors
@@ -361,65 +438,69 @@ pub async fn executive_dashboard(
             id: t.id.to_string(),
             title: t.title.clone(),
             severity: t.severity.clone(),
-            company: t.entity_id.clone().unwrap_or_else(|| "Unknown".into()),
+            company: resolve_entity_name(t.entity_id.as_deref())
+                .unwrap_or_else(|| "Unknown".into()),
             score: t.impact_score,
             region: t.region.clone().unwrap_or_default(),
             score_display: format!("{:.1}", t.impact_score),
         })
         .collect();
 
-    // ── Build trending topics from insights ──────────────────────────────
+    // ── Build trending topics ────────────────────────────────────────────
 
-    let mut topic_counts: BTreeMap<String, i64> = BTreeMap::new();
-    for insight in &recent_insights {
-        if let Some(ref tags) = insight.tags {
-            for tag in tags {
-                if !competitor_names.iter().any(|k| tag.contains(k.as_str())) {
-                    *topic_counts.entry(tag.clone()).or_default() += 1;
-                }
-            }
-        }
-        // Use insight_type as topic signal
-        if let Some(ref insight_type) = insight.insight_type {
-            if !insight_type.starts_with("llm_") {
-                *topic_counts.entry(insight_type.clone()).or_default() += 1;
-            }
-        }
-    }
-
-    let mut sorted_topics: Vec<(String, i64)> = topic_counts.into_iter().collect();
-    sorted_topics.sort_by_key(|a| std::cmp::Reverse(a.1));
-    sorted_topics.truncate(5);
-
-    // B313: honest week-over-week change — count this week's mentions against
-    // the previous week's from the same loaded window, instead of the
-    // fabricated `count × 7.5%` figure that always rendered an upward trend.
+    // #156: topics are aggregated in SQL over the two-week window (tags via
+    // `unnest` plus non-LLM insight types), instead of scanning one capped
+    // page of insights in Rust and reporting counts frozen at that cap.
     let now = chrono::Utc::now();
     let week_ago = now - chrono::Duration::days(7);
     let two_weeks_ago = now - chrono::Duration::days(14);
-    let trending_topics: Vec<TrendingTopic> = sorted_topics
+    let trend_rows_state = DataState::from_result(
+        sqlx::query_as::<_, (String, i64, i64)>(
+            r#"
+            WITH topic_rows AS (
+                SELECT tag AS topic, i.created_at
+                FROM insights i
+                CROSS JOIN LATERAL unnest(COALESCE(i.tags, ARRAY[]::text[])) AS tag
+                WHERE i.created_at >= $1
+                UNION ALL
+                SELECT i.insight_type AS topic, i.created_at
+                FROM insights i
+                WHERE i.created_at >= $1
+                  AND i.insight_type IS NOT NULL
+                  AND i.insight_type NOT LIKE 'llm_%'
+            ),
+            filtered AS (
+                SELECT topic, created_at
+                FROM topic_rows
+                WHERE topic IS NOT NULL
+                  AND btrim(topic) <> ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM unnest($3::text[]) AS competitor(name)
+                      WHERE lower(btrim(competitor.name)) = lower(btrim(topic))
+                  )
+            )
+            SELECT topic,
+                   COUNT(*) FILTER (WHERE created_at >= $2)::bigint AS this_week,
+                   COUNT(*) FILTER (WHERE created_at < $2)::bigint AS prev_week
+            FROM filtered
+            GROUP BY topic
+            ORDER BY COUNT(*) DESC, topic ASC
+            LIMIT 5
+            "#,
+        )
+        .bind(two_weeks_ago)
+        .bind(week_ago)
+        .bind(competitor_names.clone())
+        .fetch_all(&store.pool)
+        .await,
+        "topic trend query failed (web executive dashboard)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&trend_rows_state, &mut degraded_notice);
+    let trending_topics: Vec<TrendingTopic> = trend_rows_state
+        .into_items()
         .into_iter()
-        .map(|(topic, count)| {
-            let topic_matches = |i: &apex_store::postgres::InsightRow, t: &str| -> bool {
-                i.tags
-                    .as_ref()
-                    .is_some_and(|tags| tags.iter().any(|tag| tag == t))
-                    || i.insight_type.as_deref() == Some(t)
-            };
-            let this_week = recent_insights
-                .iter()
-                .filter(|i| {
-                    i.created_at.is_some_and(|ts| ts >= week_ago) && topic_matches(i, &topic)
-                })
-                .count() as i64;
-            let prev_week = recent_insights
-                .iter()
-                .filter(|i| {
-                    i.created_at
-                        .is_some_and(|ts| ts >= two_weeks_ago && ts < week_ago)
-                        && topic_matches(i, &topic)
-                })
-                .count() as i64;
+        .map(|(topic, this_week, prev_week)| {
             let change_pct = if prev_week == 0 {
                 if this_week == 0 {
                     "±0%".to_string()
@@ -431,9 +512,6 @@ pub async fn executive_dashboard(
                     ((this_week - prev_week) as f64 / prev_week as f64 * 100.0).round() as i64;
                 format!("{}{}%", if delta >= 0 { "+" } else { "" }, delta)
             };
-            // The card shows a week-over-week delta, so the count beside it
-            // must be the same window's count — not the broader loaded window.
-            let _ = count;
             TrendingTopic {
                 topic,
                 mention_count: this_week,
@@ -454,7 +532,7 @@ pub async fn executive_dashboard(
             .map(|o| RecentWinLoss {
                 title: o.title.clone(),
                 result_type: opportunity_result_type(&o.status).to_string(),
-                company: o.entity_id.clone().unwrap_or_default(),
+                company: resolve_entity_name(o.entity_id.as_deref()).unwrap_or_default(),
                 date: o.updated_at.format("%Y-%m-%d").to_string(),
                 description: o.description.clone().unwrap_or_default(),
             })
@@ -579,6 +657,66 @@ mod tests {
             "loss badge missing: {loss_item}"
         );
         assert!(!loss_item.contains("win"));
+    }
+
+    // ── #156: whole-word competitor matching ─────────────────────────────
+
+    #[test]
+    fn whole_word_match_does_not_match_substrings() {
+        assert!(contains_whole_word("Acme Corp wins a deal", "Acme"));
+        assert!(contains_whole_word("Acme-Corp expands", "Acme"));
+        assert!(contains_whole_word("the ACME deal", "acme"));
+        assert!(contains_whole_word("Acme", "Acme"));
+        assert!(!contains_whole_word("ApexIntel filing", "Apex"));
+        assert!(!contains_whole_word("MyAcmeCorp", "Acme"));
+        assert!(!contains_whole_word("anything", "  "));
+    }
+
+    #[test]
+    fn competitor_mentions_use_resolved_entity_names() {
+        let entity_id = uuid::Uuid::new_v4();
+        let mut insight = insight_row();
+        insight.entity_ids = Some(vec![entity_id]);
+        insight.title = "Quarterly update".to_string();
+        insight.summary = "No company named here".to_string();
+        insight.tags = None;
+
+        let mut names = HashMap::new();
+        names.insert(entity_id.to_string(), "Acme Corp".to_string());
+
+        assert!(insight_mentions_competitor(&insight, "Acme Corp", &names));
+        assert!(!insight_mentions_competitor(&insight, "Other Corp", &names));
+    }
+
+    #[test]
+    fn competitor_mentions_ignore_substring_text_matches() {
+        let mut insight = insight_row();
+        insight.title = "ApexIntel ships a product".to_string();
+        insight.summary = "MyAcmeCorp response".to_string();
+        insight.tags = Some(vec!["ApexIntel".to_string()]);
+        insight.entity_ids = None;
+
+        let names = HashMap::new();
+        assert!(!insight_mentions_competitor(&insight, "Apex", &names));
+        assert!(!insight_mentions_competitor(&insight, "Acme", &names));
+        assert!(insight_mentions_competitor(&insight, "ApexIntel", &names));
+    }
+
+    fn insight_row() -> apex_store::postgres::InsightRow {
+        apex_store::postgres::InsightRow {
+            id: uuid::Uuid::new_v4(),
+            title: String::new(),
+            summary: String::new(),
+            insight_type: Some("market_shift".to_string()),
+            region: None,
+            confidence: None,
+            evidence_urls: None,
+            entity_ids: None,
+            tags: None,
+            metadata: None,
+            created_at: None,
+            updated_at: None,
+        }
     }
 
     /// Text of the rendered list item starting at `title` up to the item's

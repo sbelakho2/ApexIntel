@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li><a href="/settings" class="hover:text-rams-foreground">Settings</a></li>
@@ -37,7 +37,7 @@
     <div class="divide-y divide-rams-line">
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Minimum Severity</span>
-        <select id="global-min-severity" class="h-7 w-40 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+        <select id="global-min-severity" class="h-7 w-40 rounded border border-rams-line bg-rams-chassis px-2 text-xs"{% if !can_admin %} disabled{% endif %}>
           <option value="info"{% if global_min_severity == "info" %} selected{% endif %}>Info</option>
           <option value="low"{% if global_min_severity == "low" %} selected{% endif %}>Low</option>
           <option value="medium"{% if global_min_severity == "medium" %} selected{% endif %}>Medium</option>
@@ -47,11 +47,11 @@
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Cooldown (minutes)</span>
-        <input type="number" id="global-cooldown" value="{{ global_cooldown }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="1440" />
+        <input type="number" id="global-cooldown" value="{{ global_cooldown }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="10080"{% if !can_admin %} disabled{% endif %} />
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Max Daily Alerts</span>
-        <input type="number" id="global-max-daily" value="{{ global_max_daily }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="10000" />
+        <input type="number" id="global-max-daily" value="{{ global_max_daily }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="1000"{% if !can_admin %} disabled{% endif %} />
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Enabled Channels</span>
@@ -72,7 +72,11 @@
       </div>
     </div>
     <div class="border-t border-rams-line px-4 py-3 flex justify-end">
+      {% if can_admin %}
       <button id="save-global-defaults" class="apex-btn apex-btn-primary text-xs h-7 px-4">Save Global Defaults</button>
+      {% else %}
+      <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Admin role required to change alert settings</p>
+      {% endif %}
     </div>
   </div>
 
@@ -115,7 +119,9 @@
               {% endif %}
             </td>
             <td class="px-4 py-3 text-right">
+              {% if can_admin %}
               <button class="delete-entity-config text-[10px] font-black uppercase text-rams-red hover:text-rams-red/80" data-entity-id="{{ cfg.entity_id }}">Delete</button>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}

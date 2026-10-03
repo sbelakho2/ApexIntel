@@ -153,6 +153,15 @@ pub struct SuggestItemPartial {
     pub url: String,
 }
 
+/// #127: clamp the page before computing the offset — an unbounded page
+/// overflowed the `(page - 1) * per_page` multiplication (debug panic) and
+/// asked the index for an absurd offset. 500 pages is the documented cap.
+pub const MAX_SEARCH_PAGE: i64 = 500;
+
+fn clamp_search_page(page: Option<i64>) -> i64 {
+    page.unwrap_or(1).clamp(1, MAX_SEARCH_PAGE)
+}
+
 // ─── Handler ────────────────────────────────────────────────────────────────
 
 /// GET /search — entity search page.
@@ -176,7 +185,7 @@ pub async fn search_page(
     );
     DegradedNotice::capture(&unack_state, &mut degraded_notice);
     let ctx = PageContext::from_session(&session, "/search", unack_state.into_loaded_or(0));
-    let page = params.page.unwrap_or(1).max(1);
+    let page = clamp_search_page(params.page);
     let per_page = params.per_page.unwrap_or(25).clamp(1, 100);
     let query_str = params.q.unwrap_or_default();
     // B303: accept both singular (`company`) and plural (`companies`) facet
@@ -516,4 +525,24 @@ fn urlencoding(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_search_page;
+
+    #[test]
+    fn search_page_is_clamped_to_the_documented_cap() {
+        assert_eq!(clamp_search_page(None), 1);
+        assert_eq!(clamp_search_page(Some(0)), 1);
+        assert_eq!(clamp_search_page(Some(-4)), 1);
+        assert_eq!(clamp_search_page(Some(3)), 3);
+        assert_eq!(clamp_search_page(Some(500)), 500);
+        assert_eq!(clamp_search_page(Some(501)), 500);
+        assert_eq!(
+            clamp_search_page(Some(i64::MAX)),
+            500,
+            "an unbounded page overflowed the offset multiplication"
+        );
+    }
 }

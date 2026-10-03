@@ -728,32 +728,46 @@ impl PgStore {
         })
     }
 
-    /// Compute summary statistics for a set of trend data points.
+    /// Compute summary statistics for the *whole* matching trend range in SQL.
+    ///
+    /// Previously this loaded a limited page of points and summed those, so a
+    /// range with more rows than the query limit reported a truncated total.
+    /// The aggregate below has no `LIMIT` and returns the real total, average,
+    /// min/max and the full data-point count.
     pub async fn get_trend_summary(&self, query: &TrendQuery) -> anyhow::Result<TrendSummary> {
-        let data_points = self.query_trends(query).await?;
+        let entity_type = normalize_optional_text(query.entity_type.as_deref());
+        let entity_id = normalize_optional_text(query.entity_id.as_deref());
 
-        if data_points.is_empty() {
-            return Ok(TrendSummary {
-                total: 0,
-                average: 0.0,
-                min: 0,
-                max: 0,
-                data_points: 0,
-            });
-        }
-
-        let total: i64 = data_points.iter().map(|dp| dp.value).sum();
-        let min = data_points.iter().map(|dp| dp.value).min().unwrap_or(0);
-        let max = data_points.iter().map(|dp| dp.value).max().unwrap_or(0);
-        let average = total as f64 / data_points.len() as f64;
-        let data_points_count = data_points.len();
+        let (data_points, total, min, max, average): (i64, i64, i64, i64, f64) = sqlx::query_as(
+            r#"SELECT
+                       COUNT(*)::bigint                                 AS data_points,
+                       COALESCE(SUM(metric_value), 0)::bigint           AS total,
+                       COALESCE(MIN(metric_value), 0)::bigint           AS min_value,
+                       COALESCE(MAX(metric_value), 0)::bigint           AS max_value,
+                       COALESCE(AVG(metric_value), 0.0)::double precision AS average
+                   FROM trend_rollups
+                   WHERE bucket_type = $1
+                     AND metric_name = $2
+                     AND ($3::DATE IS NULL OR bucket_date >= $3)
+                     AND ($4::DATE IS NULL OR bucket_date <= $4)
+                     AND ($5::VARCHAR IS NULL OR entity_type IS NOT DISTINCT FROM $5)
+                     AND ($6::VARCHAR IS NULL OR entity_id IS NOT DISTINCT FROM $6)"#,
+        )
+        .bind(&query.bucket_type)
+        .bind(&query.metric_name)
+        .bind(query.from_date)
+        .bind(query.to_date)
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_one(&self.pool)
+        .await?;
 
         Ok(TrendSummary {
             total,
             average,
             min,
             max,
-            data_points: data_points_count,
+            data_points: data_points.max(0) as usize,
         })
     }
 }

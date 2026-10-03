@@ -88,6 +88,7 @@ dependencies = [
  "apex-insights",
  "apex-investigation",
  "apex-llm",
+ "apex-recipes",
  "apex-shared",
  "apex-store",
  "apex-triage",

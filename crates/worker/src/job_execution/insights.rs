@@ -929,31 +929,26 @@ async fn generate_insights_for_company(
                 );
             }
             for poi in company_pois.iter().filter(|p| p.is_buyer_relevant).take(5) {
-                if let Ok(Some(row)) = sqlx::query(
-                    "SELECT id FROM persons WHERE primary_org_id = $1 AND name ILIKE $2 LIMIT 1",
-                )
-                .bind(*company_id)
-                .bind(&poi.name)
-                .fetch_optional(&store.pool)
-                .await
+                // #102: `CompanyPoiRef.id` is already the canonical
+                // `persons.id` these POIs were loaded by, so the person link
+                // uses it directly. The previous `name ILIKE` lookup could
+                // attach the insight to a same-named person at another
+                // company (or silently miss on case/whitespace differences).
+                let person_id = poi.id;
+                // Person linkage is secondary to the persisted insight: a
+                // failed write is counted and degrades the run, but it must
+                // not discard the insight's success path.
+                if let Err(e) = store
+                    .link_insight_to_entity(insight_id, &person_id, "person")
+                    .await
                 {
-                    if let Ok(person_id) = row.try_get::<uuid::Uuid, _>("id") {
-                        // Person linkage is secondary to the persisted insight:
-                        // a failed write is counted and degrades the run, but
-                        // it must not discard the insight's success path.
-                        if let Err(e) = store
-                            .link_insight_to_entity(insight_id, &person_id, "person")
-                            .await
-                        {
-                            link_failures += 1;
-                            tracing::warn!(
-                                insight_id = %insight_id,
-                                person_id = %person_id,
-                                error = %e,
-                                "insight_generation: failed to link insight to person"
-                            );
-                        }
-                    }
+                    link_failures += 1;
+                    tracing::warn!(
+                        insight_id = %insight_id,
+                        person_id = %person_id,
+                        error = %e,
+                        "insight_generation: failed to link insight to person"
+                    );
                 }
             }
 

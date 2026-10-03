@@ -18,6 +18,7 @@ pub mod activity_logger;
 pub mod embedding_indexer;
 pub mod healthcheck;
 pub mod holiday_calendar;
+pub mod llm_concurrency;
 pub mod nats_stream;
 pub mod nightly;
 pub mod notification_delivery;

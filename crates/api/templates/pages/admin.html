@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Admin</li>
@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Admin Panel", "settings", "System administration — data quality, jobs, and platform status.", "") %}
+{% call m::page_header("Admin", "settings", "System administration — data quality, jobs, and platform status.", "") %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
@@ -182,6 +182,7 @@
       <span class="text-sm">{{ cs.source }}</span>
       <div class="flex gap-4 text-[11px] tabular-nums text-rams-muted">
         <span>{{ cs.items_crawled }} pages</span>
+        <span>errors {% if let Some(errors) = cs.error_count %}{{ errors }}{% else %}—{% endif %}</span>
         <span>last run {{ cs.last_run }}</span>
       </div>
     </div>
@@ -200,6 +201,8 @@
         <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Recipe</th>
         <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Runs</th>
         <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted" title="Estimated from measured precision &times; runs; recipes without measured precision show unknown">Est. successes</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Failures</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Avg ms</th>
         <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Last Fired</th>
       </tr>
     </thead>
@@ -209,6 +212,8 @@
         <td class="px-4 py-2 text-xs font-semibold">{{ r.name }}</td>
         <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.total_runs }}</td>
         <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{% if let Some(successes) = r.success_count %}{{ successes }}{% else %}—{% endif %}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{% if let Some(failures) = r.failure_count %}{{ failures }}{% else %}—{% endif %}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{% if let Some(duration) = r.avg_duration_ms %}{{ duration }}{% else %}—{% endif %}</td>
         <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.last_run }}</td>
       </tr>
       {% endfor %}

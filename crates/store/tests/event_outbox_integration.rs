@@ -517,3 +517,87 @@ async fn system_broadcast_flag_persists_and_merges_with_or() {
     }
     pool.close().await;
 }
+
+/// Dedup merges are entity-scoped and text-similarity gated, and a recurrence
+/// never buries a more severe signal: a critical recency escalates the merged
+/// row instead of creating (or hiding under) a lower-severity one.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn dedup_requires_same_entity_similar_text_and_escalates_severity() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = PgStore::from_pool(pool.clone());
+    clean_outbox_test_rows(&pool).await;
+
+    let entity = Uuid::new_v4();
+    let other_entity = Uuid::new_v4();
+    let title = format!("dedup contract {}", Uuid::new_v4());
+
+    let insert = |description: &'static str, severity: &'static str, entities: Vec<Uuid>| {
+        let store = store.clone();
+        let title = title.clone();
+        async move {
+            store
+                .insert_warning_with_outcome(
+                    "outbox_test",
+                    &title,
+                    Some(description),
+                    severity,
+                    None,
+                    None,
+                    Some(entities),
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    // 1. Same entity and window, but unrelated text: no merge (the old
+    //    bare entity+window branch collapsed every signal about a company).
+    let first = insert("supply chain halt in Tunisia", "low", vec![entity]).await;
+    assert!(first.created);
+    let unrelated = insert("quarterly earnings beat expectations", "low", vec![entity]).await;
+    assert!(
+        unrelated.created,
+        "entity and time window alone must not merge unrelated signals"
+    );
+
+    // 2. Same entity with genuinely similar text: merged.
+    let recurrence = insert("supply chain halt in Tunisia.", "low", vec![entity]).await;
+    assert!(!recurrence.created, "similar same-entity text must merge");
+    assert_eq!(recurrence.id, first.id);
+
+    // 3. A more severe recurrence escalates the merged row.
+    let severe = insert(
+        "supply chain halt in Tunisia plant",
+        "critical",
+        vec![entity],
+    )
+    .await;
+    assert!(!severe.created, "the severe recurrence must merge");
+    assert_eq!(severe.id, first.id);
+    let (severity,): (String,) = sqlx::query_as("SELECT severity FROM warnings WHERE id = $1")
+        .bind(first.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        severity, "critical",
+        "a more severe recurrence must not be buried in a low-severity row"
+    );
+
+    // 4. Lexical dedup requires the same entity: identical text about a
+    //    different company is a different warning.
+    let other_company = insert("supply chain halt in Tunisia", "low", vec![other_entity]).await;
+    assert!(
+        other_company.created,
+        "identical text for a different entity must not merge"
+    );
+
+    clean_outbox_test_rows(&pool).await;
+    pool.close().await;
+}

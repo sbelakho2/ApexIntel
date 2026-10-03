@@ -1746,3 +1746,108 @@ async fn worker_job_interruption_is_scoped_to_the_owning_instance() {
 
     pool.close().await;
 }
+
+/// Migrations 102 and 103 add the store-support columns and the workspace
+/// owner-id backfill contract. Assert the columns, defaults and the NOT VALID
+/// foreign key exist at head.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn migration_102_and_103_store_support_columns_exist() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrations apply");
+
+    for (table, column) in [
+        ("triage_queue", "triage_attempts"),
+        ("triage_queue", "overridden_by"),
+        ("llm_cache", "prompt_hash"),
+        ("llm_cache", "expires_at"),
+        ("recipes", "created_by"),
+    ] {
+        assert!(
+            column_exists(&pool, table, column).await,
+            "{table}.{column} must exist after migration 102"
+        );
+    }
+
+    let attempts_default: String = sqlx::query_scalar(
+        "SELECT COALESCE(column_default, '') FROM information_schema.columns \
+         WHERE table_schema = 'public' AND table_name = 'triage_queue' \
+           AND column_name = 'triage_attempts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        attempts_default.contains('0'),
+        "triage_attempts must default to 0, got '{attempts_default}'"
+    );
+
+    let expires_nullable: String = sqlx::query_scalar(
+        "SELECT is_nullable FROM information_schema.columns \
+         WHERE table_schema = 'public' AND table_name = 'llm_cache' \
+           AND column_name = 'expires_at'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        expires_nullable, "NO",
+        "llm_cache.expires_at must be NOT NULL so every entry expires"
+    );
+
+    // The owner-id transition deliberately does not add a foreign key yet:
+    // an FK (even NOT VALID) would reject transitional writes that still hold
+    // a username, which the dual-form visibility reads accept.
+    let owner_fk_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_constraint \
+         WHERE conname = 'investigation_workspaces_owner_id_fkey')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        !owner_fk_exists,
+        "the transitional owner_id backfill must not add an FK before every writer emits ids"
+    );
+
+    // Dedup-candidate retention: the cleanup function exists and really
+    // deletes rows past the retention horizon.
+    let cleanup_exists: bool = sqlx::query_scalar(
+        "SELECT to_regprocedure('cleanup_semantic_dedup_items(integer)') IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        cleanup_exists,
+        "migration 102 must define cleanup_semantic_dedup_items(INT)"
+    );
+
+    let dedup_item_id = format!("prune-{}", uuid::Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO semantic_dedup_items (item_type, item_id, title, text_content, updated_at) \
+         VALUES ('insight', $1, 'prune fixture', 'prune fixture', NOW() - INTERVAL '90 days')",
+    )
+    .bind(&dedup_item_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+    let deleted = store
+        .prune_semantic_dedup_items(30)
+        .await
+        .expect("prune dedup candidates");
+    assert!(deleted >= 1, "the 90-day-old candidate must be pruned");
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM semantic_dedup_items WHERE item_id = $1")
+            .bind(&dedup_item_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, 0);
+
+    pool.close().await;
+}

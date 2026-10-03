@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Insights</li>
@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Insight Feed", "eye", "Ranked insights with evidence links and context.", "<a href=\"/memos\" class=\"apex-action-link px-3 py-1.5 tracking-[0.12em]\">Use AI</a>") %}
+{% call m::page_header("Insights", "eye", "Ranked insights with evidence links and context.", "<a href=\"/memos\" class=\"apex-btn apex-btn-secondary\">AI briefing</a>") %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
@@ -106,57 +106,11 @@
   </div>
 </div>
 
-{# ── Analyst table (apex-table) ── #}
-<div class="apex-module overflow-hidden mb-4">
-  <div class="apex-module-header">
-    <div>
-      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Analyst Table</h2>
-      <p class="mt-1 text-[11px] text-rams-muted">Dense insight view for triage, sorting, and export-friendly scanning.</p>
-    </div>
-    <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
-      <a href="/api/insights/export" class="apex-action-link">CSV</a>
-    </div>
-  </div>
-  <div class="overflow-x-auto">
-    <table class="apex-table" data-dense-table data-table-name="insights">
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>Type</th>
-          <th>Impact</th>
-          <th>Company</th>
-          <th class="text-right">Confidence</th>
-          <th>Region</th>
-          <th class="text-right">Evidence</th>
-          <th><a href="{{ page_base_href }}sort=created_at&dir={% if sort_field == "created_at" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Created</a></th>
-          <th>Bookmark</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for i in insights %}
-        <tr class="cursor-pointer hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/insights/{{ i.id }}">
-          <td class="font-semibold"><a href="/insights/{{ i.id }}" class="hover:underline text-rams-foreground">{{ i.title }}</a></td>
-          <td><span class="mobile-inline-chip inline-flex items-center rounded-rams-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.category_css }}">{{ i.category_label }}</span></td>
-          <td><span class="inline-flex items-center rounded-rams-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.impact_css }}">{{ i.impact_tier }}</span></td>
-          <td class="text-rams-muted">{{ i.company_name }}</td>
-          <td class="text-right font-bold tabular-nums">{% if let Some(pct) = i.confidence_pct %}{{ pct }}%{% else %}—{% endif %}</td>
-          <td class="text-rams-muted">{% if i.region.is_empty() %}—{% else %}{{ i.region }}{% endif %}</td>
-          <td class="text-right tabular-nums text-rams-muted">{{ i.evidence_count }}</td>
-          <td class="tabular-nums text-rams-muted">{{ i.age_label }}</td>
-          <td>{% if i.bookmarked %}<span class="apex-text-warning">Saved</span>{% else %}<span class="text-rams-muted">—</span>{% endif %}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-
 {# ── Narrative cards ── #}
 <div class="space-y-3">
   {% if insights.is_empty() %}
     {% call m::empty_state("No insights available", "Try adjusting filters.") %}
   {% else %}
-    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</p>
     {% for i in insights %}
       <div class="apex-module" id="insight-card-{{ i.id }}">
         <div class="apex-module-body">

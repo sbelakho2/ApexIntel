@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li><a href="/companies" class="hover:text-rams-foreground">Companies</a></li>
@@ -61,10 +61,10 @@
     <p class="mt-2 text-[11px]"><a href="{{ website_url }}" class="apex-link-steel hover:underline" target="_blank" rel="noopener noreferrer">{{ website }}</a></p>
     {% endif %}
     <div class="mt-4 grid grid-cols-2 gap-4 text-[11px] sm:grid-cols-4">
-      <div><span class="font-black uppercase text-rams-muted">Warnings</span><br><span class="tabular-nums">{{ total_warnings }}</span></div>
-      <div><span class="font-black uppercase text-rams-muted">Insights</span><br><span class="tabular-nums">{{ total_insights }}</span></div>
-      <div><span class="font-black uppercase text-rams-muted">Evidence</span><br><span class="tabular-nums">{{ why_now.evidence_count }}</span></div>
-      <div><span class="font-black uppercase text-rams-muted">Risk score</span><br><span class="tabular-nums">{% if has_risk_score %}{{ risk_score_value }}{% else %}—{% endif %}</span></div>
+      <div><span class="font-semibold text-rams-muted">Warnings</span><br><span class="tabular-nums">{{ total_warnings }}</span></div>
+      <div><span class="font-semibold text-rams-muted">Insights</span><br><span class="tabular-nums">{{ total_insights }}</span></div>
+      <div><span class="font-semibold text-rams-muted">Evidence</span><br><span class="tabular-nums">{{ why_now.evidence_count }}</span></div>
+      <div><span class="font-semibold text-rams-muted">Risk score</span><br><span class="tabular-nums">{% if has_risk_score %}{{ risk_score_value }}{% else %}—{% endif %}</span></div>
     </div>
   </section>
 
@@ -76,16 +76,16 @@
     <p class="mt-3 text-sm font-semibold" data-why-now-headline>{{ why_now.headline }}</p>
     <div class="mt-3 grid grid-cols-2 gap-4 text-[11px] sm:grid-cols-4">
       <div>
-        <span class="font-black uppercase text-rams-muted">Latest signal</span><br>
+        <span class="font-semibold text-rams-muted">Latest signal</span><br>
         {% if !why_now.latest_signal_id.is_empty() %}
         <a href="/warnings/{{ why_now.latest_signal_id }}" class="hover:underline text-rams-foreground">{{ why_now.latest_signal_title }}</a>
         {% else %}
         <span class="text-rams-muted">None recorded</span>
         {% endif %}
       </div>
-      <div><span class="font-black uppercase text-rams-muted">Open signals</span><br><span class="tabular-nums" data-open-signals>{{ why_now.open_signals }}</span></div>
-      <div><span class="font-black uppercase text-rams-muted">Changes · 14d</span><br><span class="tabular-nums">{{ why_now.recent_changes }}</span></div>
-      <div><span class="font-black uppercase text-rams-muted">Evidence items</span><br><span class="tabular-nums">{{ why_now.evidence_count }}</span></div>
+      <div><span class="font-semibold text-rams-muted">Open signals</span><br><span class="tabular-nums" data-open-signals>{{ why_now.open_signals }}</span></div>
+      <div><span class="font-semibold text-rams-muted">Changes · 14d</span><br><span class="tabular-nums">{{ why_now.recent_changes }}</span></div>
+      <div><span class="font-semibold text-rams-muted">Evidence items</span><br><span class="tabular-nums">{{ why_now.evidence_count }}</span></div>
     </div>
     <div class="mt-4 flex flex-wrap items-center gap-2 no-print">
       {% if !why_now.latest_signal_id.is_empty() %}
@@ -350,25 +350,31 @@
   {# ── Remaining signals & dossier ───────────────────────────────────── #}
   {% if !warnings.is_empty() %}
   <section class="apex-card" data-entity-warnings>
-    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">All warnings</h2>
-      <span class="text-[10px] text-rams-muted tabular-nums">{{ total_warnings }}</span>
+    <div class="flex items-center justify-between px-4 py-3">
+      <h2>All warnings</h2>
+      <span class="text-[12px] tabular-nums text-rams-muted">{{ total_warnings }}</span>
     </div>
-    <div class="divide-y divide-rams-line">
+    {% if warnings.is_empty() %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-5 text-[13px] text-rams-muted">No warnings recorded for this company.</p>{% endif %}
+    {% else %}
+    <div class="divide-y divide-rams-line border-t border-rams-line">
       {% for w in warnings %}
+      {% if w.severity != "high" && w.severity != "critical" %}
       <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-rams-panel">
         <div class="flex items-center justify-between gap-2">
           <span class="text-sm font-semibold">{{ w.title }}</span>
-          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ w.created_at }}</span>
+          <span class="shrink-0 text-[11px] text-rams-muted tabular-nums">{{ w.age }}</span>
         </div>
         <div class="mt-1 flex flex-wrap items-center gap-2">
           {% call m::severity_badge(w.severity) %}
-          <span class="text-[10px] text-rams-muted">{{ w.warning_type }}</span>
-          <span class="text-[10px] text-rams-muted tabular-nums">{% if let Some(pct) = w.confidence_pct %}{{ pct }}% confidence{% else %}confidence not recorded{% endif %}</span>
+          {% if w.acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Reviewed</span>{% endif %}
+          <span class="text-[11px] text-rams-muted">{{ w.warning_type }}</span>
         </div>
       </a>
+      {% endif %}
       {% endfor %}
     </div>
+    {% endif %}
   </section>
   {% endif %}
 

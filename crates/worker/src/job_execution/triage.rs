@@ -12,11 +12,19 @@ use apex_triage::{TriageConfig, TriageQueue, TriageScorer};
 
 use crate::{JobKind, JobRun};
 
+/// Maximum triage items claimed per run (#107).
+///
+/// The batch is deliberately small: every item costs one LLM call, and the
+/// scheduler timeout is 900s. A bounded batch keeps one run comfortably inside
+/// its timeout even on a slow local model, instead of one run trying to score
+/// the whole queue.
+const TRIAGE_BATCH_SIZE: usize = 25;
+
 /// Process unscored triage items through the LLM triage scorer.
 ///
 /// 1. Load config (defaults or from environment).
 /// 2. Create a [`TriageQueue`] and [`TriageScorer`].
-/// 3. Fetch up to 50 unscored items.
+/// 3. Fetch up to [`TRIAGE_BATCH_SIZE`] unscored items.
 /// 4. Score them in batch via the LLM.
 /// 5. Persist the scores back to the queue.
 #[tracing::instrument(skip(store))]
@@ -34,8 +42,8 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
         config.thresholds.clone(),
     );
 
-    // Get unscored items (up to 50 per batch)
-    let unscored = match queue.unscored_items(50).await {
+    // Get unscored items (bounded batch)
+    let unscored = match queue.unscored_items(TRIAGE_BATCH_SIZE).await {
         Ok(items) => items,
         Err(e) => {
             run.fail(&format!("failed to fetch unscored items: {e}"));
@@ -56,6 +64,9 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
         let llm = build_triage_llm_client();
         let scorer = TriageScorer::new(llm, config);
 
+        // #92: the triage batch borrows one process-wide LLM permit for the
+        // whole scoring pass (the scorer issues sequential model calls).
+        let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
         let dimensions = match scorer.score_batch(&unscored).await {
             Ok(dims) => dims,
             Err(e) => {

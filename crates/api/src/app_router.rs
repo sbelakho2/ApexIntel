@@ -363,15 +363,13 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/settings/alerts",
             get(alert_settings_handlers::list_alert_settings),
         )
+        // Mutations of the org-wide alert configuration live in the
+        // admin-only sub-router below (#146): an analyst must not be able to
+        // disable alerting for the whole organisation. The GET stays here so
+        // every role can inspect the effective thresholds.
         .route(
             "/api/settings/alerts/entity/:entity_id",
-            get(alert_settings_handlers::get_entity_alert_config)
-                .put(alert_settings_handlers::upsert_entity_alert_config)
-                .delete(alert_settings_handlers::delete_entity_alert_config),
-        )
-        .route(
-            "/api/settings/alerts/global",
-            put(alert_settings_handlers::upsert_global_alert_defaults),
+            get(alert_settings_handlers::get_entity_alert_config),
         )
         // ─── Per-user entity alert subscriptions (migration 048) ──────────
         // The alert router resolves addressee-less alerts against these rows;
@@ -401,6 +399,18 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
                 .route(
                     "/api/admin/embeddings/reindex",
                     post(vector_search_handlers::reindex_embeddings),
+                )
+                // #146: global and per-entity alert settings are org-wide
+                // alerting controls; only admins may change or remove them.
+                // The handlers also re-check the role defensively.
+                .route(
+                    "/api/settings/alerts/entity/:entity_id",
+                    put(alert_settings_handlers::upsert_entity_alert_config)
+                        .delete(alert_settings_handlers::delete_entity_alert_config),
+                )
+                .route(
+                    "/api/settings/alerts/global",
+                    put(alert_settings_handlers::upsert_global_alert_defaults),
                 )
                 .route_layer(middleware::from_fn(require_admin)),
         )

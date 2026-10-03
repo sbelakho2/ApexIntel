@@ -1523,6 +1523,39 @@ pub struct RelevanceValidation {
     pub warnings: Vec<String>,
 }
 
+/// True when `entity_name` appears in `text_lower` as whole word tokens.
+///
+/// Proper nouns are compared token-by-token rather than by substring, so a
+/// short name cannot match inside a longer word. Name tokens of >= 3 chars
+/// must each appear as a whole token in the text (so multi-word names like
+/// "Taiwan Semiconductor" need both); a name made only of shorter tokens
+/// (e.g. "BP") requires every token to match exactly.
+fn mentions_entity_name(text_lower: &str, entity_name: &str) -> bool {
+    let is_token_char = |c: char| c.is_alphanumeric();
+    let text_tokens: std::collections::HashSet<&str> = text_lower
+        .split(|c: char| !is_token_char(c))
+        .filter(|token| !token.is_empty())
+        .collect();
+    let entity_lower = entity_name.to_lowercase();
+    let name_tokens: Vec<&str> = entity_lower
+        .split(|c: char| !is_token_char(c))
+        .filter(|token| !token.is_empty())
+        .collect();
+    if name_tokens.is_empty() {
+        return false;
+    }
+    let significant: Vec<&str> = name_tokens
+        .iter()
+        .copied()
+        .filter(|token| token.chars().count() >= 3)
+        .collect();
+    if significant.is_empty() {
+        name_tokens.iter().all(|token| text_tokens.contains(token))
+    } else {
+        significant.iter().all(|token| text_tokens.contains(token))
+    }
+}
+
 /// Relevance validator for insights.
 pub struct RelevanceValidator {
     /// Minimum relevance score threshold
@@ -1558,8 +1591,9 @@ impl RelevanceValidator {
         let mut missing_keywords = Vec::new();
         let mut warning_messages = Vec::new();
 
-        // Check for entity name mentions
-        let entity_name_mentioned = insight_lower.contains(&profile.entity_name.to_lowercase());
+        // Check for entity name mentions as whole tokens (never substrings:
+        // "Iran" must not match "Iranian", "Apple" must not match "applesauce").
+        let entity_name_mentioned = mentions_entity_name(&insight_lower, &profile.entity_name);
 
         // Check keyword matches
         for keyword in &keywords {
@@ -2224,6 +2258,46 @@ mod tests {
         assert!(result.matched_keywords.iter().any(|k| k.contains("nvidia")));
         assert!(result.matched_keywords.iter().any(|k| k.contains("gpu")));
         assert!(result.matched_keywords.iter().any(|k| k.contains("h100")));
+    }
+
+    #[test]
+    fn test_entity_name_requires_whole_token_match() {
+        let validator = RelevanceValidator::default();
+        let not_mentioned = |result: &RelevanceValidation| {
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("not explicitly mentioned"))
+        };
+
+        // Substring of a longer word must not count.
+        let iranian =
+            validator.validate_with_entity_name("Iranian oil exports rose sharply.", "Iran");
+        assert!(not_mentioned(&iranian), "Iran must not match Iranian");
+
+        // Possessive/cased forms of the whole token do count.
+        let nvidia =
+            validator.validate_with_entity_name("NVIDIA's H100 GPU demand expanded.", "NVIDIA");
+        assert!(!not_mentioned(&nvidia), "NVIDIA's must match NVIDIA");
+
+        // Multi-word names need every significant token.
+        let partial = validator
+            .validate_with_entity_name("Taiwan exports rose this quarter.", "Taiwan Semiconductor");
+        assert!(
+            not_mentioned(&partial),
+            "a multi-word name must not match on one token"
+        );
+        let full = validator.validate_with_entity_name(
+            "Taiwan Semiconductor expanded capacity.",
+            "Taiwan Semiconductor",
+        );
+        assert!(!not_mentioned(&full));
+
+        // Names made only of short tokens still require exact whole tokens.
+        let inside = validator.validate_with_entity_name("bpd output rose at the refinery.", "BP");
+        assert!(not_mentioned(&inside), "BP must not match bpd");
+        let exact = validator.validate_with_entity_name("BP plc reported higher output.", "BP");
+        assert!(!not_mentioned(&exact));
     }
 
     #[test]

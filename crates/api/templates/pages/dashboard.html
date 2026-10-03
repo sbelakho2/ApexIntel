@@ -8,7 +8,7 @@
 
 {% block content %}
 <div class="space-y-6">
-  {% call m::page_header("Decisions", "target", "What changed, what needs action, what is newly actionable, and what is stale.", "") %}
+  {% call m::page_header("Overview", "activity", "Signals, coverage, and system health at a glance.", "") %}
 
   {% if let Some(notice) = degraded_notice %}
   <div class="apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
@@ -17,7 +17,7 @@
   {# ═══ 1. What changed since last look ═══ #}
   <section aria-labelledby="changes-heading">
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-      <h2 id="changes-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">What Changed Since Last Look</h2>
+      <h2 id="changes-heading">What changed since last look</h2>
       <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Rolling 24h window</span>
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4" data-section="changes">
@@ -27,7 +27,7 @@
         <p class="apex-stat-label">{{ change.label }}</p>
         <p class="apex-stat-value mt-1.5 tabular-nums">{{ change.count }}</p>
         <p class="mt-1 text-[11px] leading-snug text-rams-muted">{{ change.detail }}</p>
-        <span class="mt-2 inline-block text-[10px] font-black uppercase tracking-[0.1em] text-primary">View →</span>
+        <span class="mt-2 inline-block text-[11px] font-semibold text-primary">View →</span>
       </a>
       {% endfor %}
     </div>
@@ -36,8 +36,8 @@
   {# ═══ 2. What requires action: priority queue ═══ #}
   <section aria-labelledby="priority-heading">
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-      <h2 id="priority-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">What Requires Action</h2>
-      <a href="/triage" class="text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">Open triage queue →</a>
+      <h2 id="priority-heading">What requires action</h2>
+      <a href="/triage" class="text-[12px] font-semibold text-primary hover:underline">Open triage queue →</a>
     </div>
     <div class="apex-module" data-section="priority-queue">
       <div class="divide-y divide-rams-line">
@@ -88,8 +88,8 @@
   {# ═══ 3. Newly actionable opportunities ═══ #}
   <section aria-labelledby="opportunities-heading">
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-      <h2 id="opportunities-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">Newly Actionable Opportunities</h2>
-      <a href="/insights" class="text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">All insights →</a>
+      <h2 id="opportunities-heading">Newly actionable opportunities</h2>
+      <a href="/insights" class="text-[12px] font-semibold text-primary hover:underline">All insights →</a>
     </div>
     <div class="grid grid-cols-1 gap-4 xl:grid-cols-2" data-section="opportunities">
       {% for o in opportunities %}
@@ -116,7 +116,7 @@
           <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Recommended next move</p>
           <p class="mt-1 text-[12px] leading-relaxed text-rams-foreground">{{ o.next_move }}</p>
         </div>
-        <a href="{{ o.href }}" class="mt-auto text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">Open insight & evidence →</a>
+        <a href="{{ o.href }}" class="mt-auto text-[12px] font-semibold text-primary hover:underline">Open insight & evidence →</a>
       </article>
       {% endfor %}
       {% if opportunities.is_empty() && degraded_notice.is_none() %}
@@ -131,7 +131,7 @@
   {# ═══ 4. What is stale or broken ═══ #}
   <section aria-labelledby="health-heading">
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-      <h2 id="health-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">What Is Stale Or Broken</h2>
+      <h2 id="health-heading">What is stale or broken</h2>
       <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Measured, not inferred</span>
     </div>
     <div class="apex-module" data-section="health">
@@ -149,7 +149,7 @@
             <p class="mt-1 text-[11px] text-rams-muted">{{ h.detail }}</p>
           </div>
           {% if !h.href.is_empty() && (can_admin || h.href != "/admin") %}
-          <a href="{{ h.href }}" class="shrink-0 text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">Inspect →</a>
+          <a href="{{ h.href }}" class="shrink-0 text-[12px] font-semibold text-primary hover:underline">Inspect →</a>
           {% endif %}
         </div>
         {% endfor %}
@@ -159,7 +159,7 @@
 
   {# ═══ Portfolio overview: vanity and volume metrics (below decisions) ═══ #}
   <div class="border-t border-rams-line pt-6">
-    <p class="mb-3 text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Portfolio Overview</p>
+    <h2>Portfolio overview</h2>
   </div>
 
   {# ── KPI stat cards (apex-stat with top accent rail) ── #}
@@ -195,7 +195,7 @@
     {# ── Recent warnings module ── #}
     <div class="apex-module">
       <div class="apex-module-header">
-        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Recent Warnings</h2>
+        <h2>Recent warnings</h2>
       </div>
       <div class="divide-y divide-rams-line">
         {% for w in recent_warnings %}
@@ -219,7 +219,7 @@
     {# ── Coverage by region module ── #}
     <div class="apex-module">
       <div class="apex-module-header">
-        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Coverage by Region</h2>
+        <h2>Coverage by region</h2>
       </div>
       <div class="apex-module-body">
         <div class="apex-chart-frame-tall">
@@ -252,7 +252,7 @@
     <div class="apex-stat">
       <div class="apex-stat-rail metric-rail-red"></div>
       <p class="apex-stat-label">Data Freshness</p>
-      <p class="apex-stat-value mt-1.5">{{ data_freshness }}</p>
+      <p class="mt-1.5 text-sm font-semibold leading-snug text-rams-foreground">{{ data_freshness }}</p>
     </div>
     <div class="apex-stat">
       <div class="apex-stat-rail
@@ -260,7 +260,7 @@
         {%- else if portfolio_health_class == "apex-text-danger" %} metric-rail-red
         {%- else %} metric-rail-steel{% endif %}"></div>
       <p class="apex-stat-label">Portfolio Health</p>
-      <p class="apex-stat-value mt-1.5 {{ portfolio_health_class }}">{{ portfolio_health }}</p>
+      <p class="mt-1.5 text-lg font-bold {{ portfolio_health_class }}">{{ portfolio_health }}</p>
     </div>
   </div>
 
@@ -268,7 +268,7 @@
   <div class="grid gap-6 lg:grid-cols-2">
     <div class="apex-module">
       <div class="apex-module-header">
-        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Warning Trend (30d)</h2>
+        <h2>Warning trend (30d)</h2>
       </div>
       <div class="apex-module-body">
         <div class="apex-chart-frame-tall">
@@ -286,7 +286,7 @@
 
     <div class="apex-module">
       <div class="apex-module-header">
-        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Crawl Activity (24h)</h2>
+        <h2>Crawl activity (24h)</h2>
       </div>
       <div class="apex-module-body">
         <div class="apex-chart-frame-tall">
@@ -304,7 +304,7 @@
   {# ── Activity timeline module (real activity_feed table) ── #}
   <div class="apex-module">
     <div class="apex-module-header">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Recent Activity</h2>
+      <h2>Recent activity</h2>
     </div>
     <div class="divide-y divide-rams-line">
       {% for a in activity %}
@@ -341,7 +341,7 @@
   {# ── Top insights module ── #}
   <div class="apex-module">
     <div class="apex-module-header">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Top Insights</h2>
+      <h2>Top insights</h2>
     </div>
     <div class="divide-y divide-rams-line">
       {% for i in top_insights %}
@@ -359,9 +359,5 @@
     </div>
   </div>
 
-  {# ── Data freshness footer ── #}
-  <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted text-right">
-    Data freshness: {{ data_freshness }}
-  </p>
 </div>
 {% endblock %}

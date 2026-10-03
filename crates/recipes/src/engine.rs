@@ -125,6 +125,22 @@ pub fn signal_key(spec: &SignalSpec) -> String {
     format!("{}.{}", spec.observation_type, spec.field)
 }
 
+/// Operator names [`check_signal_with_key`] can evaluate. This is the single
+/// source of truth for writers (API validation, recipe creation) so a recipe
+/// that stores an operator the engine cannot evaluate is refused at write
+/// time instead of silently never matching.
+pub const SUPPORTED_OPERATORS: [&str; 6] = [
+    "increase", "decrease", "above", "below", "equals", "contains",
+];
+
+/// Whether [`check_signal_with_key`] can evaluate the given operator.
+///
+/// `default` is accepted as the documented fallback (non-zero value check)
+/// that `SignalSpec.operator` uses when no explicit operator is declared.
+pub fn is_supported_operator(op: &str) -> bool {
+    SUPPORTED_OPERATORS.contains(&op) || op == "default"
+}
+
 /// Check if a single signal condition is satisfied, returning the matched
 /// feature key and its value. The key is formatted once so hot matching paths
 /// do not rebuild it.
@@ -140,13 +156,10 @@ pub fn check_signal_with_key(spec: &SignalSpec, features: &FeatureMap) -> Option
 
     let threshold = spec.threshold.unwrap_or(0.0);
 
-    let known_operators = [
-        "increase", "decrease", "above", "below", "equals", "contains",
-    ];
     let op = spec.operator.as_str();
 
     // B131: Validate operator — unknown operators return None
-    if !known_operators.contains(&op) && op != "default" {
+    if !is_supported_operator(op) {
         return None;
     }
 
@@ -1016,6 +1029,31 @@ mod tests {
         let spec = make_signal("JobPost", "count", "above", Some(3.0));
         let features = FeatureMap::new();
         assert_eq!(check_signal(&spec, &features), None);
+    }
+
+    #[test]
+    fn supported_operator_matches_the_engine_vocabulary() {
+        for op in SUPPORTED_OPERATORS {
+            assert!(is_supported_operator(op), "{op} must be accepted");
+        }
+        // `default` is the documented fallback used when no operator is set.
+        assert!(is_supported_operator("default"));
+
+        for op in ["", "gt", "eq", "greater_than", "DROP TABLE", "Above"] {
+            assert!(!is_supported_operator(op), "{op:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn check_signal_with_key_uses_is_supported_operator() {
+        let mut features = FeatureMap::new();
+        features.insert("JobPost.count".to_string(), 5.0);
+
+        let mut spec = make_signal("JobPost", "count", "not_an_operator", Some(1.0));
+        assert_eq!(check_signal_with_key(&spec, &features), None);
+
+        spec.operator = "default".to_string();
+        assert!(check_signal_with_key(&spec, &features).is_some());
     }
 
     #[test]

@@ -214,6 +214,8 @@ async fn main() -> Result<()> {
         .init();
 
     STARTED_AT.get_or_init(Utc::now);
+    // #129: uptime must measure from process launch, not first admin render.
+    apex_api::web::admin::init_process_start();
     runtime_metrics::init_metrics();
 
     let state = build_state().await?;

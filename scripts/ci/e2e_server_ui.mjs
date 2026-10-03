@@ -75,9 +75,9 @@ const v = (msg) => violations.push(msg);
 async function login(context) {
   const page = await context.newPage();
   await page.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('textbox', { name: /operator id/i }).fill(USER);
-  await page.getByRole('textbox', { name: /access key/i }).fill(PASS);
-  await page.getByRole('button', { name: /access platform/i }).click();
+  await page.getByLabel(/^username$/i).fill(USER);
+  await page.getByLabel(/^password$/i).fill(PASS);
+  await page.getByRole('button', { name: /sign in/i }).click();
   await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 10000 });
   await page.close();
 }
@@ -383,9 +383,17 @@ try {
       await act('open insight', () =>
         page.locator(`a[href="/insights/${insight.id}"]`).first().click());
       await page.waitForURL(`**/insights/${insight.id}`);
+      // Re-entrant: the bookmark is a toggle that replaces itself in place.
+      // A previous attempt may have left the insight bookmarked; reset it
+      // first, awaiting the response so the toggle never flips twice.
+      if (await page.getByRole('button', { name: 'Unbookmark', exact: true }).count()) {
+        const reset = page.waitForResponse((r) => r.url().includes('/bookmark'), { timeout: 5_000 }).catch(() => null);
+        await page.getByRole('button', { name: 'Unbookmark', exact: true }).click();
+        (await reset)?.finished?.();
+      }
       await act('bookmark', () =>
         page.getByRole('button', { name: 'Bookmark', exact: true }).click());
-      await page.waitForSelector('#bookmark-status button[title="Remove bookmark"]', {
+      await page.waitForSelector('button:has-text("Unbookmark")', {
         timeout: 15_000,
       });
     }, 2);

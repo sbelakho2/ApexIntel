@@ -28,6 +28,60 @@ pub const MIN_INTERVAL_SECS: u64 = 60;
 /// Minimum interval for custom jobs to avoid abuse and accidental hot loops (B314).
 pub const MIN_CUSTOM_JOB_INTERVAL_SECS: u64 = 300;
 
+/// Consecutive failures before the circuit breaker disables a normal job.
+pub const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
+/// Control-plane jobs keep the platform's own feedback loops alive (delivery,
+/// scoring, SLA re-escalation, search indexing). Disabling them silently stops
+/// user-visible safety nets, so they tolerate a much longer failure streak
+/// before the breaker opens (#106).
+pub const CONTROL_PLANE_MAX_CONSECUTIVE_FAILURES: u32 = 50;
+
+/// How long an open circuit waits before allowing one probe run (#106).
+pub const CIRCUIT_PROBE_COOLDOWN_SECS: i64 = 3600;
+
+/// Jobs whose failure disables a user-visible safety net. These get a much
+/// higher failure threshold and are the dedicated scheduler lanes in the
+/// runtime.
+pub fn is_control_plane_job(kind: &JobKind) -> bool {
+    matches!(
+        kind,
+        JobKind::NotificationDelivery
+            | JobKind::SlaEnforcement
+            | JobKind::TriageProcessing
+            | JobKind::ObservationIndex
+    )
+}
+
+/// Default failure threshold for `kind` (#106).
+pub fn default_max_consecutive_failures_for(kind: &JobKind) -> u32 {
+    if is_control_plane_job(kind) {
+        CONTROL_PLANE_MAX_CONSECUTIVE_FAILURES
+    } else {
+        DEFAULT_MAX_CONSECUTIVE_FAILURES
+    }
+}
+
+/// Does this job kind issue LLM calls?
+///
+/// The runtime probes the process-wide LLM gate before claiming these jobs
+/// (#92): when every model slot is busy, the run is left queued for the next
+/// tick instead of starting work that would immediately block. Call sites
+/// additionally acquire the gate per model call, so this list is an admission
+/// optimization, not the safety mechanism.
+pub fn job_may_use_llm(kind: &JobKind) -> bool {
+    matches!(
+        kind,
+        JobKind::PoiRefresh
+            | JobKind::StrategyMemo
+            | JobKind::EmbeddingReindex
+            | JobKind::TriageProcessing
+            | JobKind::InsightGeneration
+            | JobKind::RecipeFire
+            | JobKind::SelfImprovementCycle
+    )
+}
+
 // ────────────────────────────────────────────
 // Schedule spec
 // ────────────────────────────────────────────
@@ -530,10 +584,16 @@ pub struct JobDef {
     /// Callers must enforce this; the scheduler tracks intent only (B242).
     #[serde(default = "JobDef::default_max_concurrent")]
     pub max_concurrent: u32,
+    /// When the circuit breaker opened. The breaker allows one probe run after
+    /// `CIRCUIT_PROBE_COOLDOWN_SECS`; `None` with a broken circuit means the
+    /// breaker may probe on the next tick (#106).
+    #[serde(default)]
+    pub circuit_opened_at: Option<DateTime<Utc>>,
 }
 
 impl JobDef {
     pub fn new(kind: JobKind, schedule: Schedule) -> Self {
+        let max_consecutive_failures = default_max_consecutive_failures_for(&kind);
         Self {
             kind,
             schedule,
@@ -541,10 +601,11 @@ impl JobDef {
             last_run: None,
             last_status: None,
             consecutive_failures: 0,
-            max_consecutive_failures: 5,
+            max_consecutive_failures,
             jitter_offset_secs: 0,
             timeout_secs: None,
             max_concurrent: 1,
+            circuit_opened_at: None,
         }
     }
 
@@ -556,6 +617,12 @@ impl JobDef {
     /// Use different values per job to spread concurrent firings across ticks.
     pub fn with_jitter(mut self, offset_secs: u32) -> Self {
         self.jitter_offset_secs = offset_secs;
+        self
+    }
+
+    /// Override the consecutive-failure threshold for this job.
+    pub fn with_max_consecutive_failures(mut self, failures: u32) -> Self {
+        self.max_consecutive_failures = failures.max(1);
         self
     }
 
@@ -580,6 +647,9 @@ impl JobDef {
                 self.consecutive_failures += 1;
                 if self.consecutive_failures >= self.max_consecutive_failures {
                     self.enabled = false;
+                    // #106: remember when the breaker opened so it can probe
+                    // again after the cooldown instead of staying open forever.
+                    self.circuit_opened_at = Some(Utc::now());
                     tracing::warn!(
                         "{} disabled after {} consecutive failures",
                         self.kind.as_str(),
@@ -589,6 +659,15 @@ impl JobDef {
             }
             JobStatus::Succeeded { .. } => {
                 self.consecutive_failures = 0;
+                // #106: a successful probe (or any success) closes the breaker.
+                if !self.enabled {
+                    tracing::info!(
+                        job = self.kind.as_str(),
+                        "circuit breaker closed after a successful run"
+                    );
+                }
+                self.enabled = true;
+                self.circuit_opened_at = None;
             }
             _ => {}
         }
@@ -597,6 +676,26 @@ impl JobDef {
     /// Has this job been auto-disabled due to repeated failures?
     pub fn is_circuit_broken(&self) -> bool {
         !self.enabled && self.consecutive_failures >= self.max_consecutive_failures
+    }
+
+    /// Is an open circuit past its cooldown, so one probe run may execute?
+    ///
+    /// The probe is the only way the breaker ever closes: without it a job
+    /// disabled by `record_run` stayed disabled until an operator intervened
+    /// (#106).
+    pub fn probe_allowed(&self, now: DateTime<Utc>) -> bool {
+        if !self.is_circuit_broken() {
+            return false;
+        }
+        match self.circuit_opened_at {
+            Some(opened_at) => {
+                now.signed_duration_since(opened_at)
+                    >= chrono::Duration::seconds(CIRCUIT_PROBE_COOLDOWN_SECS)
+            }
+            // A restored circuit with no timestamp probes immediately; the
+            // failure path stamps the cooldown for the next attempt.
+            None => true,
+        }
     }
 
     /// Reset the circuit breaker (operator override).
@@ -612,6 +711,7 @@ impl JobDef {
         );
         self.consecutive_failures = 0;
         self.enabled = true;
+        self.circuit_opened_at = None;
     }
 }
 
@@ -696,13 +796,12 @@ impl Scheduler {
     /// Jobs that are still in `Running` state are excluded to prevent
     /// overlapping parallel executions of the same job (B238).
     /// Jitter offsets are applied per-job to spread thundering-herd (B231).
+    /// Circuit-broken jobs are skipped until their probe cooldown elapses, then
+    /// exactly one probe run is admitted (#106).
     pub fn due_jobs(&self, now: DateTime<Utc>) -> Vec<JobKind> {
         self.jobs
             .values()
             .filter(|def| {
-                if !def.enabled {
-                    return false;
-                }
                 // B238: never schedule a second run while the first is still in-flight
                 if matches!(def.last_status.as_ref(), Some(JobStatus::Running)) {
                     tracing::debug!(
@@ -710,6 +809,17 @@ impl Scheduler {
                         "skipping due check: previous run still Running"
                     );
                     return false;
+                }
+                if !def.enabled {
+                    let probe = def.probe_allowed(now);
+                    if probe {
+                        tracing::warn!(
+                            job = def.kind.as_str(),
+                            consecutive_failures = def.consecutive_failures,
+                            "circuit breaker cooldown elapsed; admitting one probe run"
+                        );
+                    }
+                    return probe;
                 }
                 is_due_with_jitter(&def.schedule, def.last_run, now, def.jitter_offset_secs)
             })
@@ -728,6 +838,18 @@ impl Scheduler {
         if self.history.len() > self.max_history {
             let excess = self.history.len() - self.max_history;
             self.history.drain(0..excess);
+        }
+    }
+
+    /// Mark a job as dispatched: its run has started but has not completed.
+    ///
+    /// The runtime calls this when it hands a job to a detached task (#104), so
+    /// `due_jobs` excludes the in-flight kind and a crash leaves a persisted
+    /// `running` state that startup recovery maps to `skipped`.
+    pub fn mark_dispatched(&mut self, kind: &JobKind) {
+        if let Some(def) = self.jobs.get_mut(kind.as_str()) {
+            def.last_run = Some(Utc::now());
+            def.last_status = Some(JobStatus::Running);
         }
     }
 
@@ -1359,7 +1481,7 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(JobKind::TriageProcessing, Schedule::IntervalSecs(300))
             .with_jitter(0)
-            .with_timeout(120), // 2 min — lightweight LLM scoring call
+            .with_timeout(900), // #107: >= 900s — a bounded batch of LLM calls can far exceed 2 min
     );
 
     // ── Historical Trend Aggregation ────────────────────────────────────
@@ -3058,5 +3180,165 @@ mod tests {
             Some(monday_0600 - chrono::Duration::days(7)),
             wednesday
         ));
+    }
+
+    // ── #106: circuit breaker probe / control-plane thresholds ──────────
+    //
+    // The runtime builds the probe clock from wall time, so these tests pin the
+    // pure JobDef behavior using an explicit `now` rather than sleeping.
+
+    fn failed_run(kind: JobKind) -> JobRun {
+        let mut run = JobRun::new(kind);
+        run.start();
+        run.fail("synthetic failure");
+        run
+    }
+
+    #[test]
+    fn circuit_breaker_opens_with_timestamp_and_blocks_due_until_cooldown() {
+        let mut sched = Scheduler::new();
+        let mut def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60));
+        def.max_consecutive_failures = 2;
+        sched.register(def);
+
+        for _ in 0..2 {
+            sched.record_run(failed_run(JobKind::CrawlCycle));
+        }
+        let def = &sched.jobs["crawl_cycle"];
+        assert!(def.is_circuit_broken());
+        assert!(!def.enabled);
+        assert!(def.circuit_opened_at.is_some());
+
+        let just_after = def.circuit_opened_at.unwrap() + chrono::Duration::seconds(1);
+        assert!(!def.probe_allowed(just_after));
+        assert!(
+            sched.due_jobs(just_after).is_empty(),
+            "an open circuit inside its cooldown must not be due"
+        );
+
+        // One hour later the single probe is admitted even though the job is
+        // still disabled and the interval schedule is long past due.
+        let after_cooldown = def.circuit_opened_at.unwrap()
+            + chrono::Duration::seconds(CIRCUIT_PROBE_COOLDOWN_SECS + 1);
+        assert!(def.probe_allowed(after_cooldown));
+        assert_eq!(sched.due_jobs(after_cooldown), vec![JobKind::CrawlCycle]);
+    }
+
+    #[test]
+    fn successful_probe_closes_the_circuit_breaker() {
+        let mut def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60));
+        def.max_consecutive_failures = 1;
+        def.record_run(&failed_run(JobKind::CrawlCycle));
+        assert!(def.is_circuit_broken());
+
+        let mut success = JobRun::new(JobKind::CrawlCycle);
+        success.start();
+        success.succeed(1, "probe ok");
+        def.record_run(&success);
+
+        assert!(def.enabled);
+        assert!(!def.is_circuit_broken());
+        assert_eq!(def.consecutive_failures, 0);
+        assert!(def.circuit_opened_at.is_none());
+    }
+
+    #[test]
+    fn failed_probe_re_arms_the_cooldown() {
+        let mut def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60));
+        def.max_consecutive_failures = 1;
+        def.record_run(&failed_run(JobKind::CrawlCycle));
+        let first_opened = def.circuit_opened_at.unwrap();
+
+        // Move the probe clock forward and fail the probe: the breaker must
+        // stay open and reset the cooldown window from the probe failure.
+        assert!(def.probe_allowed(
+            first_opened + chrono::Duration::seconds(CIRCUIT_PROBE_COOLDOWN_SECS + 1)
+        ));
+        def.record_run(&failed_run(JobKind::CrawlCycle));
+        let second_opened = def.circuit_opened_at.unwrap();
+        assert!(second_opened > first_opened);
+        assert!(!def.probe_allowed(second_opened + chrono::Duration::seconds(1)));
+    }
+
+    #[test]
+    fn manually_disabled_job_never_probes() {
+        let mut sched = Scheduler::new();
+        let mut def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60));
+        def.enabled = false;
+        sched.register(def);
+
+        assert!(
+            sched
+                .due_jobs(utc(2026, 8, 24, 6, 0, 0) + chrono::Duration::days(30))
+                .is_empty(),
+            "an operator-disabled job must not be resurrected by the probe path"
+        );
+    }
+
+    #[test]
+    fn control_plane_jobs_get_a_much_higher_failure_threshold() {
+        let control_plane = [
+            JobKind::NotificationDelivery,
+            JobKind::SlaEnforcement,
+            JobKind::TriageProcessing,
+            JobKind::ObservationIndex,
+        ];
+        for kind in control_plane {
+            assert!(is_control_plane_job(&kind));
+            let def = JobDef::new(kind, Schedule::IntervalSecs(60));
+            assert_eq!(
+                def.max_consecutive_failures,
+                CONTROL_PLANE_MAX_CONSECUTIVE_FAILURES
+            );
+            assert!(
+                def.max_consecutive_failures > DEFAULT_MAX_CONSECUTIVE_FAILURES,
+                "control-plane threshold must be much higher than the default"
+            );
+        }
+        assert_eq!(
+            JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60)).max_consecutive_failures,
+            DEFAULT_MAX_CONSECUTIVE_FAILURES
+        );
+    }
+
+    // ── #104/#92: dispatch marking and LLM admission classification ─────
+
+    #[test]
+    fn mark_dispatched_blocks_due_until_a_run_is_recorded() {
+        let mut sched = Scheduler::new();
+        sched.register(JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60)));
+        let now = utc(2026, 8, 24, 6, 0, 0);
+        sched.jobs.get_mut("crawl_cycle").unwrap().last_run =
+            Some(now - chrono::Duration::hours(2));
+        assert_eq!(sched.due_jobs(now), vec![JobKind::CrawlCycle]);
+
+        sched.mark_dispatched(&JobKind::CrawlCycle);
+        assert!(matches!(
+            sched.jobs["crawl_cycle"].last_status,
+            Some(JobStatus::Running)
+        ));
+        assert!(
+            sched.due_jobs(now).is_empty(),
+            "a dispatched (Running) job must not be dispatched twice"
+        );
+
+        let mut run = JobRun::new(JobKind::CrawlCycle);
+        run.start();
+        run.succeed(1, "done");
+        sched.record_run(run);
+        assert!(!matches!(
+            sched.jobs["crawl_cycle"].last_status,
+            Some(JobStatus::Running)
+        ));
+    }
+
+    #[test]
+    fn llm_jobs_are_admitted_through_the_gate_classifier() {
+        assert!(job_may_use_llm(&JobKind::InsightGeneration));
+        assert!(job_may_use_llm(&JobKind::TriageProcessing));
+        assert!(job_may_use_llm(&JobKind::RecipeFire));
+        assert!(job_may_use_llm(&JobKind::EmbeddingReindex));
+        assert!(!job_may_use_llm(&JobKind::NotificationDelivery));
+        assert!(!job_may_use_llm(&JobKind::CrawlCycle));
     }
 }

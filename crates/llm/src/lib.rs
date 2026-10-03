@@ -167,6 +167,58 @@ impl LlmProvider {
     pub fn is_local(&self) -> bool {
         matches!(self, Self::LlamaCpp)
     }
+
+    /// Parse an explicit provider name (case-insensitive).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "llamacpp" | "llama.cpp" | "llama_cpp" | "local" => Some(Self::LlamaCpp),
+            "openai" => Some(Self::OpenAi),
+            "azure_openai" | "azureopenai" | "azure" => Some(Self::AzureOpenAi),
+            _ => None,
+        }
+    }
+
+    /// Provider chosen by the explicit `LLM_PROVIDER` environment variable.
+    ///
+    /// Returns `None` when the variable is absent or unrecognized, so callers
+    /// can fall back to their own default instead of silently guessing.
+    pub fn from_env() -> Option<Self> {
+        std::env::var("LLM_PROVIDER")
+            .ok()
+            .and_then(|value| Self::parse(&value))
+    }
+}
+
+/// Environment switch that must be explicitly set to `1` before any cloud LLM
+/// provider may be called.
+pub const ALLOW_CLOUD_LLM_ENV: &str = "APEX_ALLOW_CLOUD_LLM";
+
+/// True when cloud LLM calls have been explicitly enabled.
+pub fn cloud_llm_allowed() -> bool {
+    cloud_llm_allowed_value(std::env::var(ALLOW_CLOUD_LLM_ENV).ok().as_deref())
+}
+
+fn cloud_llm_allowed_value(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1"))
+}
+
+fn provider_allowed(provider: &LlmProvider, allow_cloud: bool) -> Result<()> {
+    if provider.is_local() || allow_cloud {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "cloud LLM provider '{}' is disabled; set {}=1 to explicitly allow cloud calls",
+        provider.as_str(),
+        ALLOW_CLOUD_LLM_ENV
+    )
+}
+
+/// Refuse cloud providers unless `APEX_ALLOW_CLOUD_LLM=1` is set.
+///
+/// Enforced by [`OpenAiCompatibleClient`] before every request, so an
+/// inferred or misconfigured cloud endpoint cannot leak data silently.
+pub fn ensure_provider_allowed(provider: &LlmProvider) -> Result<()> {
+    provider_allowed(provider, cloud_llm_allowed())
 }
 
 /// Per-model configuration including provider, endpoint, and generation parameters.
@@ -239,6 +291,50 @@ impl ModelConfig {
             temperature: 0.2,
             timeout_seconds: 60,
         }
+    }
+
+    /// Build a config from an explicit provider plus optional overrides.
+    ///
+    /// The provider is always taken from `provider` — never inferred from the
+    /// URL — so a cloud endpoint cannot be selected implicitly.
+    pub fn from_parts(
+        provider: LlmProvider,
+        base_url: Option<String>,
+        model_name: Option<String>,
+        api_key: Option<String>,
+    ) -> Self {
+        let defaults = match provider {
+            LlmProvider::LlamaCpp => Self::llamacpp_default(),
+            LlmProvider::OpenAi | LlmProvider::AzureOpenAi => Self::openai_default(),
+        };
+        let non_empty =
+            |value: Option<String>| value.filter(|candidate| !candidate.trim().is_empty());
+        Self {
+            model_name: non_empty(model_name).unwrap_or(defaults.model_name),
+            provider,
+            base_url: non_empty(base_url).unwrap_or(defaults.base_url),
+            api_key: non_empty(api_key).map(ApiKeySecret::from),
+            max_tokens: defaults.max_tokens,
+            temperature: defaults.temperature,
+            timeout_seconds: defaults.timeout_seconds,
+        }
+    }
+
+    /// Build the provider and endpoint from environment variables.
+    ///
+    /// The provider comes from the explicit `LLM_PROVIDER` variable
+    /// (`llamacpp` | `openai` | `azure_openai`), defaulting to the local
+    /// llama.cpp server. `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`
+    /// override the provider defaults. Cloud providers remain subject to
+    /// [`ensure_provider_allowed`] at call time.
+    pub fn from_env() -> Self {
+        let provider = LlmProvider::from_env().unwrap_or(LlmProvider::LlamaCpp);
+        Self::from_parts(
+            provider,
+            std::env::var("LLM_BASE_URL").ok(),
+            std::env::var("LLM_MODEL").ok(),
+            std::env::var("LLM_API_KEY").ok(),
+        )
     }
 
     /// Build chat completions endpoint URL.
@@ -721,6 +817,8 @@ impl OpenAiCompatibleClient {
     }
 
     async fn call(&self, system: &str, user: &str, json_mode: bool) -> Result<String> {
+        // Cloud providers are refused unless the operator opted in explicitly.
+        crate::ensure_provider_allowed(&self.config.provider)?;
         let Some(http) = self.http.as_ref() else {
             anyhow::bail!(
                 "LLM HTTP client is unavailable (construction failed at startup); \
@@ -865,6 +963,61 @@ mod tests {
         let cfg = ModelConfig::openai_default();
         assert_eq!(cfg.model_name, "gpt-4o");
         assert_eq!(cfg.provider, LlmProvider::OpenAi);
+    }
+
+    #[test]
+    fn test_llm_provider_parse_is_case_insensitive() {
+        assert_eq!(LlmProvider::parse("LLAMACPP"), Some(LlmProvider::LlamaCpp));
+        assert_eq!(LlmProvider::parse("llama.cpp"), Some(LlmProvider::LlamaCpp));
+        assert_eq!(LlmProvider::parse("OpenAI"), Some(LlmProvider::OpenAi));
+        assert_eq!(
+            LlmProvider::parse("azure_openai"),
+            Some(LlmProvider::AzureOpenAi)
+        );
+        assert_eq!(LlmProvider::parse("azure"), Some(LlmProvider::AzureOpenAi));
+        assert_eq!(LlmProvider::parse("anthropic"), None);
+    }
+
+    #[test]
+    fn test_cloud_provider_gate() {
+        // Local providers never need the opt-in.
+        assert!(provider_allowed(&LlmProvider::LlamaCpp, false).is_ok());
+        // Cloud providers are refused without the explicit opt-in ...
+        assert!(provider_allowed(&LlmProvider::OpenAi, false).is_err());
+        assert!(provider_allowed(&LlmProvider::AzureOpenAi, false).is_err());
+        // ... and allowed with it.
+        assert!(provider_allowed(&LlmProvider::OpenAi, true).is_ok());
+        assert!(provider_allowed(&LlmProvider::AzureOpenAi, true).is_ok());
+
+        assert!(cloud_llm_allowed_value(Some("1")));
+        assert!(cloud_llm_allowed_value(Some(" 1 ")));
+        assert!(!cloud_llm_allowed_value(Some("true")));
+        assert!(!cloud_llm_allowed_value(Some("0")));
+        assert!(!cloud_llm_allowed_value(None));
+    }
+
+    #[test]
+    fn test_model_config_from_parts_uses_explicit_provider() {
+        let cloud = ModelConfig::from_parts(
+            LlmProvider::OpenAi,
+            None,
+            Some("gpt-4o-mini".to_string()),
+            Some("sk-test".to_string()),
+        );
+        assert_eq!(cloud.provider, LlmProvider::OpenAi);
+        assert_eq!(cloud.model_name, "gpt-4o-mini");
+        assert!(cloud.api_key.is_some());
+        // Blank overrides fall back to provider defaults.
+        let local = ModelConfig::from_parts(
+            LlmProvider::LlamaCpp,
+            Some("  ".to_string()),
+            Some(String::new()),
+            None,
+        );
+        assert_eq!(local.provider, LlmProvider::LlamaCpp);
+        assert_eq!(local.base_url, "http://localhost:8080");
+        assert_eq!(local.model_name, "Qwen3-30B-A3B-Q4_K_M");
+        assert!(local.api_key.is_none());
     }
 
     #[test]
@@ -1423,7 +1576,8 @@ mod tests {
         );
         let (addr, server) = spawn_raw_http_response(response).await;
 
-        let mut config = ModelConfig::openai_default();
+        // Local provider: these tests exercise body handling, not cloud access.
+        let mut config = ModelConfig::llamacpp_default();
         config.base_url = format!("http://{addr}");
         config.timeout_seconds = 5;
         let client = OpenAiCompatibleClient::new(config);
@@ -1449,7 +1603,8 @@ mod tests {
         body.push_str("0\r\n\r\n");
         let (addr, server) = spawn_raw_http_response(body).await;
 
-        let mut config = ModelConfig::openai_default();
+        // Local provider: these tests exercise body handling, not cloud access.
+        let mut config = ModelConfig::llamacpp_default();
         config.base_url = format!("http://{addr}");
         config.timeout_seconds = 5;
         let client = OpenAiCompatibleClient::new(config);

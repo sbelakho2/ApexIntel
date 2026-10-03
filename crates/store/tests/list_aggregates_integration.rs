@@ -380,3 +380,458 @@ async fn warning_summary_is_exact_past_the_list_clamp() {
         .await
         .expect("cleanup warnings");
 }
+
+/// The newest observations per company are fetched in one partitioned SQL
+/// query (ROW_NUMBER), not with one query per company.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn recent_observations_per_entity_are_bounded_in_sql() {
+    use apex_core::entities::{Observation, ObservationType};
+    use chrono::{Duration, Utc};
+
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let entity_a = Uuid::new_v4();
+    let entity_b = Uuid::new_v4();
+    let base = Utc::now() - Duration::days(1);
+    let mut inserted: Vec<Uuid> = Vec::new();
+
+    for (entity, label) in [(entity_a, "a"), (entity_b, "b")] {
+        for i in 0..15 {
+            let observation = Observation {
+                id: Uuid::new_v4(),
+                observation_type: ObservationType::WebChange,
+                entity_id: Some(entity),
+                entity_type: Some("company".to_string()),
+                ts_utc: base + Duration::minutes(i),
+                value: serde_json::json!({"label": label, "seq": i}),
+                provenance: serde_json::json!({"source": "test"}),
+                confidence: 0.5,
+                // Distinct created_at ordering: newest is i = 14.
+                created_at: base + Duration::minutes(i),
+            };
+            store.insert_observation(&observation).await.unwrap();
+            inserted.push(observation.id);
+        }
+    }
+
+    let rows = store
+        .get_recent_observations_for_entities(&[entity_a, entity_b], 12)
+        .await
+        .expect("partitioned observations query");
+    assert_eq!(rows.len(), 24, "12 newest per entity, two entities");
+    for entity in [entity_a, entity_b] {
+        let for_entity: Vec<_> = rows
+            .iter()
+            .filter(|r| r.entity_id == Some(entity))
+            .collect();
+        assert_eq!(for_entity.len(), 12);
+        let seqs: Vec<i64> = for_entity
+            .iter()
+            .map(|r| r.value.get("seq").and_then(|v| v.as_i64()).unwrap())
+            .collect();
+        assert!(
+            seqs.contains(&14) && !seqs.contains(&2),
+            "the newest observations must win: {seqs:?}"
+        );
+    }
+
+    assert!(store
+        .get_recent_observations_for_entities(&[], 12)
+        .await
+        .expect("empty entity set")
+        .is_empty());
+
+    for id in inserted {
+        sqlx::query("DELETE FROM observations WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// Store-side triage support: bounded scoring attempts, dimension updates
+/// only when supplied, reopening on a new sighting, SQL band counts from the
+/// configured thresholds, transition enforcement and override attribution.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn triage_store_support_enforces_attempts_and_transitions() {
+    use apex_core::triage::{TriageDimensions, TriageThresholds, TriageWeights};
+
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let source_a = Uuid::new_v4();
+    let source_b = Uuid::new_v4();
+    // `triage_queue.item_type` is constrained to insight|warning|alert.
+    let item_type = "alert".to_string();
+    let mut inserted = Vec::new();
+
+    let insert = |source: Uuid, attempts: i32, score: f64| {
+        let pool = pool.clone();
+        let item_type = item_type.clone();
+        async move {
+            let id: Uuid = sqlx::query_scalar(
+                "INSERT INTO triage_queue \
+                     (item_type, source_id, title, description, composite_score, status, triage_attempts) \
+                 VALUES ($1, $2, 'title', 'description', $3, 'pending', $4) \
+                 RETURNING id",
+            )
+            .bind(&item_type)
+            .bind(source)
+            .bind(score)
+            .bind(attempts)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            id
+        }
+    };
+
+    // Exhausted item is not claimable; fresh item is, and consumes an attempt.
+    let exhausted = insert(source_a, 3, 0.0).await;
+    let fresh = insert(source_b, 0, 0.0).await;
+    inserted.push(exhausted);
+    inserted.push(fresh);
+
+    let claimed = store
+        .claim_unscored_triage_items(500, 3)
+        .await
+        .expect("claim unscored items");
+    let claimed_ids: Vec<Uuid> = claimed.iter().map(|item| item.id).collect();
+    assert!(
+        claimed_ids.contains(&fresh) && !claimed_ids.contains(&exhausted),
+        "only items below the attempt cap are claimable: {claimed_ids:?}"
+    );
+    let fresh_attempts: i32 =
+        sqlx::query_scalar("SELECT triage_attempts FROM triage_queue WHERE id = $1")
+            .bind(fresh)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(fresh_attempts, 1, "a claim consumes exactly one attempt");
+
+    // Normative transition: pending -> acknowledged is valid.
+    assert!(
+        store
+            .transition_triage_item(fresh, "acknowledged")
+            .await
+            .unwrap()
+            .is_some(),
+        "pending -> acknowledged must be accepted"
+    );
+    // Terminal transition: acknowledged -> pending is not a valid edge.
+    assert!(
+        store
+            .transition_triage_item(fresh, "pending")
+            .await
+            .unwrap()
+            .is_none(),
+        "acknowledged -> pending must be rejected"
+    );
+    // Unknown id is None (404, not an error).
+    assert!(store
+        .transition_triage_item(Uuid::new_v4(), "resolved")
+        .await
+        .unwrap()
+        .is_none());
+
+    // Resolving then a new sighting reopens the row and bumps occurrences.
+    assert!(store
+        .transition_triage_item(fresh, "resolved")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store.reopen_triage_item_on_sighting(fresh).await.unwrap());
+    let (status, occurrences, resolved_at): (String, i32, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as(
+            "SELECT status::text, occurrence_count, resolved_at FROM triage_queue WHERE id = $1",
+        )
+        .bind(fresh)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+    assert_eq!(occurrences, 2);
+    assert!(resolved_at.is_none(), "reopening clears resolved_at");
+
+    // A failed scoring pass (None dimensions) must not touch dimensions...
+    let before: (f64, f64, f64, String) = sqlx::query_as(
+        "SELECT urgency, impact, composite_score, status::text FROM triage_queue WHERE id = $1",
+    )
+    .bind(fresh)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let weights = TriageWeights::default();
+    assert!(!store
+        .apply_triage_scores(fresh, None, &weights)
+        .await
+        .expect("None dimensions is a recorded failure, not an error"));
+    let after_failure: (f64, f64, f64, String) = sqlx::query_as(
+        "SELECT urgency, impact, composite_score, status::text FROM triage_queue WHERE id = $1",
+    )
+    .bind(fresh)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        after_failure, before,
+        "None dimensions must not zero scores"
+    );
+
+    // ... and supplied dimensions are applied and recorded.
+    let dimensions = TriageDimensions {
+        urgency: 0.9,
+        impact: 0.8,
+        actionability: 0.7,
+        novelty: 0.6,
+        confidence: 0.9,
+    };
+    assert!(store
+        .apply_triage_scores(fresh, Some(&dimensions), &weights)
+        .await
+        .expect("apply supplied dimensions"));
+    let composite: f64 =
+        sqlx::query_scalar("SELECT composite_score FROM triage_queue WHERE id = $1")
+            .bind(fresh)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(composite > 0.0, "supplied dimensions must set the score");
+
+    // Override attribution is recorded.
+    assert!(store
+        .override_triage_score(fresh, 0.95, "analyst-7")
+        .await
+        .unwrap()
+        .is_some());
+    let overridden_by: Option<String> =
+        sqlx::query_scalar("SELECT overridden_by FROM triage_queue WHERE id = $1")
+            .bind(fresh)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(overridden_by.as_deref(), Some("analyst-7"));
+
+    // Band counts are computed in SQL from the configured thresholds and only
+    // count pending rows; return the item to pending first.
+    assert!(store
+        .transition_triage_item(fresh, "resolved")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store.reopen_triage_item_on_sighting(fresh).await.unwrap());
+    let bands = store
+        .count_triage_bands(&TriageThresholds::default())
+        .await
+        .expect("band counts");
+    let total_pending: i64 = bands.iter().map(|(_, count)| count).sum();
+    assert!(total_pending >= 1, "the reopened item is pending");
+    let expected_band = apex_core::triage::score_to_band(0.95, &TriageThresholds::default());
+    assert!(
+        bands
+            .iter()
+            .find(|(band, _)| band.as_str() == expected_band)
+            .map(|(_, count)| *count)
+            .unwrap_or(0)
+            >= 1,
+        "the overridden item is counted in its configured band: {bands:?}"
+    );
+
+    for id in inserted {
+        sqlx::query("DELETE FROM triage_queue WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// DNS posture is a per-domain property: repeated scans must render once per
+/// domain (newest measurement wins), including rows written through the
+/// canonical `DnsPosture` observation type.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn dns_posture_reads_deduplicate_domains() {
+    use apex_core::entities::{Observation, ObservationType};
+    use chrono::{Duration, Utc};
+
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let domains = [
+        format!("a-{suffix}.test"),
+        format!("b-{suffix}.test"),
+        format!("c-{suffix}.test"),
+    ];
+
+    let base = Utc::now() - Duration::hours(1);
+    let mut inserted = Vec::new();
+    let mut step = 0i64;
+    // > 20 rows so the dedicated-table fallback is not selected and the
+    // observation path is what is asserted.
+    for domain in &domains {
+        for _ in 0..9 {
+            step += 1;
+            let observation = Observation {
+                id: Uuid::new_v4(),
+                observation_type: ObservationType::DnsPosture,
+                entity_id: Some(Uuid::new_v4()),
+                entity_type: Some("company".to_string()),
+                ts_utc: base + Duration::seconds(step),
+                value: serde_json::json!({
+                    "domain": domain,
+                    "has_spf": true,
+                    "has_dkim": false,
+                    "dkim_status": "unknown",
+                    "dkim_unknown_reason": "resolver error",
+                    "has_dmarc": false,
+                    "posture_score": 0.3,
+                }),
+                provenance: serde_json::json!({"source": "test", "content_hash": format!("dns_{step}")}),
+                confidence: 0.9,
+                created_at: base + Duration::seconds(step),
+            };
+            store
+                .insert_observation(&observation)
+                .await
+                .expect("insert dns posture observation");
+            inserted.push(observation.id);
+        }
+    }
+
+    let rows = store
+        .get_dns_posture_entries(200)
+        .await
+        .expect("read dns posture");
+    for domain in &domains {
+        let matching: Vec<_> = rows
+            .iter()
+            .filter(|row| row.value.get("domain").and_then(|v| v.as_str()) == Some(domain.as_str()))
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "each domain must render exactly once: {domain}"
+        );
+        assert_eq!(
+            matching[0]
+                .value
+                .get("dkim_status")
+                .and_then(|v| v.as_str()),
+            Some("unknown"),
+            "an unmeasured DKIM lookup stays unknown, never absent"
+        );
+    }
+
+    for id in inserted {
+        sqlx::query("DELETE FROM observations WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// The LLM cache binds the rendered prompt into the key, refuses to store an
+/// ungrounded response, and treats expired entries as misses.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn llm_cache_is_grounded_prompt_bound_and_expiring() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let workflow = format!("cache_test_{}", Uuid::new_v4().simple());
+    let base_key = "evidence-key-1";
+    let prompt = "rendered prompt {{entity}}";
+    let evidence = [Uuid::new_v4()];
+
+    // Ungrounded responses are never cached.
+    let stored = store
+        .put_llm_cache_grounded(
+            base_key,
+            &workflow,
+            "model-v1",
+            "prompt-v1",
+            &evidence,
+            prompt,
+            false,
+            chrono::Duration::hours(1),
+            r#"{"headline":"ungrounded"}"#,
+        )
+        .await
+        .expect("ungrounded put");
+    assert!(!stored, "an ungrounded response must not be cached");
+    assert!(store
+        .get_llm_cache_for_prompt(base_key, prompt)
+        .await
+        .expect("read ungrounded")
+        .is_none());
+
+    // A grounded response is cached under the prompt-bound key.
+    let stored = store
+        .put_llm_cache_grounded(
+            base_key,
+            &workflow,
+            "model-v1",
+            "prompt-v1",
+            &evidence,
+            prompt,
+            true,
+            chrono::Duration::hours(1),
+            r#"{"headline":"grounded"}"#,
+        )
+        .await
+        .expect("grounded put");
+    assert!(stored);
+    assert_eq!(
+        store
+            .get_llm_cache_for_prompt(base_key, prompt)
+            .await
+            .expect("read grounded")
+            .as_deref(),
+        Some(r#"{"headline":"grounded"}"#)
+    );
+    // The bare evidence key must not hit: the rendered prompt is part of the key.
+    assert!(
+        store
+            .get_llm_cache(base_key)
+            .await
+            .expect("bare key read")
+            .is_none(),
+        "the prompt must be hashed into the effective cache key"
+    );
+    // A different rendered prompt is a different entry.
+    assert!(store
+        .get_llm_cache_for_prompt(base_key, "a different rendering")
+        .await
+        .expect("different prompt read")
+        .is_none());
+
+    // Expiry makes the entry a miss.
+    sqlx::query(
+        "UPDATE llm_cache SET expires_at = NOW() - INTERVAL '1 second' WHERE workflow = $1",
+    )
+    .bind(&workflow)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(store
+        .get_llm_cache_for_prompt(base_key, prompt)
+        .await
+        .expect("expired read")
+        .is_none());
+    assert_eq!(
+        store
+            .count_expired_llm_cache_entries(&workflow)
+            .await
+            .expect("count expired"),
+        1
+    );
+
+    sqlx::query("DELETE FROM llm_cache WHERE workflow = $1")
+        .bind(&workflow)
+        .execute(&pool)
+        .await
+        .unwrap();
+}

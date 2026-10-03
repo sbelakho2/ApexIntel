@@ -15,15 +15,11 @@
     </div>
     <h1 class="mt-5 text-4xl font-black">500</h1>
     <p class="mx-auto mt-3 text-sm text-rams-muted">An internal error interrupted the current operator workflow.</p>
-    {% if !error_message.is_empty() %}
-    <div class="apex-alert apex-alert-danger mx-auto mt-4 max-w-xl text-left">
-      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Error Context</p>
-      <p class="mt-2 text-[11px] text-rams-foreground">{{ error_message }}</p>
+    <div class="mx-auto mt-4 max-w-xl rounded border border-rams-line bg-rams-panel px-3 py-2 text-left">
+      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Incident ID</p>
+      <p class="mt-1 text-[11px] font-mono text-rams-foreground">{{ incident_id }}</p>
+      <p class="mt-1 text-[10px] text-rams-muted">Quote this id to support; the details are in the server log.</p>
     </div>
-    {% endif %}
-    {% if !request_id.is_empty() %}
-    <p class="mt-4 text-[10px] font-mono text-rams-muted">Request ID: {{ request_id }}</p>
-    {% endif %}
     <div class="mt-6 flex items-center justify-center">
       <a href="/" class="apex-btn apex-btn-secondary">Return to Dashboard</a>
     </div>

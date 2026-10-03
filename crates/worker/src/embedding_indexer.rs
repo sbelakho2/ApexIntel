@@ -255,6 +255,8 @@ async fn index_single_entity(
     }
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
+        // #92: one process-wide LLM permit per embedding request.
+        let _llm_slot = crate::llm_concurrency::acquire_llm_slot().await;
         let embedding = client.embed(chunk).await?;
         store
             .upsert_embedding(

@@ -442,3 +442,174 @@ async fn list_and_count_run_against_the_real_schema() {
     delete_fixture(&pool, &item_type, &source_id).await;
     pool.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn enqueue_without_dimensions_preserves_scores_and_reopens_closed_rows() {
+    let pool = connect().await;
+    let queue = TriageQueue::new(pool.clone());
+
+    let item_type = TriageItemType::Warning;
+    purge_stale_fixtures(&pool, &item_type).await;
+    let source_id = Uuid::new_v4().to_string();
+
+    let dims = apex_core::triage::TriageDimensions {
+        urgency: 0.8,
+        impact: 0.9,
+        actionability: 0.6,
+        novelty: 0.4,
+        confidence: 0.7,
+    };
+
+    let first = queue
+        .enqueue(QueueEnqueueRequest {
+            item_type: item_type.clone(),
+            source_id: &source_id,
+            title: "Initial sighting",
+            description: "First observation of the signal",
+            entity_id: None,
+            entity_name: Some("Integration Test Corp"),
+            static_severity: Some("low"),
+            dimensions: Some(&dims),
+        })
+        .await
+        .unwrap();
+    assert_eq!(first.status, TriageStatus::Pending);
+    let original_dimensions = first.dimensions.clone().expect("dimensions stored");
+    let original_score = first.composite_score;
+
+    // Re-enqueue the same sighting with no dimensions: the stored score must
+    // not be zeroed out (#111).
+    let repeated = queue
+        .enqueue(QueueEnqueueRequest {
+            item_type: item_type.clone(),
+            source_id: &source_id,
+            title: "Repeat sighting",
+            description: "Second observation of the signal",
+            entity_id: None,
+            entity_name: Some("Integration Test Corp"),
+            static_severity: Some("low"),
+            dimensions: None,
+        })
+        .await
+        .unwrap();
+    let repeated_dimensions = repeated.dimensions.clone().expect("dimensions kept");
+    assert!(
+        (repeated_dimensions.urgency - original_dimensions.urgency).abs() < 1e-9,
+        "urgency must be preserved when no new dimensions are supplied"
+    );
+    assert!(
+        (repeated.composite_score - original_score).abs() < 1e-9,
+        "composite score must be preserved when no new dimensions are supplied"
+    );
+    assert_eq!(repeated.status, TriageStatus::Pending);
+
+    // Close the row, then enqueue the same sighting again: it must reopen
+    // (#112) with its score intact.
+    queue.resolve(repeated.id).await.unwrap();
+    let reopened = queue
+        .enqueue(QueueEnqueueRequest {
+            item_type: item_type.clone(),
+            source_id: &source_id,
+            title: "Third sighting",
+            description: "Third observation of the signal",
+            entity_id: None,
+            entity_name: Some("Integration Test Corp"),
+            static_severity: Some("low"),
+            dimensions: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.status,
+        TriageStatus::Triaged,
+        "a new sighting must reopen a resolved row"
+    );
+    assert!(
+        (reopened.composite_score - original_score).abs() < 1e-9,
+        "reopening without new dimensions keeps the stored score"
+    );
+
+    // New dimensions still overwrite the stored ones.
+    let new_dims = apex_core::triage::TriageDimensions {
+        urgency: 0.1,
+        impact: 0.2,
+        actionability: 0.3,
+        novelty: 0.4,
+        confidence: 0.5,
+    };
+    let rescored = queue
+        .enqueue(QueueEnqueueRequest {
+            item_type: item_type.clone(),
+            source_id: &source_id,
+            title: "Fourth sighting",
+            description: "Fourth observation with fresh scoring",
+            entity_id: None,
+            entity_name: Some("Integration Test Corp"),
+            static_severity: Some("low"),
+            dimensions: Some(&new_dims),
+        })
+        .await
+        .unwrap();
+    let rescored_dimensions = rescored.dimensions.clone().expect("dimensions stored");
+    assert!(
+        (rescored_dimensions.urgency - 0.1).abs() < 1e-9,
+        "supplied dimensions must overwrite the stored score"
+    );
+    assert_eq!(rescored.status, TriageStatus::Triaged);
+
+    delete_fixture(&pool, &item_type, &source_id).await;
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn resubmitting_a_resolved_sighting_reopens_it() {
+    let pool = connect().await;
+    let queue = TriageQueue::new(pool.clone());
+    let ingestor = TriageIngestor::new(queue, SemanticDedup::with_in_memory_fallback());
+
+    let item_type = TriageItemType::Alert;
+    purge_stale_fixtures(&pool, &item_type).await;
+    let source_id = Uuid::new_v4().to_string();
+
+    let first = ingestor
+        .submit(submission(
+            item_type.clone(),
+            &source_id,
+            Uuid::new_v4(),
+            "https://news-a.example/reopen",
+        ))
+        .await
+        .unwrap();
+    assert!(!first.merged());
+    let id = first.item().id;
+
+    TriageQueue::new(pool.clone()).resolve(id).await.unwrap();
+
+    // The same source producing a new sighting must reopen the closed row,
+    // not merge into it invisibly (#112).
+    let second = ingestor
+        .submit(submission(
+            item_type.clone(),
+            &source_id,
+            Uuid::new_v4(),
+            "https://news-b.example/reopen",
+        ))
+        .await
+        .unwrap();
+    assert!(second.merged());
+
+    let (status, occurrences): (String, i64) = sqlx::query_as(
+        "SELECT status::text, occurrence_count::bigint FROM triage_queue WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "pending", "a new sighting must reopen the row");
+    assert_eq!(occurrences, 2);
+
+    delete_fixture(&pool, &item_type, &source_id).await;
+    pool.close().await;
+}

@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Warnings</li>
@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Warning Center", "alert-triangle", "Real-time warnings with severity, type, and region filters.", "") %}
+{% call m::page_header("Warnings", "alert-triangle", "Signals requiring review, with severity, type, and region filters.", "") %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
@@ -46,7 +46,7 @@
 {# ── Warning Trend (30d) ── #}
 <div class="apex-module mb-6">
   <div class="apex-module-header">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Warning Trend (30d)</h2>
+    <h2>Warning trend (30d)</h2>
     <a href="/api/warnings" class="apex-action-link">Export JSON</a>
   </div>
   <div class="apex-module-body">
@@ -127,7 +127,7 @@
 <div class="apex-module overflow-hidden mb-4">
   <div class="apex-module-header">
     <div>
-      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Analyst Table</h2>
+      <h2>All warnings</h2>
       <p class="mt-1 text-[11px] text-rams-muted">Arrow keys move between rows. Press Enter to open the selected warning.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
@@ -164,38 +164,6 @@
       </tbody>
     </table>
   </div>
-</div>
-
-{# ── Narrative cards ── #}
-<div class="space-y-3">
-  {% if warnings.is_empty() %}
-    {% call m::empty_state("No warnings match the current filters", "Try adjusting filters or reset.") %}
-  {% else %}
-    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</p>
-    {% for w in warnings %}
-      <div class="apex-module" id="warning-card-{{ w.id }}">
-        <div class="apex-module-body">
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0 flex-1">
-              <a href="/warnings/{{ w.id }}" class="text-sm font-semibold text-rams-foreground hover:underline break-words">{{ w.title }}</a>
-              <div class="mt-1.5 flex flex-wrap items-center gap-2">
-                {% call m::severity_badge(w.severity) %}
-                {% call m::region_badge(w.region) %}
-                {% if w.acknowledged %}
-                <span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>
-                {% endif %}
-              </div>
-            </div>
-            <span class="text-xs font-bold tabular-nums text-rams-muted">{% if let Some(pct) = w.confidence_pct %}{{ pct }}%{% else %}confidence not recorded{% endif %}</span>
-          </div>
-          <div class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-rams-muted">
-            <span class="min-w-0 break-words">{{ w.company_name }} · {{ w.warning_type }}</span>
-            <span class="tabular-nums shrink-0">{{ w.created_at }}</span>
-          </div>
-        </div>
-      </div>
-    {% endfor %}
-  {% endif %}
 </div>
 
 {# ── Pagination ── #}

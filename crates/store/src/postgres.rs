@@ -289,6 +289,8 @@ mod semantic_dedup;
 pub use semantic_dedup::{SemanticDedupBackend, SemanticDedupState, SemanticDedupStatus};
 mod sources;
 pub mod trends;
+mod triage_queue;
+pub use triage_queue::{TriageItemWithSource, DEFAULT_MAX_TRIAGE_ATTEMPTS};
 mod warning_analysis;
 mod warning_evidence;
 mod warnings;

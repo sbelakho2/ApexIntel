@@ -316,7 +316,7 @@ pub(crate) fn render_activity_chart_svg(
 
     // Plot background
     svg.push_str(&format!(
-        r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="8" fill="rgba(255,255,255,0.6)" stroke="rgba(22,22,22,0.10)" stroke-width="1"/>"#,
+        r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="8" fill="var(--chart-plot)" stroke="var(--chart-plot-edge)" stroke-width="1"/>"#,
         pad_left, pad_top, plot_w, plot_h
     ));
 

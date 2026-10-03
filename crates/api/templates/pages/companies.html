@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Companies</li>
@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Company Browser", "boxes", "Searchable company profiles with dossier links.", "") %}
+{% call m::page_header("Companies", "folder", "Tracked companies with risk scores, dossiers, and coverage.", "") %}
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Companies Tracked", total.to_string(), "metric-rail-steel") %}
@@ -84,7 +84,7 @@
 <div class="apex-card overflow-hidden mb-4">
   <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
     <div>
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
+      <h2>All companies</h2>
       <p class="mt-1 text-[11px] text-rams-muted">Compact company view for ranking by threat, region coverage, and recent updates.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
@@ -123,28 +123,12 @@
   </div>
 </div>
 
-<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-  {% if let Some(notice) = degraded_notice %}
-    <div class="col-span-full apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
-  {% endif %}
-  {% if companies.is_empty() && degraded_notice.is_none() %}
-    <div class="col-span-full">{% call m::empty_state("No companies found", "Try broadening your filter or adjusting the region/sector selection. Companies are added automatically via monitoring recipes and manual seeding.") %}</div>
-  {% else if !companies.is_empty() %}
-    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
-    {% for c in companies %}
-    <a href="/companies/{{ c.id }}" class="apex-card p-4 hover:bg-rams-panel block">
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <p class="font-bold text-sm">{{ c.name }}</p>
-          <p class="text-[10px] text-rams-muted uppercase mt-1">{{ c.region }} · {{ c.sector }}</p>
-        </div>
-        {% if c.has_risk_score() %}<p class="text-xs">Threat: <span class="font-bold tabular-nums">{{ c.risk_score_value() }}</span></p>{% endif %}
-      </div>
-      {% if let Some(competitor) = c.is_competitor %}{% if competitor %}<p class="mt-2 text-[10px] font-bold uppercase apex-text-competitor">Competitor</p>{% endif %}{% else %}<p class="mt-2 text-[10px] text-rams-muted">Competitor status not recorded</p>{% endif %}
-    </a>
-    {% endfor %}
-  {% endif %}
-</div>
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-4 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+{% if companies.is_empty() && degraded_notice.is_none() %}
+{% call m::empty_state("No companies found", "Try broadening your filter or adjusting the region/sector selection. Companies are added automatically via monitoring recipes and manual seeding.") %}
+{% endif %}
 
 {% if total_pages > 1 %}
 <div class="mt-4 flex items-center justify-between">

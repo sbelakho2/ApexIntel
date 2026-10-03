@@ -32,7 +32,9 @@ pub struct CrawlStatus {
     pub status: String, // "running" | "idle" | "error"
     pub last_run: String,
     pub items_crawled: i64,
-    pub error_count: i64,
+    /// Measured crawl-error count, `None` when the probe does not report one:
+    /// an unmeasured count renders as "—", never a fabricated 0 (audit #129).
+    pub error_count: Option<i64>,
     pub next_run: Option<String>,
 }
 
@@ -46,14 +48,20 @@ pub struct PoiCoverage {
 
 #[derive(Clone, Debug)]
 pub struct RecipePerformance {
-    pub recipe_id: i64,
+    /// Database identity when the probe reports one; unmeasured rows stay
+    /// `None` rather than a fabricated 0 (audit #129).
+    pub recipe_id: Option<i64>,
     pub name: String,
     pub total_runs: i64,
     /// Expected successes (measured precision × runs); `None` when the recipe
     /// has no measured precision, so the UI shows unknown instead of 0.
     pub success_count: Option<i64>,
-    pub failure_count: i64,
-    pub avg_duration_ms: i64,
+    /// Measured failures. The recipe probe does not report them yet, so this
+    /// stays `None` and renders "—" instead of a fabricated 0.
+    pub failure_count: Option<i64>,
+    /// Measured average run duration. Not reported by the probe yet; `None`
+    /// (rendered "—") instead of a fabricated 0.
+    pub avg_duration_ms: Option<i64>,
     pub last_run: String,
 }
 
@@ -223,6 +231,24 @@ pub struct OutboxReplayForm {
 
 const DEAD_LETTER_LIST_LIMIT: i64 = 25;
 
+/// Render a dead-letter destination without leaking a URL. Legacy rows stored
+/// the webhook secret URL as the destination; the admin table must show the
+/// channel name instead. Channel names and e-mail recipients stay readable.
+pub fn display_dead_letter_destination(channel: &str, destination: &str) -> String {
+    let trimmed = destination.trim();
+    let looks_like_url =
+        trimmed.contains("://") || trimmed.starts_with("//") || trimmed.contains('/');
+    if trimmed.is_empty() || looks_like_url {
+        if channel.trim().is_empty() {
+            "—".to_string()
+        } else {
+            channel.trim().to_string()
+        }
+    } else {
+        trimmed.to_string()
+    }
+}
+
 // ─── Template ───────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -281,7 +307,16 @@ fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
 /// Process start time — powers the real uptime tile (B316).
 static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+/// Record the process start time at startup (audit #129). Without this the
+/// uptime tile measures from the first admin page render, not the process
+/// launch, and reports a smaller-than-real uptime. Idempotent.
+pub fn init_process_start() {
+    let _ = PROCESS_START.set(std::time::Instant::now());
+}
+
 fn fmt_process_uptime() -> String {
+    // Fallback for callers that never initialized (e.g. focused tests): the
+    // first read acts as the start rather than panicking.
     let start = PROCESS_START.get_or_init(std::time::Instant::now);
     let secs = start.elapsed().as_secs();
     let days = secs / 86400;
@@ -363,7 +398,7 @@ pub async fn admin_page(
                 .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or_else(|| "—".into()),
             items_crawled: cs.total_fingerprints,
-            error_count: 0,
+            error_count: None,
             next_run: None,
         }],
         DataState::Empty | DataState::Degraded { .. } => vec![],
@@ -381,7 +416,7 @@ pub async fn admin_page(
             .recipes
             .iter()
             .map(|r| RecipePerformance {
-                recipe_id: 0,
+                recipe_id: None,
                 name: r.recipe_code.clone(),
                 total_runs: r.fired_count,
                 // Expected successes from measured precision only; an
@@ -389,8 +424,8 @@ pub async fn admin_page(
                 success_count: r.precision_score.map(|precision| {
                     ((precision.clamp(0.0, 1.0)) * r.fired_count as f64).round() as i64
                 }),
-                failure_count: 0,
-                avg_duration_ms: 0,
+                failure_count: None,
+                avg_duration_ms: None,
                 last_run: r
                     .last_fired
                     .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
@@ -695,8 +730,8 @@ pub async fn admin_page(
         .into_iter()
         .map(|row| DeliveryDeadLetterItem {
             delivery_key: row.delivery_key,
+            destination: display_dead_letter_destination(&row.channel, &row.destination),
             channel: row.channel,
-            destination: row.destination,
             attempts: row.attempts,
             error: row.last_error.unwrap_or_default(),
             dead_lettered_at: row
@@ -772,6 +807,15 @@ pub async fn admin_page(
     super::render_template(&tpl)
 }
 
+/// Best-effort audit trail for an operator replay: the replay itself may
+/// succeed while the audit insert fails, so the failure is logged and the
+/// operator response is not turned into a false error.
+async fn audit_replay(store: &PgStore, actor: &str, event_type: &str, detail: serde_json::Value) {
+    if let Err(error) = store.record_audit_event(actor, event_type, &detail).await {
+        tracing::error!(error = %error, event_type, "failed to write admin replay audit event");
+    }
+}
+
 /// POST /admin/notifications/delivery/replay — requeue a dead-lettered channel
 /// delivery with a fresh attempt budget.
 pub async fn admin_replay_delivery(
@@ -792,6 +836,16 @@ pub async fn admin_replay_delivery(
                 username = %session.username,
                 "admin replayed a dead-lettered notification delivery"
             );
+            audit_replay(
+                &store,
+                session.user_id.as_str(),
+                "notification_delivery_replayed",
+                serde_json::json!({
+                    "delivery_key": form.delivery_key,
+                    "outcome": "replayed",
+                }),
+            )
+            .await;
             Redirect::to("/admin").into_response()
         }
         Ok(false) => {
@@ -799,6 +853,16 @@ pub async fn admin_replay_delivery(
                 delivery_key = %form.delivery_key,
                 "admin replay found no dead-lettered delivery with that key"
             );
+            audit_replay(
+                &store,
+                session.user_id.as_str(),
+                "notification_delivery_replayed",
+                serde_json::json!({
+                    "delivery_key": form.delivery_key,
+                    "outcome": "not_found",
+                }),
+            )
+            .await;
             (
                 StatusCode::NOT_FOUND,
                 "No dead-lettered delivery with that key",
@@ -811,6 +875,16 @@ pub async fn admin_replay_delivery(
                 error = %error,
                 "admin replay of a notification delivery failed"
             );
+            audit_replay(
+                &store,
+                session.user_id.as_str(),
+                "notification_delivery_replayed",
+                serde_json::json!({
+                    "delivery_key": form.delivery_key,
+                    "outcome": "failed",
+                }),
+            )
+            .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to replay notification delivery",
@@ -844,6 +918,16 @@ pub async fn admin_replay_outbox(
                 username = %session.username,
                 "admin replayed a dead-lettered outbox event"
             );
+            audit_replay(
+                &store,
+                session.user_id.as_str(),
+                "notification_outbox_replayed",
+                serde_json::json!({
+                    "outbox_id": outbox_id.to_string(),
+                    "outcome": "replayed",
+                }),
+            )
+            .await;
             Redirect::to("/admin").into_response()
         }
         Ok(false) => {
@@ -851,6 +935,16 @@ pub async fn admin_replay_outbox(
                 %outbox_id,
                 "admin replay found no dead-lettered outbox event with that id"
             );
+            audit_replay(
+                &store,
+                session.user_id.as_str(),
+                "notification_outbox_replayed",
+                serde_json::json!({
+                    "outbox_id": outbox_id.to_string(),
+                    "outcome": "not_found",
+                }),
+            )
+            .await;
             (
                 StatusCode::NOT_FOUND,
                 "No dead-lettered outbox event with that ID",
@@ -863,6 +957,16 @@ pub async fn admin_replay_outbox(
                 error = %error,
                 "admin replay of an outbox event failed"
             );
+            audit_replay(
+                &store,
+                session.user_id.as_str(),
+                "notification_outbox_replayed",
+                serde_json::json!({
+                    "outbox_id": outbox_id.to_string(),
+                    "outcome": "failed",
+                }),
+            )
+            .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to replay outbox event",
@@ -904,6 +1008,48 @@ mod tests {
         // No published snapshot in this test process: an unmeasured platform
         // renders no badge rather than a fabricated Healthy row.
         assert!(capability_badges().is_empty());
+    }
+
+    // ── #129: dead-letter destinations and process uptime ───────────────
+
+    #[test]
+    fn dead_letter_destination_never_renders_a_stored_url() {
+        // Legacy rows stored the webhook secret URL as the destination.
+        assert_eq!(
+            display_dead_letter_destination("slack", "https://hooks.slack.com/services/T/B/SECRET"),
+            "slack"
+        );
+        assert_eq!(
+            display_dead_letter_destination("webhook", "//evil.example/hook"),
+            "webhook"
+        );
+        assert_eq!(
+            display_dead_letter_destination("webhook", "hooks.example.com/hook"),
+            "webhook"
+        );
+        // Channel names and recipient addresses are not secrets.
+        assert_eq!(
+            display_dead_letter_destination("webhook", "ops-alerts"),
+            "ops-alerts"
+        );
+        assert_eq!(
+            display_dead_letter_destination("email", "soc@example.com"),
+            "soc@example.com"
+        );
+        assert_eq!(display_dead_letter_destination("email", "  "), "email");
+    }
+
+    #[test]
+    fn process_start_initialization_is_idempotent() {
+        init_process_start();
+        init_process_start();
+        // The formatted uptime never panics and is a real duration string.
+        let uptime = fmt_process_uptime();
+        assert!(!uptime.is_empty());
+        assert!(
+            uptime.ends_with('m') || uptime.ends_with('h') || uptime.ends_with('d'),
+            "unexpected uptime format: {uptime}"
+        );
     }
 
     /// A failed or empty probe is unknown — it must not become a measured 0

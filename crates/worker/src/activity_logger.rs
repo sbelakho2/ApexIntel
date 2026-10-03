@@ -330,6 +330,27 @@ impl ActivityLogger {
         })
         .await;
     }
+
+    /// Log that a recipe was deprecated (moved out of rotation).
+    pub async fn log_recipe_deprecated(&self, recipe_code: &str, reason: &str) {
+        let details = Self::make_details(&[
+            ("recipe_code", json!(recipe_code)),
+            ("reason", json!(reason)),
+        ]);
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Recipe Engine",
+            action_type: "recipe_deprecated",
+            entity_type: Some("recipe"),
+            entity_id: None,
+            entity_name: Some(recipe_code),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
+        .await;
+    }
 }
 
 impl std::fmt::Debug for ActivityLogger {

@@ -1533,18 +1533,23 @@ mod tests {
             direction: "flat".into(),
         }];
         let html = page.render().expect("dashboard renders");
+        // Section titles are matched case-insensitively: their casing is
+        // presentation and may change without reordering the page.
+        let lower = html.to_lowercase();
 
-        let priority = html.find("What Requires Action").expect("priority section");
-        let changes = html
-            .find("What Changed Since Last Look")
+        let priority = lower
+            .find("what requires action")
+            .expect("priority section");
+        let changes = lower
+            .find("what changed since last look")
             .expect("changes section");
-        let opportunities = html
-            .find("Newly Actionable Opportunities")
+        let opportunities = lower
+            .find("newly actionable opportunities")
             .expect("opportunities section");
-        let health = html
-            .find("What Is Stale Or Broken")
+        let health = lower
+            .find("what is stale or broken")
             .expect("health section");
-        let vanity = html.find("Portfolio Overview").expect("vanity divider");
+        let vanity = lower.find("portfolio overview").expect("vanity divider");
 
         assert!(changes < priority);
         assert!(priority < opportunities);

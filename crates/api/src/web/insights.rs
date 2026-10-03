@@ -1042,18 +1042,40 @@ pub async fn get_insight(
 
     let insight = match store.get_insight(uuid).await {
         Ok(Some(i)) => i,
+        // #138: a missing insight is a 404, not a silent redirect that hides
+        // a stale link as if the insight simply moved.
         Ok(None) => {
-            return Redirect::to("/insights").into_response();
+            return super::errors::not_found_for(&ctx, "/insights");
         }
         Err(e) => {
             tracing::error!("Failed to fetch insight {id}: {e}");
-            return super::errors::not_found_with_context(
-                &ctx.username,
-                "/insights",
-                ctx.warning_count,
-            );
+            return super::errors::not_found_for(&ctx, "/insights");
         }
     };
+
+    // #138: resolve the referenced entities to real names; the detail page
+    // previously rendered an empty company link. Failures are reported as
+    // degraded, never as a fabricated empty entity set.
+    let entity_ids = insight.entity_ids.clone().unwrap_or_default();
+    let company_rows_state = DataState::from_result(
+        store.get_company_names_by_ids(&entity_ids).await,
+        "get_company_names_by_ids failed (web insight detail)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&company_rows_state, &mut degraded_notice);
+    let company_rows = company_rows_state.into_items();
+    let person_rows_state = DataState::from_result(
+        store.get_person_names_by_ids(&entity_ids).await,
+        "get_person_names_by_ids failed (web insight detail)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&person_rows_state, &mut degraded_notice);
+    let person_rows = person_rows_state.into_items();
+    let entities = build_insight_entities(&company_rows, &person_rows);
+    let (company_id, company_name) = company_rows
+        .first()
+        .map(|(entity_id, name, _, _)| (entity_id.to_string(), name.clone()))
+        .unwrap_or_default();
 
     // Build evidence from persisted evidence refs when available: those carry
     // the evidence row ids that claims cite. Fall back to legacy evidence_urls.
@@ -1212,8 +1234,8 @@ pub async fn get_insight(
         impact_css: tier_css.to_string(),
         summary: insight.summary.clone(),
         body: insight.summary.clone(),
-        company_name: String::new(),
-        company_id: String::new(),
+        company_name,
+        company_id,
         region: insight.region.clone().unwrap_or_default(),
         created_at: insight
             .created_at
@@ -1231,7 +1253,7 @@ pub async fn get_insight(
         evidence,
         claims,
         claims_degraded,
-        entities: vec![],
+        entities,
         annotations,
         ai_analysis: None,
         // The heuristic information-gain quantity is derived from confidence;
@@ -1271,6 +1293,29 @@ pub async fn get_insight(
     };
 
     super::render_template(&tpl)
+}
+
+/// Map resolved entity rows into the detail page's entity list. Companies
+/// come first so the "Company" field can use the first resolved row; persons
+/// follow for the per-entity links.
+fn build_insight_entities(
+    company_rows: &[(Uuid, String, Option<String>, Option<String>)],
+    person_rows: &[(Uuid, String, Option<String>)],
+) -> Vec<InsightEntity> {
+    let mut entities: Vec<InsightEntity> = company_rows
+        .iter()
+        .map(|(id, name, _, _)| InsightEntity {
+            kind: "company".to_string(),
+            id: id.to_string(),
+            name: name.clone(),
+        })
+        .collect();
+    entities.extend(person_rows.iter().map(|(id, name, _)| InsightEntity {
+        kind: "person".to_string(),
+        id: id.to_string(),
+        name: name.clone(),
+    }));
+    entities
 }
 
 fn confidence_to_pct(value: f64) -> i64 {
@@ -1424,28 +1469,29 @@ pub async fn bookmark_insight_html(
         )
         .await;
 
-    let icon_fill = if bookmarked { "currentColor" } else { "none" };
-    let color_class = if bookmarked {
-        "text-rams-orange"
-    } else {
-        "text-muted-foreground"
-    };
-    let title_text = if bookmarked {
-        "Remove bookmark"
-    } else {
-        "Bookmark"
-    };
-
-    Html(format!(
-        r#"<button hx-post="/insights/{id}/bookmark" hx-swap="outerHTML"
-             class="shrink-0 rounded-sm border border-border p-1.5 hover:bg-muted {color_class}"
-             title="{title_text}">
-             <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="{icon_fill}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-           </button>"#
-    )).into_response()
+    // #139: return the same button, toggled, so `hx-target="this"` +
+    // `hx-swap="outerHTML"` replaces the clicked control in place. The
+    // returned markup must carry its own hx-target (inherited attributes do
+    // not survive an outerHTML swap).
+    Html(render_bookmark_button(&id, bookmarked)).into_response()
 }
 
-/// POST /insights/:id/analyze — trigger AI analysis, return rendered panel.
+/// The bookmark control as it is rendered both by the detail page and by the
+/// toggle response, so one click always yields the opposite action in place.
+pub fn render_bookmark_button(id: &str, bookmarked: bool) -> String {
+    let label = if bookmarked { "Unbookmark" } else { "Bookmark" };
+    format!(
+        r#"<button hx-post="/insights/{id}/bookmark" hx-target="this" hx-swap="outerHTML" class="apex-btn apex-btn-primary">{label}</button>"#
+    )
+}
+
+/// POST /insights/:id/analyze — return the rendered analysis panel.
+///
+/// #137: there is no insight analysis engine behind this route. The previous
+/// implementation rendered a fake "Processing…" spinner that never completed
+/// and persisted nothing. The panel below is the honest state: no analysis was
+/// started, and the real synchronous LLM endpoint is named for clients that
+/// need one.
 pub async fn analyze_insight_html(
     _session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
@@ -1463,29 +1509,49 @@ pub async fn analyze_insight_html(
     };
 
     match store.get_insight(uuid).await {
-        Ok(Some(i)) => {
-            Html(format!(
-                r#"<div class="apex-card p-4" id="analysis-panel">
-                     <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
-                     <p class="text-sm leading-relaxed text-muted-foreground">
-                       Analysis in progress for "<strong>{}</strong>". This may take a few moments.
-                       The system will evaluate confidence levels, cross-reference entities,
-                       and generate actionable recommendations.
-                     </p>
-                     <div class="mt-3 flex items-center gap-2 text-[10px] text-muted-foreground">
-                       <span class="h-2 w-2 rounded-full bg-rams-orange animate-pulse"></span>
-                       Processing…
-                     </div>
-                   </div>"#,
-                super::escape_html(&i.title)
-            )).into_response()
-        }
-        Ok(None) => (StatusCode::NOT_FOUND, Html("Insight not found".to_string())).into_response(),
+        Ok(Some(i)) => Html(render_insight_analysis_unavailable(
+            &id,
+            &super::escape_html(&i.title),
+        ))
+        .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Html(render_insight_analysis_unavailable(&id, "")),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Failed to fetch insight for analysis {id}: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Html("Failed to start analysis".to_string())).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_insight_analysis_unavailable(&id, "")),
+            )
+                .into_response()
         }
     }
+}
+
+/// Honest "no analysis engine" panel for insights (#137). Pure so the wording
+/// is unit-testable and can never regress into a fake in-progress state.
+pub fn render_insight_analysis_unavailable(id: &str, escaped_title: &str) -> String {
+    let subject = if escaped_title.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" for &ldquo;{escaped_title}&rdquo;")
+    };
+    format!(
+        r#"<div class="apex-card p-4" id="analysis-panel">
+             <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
+             <p class="text-sm leading-relaxed text-muted-foreground">
+               No AI analysis was started{subject}. In-page analysis is not available for
+               insights; nothing is running in the background.
+             </p>
+             <p class="mt-2 text-[11px] text-muted-foreground">
+               Evidence-bound analysis runs on warnings — open the related warning and use its
+               Analyze action. API clients can request a synchronous LLM analysis through
+               <code>POST /api/insights/{id}/analyze</code>.
+             </p>
+           </div>"#
+    )
 }
 
 pub async fn create_insight_note(
@@ -1769,5 +1835,60 @@ mod tests {
         let html = page.render().expect("insight detail renders");
 
         assert!(html.contains("Relevance: 80%"));
+    }
+    // ── #138: entity resolution ──────────────────────────────────────────
+
+    #[test]
+    fn insight_entities_resolve_companies_before_persons() {
+        let company_id = Uuid::new_v4();
+        let person_id = Uuid::new_v4();
+        let entities = build_insight_entities(
+            &[(
+                company_id,
+                "Acme Corp".to_string(),
+                Some("EMEA".to_string()),
+                None,
+            )],
+            &[(person_id, "Jane Doe".to_string(), Some("CTO".to_string()))],
+        );
+        assert_eq!(entities.len(), 2);
+        assert_eq!(entities[0].kind, "company");
+        assert_eq!(entities[0].name, "Acme Corp");
+        assert_eq!(entities[0].id, company_id.to_string());
+        assert_eq!(entities[1].kind, "person");
+        assert_eq!(entities[1].name, "Jane Doe");
+    }
+
+    #[test]
+    fn unresolved_insight_entities_stay_empty_not_fabricated() {
+        let entities = build_insight_entities(&[], &[]);
+        assert!(entities.is_empty());
+    }
+    // ── #137/#139: honest analyze panel + self-replacing bookmark ───────
+
+    #[test]
+    fn bookmark_button_replaces_itself_with_the_toggled_action() {
+        let add = render_bookmark_button("abc", false);
+        assert!(add.contains(r#"hx-target="this""#));
+        assert!(add.contains(r#"hx-swap="outerHTML""#));
+        assert!(add.contains(">Bookmark<"), "{add}");
+        assert!(!add.contains("Processing"));
+
+        let remove = render_bookmark_button("abc", true);
+        assert!(remove.contains(">Unbookmark<"), "{remove}");
+        assert!(remove.contains("/insights/abc/bookmark"));
+    }
+
+    #[test]
+    fn insight_analysis_panel_is_honest_and_never_fake_in_progress() {
+        let panel = render_insight_analysis_unavailable(
+            "11111111-1111-1111-1111-111111111111",
+            "Acme signal",
+        );
+        assert!(panel.contains("No AI analysis was started"));
+        assert!(panel.contains("not available for"));
+        assert!(panel.contains("POST /api/insights/11111111-1111-1111-1111-111111111111/analyze"));
+        assert!(!panel.contains("Processing"));
+        assert!(!panel.contains("In progress"));
     }
 }

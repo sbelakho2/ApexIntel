@@ -124,12 +124,27 @@ impl PgStore {
     }
 
     pub async fn get_dns_posture_entries(&self, limit: i64) -> Result<Vec<ObservationRow>> {
+        // One row per domain: posture is a property of the domain, so repeated
+        // checks must not render as duplicate rows. The newest measurement per
+        // domain wins.
         let rows = sqlx::query_as::<_, ObservationRow>(
-            "SELECT id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence, created_at
-             FROM observations
-             WHERE observation_type IN ('dns_posture', 'dmarc_check', 'spf_check', 'dkim_check')
-             ORDER BY ts_utc DESC
-             LIMIT $1",
+            r#"SELECT id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence, created_at
+               FROM (
+                   SELECT DISTINCT ON (
+                              COALESCE(NULLIF(value->>'domain', ''), entity_id::text, id::text)
+                          )
+                          id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence, created_at
+                   FROM observations
+                   -- Case-insensitive: producers write both the canonical
+                   -- 'DnsPosture' entity name (lowercased: dnsposture) and the
+                   -- lowercase wire label dns_posture.
+                   WHERE lower(observation_type) IN
+                         ('dns_posture', 'dnsposture', 'dmarc_check', 'spf_check', 'dkim_check')
+                   ORDER BY COALESCE(NULLIF(value->>'domain', ''), entity_id::text, id::text) ASC,
+                            ts_utc DESC, created_at DESC NULLS LAST, id DESC
+               ) latest_per_domain
+               ORDER BY ts_utc DESC
+               LIMIT $1"#,
         )
         .bind(normalize_security_limit(limit))
         .fetch_all(&self.pool)
@@ -165,11 +180,21 @@ impl PgStore {
             dkim_unknown_reason: Option<String>,
         }
 
+        // One row per domain (newest check wins): posture tables accumulate a
+        // row per scan, and the readers must not render the same domain once
+        // per scan.
         let rows = sqlx::query_as::<_, DnsPostureTableRow>(
-            "SELECT id, company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy, posture_score, checked_at, dkim_status, dkim_unknown_reason
-             FROM dns_posture_entries
-             ORDER BY checked_at DESC
-             LIMIT $1",
+            r#"SELECT id, company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy,
+                      posture_score, checked_at, dkim_status, dkim_unknown_reason
+               FROM (
+                   SELECT DISTINCT ON (domain)
+                          id, company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy,
+                          posture_score, checked_at, dkim_status, dkim_unknown_reason
+                   FROM dns_posture_entries
+                   ORDER BY domain ASC, checked_at DESC, id DESC
+               ) latest_per_domain
+               ORDER BY checked_at DESC, domain ASC
+               LIMIT $1"#,
         )
         .bind(normalize_security_limit(limit))
         .fetch_all(&self.pool)
@@ -178,12 +203,18 @@ impl PgStore {
         let obs_rows: Vec<ObservationRow> = rows
             .into_iter()
             .map(|r| {
+                // Tri-state: an indeterminate DKIM lookup is "unknown", never
+                // "absent". `has_dkim` stays the measured boolean (false when
+                // unknown) and the status/reason carry the uncertainty so
+                // consumers can exclude unknowns from pass/fail scoring.
+                let dkim_measured = !r.dkim_status.eq_ignore_ascii_case("unknown");
                 #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let value = serde_json::json!({
                     "domain": r.domain,
                     "has_spf": r.has_spf,
                     "has_dkim": r.has_dkim,
                     "dkim_status": r.dkim_status,
+                    "dkim_measured": dkim_measured,
                     "dkim_unknown_reason": r.dkim_unknown_reason,
                     "has_dmarc": r.has_dmarc,
                     "dmarc_policy": r.dmarc_policy,
@@ -365,9 +396,14 @@ impl PgStore {
                     "relevance_score": r.relevance_score,
                     "notes": r.notes,
                 });
+                // A catalog row is reference data, not a finding about a
+                // monitored entity; `catalog_entry` lets readers separate the
+                // catalog from observed matches instead of counting catalog
+                // size as "CVE findings".
                 #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let provenance = serde_json::json!({
                     "source": "kev_observations_table",
+                    "catalog_entry": true,
                     "content_hash": format!("kev_{}", r.cve_id),
                 });
                 ObservationRow {

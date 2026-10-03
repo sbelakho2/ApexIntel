@@ -277,8 +277,10 @@ test.describe('server UI — journey contracts (DB state)', () => {
         [insight.id, 'admin']
       );
 
-    const removeButton = page.locator('#bookmark-status button[title="Remove bookmark"]');
-    const bookmarkButton = page.locator('#bookmark-status button[title="Bookmark"]');
+    // The bookmark control is a self-replacing text button in the page header:
+    // one click always yields the opposite action in place.
+    const removeButton = page.getByRole('button', { name: 'Unbookmark', exact: true });
+    const bookmarkButton = page.getByRole('button', { name: 'Bookmark', exact: true });
 
     // htmx can drop a click that lands inside a response-swap window. Retry the
     // click until the server *response* arrives (never fire a second click
@@ -733,9 +735,9 @@ test.describe('server UI — journey contracts (DB state)', () => {
 
     const loginWith = async (target, password) => {
       await target.goto(`${base}/login`, { waitUntil: 'domcontentloaded' });
-      await target.getByRole('textbox', { name: /operator id/i }).fill(user);
-      await target.getByRole('textbox', { name: /access key/i }).fill(password);
-      await target.getByRole('button', { name: /access platform/i }).click();
+      await target.getByLabel(/^username$/i).fill(user);
+      await target.getByLabel(/^password$/i).fill(password);
+      await target.getByRole('button', { name: /sign in/i }).click();
     };
 
     try {

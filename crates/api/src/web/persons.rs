@@ -485,6 +485,8 @@ pub struct PersonDetailPage {
     pub id: String,
     pub name: String,
     pub title: String,
+    /// Role line for the header; empty when it would repeat the name.
+    pub subtitle: String,
     pub bio: String,
     pub region: String,
     pub priority_tier: String,
@@ -1207,6 +1209,12 @@ pub async fn get_person(
         )
     });
 
+    // A degenerate row whose `current_role` mirrors the name (seen in fixture
+    // data) must not render the person's name twice in the header.
+    let role_subtitle = match person.current_role.as_deref() {
+        Some(role) if !role.is_empty() && role != person.name => role.to_string(),
+        _ => String::new(),
+    };
     let tpl = PersonDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
@@ -1220,6 +1228,7 @@ pub async fn get_person(
         id: person.id.to_string(),
         name: person.name.clone(),
         title: person.current_role.clone().unwrap_or_default(),
+        subtitle: role_subtitle,
         bio,
         region: person.region.clone().unwrap_or_default(),
         priority_tier: tier.to_string(),

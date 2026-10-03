@@ -905,6 +905,31 @@ pub async fn save_settings(
                 degraded_notice,
             ));
         }
+        // #126: recipients are restricted to the approved company domains.
+        // The worker re-checks this at send time, so a stored address that
+        // predates a tightened allowlist can never be mailed either.
+        let allowed_domains = apex_core::email_policy::allowed_domains_from_env();
+        let outside: Vec<String> = recipients
+            .iter()
+            .filter(|r| !apex_core::email_policy::is_approved_recipient(r, &allowed_domains))
+            .cloned()
+            .collect();
+        if !outside.is_empty() {
+            return super::render_template(&render_settings_page(
+                ctx,
+                existing_record.as_ref(),
+                &prefs,
+                &health,
+                None,
+                Some(format!(
+                    "Recipient email(s) outside the approved company domains: {} \
+                     (see {})",
+                    outside.join(", "),
+                    apex_core::email_policy::ALLOWED_DOMAINS_ENV
+                )),
+                degraded_notice,
+            ));
+        }
         if !is_valid_hhmm(&prefs.email_digest_time_cet) {
             return super::render_template(&render_settings_page(
                 ctx,
@@ -975,6 +1000,34 @@ pub async fn save_settings(
             Some("Failed to save settings. Please retry.".to_string()),
             degraded_notice,
         ));
+    }
+
+    // #126: every change to the digest recipients (or the on/off state) is
+    // audited. Best-effort: the preference change already committed.
+    let recipients_before = split_recipients(&previous.email_digest_recipients);
+    let recipients_after = split_recipients(&prefs.email_digest_recipients);
+    if recipients_before != recipients_after
+        || previous.email_digest_enabled != prefs.email_digest_enabled
+    {
+        if let Err(error) = store
+            .record_audit_event(
+                session.user_id.as_str(),
+                "email_digest_settings_updated",
+                &serde_json::json!({
+                    "recipients_before": recipients_before,
+                    "recipients_after": recipients_after,
+                    "enabled_before": previous.email_digest_enabled,
+                    "enabled_after": prefs.email_digest_enabled,
+                }),
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                user_id = %session.user_id,
+                "email digest settings audit write failed"
+            );
+        }
     }
 
     // The response itself carries the new appearance so the browser applies

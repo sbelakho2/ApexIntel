@@ -355,6 +355,24 @@ where
             "/notifications/:id/read",
             crate::web::notifications::mark_notification_read,
         )
+        .self_post(
+            "/notifications/read-all",
+            crate::web::notifications::mark_all_notifications_read,
+        )
+        // Deleting is separate from marking read: read rows still count in
+        // the `all` view, so an inbox that is only marked read never empties.
+        .self_post(
+            "/notifications/:id/delete",
+            crate::web::notifications::delete_notification,
+        )
+        .self_post(
+            "/notifications/clear-all",
+            crate::web::notifications::clear_all_notifications,
+        )
+        .self_post(
+            "/notifications/clear-read",
+            crate::web::notifications::clear_read_notifications,
+        )
         .self_post("/search/saved-searches", crate::web::search::save_search)
         .self_post(
             "/search/saved-searches/:id/delete",

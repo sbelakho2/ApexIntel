@@ -240,7 +240,14 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
     let mut governance_failures: Vec<StructuredFailure> = Vec::new();
     let mut governance_runs_persisted = 0usize;
 
-    let evaluation = match eval_runner.run(&eval_suite).await {
+    // #92: the evaluation suite drives model calls; hold one process-wide
+    // LLM permit for the run so the self-improvement job cannot push the
+    // endpoint past the global concurrency cap.
+    let evaluation_result = {
+        let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
+        eval_runner.run(&eval_suite).await
+    };
+    let evaluation = match evaluation_result {
         Ok(eval_report) => {
             let eval_pass_rate = eval_report.pass_rate();
             let eval_avg_score = eval_report.avg_judge_score.clone();
@@ -558,7 +565,13 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
     // Serialize the examples once; both the governance artifact preview and
     // the dataset persistence reuse the same JSONL.
     let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
-    let cycle_report: Option<ImprovementCycleReport> = match loop_runner.run_cycle().await {
+    // #92: the critique cycle is the second model-call stage; it takes the
+    // same process-wide permit as the evaluation stage.
+    let cycle_result = {
+        let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
+        loop_runner.run_cycle().await
+    };
+    let cycle_report: Option<ImprovementCycleReport> = match cycle_result {
         Ok(report) => Some(report),
         Err(error) => {
             tracing::error!(%error, "self_improvement_cycle: critique cycle failed");

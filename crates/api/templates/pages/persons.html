@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Persons</li>
@@ -17,7 +17,7 @@
 {% if buying_center_mode %}
 {% call m::page_header("Buying Centres", "users", "Sales intelligence view: the people who decide, buy, and gatekeep at each account.", "") %}
 {% else %}
-{% call m::page_header("POI Browser", "users", "Searchable person-of-interest profiles filtered by region and role.", "") %}
+{% call m::page_header("People", "users", "Persons of interest with roles, affiliations, and priority.", "") %}
 {% endif %}
 
 {% if let Some(notice) = degraded_notice %}
@@ -121,7 +121,7 @@
 <div class="apex-card overflow-hidden mb-4">
   <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
     <div>
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
+      <h2>All people</h2>
       <p class="mt-1 text-[11px] text-rams-muted">Dense POI review for influence ranking, organization coverage, and tag scanning.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
@@ -168,34 +168,8 @@
 </nav>
 {% endif %}
 
-<div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-  {% if persons.is_empty() && degraded_notice.is_none() %}
-    {% call m::empty_state("No persons match current filters", "Try broadening region/priority filters or reset filters to review all tracked POIs.") %}
-  {% else if !persons.is_empty() %}
-    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
-    {% for p in persons %}
-    <a href="/persons/{{ p.id }}" class="apex-card p-4 hover:bg-rams-panel block">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <p class="font-bold text-sm truncate">{{ p.name }}</p>
-          <p class="mt-1 text-[10px] uppercase text-rams-muted truncate">{{ p.role }} · {{ p.organization.as_deref().unwrap_or("not recorded") }}</p>
-        </div>
-        <span class="apex-chip apex-chip-muted">{% if let Some(band) = p.priority %}{{ band }}{% else %}not measured{% endif %}</span>
-      </div>
-      <div class="mt-2 flex items-center justify-between text-[10px] text-rams-muted">
-        <span>{{ p.region }}</span>
-        <span class="font-bold">{% if let Some(score) = p.influence_score %}{{ score }}{% else %}not measured{% endif %}</span>
-      </div>
-      {% if !p.tags.is_empty() %}
-      <div class="mt-2 flex flex-wrap gap-1.5">
-        {% for tag in p.tags %}
-        <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 text-[10px] uppercase text-rams-muted">{{ tag }}</span>
-        {% endfor %}
-      </div>
-      {% endif %}
-    </a>
-    {% endfor %}
-  {% endif %}
-</div>
+{% if persons.is_empty() && degraded_notice.is_none() %}
+{% call m::empty_state("No persons match current filters", "Try broadening region/priority filters or reset filters to review all tracked POIs.") %}
+{% endif %}
 {% endif %}
 {% endblock %}

@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Settings</li>
@@ -14,7 +14,14 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Settings", "settings", "Personal preferences for your account; system configuration is read-only.", "") %}
+{% call m::page_header("Settings", "settings", "Personal preferences, notifications, and account security.", "") %}
+<nav aria-label="Settings sections" class="mb-5 flex flex-wrap gap-2 no-print">
+  <a href="#personal-prefs" class="apex-chip apex-chip-idle">Preferences</a>
+  <a href="#notification-prefs" class="apex-chip apex-chip-idle">Notifications</a>
+  <a href="#account-security" class="apex-chip apex-chip-idle">Password</a>
+  <a href="#health" class="apex-chip apex-chip-idle">System health</a>
+  {% if can_admin %}<a href="#system-config" class="apex-chip apex-chip-idle">Configuration</a>{% endif %}
+</nav>
 
 {% if let Some(message) = save_success %}
 <div class="apex-alert apex-alert-success mb-4 text-xs font-semibold" role="status">{{ message }}</div>
@@ -29,24 +36,24 @@
 {% endif %}
 
 <form method="post" action="/settings" class="space-y-6">
-  <section aria-labelledby="personal-prefs-heading">
+  <section id="personal-prefs" aria-labelledby="personal-prefs-heading" class="scroll-mt-20">
     <div class="apex-card">
       <div class="border-b border-rams-line px-4 py-3">
-        <h2 id="personal-prefs-heading" class="text-xs font-black uppercase tracking-[0.12em]">Personal Preferences</h2>
+        <h2 id="personal-prefs-heading">Personal preferences</h2>
         <p class="mt-1 text-[11px] text-rams-muted">Stored on your account and applied wherever you sign in.</p>
       </div>
       <div class="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
         <div>
-          <label for="settings-theme" class="block text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-1.5">Theme</label>
-          <select id="settings-theme" name="theme" class="w-full h-11 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <label for="settings-theme" class="block text-[13px] font-semibold text-rams-foreground mb-1.5">Theme</label>
+          <select id="settings-theme" name="theme" class="apex-select h-11 w-full">
             <option value="system" {% if theme == "system" %}selected{% endif %}>System</option>
             <option value="light" {% if theme == "light" %}selected{% endif %}>Light</option>
             <option value="dark" {% if theme == "dark" %}selected{% endif %}>Dark</option>
           </select>
         </div>
         <div>
-          <label for="settings-locale" class="block text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-1.5">Locale</label>
-          <select id="settings-locale" name="locale" class="w-full h-11 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <label for="settings-locale" class="block text-[13px] font-semibold text-rams-foreground mb-1.5">Locale</label>
+          <select id="settings-locale" name="locale" class="apex-select h-11 w-full">
             <option value="en" {% if stored_locale == "en" %}selected{% endif %}>English (en)</option>
             <option value="fr" {% if stored_locale == "fr" %}selected{% endif %}>French (fr)</option>
             <option value="de" {% if stored_locale == "de" %}selected{% endif %}>German (de)</option>
@@ -63,24 +70,24 @@
           </select>
         </div>
         <div>
-          <label for="settings-table-layout" class="block text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-1.5">Table layout</label>
-          <select id="settings-table-layout" name="table_layout" class="w-full h-11 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <label for="settings-table-layout" class="block text-[13px] font-semibold text-rams-foreground mb-1.5">Table layout</label>
+          <select id="settings-table-layout" name="table_layout" class="apex-select h-11 w-full">
             <option value="comfortable" {% if table_layout == "comfortable" %}selected{% endif %}>Comfortable</option>
             <option value="compact" {% if table_layout == "compact" %}selected{% endif %}>Compact</option>
           </select>
           <p class="mt-1 text-[10px] text-rams-muted">Controls data-table row density.</p>
         </div>
         <div>
-          <label for="settings-region" class="block text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-1.5">Default region</label>
-          <select id="settings-region" name="default_region" class="w-full h-11 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <label for="settings-region" class="block text-[13px] font-semibold text-rams-foreground mb-1.5">Default region</label>
+          <select id="settings-region" name="default_region" class="apex-select h-11 w-full">
             <option value="Global" {% if default_region == "Global" %}selected{% endif %}>Global</option>
             <option value="EU" {% if default_region == "EU" %}selected{% endif %}>EU</option>
             <option value="MENA" {% if default_region == "MENA" %}selected{% endif %}>MENA</option>
           </select>
         </div>
         <div>
-          <label for="settings-session-timeout" class="block text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-1.5">Session length</label>
-          <select id="settings-session-timeout" name="session_timeout_hours" class="w-full h-11 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <label for="settings-session-timeout" class="block text-[13px] font-semibold text-rams-foreground mb-1.5">Session length</label>
+          <select id="settings-session-timeout" name="session_timeout_hours" class="apex-select h-11 w-full">
             <option value="8" {% if session_timeout_hours == 8 %}selected{% endif %}>8 hours</option>
             <option value="24" {% if session_timeout_hours == 24 %}selected{% endif %}>24 hours</option>
             <option value="72" {% if session_timeout_hours == 72 %}selected{% endif %}>72 hours</option>
@@ -91,38 +98,38 @@
     </div>
   </section>
 
-  <section aria-labelledby="notification-prefs-heading">
+  <section id="notification-prefs" aria-labelledby="notification-prefs-heading" class="scroll-mt-20">
     <div class="apex-card">
       <div class="border-b border-rams-line px-4 py-3">
-        <h2 id="notification-prefs-heading" class="text-xs font-black uppercase tracking-[0.12em]">Notification Preferences</h2>
+        <h2 id="notification-prefs-heading">Notification preferences</h2>
         <p class="mt-1 text-[11px] text-rams-muted">Digest schedule and per-user alert thresholds. Alert routing rules live in <a href="/settings/alerts" class="underline">Alert Settings</a>.</p>
       </div>
       <div class="divide-y divide-rams-line">
         <div class="flex items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">Email digest</span>
+          <span class="text-sm font-semibold">Email digest</span>
           <label class="inline-flex items-center gap-2 text-xs">
             <input type="checkbox" name="email_digest_enabled" value="on" {% if email_digest_enabled %}checked{% endif %} class="h-3.5 w-3.5 rounded border-rams-line" />
             Enabled
           </label>
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">Frequency</span>
-          <select name="notification_frequency" class="h-11 w-40 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <span class="text-sm font-semibold">Frequency</span>
+          <select name="notification_frequency" class="apex-select h-11 w-40">
             <option value="Daily" {% if notification_frequency == "Daily" %}selected{% endif %}>Daily</option>
             <option value="Weekly" {% if notification_frequency == "Weekly" %}selected{% endif %}>Weekly</option>
           </select>
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">Send time (CET)</span>
-          <input type="time" name="email_digest_time_cet" value="{{ email_digest_time_cet }}" class="h-11 w-32 rounded border border-rams-line bg-rams-chassis px-2 text-xs" />
+          <span class="text-sm font-semibold">Send time (CET)</span>
+          <input type="time" name="email_digest_time_cet" value="{{ email_digest_time_cet }}" class="apex-select h-11 w-32" />
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">Desktop alerts</span>
+          <span class="text-sm font-semibold">Desktop alerts</span>
           <button type="button" id="enable-desktop-alerts" class="apex-btn apex-btn-secondary">Enable desktop alerts</button>
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">Weekly digest day</span>
-          <select name="email_digest_weekday" class="h-11 w-32 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <span class="text-sm font-semibold">Weekly digest day</span>
+          <select name="email_digest_weekday" class="apex-select h-11 w-32">
             <option value="Mon" {% if email_digest_weekday == "Mon" %}selected{% endif %}>Mon</option>
             <option value="Tue" {% if email_digest_weekday == "Tue" %}selected{% endif %}>Tue</option>
             <option value="Wed" {% if email_digest_weekday == "Wed" %}selected{% endif %}>Wed</option>
@@ -149,14 +156,14 @@
           </div>
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">Minimum alert severity</span>
-          <select name="minimum_severity" class="h-11 w-32 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
+          <span class="text-sm font-semibold">Minimum alert severity</span>
+          <select name="minimum_severity" class="apex-select h-11 w-32">
             <option value="high" {% if minimum_severity == "high" %}selected{% endif %}>high</option>
             <option value="medium" {% if minimum_severity == "medium" %}selected{% endif %}>medium</option>
           </select>
         </div>
         <div class="flex items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">Critical only</span>
+          <span class="text-sm font-semibold">Critical only</span>
           <label class="inline-flex items-center gap-2 text-xs">
             <input type="checkbox" name="critical_only_enabled" value="on" {% if critical_only_enabled %}checked{% endif %} class="h-3.5 w-3.5 rounded border-rams-line" />
             Enabled
@@ -167,23 +174,23 @@
   </section>
 
   <div class="flex justify-end">
-    <button type="submit" class="inline-flex min-h-11 items-center gap-2 rounded border border-rams-line bg-rams-orange px-4 py-2 text-xs font-bold uppercase text-rams-chassis">Save Preferences</button>
+    <button type="submit" class="apex-btn apex-btn-primary">Save preferences</button>
   </div>
 </form>
 
 {% include "partials/change_password.html" %}
 
-<section aria-labelledby="health-heading">
+<section id="health" aria-labelledby="health-heading" class="scroll-mt-20">
   <div class="apex-card">
     <div class="border-b border-rams-line px-4 py-3">
-      <h2 id="health-heading" class="text-xs font-black uppercase tracking-[0.12em]">Health Checks</h2>
+      <h2 id="health-heading">System health</h2>
       <p class="mt-1 text-[11px] text-rams-muted">Measured state of the running platform (API {{ api_status }}, version {{ app_version }}).</p>
     </div>
     {% if !health_checks.is_empty() %}
       <div class="divide-y divide-rams-line">
         {% for check in health_checks %}
         <div class="flex items-center justify-between gap-4 px-4 py-3">
-          <span class="text-sm font-bold">{{ check.name }}</span>
+          <span class="text-sm font-semibold">{{ check.name }}</span>
           <span class="text-xs font-bold uppercase {{ check.status_class }}">{{ check.status }}</span>
         </div>
         {% endfor %}
@@ -195,11 +202,11 @@
 </section>
 
 {% if can_admin %}
-<section aria-labelledby="system-config-heading">
+<section id="system-config" aria-labelledby="system-config-heading" class="scroll-mt-20">
   <div class="apex-card">
     <div class="border-b border-rams-line px-4 py-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="system-config-heading" class="text-xs font-black uppercase tracking-[0.12em]">System Configuration</h2>
+        <h2 id="system-config-heading">System configuration</h2>
         <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Read-only · admin</span>
       </div>
       <p class="mt-1 text-[11px] text-rams-muted">Live values from the API/worker environment. These are loaded at service startup; edit the environment and restart the service to change one.</p>
@@ -213,7 +220,7 @@
           {% for item in section.items %}
           <div class="flex flex-wrap items-center justify-between gap-2 rounded-rams-sm border border-rams-line/60 px-3 py-2">
             <div class="min-w-0">
-              <span class="text-xs font-semibold">{{ item.label }}</span>
+              <span class="text-[13px] font-semibold">{{ item.label }}</span>
               <span class="ml-2 font-mono text-[10px] text-rams-muted">{{ item.env_key }}</span>
             </div>
             <div class="text-right">

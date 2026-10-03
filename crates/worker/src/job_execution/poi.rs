@@ -1778,10 +1778,14 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
                         timeout: std::time::Duration::from_secs(90),
                         ..Default::default()
                     };
-                    match poi_llm_client
-                        .complete_with_config(messages, &enrich_config)
-                        .await
-                    {
+                    // #92: one process-wide model-call permit per enrichment request.
+                    let enrichment_response = {
+                        let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
+                        poi_llm_client
+                            .complete_with_config(messages, &enrich_config)
+                            .await
+                    };
+                    match enrichment_response {
                         Ok(resp) => {
                             #[derive(serde::Deserialize)]
                             struct PoiEnrichResp {

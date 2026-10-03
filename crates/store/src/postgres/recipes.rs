@@ -329,7 +329,12 @@ impl PgStore {
     ///    clamped to `[0.0, 1.0]`.
     /// 4. Recipes at `activation_threshold ≤ 0.001` are skipped (nothing to
     ///    tighten) and rows without a calibrated threshold are ignored.
-    /// 5. Every adjustment is recorded in `audit_log`.
+    /// 5. At most one adjustment per recipe per calendar week: an
+    ///    `audit_log` row from the current week skips the recipe, so the
+    ///    worker's at-least-once retries cannot compound
+    ///    `threshold × (1 + 0.5 × rate)` into an ever-tightening gate.
+    /// 6. Every adjustment is recorded in `audit_log`, in the same
+    ///    transaction as the threshold write.
     ///
     /// ## Returns
     ///
@@ -344,6 +349,7 @@ impl PgStore {
             avg_fp_rate_4w: f64,
         }
 
+        let mut tx = self.pool.begin().await?;
         let adjustments: Vec<CalibrationRow> = sqlx::query_as::<_, CalibrationRow>(
             r#"WITH weekly AS (
                    -- Weighted evidence: total reviewed warnings and total false
@@ -383,11 +389,19 @@ impl PgStore {
                        ) AS new_threshold,
                        h.avg_fp_rate_4w
                    FROM high_fp_recipes h
-                   JOIN recipes r ON r.code = h.recipe_code
-                   WHERE r.activation_threshold IS NOT NULL
-                     AND r.activation_threshold > 0.001
-                     AND r.status IN ('active', 'production')
-               )
+                    JOIN recipes r ON r.code = h.recipe_code
+                    WHERE r.activation_threshold IS NOT NULL
+                      AND r.activation_threshold > 0.001
+                      AND r.status IN ('active', 'production')
+                      -- Once per week per recipe: the previous adjustment's
+                      -- audit row in this calendar week makes retries no-ops.
+                      AND NOT EXISTS (
+                          SELECT 1 FROM audit_log a
+                          WHERE a.event_type = 'recipe_threshold_auto_calibrated'
+                            AND a.detail->>'recipe_code' = h.recipe_code
+                            AND a.ts >= DATE_TRUNC('week', NOW())
+                      )
+                )
                UPDATE recipes r
                SET
                    activation_threshold = c.new_threshold,
@@ -396,14 +410,16 @@ impl PgStore {
                WHERE r.code = c.recipe_code
                RETURNING
                    r.code                       AS recipe_code,
-                   c.current_threshold,
-                   c.new_threshold,
-                   c.avg_fp_rate_4w"#,
+                    c.current_threshold,
+                    c.new_threshold,
+                    c.avg_fp_rate_4w"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
 
-        // Persist every adjustment to the audit trail
+        // Persist every adjustment to the audit trail in the same transaction
+        // as the threshold write: a retry after a partial failure re-runs the
+        // whole calibration instead of double-applying it.
         for adj in &adjustments {
             #[allow(clippy::unwrap_used, clippy::expect_used)]
             let detail = serde_json::json!({
@@ -420,9 +436,10 @@ impl PgStore {
                 .bind("recipe_threshold_auto_calibrated")
                 .bind("system")
                 .bind(&detail)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
+        tx.commit().await?;
 
         let result: Vec<CalibrationAdjustment> = adjustments
             .into_iter()
@@ -530,6 +547,83 @@ impl PgStore {
         .bind(name)
         .bind(status)
         .bind(definition)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Canonical-column recipe writer used by the UI recipe-creation path.
+    ///
+    /// Writes the canonical body columns (`category`, `join_type`, `outcome`,
+    /// `signals`, `transforms`, `thresholds`, `narrative_template`,
+    /// `action_playbook`) together with the legacy `definition` blob (kept in
+    /// sync so readers that reconstruct from `definition` still work) and
+    /// records the author in `created_by`. New recipes start in `staging`;
+    /// an existing recipe keeps its current lifecycle status so a re-save can
+    /// never resurrect a deprecated recipe.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_recipe_canonical(
+        &self,
+        code: &str,
+        name: &str,
+        category: &str,
+        join_type: &str,
+        outcome: &str,
+        signals: &serde_json::Value,
+        transforms: &serde_json::Value,
+        thresholds: &serde_json::Value,
+        narrative_template: &str,
+        action_playbook: &serde_json::Value,
+        created_by: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO recipes (
+                   code, name, status, category, join_type, outcome,
+                   signals, transforms, thresholds, narrative_template, action_playbook,
+                   definition, created_by, created_at, updated_at
+               )
+               VALUES (
+                   $1, $2, 'staging', $3, $4, $5,
+                   $6, $7, $8, $9, $10,
+                   jsonb_build_object(
+                       'code', $1::text,
+                       'name', $2::text,
+                       'category', $3::text,
+                       'join_type', $4::text,
+                       'outcome', $5::text,
+                       'signals', $6::jsonb,
+                       'transforms', $7::jsonb,
+                       'thresholds', $8::jsonb,
+                       'narrative_template', $9::text,
+                       'action_playbook', $10::jsonb
+                   ),
+                   $11, now(), now()
+               )
+               ON CONFLICT (code) DO UPDATE SET
+                   name = EXCLUDED.name,
+                   category = EXCLUDED.category,
+                   join_type = EXCLUDED.join_type,
+                   outcome = EXCLUDED.outcome,
+                   signals = EXCLUDED.signals,
+                   transforms = EXCLUDED.transforms,
+                   thresholds = EXCLUDED.thresholds,
+                   narrative_template = EXCLUDED.narrative_template,
+                   action_playbook = EXCLUDED.action_playbook,
+                   definition = EXCLUDED.definition,
+                   created_by = EXCLUDED.created_by,
+                   updated_at = now()"#,
+        )
+        .bind(code)
+        .bind(name)
+        .bind(category)
+        .bind(join_type)
+        .bind(outcome)
+        .bind(signals)
+        .bind(transforms)
+        .bind(thresholds)
+        .bind(narrative_template)
+        .bind(action_playbook)
+        .bind(created_by)
         .execute(&self.pool)
         .await?;
         Ok(())

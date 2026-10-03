@@ -48,6 +48,44 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// The newest `per_entity_limit` observations for every entity in
+    /// `entity_ids`, in a single query.
+    ///
+    /// `ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY created_at DESC)`
+    /// replaces the previous per-company loop: one round trip, one plan, and
+    /// each company still receives at most `per_entity_limit` rows.
+    pub async fn get_recent_observations_for_entities(
+        &self,
+        entity_ids: &[Uuid],
+        per_entity_limit: i64,
+    ) -> Result<Vec<ObservationRow>> {
+        if entity_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let per_entity_limit = per_entity_limit.clamp(1, 1000);
+        let rows = sqlx::query_as::<_, ObservationRow>(
+            r#"SELECT id, observation_type, entity_id, entity_type, ts_utc,
+                      value, provenance, confidence, created_at
+               FROM (
+                   SELECT o.id, o.observation_type, o.entity_id, o.entity_type, o.ts_utc,
+                          o.value, o.provenance, o.confidence, o.created_at,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY o.entity_id
+                              ORDER BY o.created_at DESC NULLS LAST, o.id DESC
+                          ) AS entity_rank
+                   FROM observations o
+                   WHERE o.entity_id = ANY($1)
+               ) ranked
+               WHERE entity_rank <= $2
+               ORDER BY entity_id ASC, created_at DESC NULLS LAST, id DESC"#,
+        )
+        .bind(entity_ids)
+        .bind(per_entity_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn get_observations_by_type(
         &self,
         obs_type: &str,

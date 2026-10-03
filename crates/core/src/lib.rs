@@ -7,6 +7,7 @@ pub mod claims;
 pub mod company_names;
 pub mod config;
 pub mod data_state;
+pub mod email_policy;
 pub mod entities;
 pub mod env;
 pub mod errors;

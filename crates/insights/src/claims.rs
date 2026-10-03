@@ -53,7 +53,9 @@ const INFERENCE_MARKERS: [&str; 12] = [
     "points to",
 ];
 
-const RECOMMENDATION_MARKERS: [&str; 12] = [
+const RECOMMENDATION_MARKERS: &[&str] = &[
+    "we recommend",
+    "i recommend",
     "recommend",
     "should ",
     "next step",
@@ -68,23 +70,113 @@ const RECOMMENDATION_MARKERS: [&str; 12] = [
     "action:",
 ];
 
+/// Common abbreviations whose trailing period must not end a sentence.
+const ABBREVIATIONS: &[&str] = &[
+    "e.g.", "i.e.", "etc.", "vs.", "approx.", "fig.", "no.", "vol.", "dept.", "est.", "cf.", "mr.",
+    "mrs.", "ms.", "dr.", "prof.", "jr.", "sr.", "inc.", "ltd.", "co.", "corp.", "st.", "u.s.",
+    "u.k.", "u.n.", "e.u.",
+];
+
 /// Split prose into claim-sized sentences.
 ///
-/// Deliberately simple: sentence terminators plus line breaks, with a minimum
-/// length so headings and list fragments do not become claims.
+/// Deliberately simple, but not naive: sentence terminators plus line breaks,
+/// with a minimum length so headings and list fragments do not become claims.
+///
+/// - Decimal points (`3.5%`) and common abbreviations (`U.S.`, `Dr.`, `Inc.`)
+///   do not end a sentence.
+/// - Trailing `[n]` citations that follow a terminator are absorbed into the
+///   sentence they cite (`"... grew. [1] Next ..."` attaches `[1]` to the
+///   sentence before it).
 pub fn split_claim_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     for line in text.lines() {
-        let mut current = String::new();
-        for ch in line.chars() {
-            current.push(ch);
-            if matches!(ch, '.' | '!' | '?') {
-                push_sentence(&mut sentences, &mut current);
-            }
-        }
-        push_sentence(&mut sentences, &mut current);
+        split_line_into_sentences(line, &mut sentences);
     }
     sentences
+}
+
+fn split_line_into_sentences(line: &str, out: &mut Vec<String>) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut current = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        current.push(ch);
+
+        let is_terminator = match ch {
+            '!' | '?' => true,
+            '.' => !is_decimal_point(&chars, i) && !is_abbreviation_dot(&chars, i),
+            _ => false,
+        };
+
+        if is_terminator {
+            // Absorb `[n]` citations that follow the terminator into the
+            // sentence just ended, preserving a single separating space.
+            let mut j = i + 1;
+            let mut pending_space = false;
+            while j < chars.len() && chars[j] == ' ' {
+                pending_space = true;
+                j += 1;
+            }
+            loop {
+                let mut k = j;
+                if k >= chars.len() || chars[k] != '[' {
+                    break;
+                }
+                k += 1;
+                let digits_start = k;
+                while k < chars.len() && chars[k].is_ascii_digit() {
+                    k += 1;
+                }
+                if k == digits_start || k >= chars.len() || chars[k] != ']' {
+                    break;
+                }
+                if pending_space {
+                    current.push(' ');
+                    pending_space = false;
+                }
+                for c in &chars[j..=k] {
+                    current.push(*c);
+                }
+                j = k + 1;
+                while j < chars.len() && chars[j] == ' ' {
+                    pending_space = true;
+                    j += 1;
+                }
+            }
+            push_sentence(out, &mut current);
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    push_sentence(out, &mut current);
+}
+
+/// True when the `.` at `i` sits between two ASCII digits (`3.5`).
+fn is_decimal_point(chars: &[char], i: usize) -> bool {
+    i > 0 && chars[i - 1].is_ascii_digit() && chars.get(i + 1).is_some_and(char::is_ascii_digit)
+}
+
+/// True when the `.` at `i` terminates a known abbreviation token.
+///
+/// The token is the run of alphanumerics and dots spanning `i`, so multi-part
+/// abbreviations (`U.S.`, `e.g.`) match even at their internal periods.
+fn is_abbreviation_dot(chars: &[char], i: usize) -> bool {
+    let is_token_char = |c: char| c.is_ascii_alphanumeric() || c == '.';
+    let mut start = i;
+    while start > 0 && is_token_char(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = i + 1;
+    while end < chars.len() && is_token_char(chars[end]) {
+        end += 1;
+    }
+    let token: String = chars[start..end].iter().collect();
+    let token = token.to_ascii_lowercase();
+    ABBREVIATIONS
+        .iter()
+        .any(|abbreviation| token == *abbreviation || token.starts_with(abbreviation))
 }
 
 fn push_sentence(out: &mut Vec<String>, current: &mut String) {
@@ -124,17 +216,29 @@ pub fn citation_ordinals(sentence: &str) -> Vec<usize> {
     ordinals
 }
 
+/// True when a sentence *opens* with recommendation language.
+///
+/// Markers only count at the start (after leading punctuation/whitespace):
+/// "We recommend engaging the supplier" is a recommendation, while a report
+/// sentence that merely mentions one ("The report recommends X") is not.
+fn starts_with_recommendation(sentence: &str) -> bool {
+    let lower = sentence
+        .trim_start_matches(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+        .to_ascii_lowercase();
+    RECOMMENDATION_MARKERS
+        .iter()
+        .any(|marker| lower.starts_with(marker))
+}
+
 /// Classify a narrative sentence.
 ///
 /// Hedged language wins over citations (a hedged statement is an inference,
 /// even when it cites evidence); a plain cited statement is observed; an
-/// uncited statement without hedging is `unknown`, never observed.
+/// uncited statement without hedging is `unknown`, never observed. Only
+/// sentences that open with recommendation language are recommendations.
 pub fn classify_claim(sentence: &str, cited_evidence: usize) -> ClaimKind {
     let lower = sentence.to_ascii_lowercase();
-    if RECOMMENDATION_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
-    {
+    if starts_with_recommendation(sentence) {
         return ClaimKind::Recommendation;
     }
     if INFERENCE_MARKERS
@@ -316,6 +420,51 @@ mod tests {
         assert_eq!(claims.len(), 2);
         assert_eq!(claims[0].kind, ClaimKind::Observed);
         assert_eq!(claims[1].kind, ClaimKind::Recommendation);
+    }
+
+    #[test]
+    fn sentence_split_keeps_decimals_and_abbreviations_intact() {
+        let sentences = split_claim_sentences(
+            "The U.S. unit grew 3.5% in Q1. Dr. Smith approved the plan for 2026.",
+        );
+        assert_eq!(sentences.len(), 2, "got {sentences:?}");
+        assert!(sentences[0].contains("3.5%"), "got {sentences:?}");
+        assert!(sentences[0].starts_with("The U.S."), "got {sentences:?}");
+        assert!(sentences[1].starts_with("Dr. Smith"), "got {sentences:?}");
+    }
+
+    #[test]
+    fn sentence_split_absorbs_trailing_citations() {
+        let sentences = split_claim_sentences(
+            "The plant opened in Tunis. [1] Output rose 12% in the quarter [2]. [3]",
+        );
+        assert_eq!(sentences.len(), 2, "got {sentences:?}");
+        assert_eq!(sentences[0], "The plant opened in Tunis. [1]");
+        assert_eq!(sentences[1], "Output rose 12% in the quarter [2]. [3]");
+    }
+
+    #[test]
+    fn only_sentences_that_start_with_recommendation_language_are_labelled() {
+        assert_eq!(
+            classify_claim(
+                "We recommend engaging the supplier before the quarter ends.",
+                0
+            ),
+            ClaimKind::Recommendation
+        );
+        assert_eq!(
+            classify_claim("Action: call the procurement lead immediately.", 0),
+            ClaimKind::Recommendation
+        );
+        // A fact sentence that merely mentions a recommendation is not one.
+        assert_eq!(
+            classify_claim("The report recommends acting on the finding [1].", 1),
+            ClaimKind::Observed
+        );
+        assert_eq!(
+            classify_claim("The board should consider the plan [1].", 1),
+            ClaimKind::Observed
+        );
     }
 
     #[test]

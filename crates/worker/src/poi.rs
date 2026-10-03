@@ -589,6 +589,7 @@ If invalid/non-target: {"is_person":false,"target_fit":false}"#;
         candidate.inferred_org.as_deref().unwrap_or("unknown"),
     );
 
+    let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
     let response = llm.generate_json(SYSTEM_PROMPT, &user_prompt).await?;
 
     // Parse LLM response

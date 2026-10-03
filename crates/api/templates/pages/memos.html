@@ -5,7 +5,7 @@
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
     <li class="text-rams-foreground" aria-current="page">Memos</li>
@@ -14,12 +14,17 @@
 {% endblock %}
 
 {% block content %}
+{% call m::page_header("Memos", "file", "Generated intelligence briefings and analyst memos.", "") %}
+{# #149: the list is rendered server-side on first load (the previous
+   `hx-trigger="load once"` fetched the same rows a second time). The zone
+   still refreshes on demand via the `refreshMemos` event. #}
 <div id="memos-list-zone"
      hx-get="/memos/_list"
-     hx-trigger="load once, refreshMemos from:body"
+     hx-trigger="refreshMemos from:body"
      hx-indicator="#memos-loading">
   <div id="memos-loading" class="htmx-indicator flex justify-center py-12">
     <span class="apex-spinner apex-spinner-md" aria-label="Loading memos…" role="status"></span>
   </div>
+  {% include "pages/memos/_list.html" %}
 </div>
 {% endblock %}
