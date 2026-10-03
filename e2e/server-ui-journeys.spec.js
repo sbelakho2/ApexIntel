@@ -722,4 +722,101 @@ test.describe('server UI — journey contracts (DB state)', () => {
     expect(rows[0].completed_at).toBeNull();
     expect(rows[0].claimed_at).toBeNull();
   });
+
+  test('changes the password and can change it back', async ({ page, browser }) => {
+    await login(page);
+    const base =
+      process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://127.0.0.1:9095';
+    const user = process.env.ADMIN_USER || 'admin';
+    const original = await scalar('SELECT password_hash FROM app_users WHERE id = $1', ['admin']);
+    const NEW_PASSWORD = 'journey-password-123';
+
+    const loginWith = async (target, password) => {
+      await target.goto(`${base}/login`, { waitUntil: 'domcontentloaded' });
+      await target.getByRole('textbox', { name: /operator id/i }).fill(user);
+      await target.getByRole('textbox', { name: /access key/i }).fill(password);
+      await target.getByRole('button', { name: /access platform/i }).click();
+    };
+
+    try {
+      // 1. Rotate through the UI. The acting session's cookie is reissued, so
+      //    the page stays signed in after the version bump.
+      await page.goto('/settings', { waitUntil: 'domcontentloaded' });
+      await page.fill('#current-password', 'adminpassword');
+      await page.fill('#new-password', NEW_PASSWORD);
+      await page.fill('#confirm-password', NEW_PASSWORD);
+      await page.getByRole('button', { name: 'Update Password' }).click();
+      await page.waitForURL(/password_changed=1/, { timeout: 15_000 });
+
+      const rotated = await scalar('SELECT password_hash FROM app_users WHERE id = $1', ['admin']);
+      expect(rotated).not.toBe(original);
+      expect(rotated.startsWith('$argon2id$')).toBe(true);
+
+      // 2. The new password signs in (fresh context).
+      const newContext = await browser.newContext();
+      const newPage = await newContext.newPage();
+      await loginWith(newPage, NEW_PASSWORD);
+      await newPage.waitForURL((url) => !url.pathname.startsWith('/login'), {
+        timeout: 15_000,
+      });
+      await newContext.close();
+
+      // 3. The old password is rejected. Checked through the change form
+      //    (invalid_current) rather than a wrong login, so this journey never
+      //    feeds the login throttle and cannot lock the account for the rest
+      //    of the suite.
+      await page.goto('/settings', { waitUntil: 'domcontentloaded' });
+      await page.fill('#current-password', 'adminpassword');
+      await page.fill('#new-password', 'journey-password-999');
+      await page.fill('#confirm-password', 'journey-password-999');
+      await page.getByRole('button', { name: 'Update Password' }).click();
+      await page.waitForURL(/password_error=invalid_current/, { timeout: 15_000 });
+      await expect(page.getByText('The current password is incorrect.')).toBeVisible({
+        timeout: 15_000,
+      });
+
+      // 4. Rotate back; the acting session is still signed in and the old
+      //    credential works again. The deliberate failure above starts the
+      //    progressive backoff, so retry the submit until the row changes;
+      //    throttled attempts are refused *before* they count, so retrying
+      //    cannot lock the endpoint.
+      await expect
+        .poll(
+          async () => {
+            if ((await page.locator('#current-password').count()) > 0) {
+              const response = page
+                .waitForResponse((r) => r.url().includes('/settings/password'), {
+                  timeout: 5_000,
+                })
+                .catch(() => null);
+              await page.fill('#current-password', NEW_PASSWORD);
+              await page.fill('#new-password', 'adminpassword');
+              await page.fill('#confirm-password', 'adminpassword');
+              await page.getByRole('button', { name: 'Update Password' }).click();
+              const resp = await response;
+              if (resp) {
+                await resp.finished();
+              }
+            }
+            return scalar('SELECT password_hash FROM app_users WHERE id = $1', ['admin']);
+          },
+          { timeout: 90_000 }
+        )
+        .not.toBe(rotated);
+
+      const restoredContext = await browser.newContext();
+      const restoredPage = await restoredContext.newPage();
+      await loginWith(restoredPage, 'adminpassword');
+      await restoredPage.waitForURL((url) => !url.pathname.startsWith('/login'), {
+        timeout: 15_000,
+      });
+      await restoredContext.close();
+    } finally {
+      // Always restore the canonical fixture credential, even on failure.
+      await q(
+        'UPDATE app_users SET password_hash = $1, session_version = session_version + 1 WHERE id = $2',
+        [original, user]
+      );
+    }
+  });
 });

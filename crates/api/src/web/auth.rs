@@ -407,7 +407,7 @@ static DUMMY_PASSWORD_HASH: std::sync::LazyLock<String> =
 /// Verify a password off the async runtime: Argon2 is tens of milliseconds of
 /// CPU, and running it directly on a Tokio worker thread lets a login flood
 /// stall every other request.
-async fn verify_password_async(password: &str, stored_hash: &str) -> bool {
+pub(crate) async fn verify_password_async(password: &str, stored_hash: &str) -> bool {
     let (password, stored_hash) = (password.to_owned(), stored_hash.to_owned());
     match tokio::task::spawn_blocking(move || verify_password_hash(&password, &stored_hash)).await {
         Ok(verified) => verified,

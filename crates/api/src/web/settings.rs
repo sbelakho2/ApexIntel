@@ -11,20 +11,24 @@
 //!   because each service reads these variables at startup; an editable
 //!   control would promise a reload that never happens.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::Extension,
+    extract::{Extension, Query},
     http::{header, HeaderMap, HeaderValue},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
 };
 use axum_extra::extract::Form;
+use chrono::Utc;
 use serde::Deserialize;
 
 use super::PageContext;
+use crate::login_throttle::LoginThrottle;
 use crate::middleware::session::{
-    appearance_cookie_headers, WebSession, MAX_SESSION_HOURS, MIN_SESSION_HOURS,
+    appearance_cookie_headers, create_session_token, current_session_secret, session_cookie_header,
+    SessionClaims, WebSession, MAX_SESSION_HOURS, MIN_SESSION_HOURS,
 };
 use crate::system_status::{format_age, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS};
 use apex_core::data_state::{DataState, DegradedNotice};
@@ -739,6 +743,7 @@ pub async fn settings_page(
     _headers: HeaderMap,
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let mut degraded_notice: Option<String> = None;
     let unack = unacknowledged_warnings(&store, &mut degraded_notice).await;
@@ -766,13 +771,22 @@ pub async fn settings_page(
     let prefs = prefs_state.into_loaded_or_default().unwrap_or_default();
     let health = SystemHealthView::probe(&store).await;
 
+    // Password rotation reports back through query flags so the GET stays a
+    // pure read (the POST handler never re-renders the whole page).
+    let save_success = params
+        .get("password_changed")
+        .map(|_| "Password updated. Your other sessions were signed out.".to_string());
+    let save_error = params
+        .get("password_error")
+        .map(|code| password_error_message(code).to_string());
+
     let page = render_settings_page(
         ctx,
         record.as_ref(),
         &prefs,
         &health,
-        None,
-        None,
+        save_success,
+        save_error,
         degraded_notice,
     );
     let theme = page.theme.clone();
@@ -988,6 +1002,167 @@ pub async fn save_settings(
     response
 }
 
+// ─── Change password ────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordForm {
+    pub current_password: String,
+    pub new_password: String,
+    pub confirm_password: String,
+}
+
+/// Minimum length for a self-service rotation. Argon2id makes short passwords
+/// expensive to brute-force, but length is still the dominant factor.
+const MIN_PASSWORD_LENGTH: usize = 12;
+
+/// Pure policy check for a proposed new password.
+///
+/// Returns a stable error code rendered by [`password_error_message`].
+fn validate_new_password(form: &ChangePasswordForm) -> Result<(), &'static str> {
+    if form.current_password.is_empty() {
+        return Err("current_required");
+    }
+    if form.new_password.chars().count() < MIN_PASSWORD_LENGTH {
+        return Err("too_short");
+    }
+    if form.new_password != form.confirm_password {
+        return Err("mismatch");
+    }
+    if form.new_password == form.current_password {
+        return Err("unchanged");
+    }
+    Ok(())
+}
+
+fn password_error_message(code: &str) -> &'static str {
+    match code {
+        "current_required" => "Enter your current password.",
+        "too_short" => "The new password must be at least 12 characters.",
+        "mismatch" => "The new password and its confirmation do not match.",
+        "unchanged" => "The new password must differ from the current password.",
+        "invalid_current" => "The current password is incorrect.",
+        "throttled" => "Too many attempts. Try again in a few minutes.",
+        "no_credentials" => "This account has no password login configured.",
+        "not_found" => "Account no longer exists.",
+        "internal" => "The password could not be changed. Please retry.",
+        _ => "The password could not be changed. Please retry.",
+    }
+}
+
+/// POST /settings/password — rotate the signed-in user's own password.
+///
+/// Security contract:
+///   * the current password must verify before anything changes (throttled on
+///     the same durable backends as login, under a distinct key);
+///   * the new password is Argon2id and must be 12+ characters, confirmed,
+///     and different from the current one;
+///   * `session_version` is bumped, revoking every OTHER session, and the
+///     acting browser receives a freshly signed cookie so it stays signed in;
+///   * the change is recorded in the audit trail.
+pub async fn change_password(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Extension(throttle): Extension<Arc<LoginThrottle>>,
+    Form(form): Form<ChangePasswordForm>,
+) -> Response {
+    let redirect = |query: &str| Redirect::to(&format!("/settings?{query}")).into_response();
+
+    if let Err(code) = validate_new_password(&form) {
+        return redirect(&format!("password_error={code}"));
+    }
+
+    let record = match store.get_app_user(session.user_id.as_str()).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return redirect("password_error=not_found"),
+        Err(error) => {
+            tracing::error!(%error, user_id = %session.user_id, "password change: account lookup failed");
+            return redirect("password_error=internal");
+        }
+    };
+    let Some(stored_hash) = record.password_hash.as_deref() else {
+        return redirect("password_error=no_credentials");
+    };
+
+    // Throttle current-password guesses from an authenticated session under a
+    // key distinct from the login throttle, on the same durable backends.
+    let attempt_key = format!("password-change:{}", session.user_id.as_str());
+    let reservation = throttle.reserve(&attempt_key, Utc::now()).await;
+    if !reservation.allowed {
+        tracing::warn!(user_id = %session.user_id, "password change rejected: throttled");
+        return redirect("password_error=throttled");
+    }
+    if !crate::web::auth::verify_password_async(&form.current_password, stored_hash).await {
+        return redirect("password_error=invalid_current");
+    }
+    throttle.record_success(&attempt_key).await;
+
+    let new_hash = match crate::web::auth::hash_password(&form.new_password) {
+        Ok(hash) => hash,
+        Err(error) => {
+            tracing::error!(%error, user_id = %session.user_id, "password change: hashing failed");
+            return redirect("password_error=internal");
+        }
+    };
+
+    let new_version = match store
+        .update_app_user_password(session.user_id.as_str(), &new_hash)
+        .await
+    {
+        Ok(Some(version)) => version,
+        Ok(None) => return redirect("password_error=not_found"),
+        Err(error) => {
+            tracing::error!(%error, user_id = %session.user_id, "password change: update failed");
+            return redirect("password_error=internal");
+        }
+    };
+
+    // Best-effort audit record; the credential change itself already happened.
+    if let Err(error) = store
+        .record_audit_event(
+            session.user_id.as_str(),
+            "password_changed",
+            &serde_json::json!({ "other_sessions_revoked": true }),
+        )
+        .await
+    {
+        tracing::warn!(%error, user_id = %session.user_id, "password change: audit write failed");
+    }
+
+    // The version bump revoked every session, including this one's old cookie.
+    // Re-sign the acting session so only the user's other devices are signed
+    // out.
+    let now_ms = Utc::now().timestamp_millis();
+    let claims = SessionClaims {
+        user_id: session.user_id.clone(),
+        username: session.username.clone(),
+        role: session.role.clone(),
+        issued_at: now_ms,
+        expires_at: session.expires_at,
+        session_version: new_version,
+        session_id: session.session_id,
+    };
+    let mut response = redirect("password_changed=1");
+    if let Some(token) = create_session_token(&claims, current_session_secret()) {
+        let max_age_secs = ((session.expires_at - now_ms) / 1000).max(0);
+        match HeaderValue::from_str(&session_cookie_header(&token, max_age_secs)) {
+            Ok(cookie) => {
+                response.headers_mut().append(header::SET_COOKIE, cookie);
+            }
+            Err(error) => {
+                // Without a reissued cookie the acting user would be signed
+                // out; surface it rather than pretending the rotation was
+                // seamless.
+                tracing::error!(%error, user_id = %session.user_id, "password change: cookie reissue failed");
+                return redirect("password_error=internal");
+            }
+        }
+    } else {
+        tracing::error!(user_id = %session.user_id, "password change: session signing failed");
+        return redirect("password_error=internal");
+    }
+    response
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1101,5 +1276,73 @@ mod tests {
             Some("compact")
         );
         assert_eq!(table_layout_from_preferences(&serde_json::json!({})), None);
+    }
+
+    fn password_form(current: &str, new: &str, confirm: &str) -> ChangePasswordForm {
+        ChangePasswordForm {
+            current_password: current.to_string(),
+            new_password: new.to_string(),
+            confirm_password: confirm.to_string(),
+        }
+    }
+
+    #[test]
+    fn change_password_policy_accepts_only_valid_rotations() {
+        assert!(validate_new_password(&password_form(
+            "old-password-12",
+            "new-password-34",
+            "new-password-34",
+        ))
+        .is_ok());
+
+        assert_eq!(
+            validate_new_password(&password_form("", "new-password-34", "new-password-34")),
+            Err("current_required")
+        );
+        assert_eq!(
+            validate_new_password(&password_form("old-password-12", "short", "short")),
+            Err("too_short")
+        );
+        assert_eq!(
+            validate_new_password(&password_form(
+                "old-password-12",
+                "new-password-34",
+                "different-5678",
+            )),
+            Err("mismatch")
+        );
+        assert_eq!(
+            validate_new_password(&password_form(
+                "same-password-12",
+                "same-password-12",
+                "same-password-12",
+            )),
+            Err("unchanged")
+        );
+        assert_eq!(
+            validate_new_password(&password_form("a", "b", "b")),
+            Err("too_short"),
+            "length is checked before other mismatches"
+        );
+    }
+
+    #[test]
+    fn change_password_error_codes_map_to_human_messages() {
+        for code in [
+            "current_required",
+            "too_short",
+            "mismatch",
+            "unchanged",
+            "invalid_current",
+            "throttled",
+            "no_credentials",
+            "not_found",
+            "internal",
+            "unknown-code",
+        ] {
+            let message = password_error_message(code);
+            assert!(!message.is_empty(), "{code} needs a message");
+            assert!(!message.contains(code), "{code} must not leak the raw code");
+        }
     }
 }

@@ -641,6 +641,9 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
     let session_authority: Arc<dyn SessionAuthority> = state.store.clone();
     let web_pages = apex_api::web::routes::build_web_pages::<AppState>()
         .layer(Extension(state.store.clone()))
+        // Self-service password rotation throttles current-password guesses on
+        // the same durable backends as login.
+        .layer(Extension(state.login_throttle.clone()))
         .layer(Extension(session_authority))
         .layer(Extension(state.search_index.clone()))
         .layer(Extension(state.autocomplete_index.clone()));

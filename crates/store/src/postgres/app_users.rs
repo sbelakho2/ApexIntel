@@ -144,6 +144,31 @@ impl PgStore {
         Ok(record)
     }
 
+    /// Replace a user's password hash and revoke every existing session by
+    /// bumping `session_version`. Returns the new session version, or `None`
+    /// when the user does not exist. Callers re-issue the acting session's
+    /// cookie with the returned version so only *other* sessions are signed
+    /// out by the rotation.
+    pub async fn update_app_user_password(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+    ) -> Result<Option<u32>> {
+        let version: Option<i32> = sqlx::query_scalar(
+            "UPDATE app_users \
+                SET password_hash = $2, \
+                    session_version = session_version + 1, \
+                    updated_at = now() \
+              WHERE id = $1 \
+              RETURNING session_version",
+        )
+        .bind(user_id)
+        .bind(password_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(version.map(|value| value.max(0) as u32))
+    }
+
     /// Canonical principal plus logout-revocation state in one round trip.
     ///
     /// The session authority runs on every page request; composing the

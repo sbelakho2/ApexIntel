@@ -350,6 +350,7 @@ where
         // inbox, and manage their own saved searches. Every handler scopes the
         // write to the session principal.
         .self_post("/settings", crate::web::settings::save_settings)
+        .self_post("/settings/password", crate::web::settings::change_password)
         .self_post(
             "/notifications/:id/read",
             crate::web::notifications::mark_notification_read,

@@ -263,3 +263,88 @@ async fn durable_throttle_facade_is_shared_between_instances() {
         .expect("cleanup throttle row");
     pool.close().await;
 }
+
+/// Self-service password rotation: the stored Argon2 hash is replaced,
+/// `session_version` is bumped (revoking other sessions), and the new
+/// credential authenticates while the old one no longer does.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn password_rotation_replaces_hash_and_bumps_session_version() {
+    let url = database_url();
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .expect("connect to postgres");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrations apply");
+    let store = PgStore::from_pool(pool.clone());
+
+    let user_id = format!("pw-rotate-{}", Uuid::new_v4().simple());
+    let initial_hash = hash_password("initial-password-1").expect("hash initial");
+    sqlx::query(
+        "INSERT INTO app_users (id, username, display_name, role, enabled, password_hash, session_version) \
+         VALUES ($1, $1, $1, 'analyst', true, $2, 1)",
+    )
+    .bind(&user_id)
+    .bind(&initial_hash)
+    .execute(&pool)
+    .await
+    .expect("insert user");
+
+    let rotated_hash = hash_password("rotated-password-22").expect("hash rotated");
+    let version = store
+        .update_app_user_password(&user_id, &rotated_hash)
+        .await
+        .expect("rotate password")
+        .expect("user exists");
+    assert_eq!(version, 2, "rotation must bump session_version");
+
+    let record = store
+        .get_app_user(&user_id)
+        .await
+        .expect("read user")
+        .expect("user exists");
+    assert_eq!(record.password_hash.as_deref(), Some(rotated_hash.as_str()));
+    assert_eq!(record.session_version, 2);
+
+    // The login path accepts the new password and rejects the old one.
+    assert!(
+        resolve_login(Some(&store), &user_id, "rotated-password-22")
+            .await
+            .is_some(),
+        "the rotated password must authenticate"
+    );
+    assert!(
+        resolve_login(Some(&store), &user_id, "initial-password-1")
+            .await
+            .is_none(),
+        "the previous password must no longer authenticate"
+    );
+
+    // A second rotation bumps again; an unknown user is `None`, not an error.
+    let rotated_again = hash_password("rotated-password-33").expect("hash again");
+    assert_eq!(
+        store
+            .update_app_user_password(&user_id, &rotated_again)
+            .await
+            .expect("rotate again"),
+        Some(3)
+    );
+    assert_eq!(
+        store
+            .update_app_user_password("missing-user", &rotated_again)
+            .await
+            .expect("unknown user"),
+        None
+    );
+
+    sqlx::query("DELETE FROM app_users WHERE id = $1")
+        .bind(&user_id)
+        .execute(&pool)
+        .await
+        .expect("cleanup user");
+    pool.close().await;
+}
