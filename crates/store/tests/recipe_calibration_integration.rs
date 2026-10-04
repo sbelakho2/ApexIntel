@@ -224,6 +224,134 @@ async fn calibration_applies_at_most_once_per_recipe_per_week() {
     .expect("cleanup audit rows");
 }
 
+/// #160: the promotion/deprecation queries must return the reviewed warning
+/// counts the evidence-floor policy needs. Previously the counts lived inside
+/// the CTE but were omitted from the projection, and the staged
+/// `reviewed_true_positives` expression had an unbalanced parenthesis that
+/// made the whole staged query fail at runtime.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn promotion_and_deprecation_rows_carry_reviewed_warning_counts() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+
+    let staged_code = format!("REVSTAGE{}", Uuid::new_v4().simple());
+    let production_code = format!("REVPROD{}", Uuid::new_v4().simple());
+
+    for (code, status) in [
+        (staged_code.as_str(), "staging"),
+        (production_code.as_str(), "production"),
+    ] {
+        sqlx::query(
+            "INSERT INTO recipes (
+                 code, name, status, category, join_type, outcome,
+                 signals, transforms, test_config, thresholds,
+                 narrative_template, action_playbook, applicability,
+                 created_at, updated_at
+             ) VALUES (
+                 $1, $1, $2, 'demand', 'company', 'signal',
+                 '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                 'template', '[]'::jsonb, '{}'::jsonb,
+                 NOW(), NOW()
+             )",
+        )
+        .bind(code)
+        .bind(status)
+        .execute(&pool)
+        .await
+        .expect("insert reviewed-count fixture recipe");
+    }
+
+    // Staged recipe: 12 reviewed warnings (10 TP / 2 FP) plus 3 unreviewed.
+    sqlx::query(
+        "INSERT INTO warnings (
+             warning_type, severity, title, recipe_code, review_outcome,
+             acknowledged, created_at
+         )
+         SELECT
+             'review_fixture', 'medium', 'reviewed-count fixture', $1,
+             CASE WHEN g <= 10 THEN 'true_positive' ELSE 'false_positive' END,
+             FALSE, NOW()
+         FROM generate_series(1, 12) AS g",
+    )
+    .bind(staged_code.as_str())
+    .execute(&pool)
+    .await
+    .expect("insert reviewed warning fixture");
+
+    sqlx::query(
+        "INSERT INTO warnings (
+             warning_type, severity, title, recipe_code, review_outcome,
+             acknowledged, created_at
+         )
+         SELECT
+             'review_fixture', 'medium', 'unreviewed fixture', $1, NULL, FALSE, NOW()
+         FROM generate_series(1, 3) AS g",
+    )
+    .bind(staged_code.as_str())
+    .execute(&pool)
+    .await
+    .expect("insert unreviewed warning fixture");
+
+    // Production recipe: 7 reviewed warnings (3 TP / 4 FP).
+    sqlx::query(
+        "INSERT INTO warnings (
+             warning_type, severity, title, recipe_code, review_outcome,
+             acknowledged, created_at
+         )
+         SELECT
+             'review_fixture', 'medium', 'reviewed-count fixture', $1,
+             CASE WHEN g <= 3 THEN 'true_positive' ELSE 'false_positive' END,
+             FALSE, NOW()
+         FROM generate_series(1, 7) AS g",
+    )
+    .bind(production_code.as_str())
+    .execute(&pool)
+    .await
+    .expect("insert production reviewed warning fixture");
+
+    let staged_rows = store
+        .get_staged_recipes_for_promotion()
+        .await
+        .expect("staged recipe query must succeed");
+    let staged = staged_rows
+        .iter()
+        .find(|row| row.recipe_code == staged_code)
+        .expect("the staged fixture recipe must be returned");
+    assert_eq!(staged.reviewed_warnings_total, 12);
+    assert_eq!(staged.reviewed_true_positives, 10);
+    let precision = staged.precision_observed.expect("precision is measured");
+    assert!((precision - 10.0 / 12.0).abs() < 1e-9, "got {precision}");
+    let fpr = staged.false_positive_rate.expect("FPR is measured");
+    assert!((fpr - 2.0 / 12.0).abs() < 1e-9, "got {fpr}");
+
+    let production_rows = store
+        .get_production_recipes_for_deprecation()
+        .await
+        .expect("production recipe query must succeed");
+    let production = production_rows
+        .iter()
+        .find(|row| row.recipe_code == production_code)
+        .expect("the production fixture recipe must be returned");
+    assert_eq!(production.reviewed_warnings_total, 7);
+    let precision = production.precision_current.expect("precision is measured");
+    assert!((precision - 3.0 / 7.0).abs() < 1e-9, "got {precision}");
+
+    // Cleanup.
+    for code in [staged_code.as_str(), production_code.as_str()] {
+        sqlx::query("DELETE FROM warnings WHERE recipe_code = $1")
+            .bind(code)
+            .execute(&pool)
+            .await
+            .expect("cleanup warnings");
+        sqlx::query("DELETE FROM recipes WHERE code = $1")
+            .bind(code)
+            .execute(&pool)
+            .await
+            .expect("cleanup recipe");
+    }
+}
+
 /// The canonical writer used by UI recipe creation must persist the canonical
 /// columns alongside `definition`, record `created_by`, start new recipes in
 /// staging and never resurrect a deprecated recipe on re-save.

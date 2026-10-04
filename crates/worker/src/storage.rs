@@ -158,6 +158,8 @@ fn map_staged_recipe_row(r: apex_store::postgres::StagedRecipeRow) -> StagedReci
         alerts_fired,
         // Real reviewed true-positive count, not a precision-derived estimate.
         true_positives: r.reviewed_true_positives.max(0) as u64,
+        // Reviewed outcomes backing precision; drives the policy evidence floor.
+        reviewed_warnings: r.reviewed_warnings_total.max(0) as u64,
     }
 }
 
@@ -175,6 +177,9 @@ fn map_production_recipe_row(r: apex_store::postgres::ProductionRecipeRow) -> Pr
         recall_history: vec![],
         false_positive_rate: r.false_positive_rate,
         alerts_fired_total: r.warnings_generated_last_week.max(0) as u64,
+        // Reviewed outcomes backing the measured precision; drives the policy
+        // evidence floor.
+        reviewed_warnings: r.reviewed_warnings_total.max(0) as u64,
     }
 }
 
@@ -374,6 +379,8 @@ mod tests {
         assert_eq!(recipe.alerts_fired, 5);
         // Real reviewed true positives, not a precision-derived estimate.
         assert_eq!(recipe.true_positives, 16);
+        // Reviewed evidence floor plumbing (#160).
+        assert_eq!(recipe.reviewed_warnings, 20);
     }
 
     #[test]
@@ -384,6 +391,7 @@ mod tests {
             precision_baseline: Some(0.75),
             false_positive_rate: Some(0.11),
             fpr_baseline: Some(0.09),
+            reviewed_warnings_total: 12,
             warnings_generated_last_week: 7,
             last_triggered_at: Some(Utc::now()),
             days_inactive: 13,
@@ -395,5 +403,7 @@ mod tests {
         assert_eq!(recipe.weeks_in_production, 1);
         assert_eq!(recipe.precision_history, vec![0.75, 0.78]);
         assert_eq!(recipe.alerts_fired_total, 7);
+        // Reviewed evidence floor plumbing (#160).
+        assert_eq!(recipe.reviewed_warnings, 12);
     }
 }

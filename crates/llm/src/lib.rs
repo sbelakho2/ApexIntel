@@ -771,10 +771,72 @@ impl SpendTracker {
 // LLM Client trait
 // ────────────────────────────────────────────
 
+/// Flatten a multi-turn [`crate::inference::ChatMessage`] conversation into a
+/// single `(system, user)` prompt pair for single-turn backends.
+///
+/// System messages are joined in order; every other turn is rendered as a
+/// role-labelled transcript block so turn boundaries survive the flattening.
+/// Deterministic: the same messages always produce the same prompt bytes.
+fn flatten_messages(messages: &[crate::inference::ChatMessage]) -> (String, String) {
+    use crate::inference::Role;
+
+    let mut system = String::new();
+    let mut user = String::new();
+    for message in messages {
+        match message.role {
+            Role::System => {
+                if !system.is_empty() {
+                    system.push_str("\n\n");
+                }
+                system.push_str(&message.content);
+            }
+            Role::Assistant => {
+                if !user.is_empty() {
+                    user.push_str("\n\n");
+                }
+                user.push_str("[assistant]\n");
+                user.push_str(&message.content);
+            }
+            Role::User => {
+                if !user.is_empty() {
+                    user.push_str("\n\n");
+                }
+                user.push_str("[user]\n");
+                user.push_str(&message.content);
+            }
+        }
+    }
+    (system, user)
+}
+
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     async fn generate_json(&self, system: &str, user: &str) -> Result<String>;
     async fn generate_text(&self, system: &str, user: &str) -> Result<String>;
+
+    /// Multi-turn chat completion: send the full conversation (system + user +
+    /// assistant + tool-feedback turns) and return the model's text.
+    ///
+    /// [`crate::function_calling::run_agent_loop`] requires this method so a
+    /// trait object (`&dyn LlmClient`, `Box<dyn LlmClient>`,
+    /// `Arc<dyn LlmClient>`) — the shape the worker holds — can run the
+    /// tool-calling loop. Implementors with a native chat-completions endpoint
+    /// must override it and send `messages` verbatim.
+    ///
+    /// The default implementation is a conservative single-turn fallback for
+    /// backends that only expose [`LlmClient::generate_text`]: it flattens the
+    /// conversation into one role-labelled transcript and forwards it. It
+    /// cannot honour `config` (the single-prompt methods take no config) and
+    /// loses native role boundaries, so multi-turn-capable clients must
+    /// override it.
+    async fn complete_messages(
+        &self,
+        messages: Vec<crate::inference::ChatMessage>,
+        _config: &crate::inference::InferenceConfig,
+    ) -> Result<String> {
+        let (system, user) = flatten_messages(&messages);
+        self.generate_text(&system, &user).await
+    }
 }
 
 /// OpenAI-compatible client (works with OpenAI, llama.cpp).
@@ -817,14 +879,6 @@ impl OpenAiCompatibleClient {
     }
 
     async fn call(&self, system: &str, user: &str, json_mode: bool) -> Result<String> {
-        // Cloud providers are refused unless the operator opted in explicitly.
-        crate::ensure_provider_allowed(&self.config.provider)?;
-        let Some(http) = self.http.as_ref() else {
-            anyhow::bail!(
-                "LLM HTTP client is unavailable (construction failed at startup); \
-                 refusing to report a successful call"
-            );
-        };
         // Inject /no_think for Qwen3 to suppress chain-of-thought tokens
         let system_with_nothink = if system.ends_with("/no_think") {
             system.to_string()
@@ -839,6 +893,22 @@ impl OpenAiCompatibleClient {
             self.config.max_tokens,
             json_mode,
         );
+        self.post_chat_body(&body).await
+    }
+
+    /// POST a prepared chat-completions body with the shared retry policy.
+    ///
+    /// Cloud providers are refused unless the operator opted in explicitly; a
+    /// degraded instance (no HTTP client) fails explicitly instead of
+    /// reporting a successful call.
+    async fn post_chat_body(&self, body: &serde_json::Value) -> Result<String> {
+        crate::ensure_provider_allowed(&self.config.provider)?;
+        let Some(http) = self.http.as_ref() else {
+            anyhow::bail!(
+                "LLM HTTP client is unavailable (construction failed at startup); \
+                 refusing to report a successful call"
+            );
+        };
 
         let endpoint = self.config.chat_endpoint();
 
@@ -851,7 +921,7 @@ impl OpenAiCompatibleClient {
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
             }
 
-            let mut req = http.post(&endpoint).json(&body);
+            let mut req = http.post(&endpoint).json(body);
             if let Some(ref key) = self.config.api_key {
                 req = req.header("Authorization", format!("Bearer {}", key.expose_secret()));
             }
@@ -911,6 +981,57 @@ impl LlmClient for OpenAiCompatibleClient {
 
     async fn generate_text(&self, system: &str, user: &str) -> Result<String> {
         self.call(system, user, false).await
+    }
+
+    /// Multi-turn chat completion: every message is sent verbatim.
+    ///
+    /// The endpoint and model name are fixed at construction (operator
+    /// environment); `config` contributes sampling parameters, JSON mode, seed,
+    /// `/no_think` suppression, and the optional structural-determinism
+    /// repeat.
+    async fn complete_messages(
+        &self,
+        messages: Vec<crate::inference::ChatMessage>,
+        config: &crate::inference::InferenceConfig,
+    ) -> Result<String> {
+        let errors = config.validate();
+        if !errors.is_empty() {
+            anyhow::bail!("Invalid InferenceConfig: {}", errors.join("; "));
+        }
+
+        let messages = if config.suppress_thinking {
+            crate::inference::inject_no_think(messages)
+        } else {
+            messages
+        };
+
+        let wire_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|message| ChatMessage {
+                role: message.role.to_string(),
+                content: message.content.clone(),
+            })
+            .collect();
+
+        let mut body = build_request_body(
+            &self.config.model_name,
+            &wire_messages,
+            f64::from(config.temperature),
+            config.max_tokens,
+            config.json_mode,
+        );
+        if let Some(seed) = config.seed {
+            if let Some(object) = body.as_object_mut() {
+                object.insert("seed".to_string(), seed.into());
+            }
+        }
+
+        let first = self.post_chat_body(&body).await?;
+        if config.enforce_structural_determinism && config.json_mode && config.temperature == 0.0 {
+            let repeated = self.post_chat_body(&body).await?;
+            crate::inference::assert_structural_determinism(&first, &repeated)?;
+        }
+        Ok(first)
     }
 }
 
@@ -1527,6 +1648,64 @@ mod tests {
         assert_eq!(MAX_RESPONSE_SIZE, 512_000);
     }
 
+    // ── Multi-turn trait method ──────────────────────────────────
+
+    #[test]
+    fn flatten_messages_preserves_turn_order_and_roles() {
+        let messages = vec![
+            crate::inference::ChatMessage::system("sys one"),
+            crate::inference::ChatMessage::system("sys two"),
+            crate::inference::ChatMessage::user("task"),
+            crate::inference::ChatMessage::assistant("{\"name\":\"echo\"}"),
+            crate::inference::ChatMessage::user("[tool_result] {}"),
+        ];
+        let (system, user) = flatten_messages(&messages);
+        assert_eq!(system, "sys one\n\nsys two");
+        let task = user.find("[user]\ntask").expect("task turn present");
+        let assistant = user
+            .find("[assistant]\n{\"name\":\"echo\"}")
+            .expect("assistant turn present");
+        let tool = user
+            .find("[user]\n[tool_result] {}")
+            .expect("tool-feedback turn present");
+        assert!(
+            task < assistant && assistant < tool,
+            "flattening must preserve turn order: {user}"
+        );
+    }
+
+    struct DefaultOnlyClient;
+
+    #[async_trait]
+    impl LlmClient for DefaultOnlyClient {
+        async fn generate_json(&self, _system: &str, _user: &str) -> Result<String> {
+            Ok("{}".to_string())
+        }
+
+        async fn generate_text(&self, system: &str, user: &str) -> Result<String> {
+            Ok(format!("SYS={system}|USER={user}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_messages_default_forwards_flattened_prompt_to_generate_text() {
+        let client: &dyn LlmClient = &DefaultOnlyClient;
+        let messages = vec![
+            crate::inference::ChatMessage::system("sys"),
+            crate::inference::ChatMessage::user("task"),
+            crate::inference::ChatMessage::assistant("thinking"),
+            crate::inference::ChatMessage::user("[tool_result] {}"),
+        ];
+        let text = client
+            .complete_messages(messages, &crate::inference::InferenceConfig::default())
+            .await
+            .expect("default complete_messages must forward to generate_text");
+        assert_eq!(
+            text,
+            "SYS=sys|USER=[user]\ntask\n\n[assistant]\nthinking\n\n[user]\n[tool_result] {}"
+        );
+    }
+
     async fn spawn_raw_http_response(
         response: String,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -1564,6 +1743,62 @@ mod tests {
         (addr, server)
     }
 
+    /// Serve exactly one HTTP request and return the captured request body.
+    async fn spawn_capturing_http_response(
+        response: String,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("test listener should bind: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("test listener address: {error}"));
+        let server = tokio::spawn(async move {
+            let mut captured = String::new();
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    if let Some(header_end) =
+                        buf.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        let body_start = header_end + 4;
+                        while buf.len() < body_start + content_length {
+                            match socket.read(&mut chunk).await {
+                                Ok(0) => break,
+                                Ok(read) => buf.extend_from_slice(&chunk[..read]),
+                                Err(_) => break,
+                            }
+                        }
+                        let body_end = (body_start + content_length).min(buf.len());
+                        captured = String::from_utf8_lossy(&buf[body_start..body_end]).to_string();
+                        break;
+                    }
+                    match socket.read(&mut chunk).await {
+                        Ok(0) => break,
+                        Ok(read) => buf.extend_from_slice(&chunk[..read]),
+                        Err(_) => break,
+                    }
+                }
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+            captured
+        });
+        (addr, server)
+    }
+
     // Audit: a valid, small response must still parse after the bounded-body
     // refactor.
     #[tokio::test]
@@ -1587,6 +1822,82 @@ mod tests {
             .unwrap_or_else(|error| panic!("valid response should parse: {error}"));
         assert_eq!(generated, "{\"ok\":true}");
         server.abort();
+    }
+
+    // The production implementor (`OpenAiCompatibleClient`, the type the worker
+    // builds behind `Arc<dyn LlmClient>`) must send every conversation turn to
+    // the endpoint, not a flattened single prompt.
+    #[tokio::test]
+    async fn complete_messages_sends_all_turns_for_production_client() {
+        let response_body =
+            r#"{"choices":[{"message":{"content":"final answer"},"finish_reason":"stop"}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let (addr, server) = spawn_capturing_http_response(response).await;
+
+        // Local provider: this test exercises the multi-turn body, not cloud access.
+        let mut config = ModelConfig::llamacpp_default();
+        config.base_url = format!("http://{addr}");
+        config.timeout_seconds = 5;
+        let model_name = config.model_name.clone();
+        let client = OpenAiCompatibleClient::new(config);
+
+        let messages = vec![
+            crate::inference::ChatMessage::system("You are an analyst."),
+            crate::inference::ChatMessage::user("Find the company."),
+            crate::inference::ChatMessage::assistant(r#"{"name":"lookup","arguments":{}}"#),
+            crate::inference::ChatMessage::user("[tool_result] {}"),
+        ];
+        let inference_config = crate::inference::InferenceConfig {
+            temperature: 0.2,
+            max_tokens: 512,
+            suppress_thinking: true,
+            ..Default::default()
+        };
+
+        let text = client
+            .complete_messages(messages, &inference_config)
+            .await
+            .unwrap_or_else(|error| panic!("multi-turn completion should succeed: {error}"));
+        assert_eq!(text, "final answer");
+
+        let captured = server
+            .await
+            .unwrap_or_else(|error| panic!("server task should join: {error}"));
+        let body: serde_json::Value = serde_json::from_str(&captured)
+            .unwrap_or_else(|error| panic!("captured body should be JSON: {error}\n{captured}"));
+        assert_eq!(body["model"], model_name);
+        assert_eq!(body["max_tokens"], 512);
+        assert!(
+            body["temperature"]
+                .as_f64()
+                .is_some_and(|value| (value - 0.2).abs() < 1e-6),
+            "temperature must come from the per-call config: {}",
+            body["temperature"]
+        );
+        let sent = body["messages"]
+            .as_array()
+            .unwrap_or_else(|| panic!("messages must be an array: {}", body["messages"]));
+        let roles: Vec<&str> = sent
+            .iter()
+            .map(|message| message["role"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
+        assert_eq!(
+            sent[2]["content"], r#"{"name":"lookup","arguments":{}}"#,
+            "assistant turn must be sent verbatim"
+        );
+        assert_eq!(sent[3]["content"], "[tool_result] {}");
+        assert!(
+            sent[0]["content"]
+                .as_str()
+                .is_some_and(|system| system.ends_with("/no_think")),
+            "suppress_thinking must append /no_think to the system turn: {}",
+            sent[0]["content"]
+        );
     }
 
     // Audit: MAX_RESPONSE_SIZE must actually cap the bytes buffered from the

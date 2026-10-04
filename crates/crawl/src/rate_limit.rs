@@ -10,6 +10,16 @@ const FAILURE_THRESHOLD: f64 = 3.0;
 const SUCCESS_STREAK_RESET: u32 = 2;
 const JITTER_FACTOR: f64 = 0.3;
 
+/// Documented default crawl rate per domain (requests/second), matching
+/// `AppConfig.default_requests_per_second` (env `DEFAULT_RPS`).
+pub const DEFAULT_REQUESTS_PER_SECOND: f64 = 0.2;
+/// Lower bound on the per-domain inter-request interval; keeps `Duration`
+/// construction well-defined for very high configured rates.
+const MIN_INTERVAL_SECS: f64 = 0.001;
+/// Upper bound on the per-domain inter-request interval (1 request/hour), so a
+/// tiny configured rate cannot make the pacing clock overflow.
+const MAX_INTERVAL_SECS: f64 = 3600.0;
+
 /// Per-engine rate limit state.
 #[derive(Debug, Clone)]
 pub struct EngineState {
@@ -54,14 +64,82 @@ pub struct RateLimitManager {
     engine_states: HashMap<String, EngineState>,
     /// Maximum number of tracked engines before evicting stale entries.
     max_tracked: usize,
+    /// Minimum interval enforced between two requests to the same domain,
+    /// derived from the configured requests-per-second as `1 / rps`.
+    min_interval: Duration,
+    /// domain → earliest instant the next request may start. Reserving a slot
+    /// advances this clock so concurrent tasks cannot stampede a domain.
+    next_available: HashMap<String, Instant>,
 }
 
 impl RateLimitManager {
+    /// Manager using the documented default per-domain crawl rate
+    /// (`0.2` req/s → one request per domain every 5 s).
     pub fn new() -> Self {
+        Self::with_requests_per_second(DEFAULT_REQUESTS_PER_SECOND)
+    }
+
+    /// Manager pacing every domain at `requests_per_second`.
+    ///
+    /// A sub-1 rate is represented exactly as a minimum inter-request interval
+    /// of `1 / requests_per_second` seconds — a configured `0.2` yields a 5 s
+    /// domain interval and is never rounded to 0 or 1 requests/second. A
+    /// non-finite or non-positive rate falls back to the documented default
+    /// (`0.2`) instead of silently disabling pacing, mirroring
+    /// `AppConfig::from_env` coercion.
+    pub fn with_requests_per_second(requests_per_second: f64) -> Self {
+        let rps = if requests_per_second.is_finite() && requests_per_second > 0.0 {
+            requests_per_second
+        } else {
+            DEFAULT_REQUESTS_PER_SECOND
+        };
+        let interval_secs = (1.0 / rps).clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS);
         Self {
             engine_states: HashMap::new(),
             max_tracked: 10_000,
+            min_interval: Duration::from_secs_f64(interval_secs),
+            next_available: HashMap::new(),
         }
+    }
+
+    /// Configured per-domain request rate, the reciprocal of
+    /// [`Self::domain_interval`].
+    pub fn requests_per_second(&self) -> f64 {
+        1.0 / self.min_interval.as_secs_f64()
+    }
+
+    /// Minimum interval enforced between two requests to the same domain.
+    pub fn domain_interval(&self) -> Duration {
+        self.min_interval
+    }
+
+    /// Reserve the next request slot for `domain`, returning how long the
+    /// caller must wait before starting the request.
+    ///
+    /// Each caller reserves a distinct slot (the clock advances immediately),
+    /// so concurrent callers are spaced by at least [`Self::domain_interval`]
+    /// instead of all waking from a sleep at once. Domains that share only a
+    /// host suffix (e.g. `a.example.com` and `b.example.com`) are independent
+    /// keys, matching the crawler's host-based pacing.
+    pub fn reserve_slot(&mut self, domain: &str) -> Duration {
+        if self.min_interval.is_zero() {
+            return Duration::ZERO;
+        }
+        let now = Instant::now();
+        if self.next_available.len() >= self.max_tracked {
+            // Drop slots that are already in the past; entries for domains
+            // still waiting are kept so pacing survives the bound.
+            self.next_available.retain(|_, next| *next > now);
+        }
+        let ready_at = self
+            .next_available
+            .get(domain)
+            .copied()
+            .unwrap_or(now)
+            .max(now);
+        self.next_available
+            .insert(domain.to_string(), ready_at + self.min_interval);
+        ready_at.saturating_duration_since(now)
     }
 
     /// Evict healthy engines that haven't been active for > 1 hour.
@@ -323,5 +401,87 @@ mod tests {
         let delay = RateLimitManager::retry_after_delay("Wed, 21 Oct 2015 07:28:00 GMT", now)
             .unwrap_or_else(|| panic!("HTTP-date Retry-After should parse"));
         assert_eq!(delay.as_secs(), 60);
+    }
+
+    // ── Configured per-domain requests/second ──────────────────────────
+
+    #[test]
+    fn default_manager_uses_documented_rate() {
+        let mgr = RateLimitManager::new();
+        assert!((mgr.requests_per_second() - DEFAULT_REQUESTS_PER_SECOND).abs() < 1e-9);
+        assert_eq!(mgr.domain_interval(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn configured_sub_one_rate_is_exact_five_second_interval() {
+        let slow = RateLimitManager::with_requests_per_second(0.2);
+        assert_eq!(
+            slow.domain_interval(),
+            Duration::from_secs(5),
+            "0.2 req/s must be represented as a 5 s interval, not rounded to 0/1"
+        );
+        assert!((slow.requests_per_second() - 0.2).abs() < 1e-9);
+
+        let one = RateLimitManager::with_requests_per_second(1.0);
+        assert_eq!(one.domain_interval(), Duration::from_secs(1));
+        assert_ne!(
+            slow.domain_interval(),
+            one.domain_interval(),
+            "0.2 req/s and 1.0 req/s must not collapse to the same pacing"
+        );
+
+        let fast = RateLimitManager::with_requests_per_second(2.0);
+        assert_eq!(fast.domain_interval(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn reserve_slot_spaces_requests_per_domain_by_configured_interval() {
+        let mut slow = RateLimitManager::with_requests_per_second(0.2);
+        assert_eq!(slow.reserve_slot("example.com"), Duration::ZERO);
+        let second = slow.reserve_slot("example.com");
+        assert!(
+            second > Duration::from_secs(4),
+            "the second slot for the same domain must wait ~5 s, got {second:?}"
+        );
+        assert!(second <= Duration::from_secs(5));
+        assert_eq!(
+            slow.reserve_slot("other.example"),
+            Duration::ZERO,
+            "a different domain must not inherit another domain's clock"
+        );
+
+        let mut one_rps = RateLimitManager::with_requests_per_second(1.0);
+        assert_eq!(one_rps.reserve_slot("example.com"), Duration::ZERO);
+        let one_rps_second = one_rps.reserve_slot("example.com");
+        assert!(
+            one_rps_second < second,
+            "1.0 req/s ({one_rps_second:?}) must pace faster than 0.2 req/s ({second:?})"
+        );
+        assert!(one_rps_second > Duration::from_millis(900));
+    }
+
+    #[test]
+    fn reserve_slot_reserves_distinct_slots_for_concurrent_callers() {
+        let mut mgr = RateLimitManager::with_requests_per_second(1.0);
+        let first = mgr.reserve_slot("example.com");
+        let second = mgr.reserve_slot("example.com");
+        let third = mgr.reserve_slot("example.com");
+        assert_eq!(first, Duration::ZERO);
+        assert!(second >= Duration::from_millis(900), "{second:?}");
+        assert!(
+            third >= Duration::from_millis(1900),
+            "the third caller must wait behind the second slot, got {third:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_rate_falls_back_to_documented_default() {
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                RateLimitManager::with_requests_per_second(invalid).domain_interval(),
+                Duration::from_secs(5),
+                "invalid rate {invalid} must fall back to {DEFAULT_REQUESTS_PER_SECOND} req/s"
+            );
+        }
     }
 }

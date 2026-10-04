@@ -700,7 +700,7 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
 /// Used to compare proper nouns without substring false positives: the token
 /// set for "foxconn subsidiary" shares "foxconn" with "foxconn", while "ace"
 /// shares nothing with "spacex".
-fn significant_name_tokens(name_lower: &str) -> HashSet<&str> {
+pub fn significant_name_tokens(name_lower: &str) -> HashSet<&str> {
     name_lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|token| token.chars().count() >= 3)

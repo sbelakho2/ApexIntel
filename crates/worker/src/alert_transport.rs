@@ -18,32 +18,32 @@ use apex_worker::nats_stream::{AlertEvent, NatsPublisher};
 /// Thin transport wrapper around [`NatsPublisher`] used by the outbox
 /// publisher. Cloneable so fast-path and drain can share one connection.
 #[derive(Clone)]
-pub struct AlertTransport {
+pub(crate) struct AlertTransport {
     publisher: NatsPublisher,
 }
 
 impl AlertTransport {
-    pub fn new(publisher: NatsPublisher) -> Self {
+    pub(crate) fn new(publisher: NatsPublisher) -> Self {
         Self { publisher }
     }
 
     /// A transport that never delivers (no NATS configured).
-    pub fn disabled() -> Self {
+    pub(crate) fn disabled() -> Self {
         Self::new(NatsPublisher::disabled())
     }
 
     /// A disabled transport that reports unavailable NATS as an error.
-    pub fn disabled_with_requirement(required: bool) -> Self {
+    pub(crate) fn disabled_with_requirement(required: bool) -> Self {
         Self::new(NatsPublisher::disabled_with_requirement(required))
     }
 
     /// Whether the underlying publisher is connected.
-    pub fn is_connected(&self) -> bool {
+    pub(crate) fn is_connected(&self) -> bool {
         self.publisher.is_connected()
     }
 
     /// Whether an unavailable NATS is a hard failure for this deployment.
-    pub fn required(&self) -> bool {
+    pub(crate) fn required(&self) -> bool {
         self.publisher.required()
     }
 
@@ -51,7 +51,7 @@ impl AlertTransport {
     ///
     /// `msg_id` is the stable transport identity (the outbox row id); it is sent
     /// as `Nats-Msg-Id`.
-    pub async fn publish_event(&self, event: &AlertEvent, msg_id: &str) -> Result<()> {
+    pub(crate) async fn publish_event(&self, event: &AlertEvent, msg_id: &str) -> Result<()> {
         self.publisher
             .publish_alert_with_msg_id(event, Some(msg_id))
             .await

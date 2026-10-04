@@ -373,6 +373,33 @@ impl PgStore {
         Ok(())
     }
 
+    /// Apply the SQL statements produced by
+    /// `apex_graph::entity_merge::generate_merge_sql` inside one transaction.
+    ///
+    /// Each statement is executed with its positional string parameters bound
+    /// in order (`$1, $2, ...`); the generated statements cast uuid columns
+    /// explicitly, so text parameters are safe. The transaction commits only
+    /// when every statement succeeds — a partially applied entity merge (for
+    /// example, graph edges redirected but warning arrays not rewritten) must
+    /// never be observable.
+    ///
+    /// Returns the number of statements applied.
+    pub async fn apply_entity_merge_statements(
+        &self,
+        statements: &[(String, Vec<String>)],
+    ) -> Result<u64> {
+        let mut transaction = self.pool.begin().await?;
+        for (sql, params) in statements {
+            let mut query = sqlx::query(sql);
+            for param in params {
+                query = query.bind(param.as_str());
+            }
+            query.execute(&mut *transaction).await?;
+        }
+        transaction.commit().await?;
+        Ok(statements.len() as u64)
+    }
+
     pub async fn get_person_names_by_company_ids(
         &self,
         company_ids: &[Uuid],

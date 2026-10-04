@@ -266,7 +266,7 @@
         label: String(node.label || node.id || "unknown"),
         type,
         size: Number(node.size || 10),
-        color: node.color || NODE_COLORS[type] || GRAPH_THEME.defaultNode,
+        color: NODE_COLORS[type] || node.color || GRAPH_THEME.defaultNode,
         x: Number.isFinite(Number(node.x)) ? Number(node.x) : undefined,
         y: Number.isFinite(Number(node.y)) ? Number(node.y) : undefined,
         clusterKey: String(node.clusterKey || type),
@@ -1060,10 +1060,7 @@
     const w = container.clientWidth || 800;
     const h = container.clientHeight || 550;
 
-    container.style.background = [
-      "radial-gradient(circle at top left, rgba(255,255,255,0.92), transparent 34%)",
-      `linear-gradient(180deg, ${GRAPH_THEME.stageTop} 0%, ${GRAPH_THEME.stageBottom} 100%)`
-    ].join(", ");
+    container.style.background = `linear-gradient(180deg, ${GRAPH_THEME.stageTop} 0%, ${GRAPH_THEME.stageBottom} 100%)`;
 
     let scale = options && options.viewportState ? Number(options.viewportState.scale || 1) : 1;
     let panX = options && options.viewportState ? Number(options.viewportState.panX || 0) : 0;
@@ -1208,7 +1205,7 @@
       return { el: line, data: edge };
     });
 
-    const nodeEls = nodes.map((node) => {
+    const nodeEls = nodes.map((node, nodeIndex) => {
       const group = document.createElementNS(ns, "g");
       group.style.cursor = "pointer";
       group.dataset.nodeid = node.id;
@@ -1239,9 +1236,12 @@
       label.setAttribute("class", "uppercase");
       label.style.pointerEvents = "none";
       label.style.userSelect = "none";
-      label.setAttribute("stroke", "rgba(255,255,255,0.92)");
-      label.setAttribute("stroke-width", "3");
+      // Halo comes from .graph-node-label in globals.css (chassis-colored, so
+      // it reads in both themes; the old inline halo was white-on-light).
       label.setAttribute("paint-order", "stroke");
+      // Alternate labels above/below their node so adjacent siblings in a
+      // cluster do not render as one continuous line of text.
+      label.dataset.labelSide = nodeIndex % 2 === 0 ? "below" : "above";
       label.textContent = node.label.length > 16 ? node.label.slice(0, 15) + "…" : node.label;
       label.classList.add("graph-node-label");
       group.appendChild(label);
@@ -1312,7 +1312,45 @@
     function paintFrame() {
       nodeEls.forEach(({ g, data, label, baseRadius }) => {
         g.setAttribute("transform", `translate(${data.x},${data.y})`);
-        label.setAttribute("y", String(baseRadius + 13));
+        const above = label.dataset.labelSide === "above";
+        const yOffset = above ? -(baseRadius + 7) : baseRadius + 13;
+        label.setAttribute("y", String(yOffset));
+        label.setAttribute("dominant-baseline", above ? "auto" : "hanging");
+      });
+
+      // Label collision culling: greedy pass in stable node order; a label
+      // overlapping an already-placed one is hidden until the layout spreads.
+      // Hovered/selected labels are exempt so inspection always reads.
+      const placed = [];
+      const overlaps = (rect) => placed.some(
+        (other) => rect.x < other.x + other.w
+          && other.x < rect.x + rect.w
+          && rect.y < other.y + other.h
+          && other.y < rect.y + rect.h
+      );
+      nodeEls.forEach(({ data, label, baseRadius }) => {
+        if (data.id === hoveredId || data.id === selectedId) {
+          label.style.opacity = "";
+          return;
+        }
+        const above = label.dataset.labelSide === "above";
+        let width = 0;
+        try {
+          width = label.getComputedTextLength();
+        } catch (error) {
+          width = (label.textContent || "").length * 6;
+        }
+        const rect = {
+          x: data.x - width / 2 - 4,
+          y: above ? data.y - baseRadius - 20 : data.y + baseRadius + 6,
+          w: width + 8,
+          h: 13,
+        };
+        const hidden = overlaps(rect);
+        label.style.opacity = hidden ? "0" : "";
+        if (!hidden) {
+          placed.push(rect);
+        }
       });
 
       edgeEls.forEach(({ el, data }) => {

@@ -10,8 +10,8 @@ edition = "2021"
 #   pipeline, cross-domain mining, outcome tracking, source scoring (advanced),
 #   and the full insights weekly pipeline with LLM narration.
 #
-#   Enables: apex-llm, apex-learning (+ experimental modules), apex-insights,
-#            apex-parse, apex-poi
+#   Enables: apex-llm (+ `experimental`: function/tool calling), apex-learning
+#            (+ experimental modules), apex-insights, apex-parse, apex-poi
 #
 # Usage:
 #   cargo build -p apex-worker --features llm
@@ -24,6 +24,7 @@ default = ["llm"]
 parse = ["apex-parse"]
 llm = [
     "apex-llm",
+    "apex-llm/experimental",
     "apex-learning",
     "apex-learning/experimental",
     "apex-insights",
@@ -35,6 +36,7 @@ llm = [
 [dependencies]
 apex-core = { path = "../core" }
 apex-store = { path = "../store" }
+apex-graph = { path = "../graph" }
 apex-crawl = { path = "../crawl" }
 apex-recipes = { path = "../recipes" }
 apex-shared = { path = "../shared" }

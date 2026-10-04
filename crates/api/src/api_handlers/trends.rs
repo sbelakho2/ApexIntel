@@ -21,7 +21,7 @@ use apex_api::responses::ApiError;
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct TrendsQueryParams {
+pub(crate) struct TrendsQueryParams {
     pub metric: Option<String>,
     pub bucket: Option<String>,
     pub from: Option<String>,
@@ -32,7 +32,7 @@ pub struct TrendsQueryParams {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ComparisonQueryParams {
+pub(crate) struct ComparisonQueryParams {
     pub metric: Option<String>,
     pub period: Option<String>, // "month" or "year"
     pub current_start: Option<String>,
@@ -43,7 +43,7 @@ pub struct ComparisonQueryParams {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct EntityTrendsQueryParams {
+pub(crate) struct EntityTrendsQueryParams {
     pub entity_type: Option<String>,
     pub entity_id: Option<String>,
     pub metric: Option<String>,
@@ -68,7 +68,7 @@ pub struct EntityTrendsQueryParams {
 /// - `entity_type` (optional): entity type filter ("company", "person", "region")
 /// - `entity_id` (optional): entity id filter
 /// - `limit` (optional, default 1000): max number of data points
-pub async fn query_trends(
+pub(crate) async fn query_trends(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<TrendsQueryParams>,
 ) -> Result<Json<Vec<TrendDataPoint>>, ApiError> {
@@ -125,7 +125,7 @@ pub async fn query_trends(
 /// - `days` (optional, default 30): duration of each period in days
 /// - `entity_type` (optional): entity type filter
 /// - `entity_id` (optional): entity id filter
-pub async fn trend_comparison(
+pub(crate) async fn trend_comparison(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<ComparisonQueryParams>,
 ) -> Result<Json<TrendComparison>, ApiError> {
@@ -179,7 +179,7 @@ pub async fn trend_comparison(
 /// - `bucket` (optional, default "monthly"): bucket type
 /// - `from` (optional): start date
 /// - `to` (optional): end date
-pub async fn entity_trends(
+pub(crate) async fn entity_trends(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<EntityTrendsQueryParams>,
 ) -> Result<Json<Vec<TrendDataPoint>>, ApiError> {

@@ -528,7 +528,12 @@ pub async fn list_workspaces(
     };
     let ctx = PageContext::from_session(&session, "/workspaces", warning_count);
 
-    let status_filter = params.status.as_deref();
+    // The UI speaks "open"; the canonical column value is "active".
+    let status_filter =
+        params
+            .status
+            .as_deref()
+            .map(|status| if status == "open" { "active" } else { status });
 
     // Visibility is enforced in SQL (admin bypass, owner, assignment,
     // unexpired share, organization/public), so private workspaces never
@@ -556,7 +561,10 @@ pub async fn list_workspaces(
     };
 
     let total = workspaces.len();
-    let open_count = workspaces.iter().filter(|w| w.status == "open").count();
+    let open_count = workspaces
+        .iter()
+        .filter(|w| w.status != "closed" && w.status != "archived")
+        .count();
 
     let items: Vec<WorkspaceItem> = workspaces
         .into_iter()

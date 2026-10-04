@@ -101,8 +101,8 @@ use apex_worker::nightly::{
 use apex_worker::nightly::{process_hypothesis_generation_stage, HypothesisGenerationStageResult};
 use apex_worker::notifications::{SlaEnforcer, SlaWarningRecord};
 use apex_worker::scheduler::{
-    default_scheduler, parse_custom_command_argv, validate_custom_command, JobKind, JobRun,
-    JobStatus, Scheduler,
+    default_scheduler_from_config, parse_custom_command_argv, validate_custom_command, JobKind,
+    JobRun, JobStatus, Scheduler,
 };
 use apex_worker::storage::{
     build_memo_inputs, load_production_recipes, load_staged_recipes, StorageContext,
@@ -329,8 +329,36 @@ fn build_paid_proxy_url_from_env() -> Option<String> {
     Some(url.to_string())
 }
 
+/// Capacity fallback for the proxy rotation pool when `PROXY_POOL_SIZE` is
+/// absent or malformed; matches `AppConfig`'s documented default.
+pub(crate) const DEFAULT_PROXY_POOL_SIZE: usize = 50;
+
+fn proxy_pool_size_from_env() -> usize {
+    std::env::var(apex_core::env::PROXY_POOL_SIZE)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PROXY_POOL_SIZE)
+        .max(1)
+}
+
 fn build_proxy_rotator_from_env() -> Option<ProxyRotator> {
-    if !env_flag("ENABLE_PROXY_ROTATION") {
+    build_proxy_rotator_with_capacity(
+        env_flag(apex_core::env::ENABLE_PROXY_ROTATION),
+        proxy_pool_size_from_env(),
+    )
+}
+
+/// Build the proxy rotator with an explicit pool capacity.
+///
+/// `None` when rotation is disabled, so the crawl client is constructed
+/// without a rotator. When enabled, at most `capacity` free proxies are
+/// admitted; overflow entries from `PROXY_LIST` are refused (and counted in
+/// the warning) instead of growing the pool past the configured bound.
+pub(crate) fn build_proxy_rotator_with_capacity(
+    enabled: bool,
+    capacity: usize,
+) -> Option<ProxyRotator> {
+    if !enabled {
         return None;
     }
 
@@ -341,16 +369,66 @@ fn build_proxy_rotator_from_env() -> Option<ProxyRotator> {
         );
     }
 
-    let mut rotator = ProxyRotator::new(true, paid_proxy);
+    let mut rotator = ProxyRotator::with_capacity(true, paid_proxy, capacity);
 
     if let Ok(proxy_list) = std::env::var("PROXY_LIST") {
         let parsed = ProxyRotator::parse_proxy_list(&proxy_list);
-        if !parsed.is_empty() {
-            rotator.add_proxies(parsed);
+        let requested = parsed.len();
+        if requested > 0 {
+            let accepted = rotator.add_proxies(parsed);
+            if accepted < requested {
+                tracing::warn!(
+                    requested,
+                    accepted,
+                    capacity = rotator.capacity(),
+                    refused = requested - accepted,
+                    "PROXY_LIST exceeds the configured proxy pool size; extra proxies were refused"
+                );
+            }
         }
     }
 
     Some(rotator)
+}
+
+/// MinIO endpoint + bucket the worker must use for raw-document storage,
+/// derived from the validated [`AppConfig`]. Kept pure so the startup wiring
+/// (endpoint AND bucket, not just the default `127.0.0.1:9000`) is unit-tested
+/// without a live server.
+pub(crate) fn minio_store_target(config: &AppConfig) -> (&str, &str) {
+    (config.minio_url.as_str(), config.minio_bucket.as_str())
+}
+
+/// Verify the configured MinIO bucket at startup.
+///
+/// Best-effort by design: raw-document archival degrades when MinIO is down,
+/// but the worker's database-backed jobs must still run, so an unreachable
+/// endpoint or missing credentials is reported loudly (with the configured
+/// endpoint and bucket) rather than aborting startup.
+async fn ensure_minio_bucket(config: &AppConfig) {
+    let (endpoint, bucket) = minio_store_target(config);
+    match apex_store::s3::ObjectStore::from_env_credentials(endpoint, bucket).await {
+        Ok(Some(store)) => match store.ensure_bucket().await {
+            Ok(()) => tracing::info!(endpoint, bucket, "minio: configured bucket verified"),
+            Err(error) => tracing::warn!(
+                endpoint,
+                bucket,
+                error = %error,
+                "minio: configured bucket unavailable; raw-document archive will fail until MinIO is reachable"
+            ),
+        },
+        Ok(None) => tracing::warn!(
+            endpoint,
+            bucket,
+            "minio: MINIO_ACCESS_KEY/MINIO_SECRET_KEY not set; raw-document archive disabled"
+        ),
+        Err(error) => tracing::warn!(
+            endpoint,
+            bucket,
+            error = %error,
+            "minio: could not build the object store; raw-document archive disabled"
+        ),
+    }
 }
 
 /// Worker process subcommands. Running the scheduler is the default.
@@ -532,6 +610,13 @@ async fn main() -> Result<()> {
     ensure_database_schema(store.as_ref()).await?;
     tracing::info!("worker startup: database schema is current");
 
+    // Raw-document archive: verify the operator-configured MinIO endpoint and
+    // bucket before any crawl can store content through S3. Best-effort — the
+    // worker's database jobs must run even when object storage is down — but
+    // failures are reported with the configured target instead of being
+    // silently ignored.
+    ensure_minio_bucket(&config).await;
+
     // Load seed recipes from config/recipes_seed.yaml and insert them into the
     // database. This MUST run after `ensure_database_schema`: on a fresh
     // database the recipes/observations schema does not exist yet, so seeding
@@ -602,7 +687,10 @@ async fn main() -> Result<()> {
     let _activity_logger = ActivityLogger::new(pool.clone());
     tracing::info!("activity_logger initialized");
 
-    let mut scheduler_state = default_scheduler();
+    // The validated AppConfig drives the crawl interval, nightly anchor hour,
+    // and weekly day; `default_scheduler()` remains the historical literal
+    // schedule used by tests and callers without a config handle.
+    let mut scheduler_state = default_scheduler_from_config(&config);
     match store.list_worker_job_states().await {
         Ok(states) => {
             runtime::restore_scheduler_state(&mut scheduler_state, &states);
@@ -973,6 +1061,7 @@ mod db_pool_config_tests {
 #[cfg(test)]
 mod worker_state_restore_tests {
     use super::*;
+    use apex_worker::scheduler::default_scheduler;
 
     /// Audit #64: the shutdown drain records `interrupted` rows; the next
     /// startup restore must understand that status (and the sibling
@@ -1081,6 +1170,76 @@ mod proxy_url_tests {
         assert!(build_paid_proxy_url_from_env().is_none());
 
         restore(saved);
+    }
+}
+
+#[cfg(test)]
+mod minio_config_tests {
+    use super::minio_store_target;
+    use apex_core::config::AppConfig;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// The worker startup path must target the operator-configured endpoint
+    /// and bucket — not the localhost default and not a hard-coded bucket.
+    #[test]
+    fn minio_store_target_uses_configured_endpoint_and_bucket() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        const KEYS: [&str; 3] = ["DATABASE_URL", "MINIO_URL", "MINIO_BUCKET"];
+        let saved: Vec<(&str, Option<String>)> = KEYS
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect();
+
+        std::env::set_var("DATABASE_URL", "postgres://test:test@localhost/minio-test");
+        std::env::set_var("MINIO_URL", "http://minio.internal:9100");
+        std::env::set_var("MINIO_BUCKET", "intel-raw-docs");
+        let config = AppConfig::from_env().expect("test config loads");
+
+        assert_eq!(
+            minio_store_target(&config),
+            ("http://minio.internal:9100", "intel-raw-docs")
+        );
+
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod proxy_capacity_tests {
+    use super::{build_proxy_rotator_with_capacity, DEFAULT_PROXY_POOL_SIZE};
+
+    #[test]
+    fn disabled_rotation_builds_no_rotator() {
+        assert!(
+            build_proxy_rotator_with_capacity(false, DEFAULT_PROXY_POOL_SIZE).is_none(),
+            "rotation disabled must produce no rotator, not a disabled one"
+        );
+    }
+
+    #[test]
+    fn configured_pool_size_bounds_the_rotator() {
+        let saved = std::env::var("PROXY_LIST").ok();
+        std::env::set_var("PROXY_LIST", "1.1.1.1:1\n2.2.2.2:2\n3.3.3.3:3");
+
+        let rotator = build_proxy_rotator_with_capacity(true, 2).expect("rotation enabled");
+        assert_eq!(rotator.capacity(), 2);
+        assert_eq!(
+            rotator.proxy_count(),
+            2,
+            "the configured pool size must cap the free pool"
+        );
+
+        match saved {
+            Some(value) => std::env::set_var("PROXY_LIST", value),
+            None => std::env::remove_var("PROXY_LIST"),
+        }
     }
 }
 

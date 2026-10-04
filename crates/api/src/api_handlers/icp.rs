@@ -15,7 +15,7 @@ use apex_insights::icp_scorer::{IcpDefinition, IcpInput, IcpScorer};
 use apex_store::postgres::{CompanyListFilters, CompanyRow};
 
 #[derive(Debug, Serialize)]
-pub struct IcpTargetItem {
+pub(crate) struct IcpTargetItem {
     pub id: String,
     pub name: String,
     pub domain: Option<String>,
@@ -242,6 +242,6 @@ fn to_item(c: &CompanyRow, score: &apex_insights::icp_scorer::IcpScore) -> IcpTa
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ListIcpTargetsQuery {
+pub(crate) struct ListIcpTargetsQuery {
     pub limit: Option<i64>,
 }

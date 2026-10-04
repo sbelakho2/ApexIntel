@@ -158,6 +158,51 @@ pub struct EntityWhyNow {
     pub evidence_count: i64,
 }
 
+/// Measured confidence of a relationship edge.
+///
+/// `None` is an unmeasured edge and must never be presentable as a fabricated
+/// "0%". The wrapper keeps the measurement optional end-to-end while still
+/// answering the template's existing `> 0` guard; rendering the em dash for an
+/// unmeasured edge needs the relationship template follow-up (reported with
+/// the audit, deliberately not edited here).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelationshipConfidence(pub Option<i64>);
+
+impl RelationshipConfidence {
+    /// A recorded ratio in `[0, 1]` as a percentage, or `None` when absent.
+    pub fn from_ratio(confidence: Option<f64>) -> Self {
+        Self(confidence.map(|c| (c * 100.0).round() as i64))
+    }
+
+    pub fn is_measured(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl std::fmt::Display for RelationshipConfidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(pct) => write!(f, "{pct}"),
+            None => f.write_str("—"),
+        }
+    }
+}
+
+impl PartialEq<i64> for RelationshipConfidence {
+    fn eq(&self, other: &i64) -> bool {
+        self.0 == Some(*other)
+    }
+}
+
+impl PartialOrd<i64> for RelationshipConfidence {
+    fn partial_cmp(&self, other: &i64) -> Option<std::cmp::Ordering> {
+        match self.0 {
+            Some(pct) => pct.partial_cmp(other),
+            None => None,
+        }
+    }
+}
+
 /// Relationship edge rendered on the entity dossier (graph-as-tool).
 #[derive(Clone, Debug)]
 pub struct EntityRelationship {
@@ -165,7 +210,7 @@ pub struct EntityRelationship {
     pub target_kind: String,
     pub target_id: String,
     pub target_name: String,
-    pub confidence_pct: i64,
+    pub confidence_pct: RelationshipConfidence,
     pub last_seen: String,
 }
 
@@ -470,25 +515,63 @@ pub async fn list_companies(
 
     let mut degraded_notice: Option<String> = None;
 
-    // Region/tier filters, stats, region donut and pagination are computed
-    // over the whole matching set, so load every match (a single list call
-    // clamps to 500 rows and would silently truncate all of them).
-    let company_rows_state = DataState::from_result(
+    // The region/tier filters are applied by the store in SQL; the requested
+    // region is canonicalized first so "EU" matches stored "eu"/"Europe"
+    // exactly as the previous in-memory filter did.
+    let region_filter: Option<String> = if active_region.is_empty() {
+        None
+    } else {
+        Some(canonical_region(&active_region))
+    };
+    let tier_filter: Option<String> = if active_sector.is_empty() {
+        None
+    } else {
+        Some(active_sector.clone())
+    };
+
+    // Whole-filtered-set stats in one bounded SQL aggregate. The previous
+    // implementation loaded every matching row to compute these in memory.
+    let summary_state = DataState::from_result(
         store
-            .list_all_companies_matching(&filters, order_by, desc)
+            .summarize_companies_filtered(
+                &filters,
+                region_filter.as_deref(),
+                tier_filter.as_deref(),
+            )
+            .await,
+        "failed to summarize companies",
+        |_| false,
+    );
+    DegradedNotice::capture(&summary_state, &mut degraded_notice);
+    let (total, competitor_count, high_risk_count, avg_risk) =
+        summary_state.into_loaded_or((0, 0, 0, 0));
+
+    // Current page: filter predicates and LIMIT/OFFSET run in SQL.
+    let companies_state = DataState::from_result(
+        store
+            .list_companies_filtered(
+                &filters,
+                region_filter.as_deref(),
+                tier_filter.as_deref(),
+                order_by,
+                desc,
+                per_page,
+                offset,
+            )
             .await,
         "failed to list companies",
         |rows| rows.is_empty(),
     );
-    DegradedNotice::capture(&company_rows_state, &mut degraded_notice);
-    let company_rows = company_rows_state.into_items();
+    DegradedNotice::capture(&companies_state, &mut degraded_notice);
+    let company_rows = companies_state.into_items();
+    let page_ids: Vec<Uuid> = company_rows.iter().map(|c| c.id).collect();
 
-    // B315: real per-entity warning/insight counts (two GROUP BY queries)
-    // instead of hardcoded zeros on every company row. Failures surface as a
-    // degraded marker — never as silently-zeroed counts.
+    // Per-entity warning/insight counts for the current page's ids only (B315
+    // ran two whole-table GROUP BY queries on every view). Failures surface as
+    // a degraded marker — never as silently-zeroed counts.
     let warning_counts_state = DataState::from_result(
-        store.get_warning_counts_by_entity().await,
-        "failed to fetch warning counts by entity",
+        store.get_warning_counts_for_entity_ids(&page_ids).await,
+        "failed to fetch warning counts for company page",
         |rows| rows.is_empty(),
     );
     DegradedNotice::capture(&warning_counts_state, &mut degraded_notice);
@@ -497,8 +580,8 @@ pub async fn list_companies(
         .into_iter()
         .collect();
     let insight_counts_state = DataState::from_result(
-        store.get_insight_counts_by_entity().await,
-        "failed to fetch insight counts by entity",
+        store.get_insight_counts_for_entity_ids(&page_ids).await,
+        "failed to fetch insight counts for company page",
         |rows| rows.is_empty(),
     );
     DegradedNotice::capture(&insight_counts_state, &mut degraded_notice);
@@ -507,7 +590,7 @@ pub async fn list_companies(
         .into_iter()
         .collect();
 
-    let mut all_companies: Vec<CompanyListItem> = company_rows
+    let companies: Vec<CompanyListItem> = company_rows
         .iter()
         .map(|c| {
             // Tri-state: an absent metadata flag is unknown, not `false`.
@@ -534,69 +617,34 @@ pub async fn list_companies(
         })
         .collect();
 
-    if !active_region.is_empty() {
-        let selected = canonical_region(&active_region);
-        all_companies.retain(|c| c.region.eq_ignore_ascii_case(&selected));
-    }
-
-    if !active_sector.is_empty() {
-        all_companies.retain(|c| risk_tier_or_unknown(c.risk_score) == active_sector);
-    }
-
-    let total = all_companies.len() as i64;
     let total_pages = if total == 0 {
         0
     } else {
         (total + per_page - 1) / per_page
     };
 
-    let companies: Vec<CompanyListItem> = all_companies
-        .iter()
-        .skip(offset as usize)
-        .take(per_page as usize)
-        .cloned()
-        .collect();
-
-    let competitor_count = all_companies
-        .iter()
-        .filter(|c| c.is_competitor == Some(true))
-        .count() as i64;
-    let high_risk_count = all_companies
-        .iter()
-        .filter(|c| c.risk_score.is_some_and(|score| score >= 70))
-        .count() as i64;
-    let regions_count = {
-        use std::collections::HashSet;
-        let mut regions: HashSet<&str> = HashSet::new();
-        for c in &all_companies {
-            if !c.region.is_empty() {
-                regions.insert(c.region.as_str());
-            }
-        }
-        regions.len() as i64
-    };
-    let avg_risk = {
-        let scored: Vec<i64> = all_companies
-            .iter()
-            .filter_map(|c| c.risk_score)
-            .filter(|s| *s > 0)
-            .collect();
-        if scored.is_empty() {
-            0
-        } else {
-            scored.iter().sum::<i64>() / scored.len() as i64
-        }
-    };
-    // avg_risk == 0 means "no measured score" and the template renders "—" for
-    // it; a measured average of exactly 0 is indistinguishable and renders the
-    // same way.
+    // Coverage donut: counts grouped by raw region over the same filtered set,
+    // canonicalized and merged exactly like the previous per-row pass.
+    let region_counts_state = DataState::from_result(
+        store
+            .count_companies_by_region_filtered(
+                &filters,
+                region_filter.as_deref(),
+                tier_filter.as_deref(),
+            )
+            .await,
+        "failed to summarize company regions",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&region_counts_state, &mut degraded_notice);
+    let region_counts = region_counts_state.into_loaded_or_default();
 
     let region_slices = {
         use std::collections::HashMap;
         let mut counts: HashMap<String, i64> = HashMap::new();
-        for c in &all_companies {
-            let key = canonical_region(&c.region);
-            *counts.entry(key).or_insert(0) += 1;
+        for (raw_region, count) in region_counts {
+            let key = canonical_region(&raw_region);
+            *counts.entry(key).or_insert(0) += count;
         }
         let mut slices: Vec<RegionSlice> = counts
             .into_iter()
@@ -626,7 +674,7 @@ pub async fn list_companies(
             slice.color = color;
         }
         // Compute SVG donut arc data
-        let total_co = all_companies.len() as f64;
+        let total_co: f64 = slices.iter().map(|slice| slice.count as f64).sum();
         if total_co > 0.0 {
             let r = 65.0f64;
             let circ = 2.0 * std::f64::consts::PI * r;
@@ -640,14 +688,33 @@ pub async fn list_companies(
         }
         slices
     };
+    let regions_count = region_slices.len() as i64;
 
-    let quick_links: Vec<CompanyQuickLink> = all_companies
+    // Quick links are the first five of the filtered set in the requested
+    // order, independent of the current page — one LIMIT 5 query.
+    let quick_links_state = DataState::from_result(
+        store
+            .list_companies_filtered(
+                &filters,
+                region_filter.as_deref(),
+                tier_filter.as_deref(),
+                order_by,
+                desc,
+                5,
+                0,
+            )
+            .await,
+        "failed to fetch company quick links",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&quick_links_state, &mut degraded_notice);
+    let quick_links: Vec<CompanyQuickLink> = quick_links_state
+        .into_items()
         .iter()
-        .take(5)
         .map(|c| CompanyQuickLink {
-            id: c.id.clone(),
+            id: c.id.to_string(),
             name: c.name.clone(),
-            tier: risk_tier_or_unknown(c.risk_score).to_string(),
+            tier: risk_tier_or_unknown(c.risk_score.map(|s| (s * 100.0) as i64)).to_string(),
         })
         .collect();
 
@@ -896,14 +963,24 @@ pub async fn get_company(
             );
         }
         Err(e) => {
-            tracing::error!("Failed to fetch company {id}: {e}");
-            return super::errors::not_found_with_context(
-                &ctx.username,
-                "/companies",
-                ctx.warning_count,
-            );
+            // A storage failure is not a missing company: answer 503 with an
+            // incident id instead of mislabelling the outage as 404.
+            let incident_id = format!("inc-{}", Uuid::new_v4().simple());
+            tracing::error!(incident_id = %incident_id, "Failed to fetch company {id}: {e}");
+            return super::errors::service_unavailable_for(&ctx, &incident_id);
         }
     };
+
+    // The real description lives in `companies.narrative`; `legal_name` is the
+    // registered legal name, not a description, and is no longer substituted.
+    let narrative_state = DataState::from_result(
+        store.get_company_narrative(uuid).await,
+        "failed to fetch company narrative",
+        |_| false,
+    );
+    DegradedNotice::capture(&narrative_state, &mut degraded_notice);
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
+    let description = narrative_state.into_loaded_or(None).unwrap_or_default();
 
     // Fetch sites for this company
     let sites_state = DataState::from_result(
@@ -1038,7 +1115,15 @@ pub async fn get_company(
     );
     DegradedNotice::capture(&warnings_state, &mut degraded_notice);
     let warning_rows = warnings_state.into_items();
-    let total_warnings = warning_rows.len() as i64;
+    // The displayed list is capped at 50 rows; the summary count is a real
+    // COUNT(*) so a company with more warnings is never under-reported.
+    let total_warnings_state = DataState::from_result(
+        store.count_warnings_for_entity(uuid).await,
+        "failed to count company warnings",
+        |_| false,
+    );
+    DegradedNotice::capture(&total_warnings_state, &mut degraded_notice);
+    let total_warnings = total_warnings_state.into_loaded_or(0);
     let warnings: Vec<CompanyWarning> = warning_rows
         .iter()
         .map(|w| CompanyWarning {
@@ -1062,7 +1147,15 @@ pub async fn get_company(
     );
     DegradedNotice::capture(&insights_state, &mut degraded_notice);
     let insight_rows = insights_state.into_items();
-    let total_insights = insight_rows.len() as i64;
+    // Same rule as warnings: a real COUNT(*) of the visible related insights,
+    // not the length of the capped 50-row page.
+    let total_insights_state = DataState::from_result(
+        store.count_insights_for_entity(uuid).await,
+        "failed to count company insights",
+        |_| false,
+    );
+    DegradedNotice::capture(&total_insights_state, &mut degraded_notice);
+    let total_insights = total_insights_state.into_loaded_or(0);
     let insights: Vec<CompanyInsight> = insight_rows
         .iter()
         .map(|i| CompanyInsight {
@@ -1170,7 +1263,8 @@ pub async fn get_company(
     let edge_rows = edges_state.into_items();
     let mut company_peer_ids: Vec<Uuid> = Vec::new();
     let mut person_peer_ids: Vec<Uuid> = Vec::new();
-    let mut relationship_seeds: Vec<(String, String, Uuid, i64, String)> = Vec::new();
+    let mut relationship_seeds: Vec<(String, String, Uuid, RelationshipConfidence, String)> =
+        Vec::new();
     for edge in &edge_rows {
         let (other_id, other_type) = if edge.source_id == uuid {
             if edge.target_id == uuid {
@@ -1189,9 +1283,8 @@ pub async fn get_company(
             edge.edge_type.clone(),
             other_type.to_string(),
             other_id,
-            edge.confidence
-                .map(|c| (c * 100.0).round() as i64)
-                .unwrap_or(0),
+            // An unmeasured edge stays unmeasured: `None`, never a "0%".
+            RelationshipConfidence::from_ratio(edge.confidence),
             edge.last_seen
                 .or(edge.first_seen)
                 .map(|d| d.format("%Y-%m-%d").to_string())
@@ -1391,7 +1484,7 @@ pub async fn get_company(
         name: company.name.clone(),
         sector: company.company_type.clone().unwrap_or_default(),
         region: company.region.clone().unwrap_or_default(),
-        description: company.legal_name.clone().unwrap_or_default(),
+        description,
         website,
         website_url,
         risk_score: measured_risk_score,
@@ -1672,7 +1765,7 @@ mod tests {
                 target_kind: "person".into(),
                 target_id: person_id.into(),
                 target_name: "Dana Whitfield".into(),
-                confidence_pct: 90,
+                confidence_pct: RelationshipConfidence(Some(90)),
                 last_seen: "2026-01-16".into(),
             }],
             open_investigations: vec![EntityWorkspaceRef {
@@ -1727,5 +1820,63 @@ mod tests {
                 || html.contains("data-evidence-source")
                 || html.contains("Evidence timeline")
         );
+    }
+
+    #[test]
+    fn unmeasured_relationship_confidence_is_none_not_zero() {
+        let unmeasured = RelationshipConfidence::from_ratio(None);
+        assert!(!unmeasured.is_measured());
+        assert_eq!(unmeasured.0, None);
+        assert!(
+            !(unmeasured > 0),
+            "an absent measurement must not pass a >0 confidence guard"
+        );
+        assert_eq!(unmeasured.to_string(), "—");
+
+        let measured = RelationshipConfidence::from_ratio(Some(0.905));
+        assert_eq!(measured.0, Some(91));
+        assert!(measured > 0);
+        assert_eq!(measured.to_string(), "91");
+    }
+
+    fn test_session() -> WebSession {
+        WebSession {
+            user_id: apex_core::identity::UserId::new("test-user"),
+            username: apex_core::identity::Username::new("tester"),
+            role: crate::auth::ApiRole::Analyst,
+            session_version: 1,
+            principal_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            issued_at: 0,
+            expires_at: i64::MAX,
+        }
+    }
+
+    fn unreachable_store() -> Arc<PgStore> {
+        // A bounded acquire timeout keeps the failing connect instant instead
+        // of waiting on the OS network timeout.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(250))
+            .connect_lazy("postgres://apex:apex@127.0.0.1:1/apex_unused_test")
+            .expect("lazy pool construction never connects");
+        Arc::new(PgStore::from_pool(pool))
+    }
+
+    /// A storage failure while loading the company must answer a styled 503
+    /// (with an incident id), never the 404 that means "no such company".
+    #[tokio::test]
+    async fn company_detail_storage_error_answers_503_not_404() {
+        let response = get_company(
+            HeaderMap::new(),
+            Extension(test_session()),
+            Extension(unreachable_store()),
+            Path(Uuid::new_v4().to_string()),
+            axum::extract::Query(CompanyDetailQuery { briefing: None }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

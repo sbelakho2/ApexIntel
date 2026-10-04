@@ -140,6 +140,12 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/insights/:id/analyze",
             post(insights_handlers::analyze_insight),
         )
+        // #169: the analyze POST only enqueues; clients poll the latest
+        // durable run for its status and persisted result.
+        .route(
+            "/api/insights/:id/analyze/latest",
+            get(insights_handlers::get_latest_insight_analysis_run),
+        )
         .route(
             "/api/insights/:id/investigate",
             post(insights_handlers::investigate_insight),

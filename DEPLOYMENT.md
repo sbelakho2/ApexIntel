@@ -400,7 +400,7 @@ SESSION_SECRET=<GENERATE_64_CHAR_HEX_SECRET>
 API_KEY_1=<GENERATE_API_KEY>,Production Admin,admin,usr-production-admin
 
 # ─── Crawl & Scheduling ──────────────────────────────────────────────────────
-CRAWL_INTERVAL_SECS=21600
+CRAWL_INTERVAL_SECS=3600
 NIGHTLY_HOUR_UTC=2
 WEEKLY_DAY=0
 DEFAULT_RPS=0.2

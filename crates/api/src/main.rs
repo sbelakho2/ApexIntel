@@ -156,6 +156,8 @@ pub(crate) use chrono::TimeZone;
 pub(crate) use mappings::*;
 
 static STARTED_AT: OnceLock<DateTime<Utc>> = OnceLock::new();
+/// Monotonic process start, used by the live deep-health latency reporting.
+static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 const MAX_JSON_DEPTH: usize = 32;
 
 #[derive(Clone)]
@@ -214,6 +216,7 @@ async fn main() -> Result<()> {
         .init();
 
     STARTED_AT.get_or_init(Utc::now);
+    PROCESS_START.get_or_init(Instant::now);
     // #129: uptime must measure from process launch, not first admin render.
     apex_api::web::admin::init_process_start();
     runtime_metrics::init_metrics();
@@ -230,8 +233,12 @@ async fn main() -> Result<()> {
     }
     // Prime the capability cache so no public request ever triggers the
     // expensive probe set itself.
-    let initial_capabilities =
-        probe_capabilities(&probe_context(&state, Some(&nats_url_from_env()), None)).await;
+    let initial_capabilities = probe_capabilities(&probe_context(
+        &state,
+        Some(state.config.app.nats_url.as_str()),
+        None,
+    ))
+    .await;
     if let Ok(mut cache) = state.capabilities_cache.write() {
         *cache = Some(initial_capabilities);
     }
@@ -478,8 +485,7 @@ async fn build_state() -> Result<AppState> {
     );
 
     // ─── SSE / Real-time alerts ─────────────────────────────────────────
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
+    let nats_url = config.app.nats_url.clone();
     let sse_manager = if !nats_url.is_empty() {
         let manager = Arc::new(apex_api::sse::SseManager::new());
         let alert_router = Arc::new(apex_api::alert_router::AlertRouter::new(store.clone()));
@@ -838,10 +844,6 @@ fn llm_service_unavailable<T: Serialize>(message: &str) -> (StatusCode, Json<Api
 // Health & Metadata
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn nats_url_from_env() -> String {
-    std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string())
-}
-
 /// Stable per-process instance id for `service_heartbeats`.
 fn process_instance_id() -> String {
     std::env::var("APEX_INSTANCE_ID")
@@ -853,20 +855,29 @@ fn process_instance_id() -> String {
         })
 }
 
+/// Copy the heartbeat-measured capability report out of the cache, if primed.
+///
+/// Split out from [`capabilities_snapshot`] so the "serve the cached snapshot,
+/// never re-probe" contract is unit-testable without constructing an
+/// `AppState`.
+fn cached_capabilities(cache: &std::sync::RwLock<Option<Capabilities>>) -> Option<Capabilities> {
+    cache.read().ok().and_then(|cache| cache.clone())
+}
+
 /// The heartbeat-measured capability report. Public probes read this cache so
 /// an anonymous client cannot drive the LLM call, embedding round trip,
 /// browser render, or NATS connect per request. Only a process whose cache was
 /// never primed (tests) pays for a live probe.
 async fn capabilities_snapshot(state: &AppState) -> Capabilities {
-    if let Some(cached) = state
-        .capabilities_cache
-        .read()
-        .ok()
-        .and_then(|cache| cache.clone())
-    {
+    if let Some(cached) = cached_capabilities(&state.capabilities_cache) {
         return cached;
     }
-    probe_capabilities(&probe_context(state, Some(&nats_url_from_env()), None)).await
+    probe_capabilities(&probe_context(
+        state,
+        Some(state.config.app.nats_url.as_str()),
+        None,
+    ))
+    .await
 }
 
 /// Resolve the capability probe context from process state. `nats_url` is
@@ -900,9 +911,9 @@ fn start_status_heartbeat(state: AppState) {
 
             // NATS is optional under `core`, so skip the live connect probe there and
             // only measure it when the profile requires NATS.
-            let nats_url = nats_url_from_env();
+            let nats_url = state.config.app.nats_url.as_str();
             let nats_probe = if state.profile.requires_capability("nats") {
-                Some(nats_url.as_str())
+                Some(nats_url)
             } else {
                 None
             };
@@ -1093,49 +1104,46 @@ async fn process_live(State(state): State<AppState>) -> Json<serde_json::Value> 
     }))
 }
 
-async fn health_deep(State(mut state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+/// `/api/health/deep` (authenticated) — deliberate live dependency checks
+/// (database round trip, Redis, NATS, the configured MinIO bucket, the LLM
+/// endpoint and schema lineage) for operators. Unlike the public
+/// `/api/health`, `/api/health/capabilities`, `/api/health/ready` and surface
+/// routes, it does not serve the heartbeat's cached capability snapshot: its
+/// purpose is measuring every dependency right now, so it is intentionally
+/// outside the cache-served health surface. This is the live caller of
+/// `routes::health::deep_health_check`; without it that checker and its
+/// MinIO/NATS/LLM probes would be dead code.
+async fn health_deep(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     let uptime_secs = STARTED_AT
         .get()
         .map(|started| (Utc::now() - started).num_seconds() as u64)
         .unwrap_or(0);
 
-    let store_check = sqlx::query("SELECT 1").execute(&state.store.pool).await;
-    let db_status = match &store_check {
-        Ok(_) => HealthStatus::Healthy,
-        Err(e) => {
-            tracing::warn!("database health check failed: {}", e);
-            HealthStatus::Unhealthy
-        }
-    };
+    let llm_base_url = state.config.app.llm_base_url.clone().unwrap_or_default();
+    let deep = apex_api::routes::health::deep_health_check(
+        &state.store.pool,
+        state.config.app.redis_url.expose_secret(),
+        &state.config.app.nats_url,
+        &state.config.app.minio_url,
+        &state.config.app.minio_bucket,
+        &llm_base_url,
+        *PROCESS_START.get_or_init(Instant::now),
+    )
+    .await;
 
-    let mut checks = vec![ComponentHealth {
-        name: "database".to_string(),
-        status: db_status,
-        message: store_check.as_ref().err().map(|e| e.to_string()),
-    }];
-
-    if let Some(ref mut redis) = state.redis {
-        let redis_check: Result<String, redis::RedisError> =
-            redis::cmd("PING").query_async(redis).await;
-        let redis_status = match &redis_check {
-            Ok(_) => HealthStatus::Healthy,
-            Err(e) => {
-                tracing::warn!("redis health check failed: {}", e);
-                HealthStatus::Degraded
-            }
-        };
-        checks.push(ComponentHealth {
-            name: "redis".to_string(),
-            status: redis_status,
-            message: redis_check.as_ref().err().map(|e| e.to_string()),
-        });
-    } else {
-        checks.push(ComponentHealth {
-            name: "redis".to_string(),
-            status: HealthStatus::Degraded,
-            message: Some("Redis not configured".to_string()),
-        });
-    }
+    let checks: Vec<ComponentHealth> = deep
+        .checks
+        .into_iter()
+        .map(|check| ComponentHealth {
+            name: check.component,
+            status: match check.status.as_str() {
+                "ok" => HealthStatus::Healthy,
+                "degraded" => HealthStatus::Degraded,
+                _ => HealthStatus::Unhealthy,
+            },
+            message: check.message,
+        })
+        .collect();
 
     let overall = aggregate_health(&checks);
     (
@@ -2218,5 +2226,47 @@ mod tests {
             assert!(!session_method_allowed(&role, &Method::DELETE));
             assert!(session_method_allowed(&role, &Method::GET));
         }
+    }
+
+    // ── #8: health routes serve the heartbeat's cached capability snapshot ──
+
+    fn cached_capabilities_fixture() -> Capabilities {
+        use apex_api::routes::capabilities::CapabilityStatus;
+
+        let status = |label: &str| CapabilityStatus::not_measured(label);
+        Capabilities {
+            llm: status("llm"),
+            embeddings: status("embeddings"),
+            nats: status("nats"),
+            browser_renderer: status("browser_renderer"),
+            database: status("database"),
+            schema: status("schema"),
+            search_index: status("search_index"),
+            worker_heartbeat: status("worker_heartbeat"),
+            crawl_freshness: status("crawl_freshness"),
+            source_coverage: status("source_coverage"),
+            alert_engine: status("alert_engine"),
+            outbox: status("outbox"),
+            notification_delivery: status("notification_delivery"),
+            scheduled_jobs: status("scheduled_jobs"),
+        }
+    }
+
+    #[test]
+    fn health_routes_serve_the_cached_capability_snapshot() {
+        let snapshot = cached_capabilities_fixture();
+        let cache = std::sync::RwLock::new(Some(snapshot.clone()));
+
+        assert_eq!(
+            cached_capabilities(&cache),
+            Some(snapshot),
+            "a primed cache must be served without re-running the probe set"
+        );
+
+        let unprimed: std::sync::RwLock<Option<Capabilities>> = std::sync::RwLock::new(None);
+        assert!(
+            cached_capabilities(&unprimed).is_none(),
+            "only an unprimed cache may fall through to a live probe"
+        );
     }
 }

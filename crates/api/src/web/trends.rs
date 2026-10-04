@@ -15,7 +15,7 @@ use super::PageContext;
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::trends::{
-    BucketType, TrendComparisonQuery, TrendDataPoint, TrendQuery, TrendSummary,
+    is_snapshot_metric, BucketType, TrendComparisonQuery, TrendDataPoint, TrendQuery, TrendSummary,
 };
 use apex_store::postgres::PgStore;
 
@@ -417,6 +417,11 @@ pub async fn trends_page(
 }
 
 /// Fetch entity-level breakdown data for the trends page.
+///
+/// Additive metrics (`observations`, `warnings`) sum each entity's buckets;
+/// snapshot metrics (companies/persons/recipes/unacknowledged warnings) take
+/// each entity's latest measured value in the range — the store owns both
+/// shapes so the gauge semantics are testable without the page.
 async fn fetch_entity_breakdown(
     store: &PgStore,
     metric: &str,
@@ -424,59 +429,24 @@ async fn fetch_entity_breakdown(
     from_date: NaiveDate,
     to_date: NaiveDate,
 ) -> Result<Vec<EntityTrendRow>, String> {
-    // Only fetch entity breakdown for observation/warning metrics
-    if metric != "observations" && metric != "warnings" {
+    // Only entity-level metrics have a breakdown; global-only additive metrics
+    // (`insights`, `new_warnings`) have no entity rows to show.
+    if metric != "observations" && metric != "warnings" && !is_snapshot_metric(metric) {
         return Ok(vec![]);
     }
 
-    // Entity breakdowns for both metrics are keyed by company.
-    let entity_type = "company";
-
-    let query = TrendQuery {
-        bucket_type: bucket_type.to_string(),
-        metric_name: metric.to_string(),
-        from_date: Some(from_date),
-        to_date: Some(to_date),
-        entity_type: Some(entity_type.to_string()),
-        entity_id: None,
-        limit: Some(20),
-    };
-
-    // For entity breakdown, we need to query all entities.
-    // We use the entity-level rollup data to get top entities by total.
-    // Since we can't easily do GROUP BY across multiple rows in a single query_trends call,
-    // we'll use a direct SQL query for the entity breakdown.
-    let rows = sqlx::query_as::<_, (String, String, i64)>(
-        r#"SELECT
-               COALESCE(entity_type, 'unknown'),
-               COALESCE(entity_id, 'unknown'),
-               SUM(metric_value)::BIGINT AS total
-           FROM trend_rollups
-           WHERE bucket_type = $1
-             AND metric_name = $2
-             AND entity_type IS NOT NULL
-             AND entity_id IS NOT NULL
-             AND bucket_date >= $3
-             AND bucket_date <= $4
-           GROUP BY entity_type, entity_id
-           ORDER BY total DESC
-           LIMIT 10"#,
-    )
-    .bind(&query.bucket_type)
-    .bind(&query.metric_name)
-    .bind(query.from_date)
-    .bind(query.to_date)
-    .fetch_all(&store.pool)
-    .await
-    .map_err(|e| format!("failed to fetch entity breakdown: {e}"))?;
+    let rows = store
+        .get_entity_metric_breakdown(metric, bucket_type, from_date, to_date, 10)
+        .await
+        .map_err(|e| format!("failed to fetch entity breakdown: {e}"))?;
 
     Ok(rows
         .into_iter()
-        .map(|(entity_type, entity_id, total)| EntityTrendRow {
-            entity_type,
-            entity_id,
+        .map(|row| EntityTrendRow {
+            entity_type: row.entity_type,
+            entity_id: row.entity_id,
             metric_name: metric.to_string(),
-            total,
+            total: row.value,
         })
         .collect())
 }

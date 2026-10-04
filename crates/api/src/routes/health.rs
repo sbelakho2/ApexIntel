@@ -12,6 +12,8 @@
 use serde::Serialize;
 use std::time::Instant;
 
+use apex_store::s3::ObjectStore;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public response types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ pub async fn deep_health_check(
     redis_url: &str,
     nats_url: &str,
     minio_endpoint: &str,
+    minio_bucket: &str,
     llm_base_url: &str,
     start_time: Instant,
 ) -> DeepHealthCheck {
@@ -51,7 +54,7 @@ pub async fn deep_health_check(
         check_postgres(pool),
         check_redis(redis_url),
         check_nats(nats_url),
-        check_minio(minio_endpoint),
+        check_minio(minio_endpoint, minio_bucket),
         check_llm(llm_base_url),
         check_schema(pool),
     );
@@ -155,35 +158,93 @@ async fn check_nats(nats_url: &str) -> ComponentCheck {
     }
 }
 
-// Operator-configured MinIO health probe endpoint, not crawled content.
-#[allow(clippy::disallowed_methods)]
-async fn check_minio(minio_endpoint: &str) -> ComponentCheck {
-    let start = Instant::now();
-    match reqwest::Client::new()
-        .get(format!("{}/minio/health/live", minio_endpoint))
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => ComponentCheck {
+/// Outcome of probing the configured MinIO endpoint and bucket, kept separate
+/// from the HTTP mapping so the mapping is unit-testable without a live MinIO.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MinioProbe {
+    /// Endpoint reachable and the configured bucket exists.
+    BucketAvailable,
+    /// Endpoint reachable but the configured bucket does not exist.
+    BucketMissing,
+    /// Endpoint reachable; bucket existence could not be verified because
+    /// `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` are not configured.
+    BucketUnverified,
+    /// Endpoint could not be reached (or the probe failed).
+    EndpointUnreachable(String),
+}
+
+/// Map a [`MinioProbe`] to the reported component check.
+pub(crate) fn minio_check_from_probe(
+    probe: MinioProbe,
+    bucket: &str,
+    latency_ms: u64,
+) -> ComponentCheck {
+    match probe {
+        MinioProbe::BucketAvailable => ComponentCheck {
             component: "minio".into(),
             status: "ok".into(),
-            latency_ms: start.elapsed().as_millis() as u64,
-            message: None,
+            latency_ms,
+            message: Some(format!("endpoint reachable; bucket '{bucket}' present")),
         },
-        Ok(resp) => ComponentCheck {
+        MinioProbe::BucketMissing => ComponentCheck {
             component: "minio".into(),
             status: "degraded".into(),
-            latency_ms: start.elapsed().as_millis() as u64,
-            message: Some(format!("HTTP {}", resp.status())),
+            latency_ms,
+            message: Some(format!(
+                "bucket '{bucket}' does not exist on the configured endpoint"
+            )),
         },
-        Err(e) => ComponentCheck {
+        MinioProbe::BucketUnverified => ComponentCheck {
+            component: "minio".into(),
+            status: "ok".into(),
+            latency_ms,
+            message: Some(format!(
+                "endpoint reachable; bucket '{bucket}' not verified (set MINIO_ACCESS_KEY and \
+                 MINIO_SECRET_KEY to probe it)"
+            )),
+        },
+        MinioProbe::EndpointUnreachable(message) => ComponentCheck {
             component: "minio".into(),
             status: "error".into(),
-            latency_ms: start.elapsed().as_millis() as u64,
-            message: Some(format!("Unreachable: {}", e)),
+            latency_ms,
+            message: Some(format!("Unreachable: {message}")),
         },
     }
+}
+
+/// Probe the configured MinIO endpoint and bucket.
+///
+/// With `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` configured this performs a
+/// bucket `HEAD` through [`ObjectStore`], so the check validates the bucket
+/// name the operator configured — not just that some MinIO process answers
+/// `/minio/health/live`. Without credentials the bucket cannot be
+/// authenticated for; the unauthenticated liveness endpoint is used and the
+/// report says the bucket was not verified.
+// Operator-configured MinIO health probe endpoint, not crawled content.
+#[allow(clippy::disallowed_methods)]
+pub(crate) async fn check_minio(minio_endpoint: &str, minio_bucket: &str) -> ComponentCheck {
+    let start = Instant::now();
+    let probe = match ObjectStore::from_env_credentials(minio_endpoint, minio_bucket).await {
+        Ok(Some(store)) => match store.bucket_exists().await {
+            Ok(true) => MinioProbe::BucketAvailable,
+            Ok(false) => MinioProbe::BucketMissing,
+            Err(error) => MinioProbe::EndpointUnreachable(error.to_string()),
+        },
+        Ok(None) => {
+            match reqwest::Client::new()
+                .get(format!("{minio_endpoint}/minio/health/live"))
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => MinioProbe::BucketUnverified,
+                Ok(resp) => MinioProbe::EndpointUnreachable(format!("HTTP {}", resp.status())),
+                Err(error) => MinioProbe::EndpointUnreachable(error.to_string()),
+            }
+        }
+        Err(error) => MinioProbe::EndpointUnreachable(error.to_string()),
+    };
+    minio_check_from_probe(probe, minio_bucket, start.elapsed().as_millis() as u64)
 }
 
 // Operator-configured LLM server health probe endpoint, not crawled content.
@@ -280,5 +341,50 @@ mod tests {
         };
         let json = serde_json::to_string(&hc).unwrap();
         assert!(json.contains("\"healthy\""));
+    }
+
+    #[test]
+    fn minio_probe_maps_existing_bucket_to_ok() {
+        let check = minio_check_from_probe(MinioProbe::BucketAvailable, "apexintel", 7);
+        assert_eq!(check.component, "minio");
+        assert_eq!(check.status, "ok");
+        assert_eq!(check.latency_ms, 7);
+        let message = check.message.expect("ok check names the bucket");
+        assert!(message.contains("apexintel"), "{message}");
+    }
+
+    #[test]
+    fn minio_probe_maps_missing_bucket_to_degraded_naming_the_bucket() {
+        let check = minio_check_from_probe(MinioProbe::BucketMissing, "apex-raw", 11);
+        assert_eq!(check.status, "degraded");
+        let message = check.message.expect("degraded check explains why");
+        assert!(
+            message.contains("apex-raw"),
+            "a missing bucket report must name the configured bucket: {message}"
+        );
+    }
+
+    #[test]
+    fn minio_probe_maps_unreachable_endpoint_to_error() {
+        let check = minio_check_from_probe(
+            MinioProbe::EndpointUnreachable("connection refused".to_string()),
+            "apexintel",
+            3,
+        );
+        assert_eq!(check.status, "error");
+        let message = check.message.expect("error check carries the cause");
+        assert!(message.contains("connection refused"), "{message}");
+    }
+
+    #[test]
+    fn minio_probe_without_credentials_reports_unverified_bucket() {
+        let check = minio_check_from_probe(MinioProbe::BucketUnverified, "apexintel", 5);
+        assert_eq!(check.status, "ok");
+        let message = check.message.expect("unverified check explains the gap");
+        assert!(message.contains("apexintel"), "{message}");
+        assert!(
+            message.contains("MINIO_ACCESS_KEY"),
+            "the operator must be told how to enable the bucket probe: {message}"
+        );
     }
 }

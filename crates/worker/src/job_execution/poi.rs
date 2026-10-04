@@ -10,6 +10,8 @@ use apex_core::env::parse_truthy_flag;
 #[cfg(feature = "llm")]
 use apex_core::person_names::is_place_name;
 #[cfg(feature = "llm")]
+use apex_graph::entity_merge::{build_merge_event, generate_merge_sql, EntityType, MergeReason};
+#[cfg(feature = "llm")]
 use apex_insights::company_discovery::{normalize_company_name, CompanyCandidate, DiscoverySource};
 #[cfg(feature = "llm")]
 use apex_parse::{
@@ -20,6 +22,8 @@ use apex_parse::{
     tender::{extract_tender, is_ems_relevant},
     trade_show::{extract_trade_show, is_ems_trade_show},
 };
+#[cfg(feature = "llm")]
+use apex_poi::resolver::{plan_person_merges, PersonMergePlan};
 #[cfg(feature = "llm")]
 use apex_store::postgres::ObservationRow;
 
@@ -651,6 +655,363 @@ async fn run_org_first_company_discovery(
     Ok(stats)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POI person resolution, merge execution and photo change detection
+//
+// These functions are the production wiring for the (previously dead)
+// `apex_poi::resolver`, `apex_graph::entity_merge` and
+// `apex_poi::photo_detector` modules. `run_poi_refresh` and (after new inserts)
+// `run_poi_discovery` call them; failures are surfaced as degraded runs, never
+// dropped silently.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "llm")]
+#[derive(Debug, Default)]
+struct PersonResolutionStats {
+    profiles_considered: usize,
+    plans: usize,
+    merges_applied: u64,
+    statements_applied: u64,
+    errors: Vec<String>,
+}
+
+/// Applies generated entity-merge statements. Abstracted behind a trait so the
+/// POI job flow can be unit-tested without a database.
+#[cfg(feature = "llm")]
+#[async_trait::async_trait]
+trait MergeStatementSink {
+    async fn apply_merge_statements(&self, statements: &[(String, Vec<String>)]) -> Result<()>;
+}
+
+#[cfg(feature = "llm")]
+#[async_trait::async_trait]
+impl MergeStatementSink for PgStore {
+    async fn apply_merge_statements(&self, statements: &[(String, Vec<String>)]) -> Result<()> {
+        self.apply_entity_merge_statements(statements).await?;
+        Ok(())
+    }
+}
+
+/// Map a corroborated resolver plan to the auditable graph merge event.
+#[cfg(feature = "llm")]
+fn merge_event_for_plan(plan: &PersonMergePlan) -> apex_graph::entity_merge::EntityMergeEvent {
+    build_merge_event(
+        EntityType::Person,
+        plan.merged_ids.clone(),
+        plan.survivor_id.clone(),
+        MergeReason::AutoResolution {
+            similarity_score: plan.confidence,
+        },
+        plan.confidence,
+        "poi_resolver",
+    )
+}
+
+/// Generate the full statement set (edge/observation redirects, warning and
+/// insight entity-array rewrites, `entity_merges` + audit rows, soft-delete)
+/// for one planned merge.
+#[cfg(feature = "llm")]
+fn merge_statements_for_plan(plan: &PersonMergePlan) -> Vec<(String, Vec<String>)> {
+    generate_merge_sql(&merge_event_for_plan(plan))
+}
+
+/// Execute every planned merge through the sink, one transaction per plan.
+///
+/// A failing plan is recorded in `errors` and the remaining plans still run;
+/// callers must surface `errors` on the job run (degraded) rather than
+/// dropping them.
+#[cfg(feature = "llm")]
+async fn execute_person_merges<S: MergeStatementSink + Sync>(
+    sink: &S,
+    plans: &[PersonMergePlan],
+) -> PersonResolutionStats {
+    let mut stats = PersonResolutionStats {
+        plans: plans.len(),
+        ..PersonResolutionStats::default()
+    };
+    for plan in plans {
+        let statements = merge_statements_for_plan(plan);
+        match sink.apply_merge_statements(&statements).await {
+            Ok(()) => {
+                stats.merges_applied += 1;
+                stats.statements_applied += statements.len() as u64;
+                tracing::info!(
+                    survivor = %plan.survivor_id,
+                    merged = ?plan.merged_ids,
+                    confidence = plan.confidence,
+                    reasons = ?plan.match_reasons,
+                    "poi_resolution: merged corroborated duplicate persons"
+                );
+            }
+            Err(error) => {
+                stats.errors.push(format!(
+                    "merge {:?} -> {}: {error}",
+                    plan.merged_ids, plan.survivor_id
+                ));
+                tracing::warn!(
+                    survivor = %plan.survivor_id,
+                    merged = ?plan.merged_ids,
+                    error = %error,
+                    "poi_resolution: merge application failed"
+                );
+            }
+        }
+    }
+    stats
+}
+
+/// Load person profiles with the identifiers the corroboration rule needs
+/// (email, organization id/name, role, and artifact source URLs). Persons
+/// already soft-deleted by a previous merge are excluded.
+#[cfg(feature = "llm")]
+async fn load_resolution_profiles(store: &Arc<PgStore>, limit: i64) -> Result<Vec<PoiProfile>> {
+    #[derive(sqlx::FromRow)]
+    struct ResolutionPersonRow {
+        id: Uuid,
+        name: String,
+        org: Option<String>,
+        org_id: Option<Uuid>,
+        current_role: Option<String>,
+        role_family: Option<String>,
+        region: Option<String>,
+        country_code: Option<String>,
+        public_email: Option<String>,
+    }
+
+    let rows = sqlx::query_as::<_, ResolutionPersonRow>(
+        r#"SELECT p.id,
+                  p.name,
+                  c.name AS org,
+                  p.primary_org_id AS org_id,
+                  p."current_role" AS current_role,
+                  p.role_family,
+                  p.region,
+                  p.country_code,
+                  p.public_email
+           FROM persons p
+           LEFT JOIN companies c ON c.id = p.primary_org_id
+           WHERE p.name <> ''
+             AND COALESCE(p.metadata->>'merged_into', '') = ''
+           ORDER BY p.created_at ASC NULLS LAST, p.id ASC
+           LIMIT $1"#,
+    )
+    .bind(limit)
+    .fetch_all(&store.pool)
+    .await?;
+
+    let person_ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let artifact_urls: Vec<(Uuid, String)> = if person_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as("SELECT person_id, url FROM poi_artifacts WHERE person_id = ANY($1)")
+            .bind(&person_ids)
+            .fetch_all(&store.pool)
+            .await?
+    };
+    let mut urls_by_person: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (person_id, url) in artifact_urls {
+        urls_by_person.entry(person_id).or_default().push(url);
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let current_role = row.current_role.clone().unwrap_or_default();
+            let role_family = row
+                .role_family
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(RoleFamily::from_str)
+                .unwrap_or_else(|| classify_role_family(row.current_role.as_deref()));
+            let artifacts = urls_by_person
+                .remove(&row.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|url| apex_poi::model::PoiArtifact {
+                    artifact_type: "resolution_source".to_string(),
+                    title: String::new(),
+                    content_summary: String::new(),
+                    source_url: Some(url),
+                    ts_utc: 0,
+                })
+                .collect();
+            PoiProfile {
+                person_id: row.id.to_string(),
+                name: row.name,
+                name_variants: vec![],
+                org: row.org.unwrap_or_default(),
+                org_id: row.org_id.map(|id| id.to_string()),
+                current_role,
+                role_family,
+                region: row.region.unwrap_or_default(),
+                country_code: row.country_code.unwrap_or_default(),
+                public_bio: String::new(),
+                public_email: row.public_email,
+                artifacts,
+                priority_vector: PoiPriorityVector::zero(),
+                psychological: PsychProfile::default_profile(),
+                influence: InfluenceProfile {
+                    influence_score: 0.0,
+                    graph_centrality: 0.0,
+                    public_recurrence: 0.0,
+                    role_seniority_score: 0.0,
+                    network_size: 0,
+                },
+                engagement: None,
+                role_history: vec![],
+                last_updated_utc: 0,
+                profile_completeness: 0.0,
+            }
+        })
+        .collect())
+}
+
+/// Run the corroborated resolver over stored persons and apply the resulting
+/// merges. Returns stats even when individual merges fail; only the profile
+/// load is fatal (`Err`).
+#[cfg(feature = "llm")]
+async fn resolve_and_merge_poi_persons(store: &Arc<PgStore>) -> Result<PersonResolutionStats> {
+    let enabled = std::env::var("POI_PERSON_RESOLVE_ENABLED")
+        .ok()
+        .map(|value| parse_truthy_flag(&value))
+        .unwrap_or(true);
+    if !enabled {
+        tracing::info!("poi_resolution: disabled by POI_PERSON_RESOLVE_ENABLED");
+        return Ok(PersonResolutionStats::default());
+    }
+
+    let limit = std::env::var("POI_PERSON_RESOLVE_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(500)
+        .clamp(10, 2_000);
+    let threshold = std::env::var("POI_PERSON_RESOLVE_THRESHOLD")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.7)
+        .clamp(0.5, 1.0);
+
+    let profiles = load_resolution_profiles(store, limit).await?;
+    let plans = plan_person_merges(&profiles, threshold);
+    let mut stats = execute_person_merges(store.as_ref(), &plans).await;
+    stats.profiles_considered = profiles.len();
+    tracing::info!(
+        profiles = stats.profiles_considered,
+        merge_plans = stats.plans,
+        merges_applied = stats.merges_applied,
+        statements = stats.statements_applied,
+        threshold,
+        "poi_resolution: pass complete"
+    );
+    Ok(stats)
+}
+
+/// Detect photo changes on person profile artifacts and persist one audit
+/// artifact per change.
+///
+/// The detector query guarantees the previous hash belongs to the same source
+/// document (`pa2.url = pa.url`), so a photo from one source can never be
+/// associated with a hash from another. The persisted audit artifact has a
+/// deterministic id and deliberately carries no `photo_hash` metadata key, so
+/// repeated runs inside the detection window cannot duplicate the event or
+/// become the "current" hash themselves.
+#[cfg(feature = "llm")]
+async fn run_poi_photo_detection(store: &Arc<PgStore>, now: DateTime<Utc>) -> Result<u64> {
+    #[derive(sqlx::FromRow)]
+    struct PhotoChangeRow {
+        person_id: Uuid,
+        person_name: String,
+        source_url: String,
+        current_hash: String,
+        previous_hash: Option<String>,
+        crawled_at: DateTime<Utc>,
+    }
+
+    let rows =
+        sqlx::query_as::<_, PhotoChangeRow>(apex_poi::photo_detector::photo_change_detection_sql())
+            .fetch_all(&store.pool)
+            .await?;
+
+    let detected: Vec<apex_poi::photo_detector::DetectedPhotoRow> = rows
+        .into_iter()
+        .map(|row| apex_poi::photo_detector::DetectedPhotoRow {
+            person_id: row.person_id.to_string(),
+            person_name: row.person_name,
+            source_url: row.source_url,
+            current_hash: row.current_hash,
+            previous_hash: row.previous_hash,
+            detected_at: row.crawled_at,
+        })
+        .collect();
+
+    let mut persisted: u64 = 0;
+    for change in apex_poi::photo_detector::detect_changes(&detected) {
+        let Ok(person_id) = change.person_id.parse::<Uuid>() else {
+            tracing::warn!(
+                person_id = %change.person_id,
+                "poi_photo: invalid person id in detection row, skipping"
+            );
+            continue;
+        };
+        let artifact = apex_poi::photo_detector::PhotoDetector::to_artifact(&change, None);
+        let metadata = &artifact.metadata;
+        let mut record = PoiArtifact::new(
+            person_id,
+            ArtifactType::Other("profile_photo_change".to_string()),
+            artifact.source_url.clone(),
+            now,
+        );
+        record.id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!(
+                "{}|{}|{}|{}",
+                change.person_id, artifact.source_url, metadata.new_hash, metadata.change_type
+            )
+            .as_bytes(),
+        );
+        record.title = Some(artifact.title.clone());
+        record.content_summary = Some(artifact.description.clone());
+        record.source_domain = extract_domain(&artifact.source_url);
+        record.topics = vec!["poi_photo".to_string(), metadata.change_type.clone()];
+        record.provenance = serde_json::json!({
+            "source": "photo_change_detection",
+            "change_type": &metadata.change_type,
+            "old_hash": &metadata.old_hash,
+            "new_hash": &metadata.new_hash,
+            "detected_at": artifact.detected_at,
+        });
+        record.metadata = serde_json::json!({
+            "photo_change": true,
+            "old_hash": &metadata.old_hash,
+            "new_hash": &metadata.new_hash,
+            "change_type": &metadata.change_type,
+            "days_since_last_change": metadata.days_since_last_change,
+        });
+        match store.insert_poi_artifact(&record).await {
+            Ok(()) => {
+                persisted += 1;
+                tracing::info!(
+                    person = %artifact.person_name,
+                    source_url = %artifact.source_url,
+                    change_type = %metadata.change_type,
+                    "poi_photo: persisted profile photo change artifact"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    person = %artifact.person_name,
+                    source_url = %artifact.source_url,
+                    error = %error,
+                    "poi_photo: failed to persist photo change artifact"
+                );
+            }
+        }
+    }
+    Ok(persisted)
+}
+
 #[cfg(all(test, feature = "llm"))]
 mod tests {
     use super::*;
@@ -715,6 +1076,162 @@ mod tests {
                 .filter(|name| *name == &normalize_entity_name("Sagemcom"))
                 .count(),
             1
+        );
+    }
+
+    // ── POI resolution / merge flow (previously dead modules) ────────────
+
+    fn resolution_profile(id: &str, name: &str, org: &str, email: Option<&str>) -> PoiProfile {
+        PoiProfile {
+            person_id: id.to_string(),
+            name: name.to_string(),
+            name_variants: vec![],
+            org: org.to_string(),
+            org_id: None,
+            current_role: "Engineer".to_string(),
+            role_family: RoleFamily::Engineering,
+            region: "TN".to_string(),
+            country_code: "TN".to_string(),
+            public_bio: String::new(),
+            public_email: email.map(|value| value.to_string()),
+            artifacts: vec![],
+            priority_vector: PoiPriorityVector::zero(),
+            psychological: PsychProfile::default_profile(),
+            influence: InfluenceProfile {
+                influence_score: 0.0,
+                graph_centrality: 0.0,
+                public_recurrence: 0.0,
+                role_seniority_score: 0.0,
+                network_size: 0,
+            },
+            engagement: None,
+            role_history: vec![],
+            last_updated_utc: 0,
+            profile_completeness: 0.0,
+        }
+    }
+
+    fn sample_merge_plan() -> PersonMergePlan {
+        PersonMergePlan {
+            survivor_id: "survivor-1".to_string(),
+            merged_ids: vec!["duplicate-1".to_string()],
+            confidence: 0.91,
+            match_reasons: vec!["email_match".to_string()],
+        }
+    }
+
+    #[test]
+    fn poi_resolution_merges_only_corroborated_duplicates() {
+        // p1/p2 share an email (corroborated); p3 shares only the name.
+        let duplicate_a = resolution_profile(
+            "p1",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("ahmed@example.com"),
+        );
+        let duplicate_b = resolution_profile(
+            "p2",
+            "Ahmed Ben Ali",
+            "Foxconn Europe",
+            Some("ahmed@example.com"),
+        );
+        let namesake = resolution_profile("p3", "Ahmed Ben Ali", "Samsung Tunisia", None);
+
+        let plans = plan_person_merges(&[duplicate_a, duplicate_b, namesake], 0.7);
+        assert_eq!(plans.len(), 1, "only the corroborated pair may merge");
+        assert_eq!(plans[0].survivor_id, "p1");
+        assert_eq!(plans[0].merged_ids, vec!["p2".to_string()]);
+    }
+
+    #[test]
+    fn poi_resolution_merge_statements_rewrite_arrays_and_record_audit_row() {
+        let statements = merge_statements_for_plan(&sample_merge_plan());
+        let sql: Vec<&str> = statements
+            .iter()
+            .map(|(statement, _)| statement.as_str())
+            .collect();
+
+        assert!(
+            sql.iter()
+                .any(|statement| statement.contains("INSERT INTO entity_merges")),
+            "the merge must be recorded in entity_merges"
+        );
+        for table in ["warnings", "insights"] {
+            assert!(
+                sql.iter().any(
+                    |statement| statement.starts_with(&format!("UPDATE {table} "))
+                        && statement.contains("array_replace(entity_ids")
+                ),
+                "{table}.entity_ids must be rewritten with array_replace"
+            );
+        }
+        assert!(
+            sql.iter()
+                .all(|statement| !statement.contains("entity_ids = ARRAY[")),
+            "no generated statement may overwrite entity_ids wholesale"
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingMergeSink {
+        calls: std::sync::Mutex<u64>,
+        sql: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MergeStatementSink for RecordingMergeSink {
+        async fn apply_merge_statements(&self, statements: &[(String, Vec<String>)]) -> Result<()> {
+            *self.calls.lock().expect("merge sink lock") += 1;
+            self.sql
+                .lock()
+                .expect("merge sink lock")
+                .extend(statements.iter().map(|(statement, _)| statement.clone()));
+            Ok(())
+        }
+    }
+
+    struct FailingMergeSink;
+
+    #[async_trait::async_trait]
+    impl MergeStatementSink for FailingMergeSink {
+        async fn apply_merge_statements(
+            &self,
+            _statements: &[(String, Vec<String>)],
+        ) -> Result<()> {
+            anyhow::bail!("simulated database failure")
+        }
+    }
+
+    #[tokio::test]
+    async fn poi_resolution_executes_plans_through_sink() {
+        let sink = RecordingMergeSink::default();
+        let plans = vec![sample_merge_plan()];
+
+        let stats = execute_person_merges(&sink, &plans).await;
+
+        assert_eq!(stats.plans, 1);
+        assert_eq!(stats.merges_applied, 1);
+        assert!(stats.statements_applied > 0);
+        assert!(stats.errors.is_empty());
+        assert_eq!(*sink.calls.lock().expect("merge sink lock"), 1);
+        let sql = sink.sql.lock().expect("merge sink lock");
+        assert!(sql
+            .iter()
+            .any(|statement| statement.contains("UPDATE warnings")));
+        assert!(sql
+            .iter()
+            .any(|statement| statement.contains("UPDATE insights")));
+    }
+
+    #[tokio::test]
+    async fn poi_resolution_records_failures_instead_of_silently_dropping_run() {
+        let stats = execute_person_merges(&FailingMergeSink, &[sample_merge_plan()]).await;
+
+        assert_eq!(stats.merges_applied, 0);
+        assert_eq!(
+            stats.errors.len(),
+            1,
+            "a failed merge application must be reported to the caller"
         );
     }
 }
@@ -1848,13 +2365,45 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
             }
         }
 
+        // Post-extraction person resolution: merge duplicate persons only when
+        // the corroboration rule holds, rewriting warning/insight entity arrays
+        // and recording each merge in `entity_merges`. A load failure degrades
+        // the run; individual merge failures are surfaced in `stats.errors`.
+        let mut persons_merged: u64 = 0;
+        match resolve_and_merge_poi_persons(store).await {
+            Ok(stats) => {
+                persons_merged = stats.merges_applied;
+                if !stats.errors.is_empty() {
+                    degraded_inputs
+                        .push(format!("person merge errors: {}", stats.errors.join("; ")));
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "poi_refresh: person resolution pass failed");
+                degraded_inputs.push(format!("person resolution pass failed ({error})"));
+            }
+        }
+
+        // POI enrichment: detect photo hash changes per source document and
+        // persist an audit artifact per change.
+        let mut photo_changes: u64 = 0;
+        match run_poi_photo_detection(store, Utc::now()).await {
+            Ok(count) => photo_changes = count,
+            Err(error) => {
+                tracing::warn!(%error, "poi_refresh: photo change detection failed");
+                degraded_inputs.push(format!("photo change detection failed ({error})"));
+            }
+        }
+
         let notes = format!(
-            "poi_refresh: {} persons processed — {} updated, {} unchanged, {} role-history backfilled, {} LLM-enriched",
+            "poi_refresh: {} persons processed — {} updated, {} unchanged, {} role-history backfilled, {} LLM-enriched, {} persons merged, {} photo changes",
             persons.len(),
             refreshed,
             unchanged,
             role_history_backfilled,
             enriched_pois,
+            persons_merged,
+            photo_changes,
         );
         if degraded_inputs.is_empty() {
             run.succeed(refreshed, &notes);
@@ -2417,6 +2966,27 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
         if raw_candidates_total == 0 && inserted == 0 && org_discovery.inserted == 0 {
             run.succeed(0, "poi_discovery: no new persons discovered");
             return run;
+        }
+
+        // New persons were just extracted; resolve corroborated duplicates
+        // immediately instead of waiting for the next refresh.
+        if inserted > 0 {
+            match resolve_and_merge_poi_persons(store).await {
+                Ok(stats) => {
+                    if stats.merges_applied > 0 {
+                        tracing::info!(
+                            profiles = stats.profiles_considered,
+                            merges = stats.merges_applied,
+                            "poi_discovery: post-extraction person resolution merged duplicates"
+                        );
+                    }
+                    errors.extend(stats.errors);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "poi_discovery: post-extraction person resolution failed");
+                    errors.push(format!("post-extraction person resolution failed: {error}"));
+                }
+            }
         }
 
         let person_network_summary = if seeds.is_empty() {

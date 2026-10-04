@@ -19,15 +19,15 @@ use apex_core::lineage::{
 };
 
 /// Default producer label for lineage rows written by the store itself.
-pub const LINEAGE_PRODUCER: &str = "apex-store:evidence-lineage";
+pub(super) const LINEAGE_PRODUCER: &str = "apex-store:evidence-lineage";
 /// Producer version recorded when the caller does not supply one.
-pub const LINEAGE_PRODUCER_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(super) const LINEAGE_PRODUCER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Default upstream traversal depth (the canonical chain has 12 stages).
-pub const LINEAGE_MAX_DEPTH: i32 = 16;
+const LINEAGE_MAX_DEPTH: i32 = 16;
 
 /// Persisted lineage node row.
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct LineageNodeRow {
+struct LineageNodeRow {
     pub id: Uuid,
     pub stage: String,
     pub reference: String,
@@ -42,7 +42,7 @@ pub struct LineageNodeRow {
 impl LineageNodeRow {
     /// Convert a persisted row to the shared model; unknown stage names are
     /// skipped rather than guessed.
-    pub fn to_node(&self) -> Option<LineageNode> {
+    fn to_node(&self) -> Option<LineageNode> {
         let stage = LineageStage::from_db(&self.stage)?;
         Some(LineageNode {
             id: Some(self.id.to_string()),
@@ -59,7 +59,7 @@ impl LineageNodeRow {
 
 /// Persisted lineage edge row.
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct LineageEdgeRow {
+struct LineageEdgeRow {
     pub id: Uuid,
     pub transformation: String,
     pub source_node: Uuid,

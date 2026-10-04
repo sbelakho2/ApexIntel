@@ -285,7 +285,7 @@ fn team_assignment_from_record(r: TeamAssignmentRecord) -> TeamAssignment {
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct ExecutiveQuery {
+pub(crate) struct ExecutiveQuery {
     pub include_threats: Option<bool>,
     pub include_opportunities: Option<bool>,
     pub priority_threshold: Option<f64>,
@@ -294,7 +294,7 @@ pub struct ExecutiveQuery {
 
 /// GET /api/executive/summary
 /// Returns the executive dashboard summary with top opportunities, threats, and actions
-pub async fn get_executive_summary(
+pub(crate) async fn get_executive_summary(
     State(state): State<crate::AppState>,
     Query(query): Query<ExecutiveQuery>,
 ) -> Result<Json<ApiResponse<Value>>, ApiError> {
@@ -375,7 +375,7 @@ pub async fn get_executive_summary(
 
 /// GET /api/executive/opportunities
 /// List strategic opportunities
-pub async fn list_opportunities(
+pub(crate) async fn list_opportunities(
     State(state): State<crate::AppState>,
     Query(params): Query<ListOpportunitiesQuery>,
 ) -> Result<Json<ApiResponse<Vec<StrategicOpportunity>>>, ApiError> {
@@ -403,7 +403,7 @@ pub async fn list_opportunities(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct ListOpportunitiesQuery {
+pub(crate) struct ListOpportunitiesQuery {
     pub priority_threshold: Option<f64>,
     pub region: Option<String>,
     pub limit: Option<u32>,
@@ -412,7 +412,7 @@ pub struct ListOpportunitiesQuery {
 
 /// POST /api/executive/opportunities
 /// Create a new strategic opportunity
-pub async fn create_opportunity(
+pub(crate) async fn create_opportunity(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreateOpportunityRequest>,
@@ -451,7 +451,7 @@ pub async fn create_opportunity(
 
 /// GET /api/executive/threats
 /// List critical threats
-pub async fn list_threats(
+pub(crate) async fn list_threats(
     State(state): State<crate::AppState>,
     Query(params): Query<ListThreatsQuery>,
 ) -> Result<Json<ApiResponse<Vec<CriticalThreat>>>, ApiError> {
@@ -477,7 +477,7 @@ pub async fn list_threats(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct ListThreatsQuery {
+pub(crate) struct ListThreatsQuery {
     pub impact_threshold: Option<f64>,
     pub region: Option<String>,
     pub severity: Option<String>,
@@ -486,7 +486,7 @@ pub struct ListThreatsQuery {
 
 /// POST /api/executive/threats
 /// Create a new critical threat
-pub async fn create_threat(
+pub(crate) async fn create_threat(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreateThreatRequest>,
@@ -526,7 +526,7 @@ pub async fn create_threat(
 
 /// GET /api/executive/opportunities/:id
 /// Get a specific strategic opportunity
-pub async fn get_opportunity(
+pub(crate) async fn get_opportunity(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<StrategicOpportunity>>, ApiError> {
@@ -543,7 +543,7 @@ pub async fn get_opportunity(
 
 /// PATCH /api/executive/opportunities/:id
 /// Update a strategic opportunity
-pub async fn update_opportunity(
+pub(crate) async fn update_opportunity(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateOpportunityRequest>,
@@ -597,7 +597,7 @@ pub async fn update_opportunity(
 
 /// GET /api/executive/threats/:id
 /// Get a specific critical threat
-pub async fn get_threat(
+pub(crate) async fn get_threat(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<CriticalThreat>>, ApiError> {
@@ -614,7 +614,7 @@ pub async fn get_threat(
 
 /// PATCH /api/executive/threats/:id
 /// Update a critical threat
-pub async fn update_threat(
+pub(crate) async fn update_threat(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateThreatRequest>,
@@ -681,7 +681,7 @@ pub async fn update_threat(
 
 /// GET /api/workspaces
 /// List investigation workspaces
-pub async fn list_workspaces(
+pub(crate) async fn list_workspaces(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Query(params): Query<ListWorkspacesQuery>,
@@ -710,7 +710,7 @@ pub async fn list_workspaces(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct ListWorkspacesQuery {
+pub(crate) struct ListWorkspacesQuery {
     pub workspace_type: Option<String>,
     pub status: Option<String>,
     pub visibility: Option<String>,
@@ -719,7 +719,7 @@ pub struct ListWorkspacesQuery {
 
 /// POST /api/workspaces
 /// Create a new investigation workspace
-pub async fn create_workspace(
+pub(crate) async fn create_workspace(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreateWorkspaceRequest>,
@@ -746,7 +746,7 @@ pub async fn create_workspace(
 
 /// GET /api/workspaces/:id
 /// Get a specific workspace
-pub async fn get_workspace(
+pub(crate) async fn get_workspace(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -766,7 +766,7 @@ pub async fn get_workspace(
 
 /// PUT /api/workspaces/:id
 /// Update a workspace
-pub async fn update_workspace(
+pub(crate) async fn update_workspace(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -807,7 +807,7 @@ pub async fn update_workspace(
 
 /// POST /api/workspaces/:id/assignments
 /// Assign a user to a workspace
-pub async fn assign_user_to_workspace(
+pub(crate) async fn assign_user_to_workspace(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -839,7 +839,7 @@ pub async fn assign_user_to_workspace(
 
 /// DELETE /api/workspaces/:id
 /// Delete a workspace (owner or platform admin only)
-pub async fn delete_workspace(
+pub(crate) async fn delete_workspace(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -874,7 +874,7 @@ pub async fn delete_workspace(
 
 /// GET /api/workspaces/:id/assignments
 /// List workspace assignments
-pub async fn list_workspace_assignments(
+pub(crate) async fn list_workspace_assignments(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -903,7 +903,7 @@ pub async fn list_workspace_assignments(
 
 /// DELETE /api/workspaces/:id/assignments/:user_id
 /// Remove a user from a workspace
-pub async fn remove_user_from_workspace(
+pub(crate) async fn remove_user_from_workspace(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path((workspace_id, user_id)): Path<(String, String)>,
@@ -937,7 +937,7 @@ pub async fn remove_user_from_workspace(
 
 /// GET /api/queue
 /// List priority queue items
-pub async fn list_queue_items(
+pub(crate) async fn list_queue_items(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Query(params): Query<ListQueueQuery>,
@@ -967,7 +967,7 @@ pub async fn list_queue_items(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct ListQueueQuery {
+pub(crate) struct ListQueueQuery {
     pub status: Option<String>,
     pub item_type: Option<String>,
     pub limit: Option<u32>,
@@ -975,7 +975,7 @@ pub struct ListQueueQuery {
 
 /// POST /api/queue
 /// Add item to priority queue
-pub async fn add_to_queue(
+pub(crate) async fn add_to_queue(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<AddToQueueRequest>,
@@ -1006,7 +1006,7 @@ pub async fn add_to_queue(
 
 /// PATCH /api/queue/:id
 /// Update queue item status
-pub async fn update_queue_item(
+pub(crate) async fn update_queue_item(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -1049,7 +1049,7 @@ pub async fn update_queue_item(
 
 /// GET /api/supplier-risk
 /// List supplier risk entries
-pub async fn list_supplier_risks(
+pub(crate) async fn list_supplier_risks(
     State(state): State<crate::AppState>,
     Query(params): Query<ListSupplierRisksQuery>,
 ) -> Result<Json<ApiResponse<Vec<SupplierRiskEntry>>>, ApiError> {
@@ -1078,7 +1078,7 @@ pub async fn list_supplier_risks(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct ListSupplierRisksQuery {
+pub(crate) struct ListSupplierRisksQuery {
     pub risk_category: Option<String>,
     pub status: Option<String>,
     pub limit: Option<u32>,
@@ -1086,7 +1086,7 @@ pub struct ListSupplierRisksQuery {
 
 /// POST /api/supplier-risk
 /// Add supplier risk entry
-pub async fn add_supplier_risk(
+pub(crate) async fn add_supplier_risk(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<AddSupplierRiskRequest>,
@@ -1117,7 +1117,7 @@ pub async fn add_supplier_risk(
 
 /// PATCH /api/supplier-risk/:id
 /// Update supplier risk entry
-pub async fn update_supplier_risk(
+pub(crate) async fn update_supplier_risk(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateSupplierRiskRequest>,
@@ -1157,7 +1157,7 @@ pub async fn update_supplier_risk(
 
 /// GET /api/pipeline
 /// List pipeline opportunities
-pub async fn list_pipeline_opportunities(
+pub(crate) async fn list_pipeline_opportunities(
     State(state): State<crate::AppState>,
     Query(params): Query<ListPipelineQuery>,
 ) -> Result<Json<ApiResponse<Vec<PipelineOpportunity>>>, ApiError> {
@@ -1177,7 +1177,7 @@ pub async fn list_pipeline_opportunities(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct ListPipelineQuery {
+pub(crate) struct ListPipelineQuery {
     pub stage: Option<String>,
     pub owner_id: Option<String>,
     pub limit: Option<u32>,
@@ -1185,7 +1185,7 @@ pub struct ListPipelineQuery {
 
 /// POST /api/pipeline
 /// Create pipeline opportunity
-pub async fn create_pipeline_opportunity(
+pub(crate) async fn create_pipeline_opportunity(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreatePipelineOpportunityRequest>,
@@ -1220,7 +1220,7 @@ pub async fn create_pipeline_opportunity(
 
 /// PATCH /api/pipeline/:id/stage
 /// Update pipeline stage
-pub async fn update_pipeline_stage(
+pub(crate) async fn update_pipeline_stage(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdatePipelineStageRequest>,
@@ -1245,7 +1245,7 @@ pub async fn update_pipeline_stage(
 
 /// GET /api/activity-feed
 /// Get activity feed
-pub async fn get_activity_feed(
+pub(crate) async fn get_activity_feed(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Query(params): Query<ActivityFeedQuery>,
@@ -1286,7 +1286,7 @@ pub async fn get_activity_feed(
 
 /// POST /api/activity-feed
 /// Record new activity
-pub async fn record_activity(
+pub(crate) async fn record_activity(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<RecordActivityRequest>,
@@ -1355,7 +1355,7 @@ pub async fn record_activity(
 
 /// GET /api/workspaces/:id/shares
 /// List workspace shares
-pub async fn list_workspace_shares(
+pub(crate) async fn list_workspace_shares(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(workspace_id): Path<String>,
@@ -1383,7 +1383,7 @@ pub async fn list_workspace_shares(
 
 /// POST /api/workspaces/:id/shares
 /// Share a workspace
-pub async fn share_workspace(
+pub(crate) async fn share_workspace(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(workspace_id): Path<String>,
@@ -1430,7 +1430,7 @@ pub async fn share_workspace(
 
 /// GET /api/evidence
 /// Get source evidence for an entity
-pub async fn get_evidence(
+pub(crate) async fn get_evidence(
     State(state): State<crate::AppState>,
     Query(params): Query<GetEvidenceQuery>,
 ) -> Result<Json<ApiResponse<Vec<SourceEvidence>>>, ApiError> {
@@ -1453,7 +1453,7 @@ pub async fn get_evidence(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct GetEvidenceQuery {
+pub(crate) struct GetEvidenceQuery {
     pub entity_type: Option<String>,
     pub entity_id: Option<String>,
     pub evidence_type: Option<String>,
@@ -1462,7 +1462,7 @@ pub struct GetEvidenceQuery {
 
 /// POST /api/evidence
 /// Add source evidence
-pub async fn add_evidence(
+pub(crate) async fn add_evidence(
     State(state): State<crate::AppState>,
     Json(req): Json<AddEvidenceRequest>,
 ) -> Result<Json<ApiResponse<SourceEvidence>>, ApiError> {
@@ -1509,7 +1509,7 @@ pub async fn add_evidence(
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct WatchlistRequest {
+pub(crate) struct WatchlistRequest {
     pub id: Option<String>,
     pub name: String,
     pub entities: Option<Value>,
@@ -1531,7 +1531,7 @@ fn watchlist_fields(req: &WatchlistRequest) -> Result<(&str, Value, Option<&str>
 
 /// GET /api/watchlists
 /// List the caller's watchlists.
-pub async fn list_watchlists(
+pub(crate) async fn list_watchlists(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
 ) -> Result<Json<ApiResponse<Vec<WatchlistRecord>>>, ApiError> {
@@ -1546,7 +1546,7 @@ pub async fn list_watchlists(
 
 /// POST /api/watchlists
 /// Create a watchlist owned by the caller.
-pub async fn create_watchlist(
+pub(crate) async fn create_watchlist(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<WatchlistRequest>,
@@ -1572,7 +1572,7 @@ pub async fn create_watchlist(
 
 /// PUT /api/watchlists/:id
 /// Update one of the caller's watchlists.
-pub async fn update_watchlist(
+pub(crate) async fn update_watchlist(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -1601,7 +1601,7 @@ pub async fn update_watchlist(
 
 /// DELETE /api/watchlists/:id
 /// Delete one of the caller's watchlists.
-pub async fn delete_watchlist(
+pub(crate) async fn delete_watchlist(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -1625,7 +1625,7 @@ pub async fn delete_watchlist(
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct SavedSearchRequest {
+pub(crate) struct SavedSearchRequest {
     pub id: Option<String>,
     pub name: String,
     pub query_text: String,
@@ -1670,7 +1670,7 @@ fn saved_search_fields(
 
 /// GET /api/saved-searches
 /// List the caller's saved searches.
-pub async fn list_saved_searches(
+pub(crate) async fn list_saved_searches(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
 ) -> Result<Json<ApiResponse<Vec<SavedSearchRecord>>>, ApiError> {
@@ -1685,7 +1685,7 @@ pub async fn list_saved_searches(
 
 /// POST /api/saved-searches
 /// Create a saved search owned by the caller.
-pub async fn create_saved_search(
+pub(crate) async fn create_saved_search(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<SavedSearchRequest>,
@@ -1712,7 +1712,7 @@ pub async fn create_saved_search(
 
 /// PUT /api/saved-searches/:id
 /// Update one of the caller's saved searches.
-pub async fn update_saved_search(
+pub(crate) async fn update_saved_search(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -1742,7 +1742,7 @@ pub async fn update_saved_search(
 
 /// DELETE /api/saved-searches/:id
 /// Delete one of the caller's saved searches.
-pub async fn delete_saved_search(
+pub(crate) async fn delete_saved_search(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
@@ -1767,7 +1767,7 @@ pub async fn delete_saved_search(
 
 /// GET /api/team-assignments
 /// List team assignments
-pub async fn list_team_assignments(
+pub(crate) async fn list_team_assignments(
     State(state): State<crate::AppState>,
     Query(params): Query<ListTeamAssignmentsQuery>,
 ) -> Result<Json<ApiResponse<Vec<TeamAssignment>>>, ApiError> {
@@ -1787,14 +1787,14 @@ pub async fn list_team_assignments(
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct ListTeamAssignmentsQuery {
+pub(crate) struct ListTeamAssignmentsQuery {
     pub entity_type: Option<String>,
     pub entity_id: Option<String>,
 }
 
 /// POST /api/team-assignments
 /// Create team assignment
-pub async fn create_team_assignment(
+pub(crate) async fn create_team_assignment(
     State(state): State<crate::AppState>,
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<CreateTeamAssignmentRequest>,

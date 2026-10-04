@@ -19,6 +19,93 @@ fn normalize_company_domain(domain: &str) -> Option<String> {
     }
 }
 
+/// Lower-case SQL comparison values for a requested region, mirroring the web
+/// `canonical_region` mapping. A request for "EU" must match stored "eu",
+/// "EU" and "Europe" alike, exactly as the in-memory filter did.
+fn company_region_aliases(region: &str) -> Vec<String> {
+    let trimmed = region.trim();
+    let aliases: &[&str] = match trimmed.to_ascii_lowercase().as_str() {
+        "" => return vec![String::new()],
+        "tn" | "tunisia" => &["tn", "tunisia"],
+        "ma" | "morocco" => &["ma", "morocco"],
+        "il" | "israel" => &["il", "israel"],
+        "eu" | "europe" => &["eu", "europe"],
+        "cn" | "china" => &["cn", "china"],
+        "us" | "usa" | "united states" => &["us", "usa", "united states"],
+        "global" => &["global"],
+        "other" => &["other", ""],
+        _ => return vec![trimmed.to_ascii_lowercase()],
+    };
+    aliases.iter().map(|alias| (*alias).to_string()).collect()
+}
+
+/// SQL predicate for one risk tier, banding the truncated 0–100 score exactly
+/// like the web `risk_tier` helper (a `None` score is "—", never a tier).
+/// Unknown tier values match nothing so an arbitrary query string cannot widen
+/// the result set.
+fn company_tier_predicate(tier: &str) -> Option<&'static str> {
+    Some(match tier {
+        "T1" => "risk_score IS NOT NULL AND trunc(risk_score * 100)::bigint >= 85",
+        "T2" => "risk_score IS NOT NULL AND trunc(risk_score * 100)::bigint >= 70 AND trunc(risk_score * 100)::bigint < 85",
+        "T3" => "risk_score IS NOT NULL AND trunc(risk_score * 100)::bigint >= 55 AND trunc(risk_score * 100)::bigint < 70",
+        "T4" => "risk_score IS NOT NULL AND trunc(risk_score * 100)::bigint >= 35 AND trunc(risk_score * 100)::bigint < 55",
+        "T5" => "risk_score IS NOT NULL AND trunc(risk_score * 100)::bigint < 35",
+        "—" => "risk_score IS NULL",
+        _ => return None,
+    })
+}
+
+/// Push the shared list predicates (search, competitor and the web region/tier
+/// filters) onto a `WHERE` builder. Kept in one place so the page rows, the
+/// summary aggregate and the region breakdown always describe the same set.
+fn push_company_list_predicates<'a>(
+    qb: &mut QueryBuilder<'a, Postgres>,
+    filters: &'a CompanyListFilters,
+    region: Option<&'a str>,
+    tier: Option<&'a str>,
+) {
+    let mut has_where = false;
+
+    if !filters.regions.is_empty() {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("region = ANY(")
+            .push_bind(&filters.regions)
+            .push(")");
+        has_where = true;
+    }
+
+    if let Some(search) = &filters.search {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("(name ILIKE ")
+            .push_bind(ilike_pattern(search))
+            .push(")");
+        has_where = true;
+    }
+
+    if let Some(is_competitor) = filters.is_competitor {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("COALESCE((metadata->>'is_competitor')::boolean, false) = ")
+            .push_bind(is_competitor);
+        has_where = true;
+    }
+
+    if let Some(region) = region {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        qb.push("lower(btrim(coalesce(region, ''))) = ANY(")
+            .push_bind(company_region_aliases(region))
+            .push(")");
+        has_where = true;
+    }
+
+    if let Some(tier) = tier {
+        qb.push(if has_where { " AND " } else { " WHERE " });
+        match company_tier_predicate(tier) {
+            Some(predicate) => qb.push(predicate),
+            None => qb.push("FALSE"),
+        };
+    }
+}
+
 fn company_temporal_delta(
     recent_changes: &[CompanyChangeRow],
     dossier_entries: &[DossierEntryRow],
@@ -578,6 +665,209 @@ impl PgStore {
         Ok(row.0)
     }
 
+    /// Filtered company page for the web list. Region/tier predicates and
+    /// LIMIT/OFFSET are applied in SQL; the whole matched set is never loaded.
+    pub async fn list_companies_filtered(
+        &self,
+        filters: &CompanyListFilters,
+        region: Option<&str>,
+        tier: Option<&str>,
+        order_by: Option<CompanyOrderBy>,
+        desc: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<CompanyRow>> {
+        let (limit, offset) = normalize_company_window(limit, offset);
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT id, name, legal_name, domain, country_code, region, company_type,
+                    industry_tags, employee_estimate, revenue_estimate_usd,
+                    risk_score, threat_score, overlap_score, strategic_relevance,
+                    is_competitor, metadata, created_at, updated_at
+             FROM companies",
+        );
+        push_company_list_predicates(&mut qb, filters, region, tier);
+
+        let order_by = order_by.unwrap_or(CompanyOrderBy::UpdatedAt);
+        qb.push(" ORDER BY ");
+        match order_by {
+            CompanyOrderBy::Name => qb.push("name"),
+            CompanyOrderBy::Region => qb.push("region"),
+            CompanyOrderBy::ThreatScore => qb.push("threat_score"),
+            CompanyOrderBy::UpdatedAt => qb.push("updated_at"),
+        };
+        qb.push(if desc { " DESC" } else { " ASC" });
+        qb.push(", id ASC");
+        qb.push(" LIMIT ").push_bind(limit);
+        qb.push(" OFFSET ").push_bind(offset);
+
+        let rows = qb
+            .build_query_as::<CompanyRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    /// Whole-filtered-set stats for the company list page as
+    /// `(total, competitor_count, high_risk_count, avg_risk)`.
+    ///
+    /// A single filtered aggregate — no `GROUP BY` over the whole table. The
+    /// score banding matches the web list exactly (the 0–100 score is
+    /// truncated before banding).
+    pub async fn summarize_companies_filtered(
+        &self,
+        filters: &CompanyListFilters,
+        region: Option<&str>,
+        tier: Option<&str>,
+    ) -> Result<(i64, i64, i64, i64)> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            r#"SELECT
+                   COUNT(*)::bigint AS total,
+                   COUNT(*) FILTER (
+                       WHERE metadata -> 'is_competitor' = 'true'::jsonb
+                   )::bigint AS competitor_count,
+                   COUNT(*) FILTER (
+                       WHERE risk_score IS NOT NULL
+                         AND trunc(risk_score * 100)::bigint >= 70
+                   )::bigint AS high_risk_count,
+                   COALESCE(SUM(trunc(risk_score * 100)::bigint) FILTER (
+                       WHERE risk_score IS NOT NULL
+                         AND trunc(risk_score * 100)::bigint > 0
+                   ), 0)::bigint AS risk_sum,
+                   COUNT(*) FILTER (
+                       WHERE risk_score IS NOT NULL
+                         AND trunc(risk_score * 100)::bigint > 0
+                   )::bigint AS risk_count
+               FROM companies"#,
+        );
+        push_company_list_predicates(&mut qb, filters, region, tier);
+
+        let (total, competitor_count, high_risk_count, risk_sum, risk_count): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = qb.build_query_as().fetch_one(&self.pool).await?;
+        let avg_risk = if risk_count == 0 {
+            0
+        } else {
+            risk_sum / risk_count
+        };
+        Ok((total, competitor_count, high_risk_count, avg_risk))
+    }
+
+    /// Counts of matching companies per raw stored region, for the list page's
+    /// coverage donut. Grouped over the filtered set only.
+    pub async fn count_companies_by_region_filtered(
+        &self,
+        filters: &CompanyListFilters,
+        region: Option<&str>,
+        tier: Option<&str>,
+    ) -> Result<Vec<(String, i64)>> {
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("SELECT COALESCE(region, ''), COUNT(*)::bigint FROM companies");
+        push_company_list_predicates(&mut qb, filters, region, tier);
+        qb.push(" GROUP BY 1 ORDER BY 2 DESC, 1 ASC");
+
+        let rows: Vec<(String, i64)> = qb.build_query_as().fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    /// Warning counts for a bounded set of entity ids (the current list page).
+    /// Mirrors `get_warnings_by_entity_ids` visibility: soft-deleted warnings
+    /// never count.
+    pub async fn get_warning_counts_for_entity_ids(
+        &self,
+        entity_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, i64)>> {
+        if entity_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows = sqlx::query_as::<_, (Uuid, i64)>(
+            r#"SELECT u.entity_id, COUNT(*)::BIGINT
+               FROM warnings w
+               CROSS JOIN LATERAL unnest(w.entity_ids) AS u(entity_id)
+               WHERE w.deleted_at IS NULL
+                 AND w.entity_ids IS NOT NULL
+                 AND u.entity_id = ANY($1)
+               GROUP BY u.entity_id"#,
+        )
+        .bind(entity_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Insight counts for a bounded set of entity ids (the current list page),
+    /// applying the same visibility rules as `get_insights_by_entity_ids`
+    /// (non-empty title, no internal insight types).
+    pub async fn get_insight_counts_for_entity_ids(
+        &self,
+        entity_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, i64)>> {
+        if entity_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows = sqlx::query_as::<_, (Uuid, i64)>(
+            r#"SELECT u.entity_id, COUNT(*)::BIGINT
+               FROM insights i
+               CROSS JOIN LATERAL unnest(i.entity_ids) AS u(entity_id)
+               WHERE i.entity_ids IS NOT NULL
+                 AND u.entity_id = ANY($1)
+                 AND btrim(COALESCE(i.title, '')) <> ''
+                 AND (i.insight_type IS NULL OR (lower(i.insight_type) NOT LIKE 'llm_%'
+                      AND lower(i.insight_type) <> 'bias_mitigation'
+                      AND lower(i.insight_type) <> 'hypothesis_ach'))
+               GROUP BY u.entity_id"#,
+        )
+        .bind(entity_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Real number of warnings related to one entity across all time (the
+    /// detail page count must not be the length of a 50-row page). Soft-deleted
+    /// warnings are excluded, matching the related-warnings list.
+    pub async fn count_warnings_for_entity(&self, entity_id: Uuid) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::BIGINT FROM warnings \
+             WHERE deleted_at IS NULL AND entity_ids IS NOT NULL AND entity_ids && $1",
+        )
+        .bind(vec![entity_id])
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// Real number of visible insights related to one entity across all time
+    /// (the detail page count must not be the length of a 50-row page).
+    /// Internal insight types and blank-title rows are excluded, matching
+    /// [`Self::get_insights_by_entity_ids`].
+    pub async fn count_insights_for_entity(&self, entity_id: Uuid) -> Result<i64> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT COUNT(*)::BIGINT FROM insights \
+             WHERE entity_ids IS NOT NULL AND entity_ids && ",
+        );
+        qb.push_bind(vec![entity_id])
+            .push(" AND btrim(COALESCE(title, '')) <> '' AND ");
+        append_internal_insight_filter_sql_clause(&mut qb, "");
+        let row: (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
+        Ok(row.0)
+    }
+
+    /// The company's stored narrative/description (`companies.narrative`,
+    /// added by migration 045). `None` when unset or unknown; never falls back
+    /// to the legal name, which is not a description.
+    pub async fn get_company_narrative(&self, id: Uuid) -> Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT narrative FROM companies WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(narrative,)| narrative))
+    }
+
     pub async fn get_company_dossier(&self, company_id: Uuid) -> Result<Option<CompanyDossier>> {
         let company = match self.get_company(company_id).await? {
             Some(company) => company,
@@ -647,7 +937,10 @@ impl PgStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_company_domain, normalize_company_window};
+    use super::{
+        company_region_aliases, company_tier_predicate, normalize_company_domain,
+        normalize_company_window,
+    };
 
     #[test]
     fn test_normalize_company_window_clamps_limit_and_offset() {
@@ -662,5 +955,25 @@ mod tests {
             Some("example.com".to_string())
         );
         assert_eq!(normalize_company_domain("   "), None);
+    }
+
+    #[test]
+    fn test_company_region_aliases_mirror_canonical_region() {
+        assert_eq!(company_region_aliases("EU"), vec!["eu", "europe"]);
+        assert_eq!(
+            company_region_aliases("usa"),
+            vec!["us", "usa", "united states"]
+        );
+        assert_eq!(company_region_aliases(" Tunisia "), vec!["tn", "tunisia"]);
+        assert_eq!(company_region_aliases("Other"), vec!["other", ""]);
+        assert_eq!(company_region_aliases("Atlantis"), vec!["atlantis"]);
+    }
+
+    #[test]
+    fn test_company_tier_predicate_bands_and_rejects_unknown() {
+        assert!(company_tier_predicate("T1").unwrap().contains(">= 85"));
+        assert!(company_tier_predicate("T5").unwrap().contains("< 35"));
+        assert_eq!(company_tier_predicate("—").unwrap(), "risk_score IS NULL");
+        assert!(company_tier_predicate("bogus").is_none());
     }
 }

@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use apex_core::triage::TriageItemType;
+use apex_core::triage::{TriageItemType, TriageThresholds};
 
 // ─── Alert Dispatcher Trait ───────────────────────────────────────────────────
 
@@ -52,6 +52,7 @@ pub trait AlertDispatcher: Send + Sync {
 /// (e.g. during development or in a Worker-only deployment without SSE).
 pub struct LoggingAlertDispatcher {
     db_pool: Option<sqlx::PgPool>,
+    thresholds: TriageThresholds,
 }
 
 /// Truncate a description to at most `max_bytes` bytes without splitting a
@@ -68,17 +69,60 @@ fn truncate_on_char_boundary(value: &str, max_bytes: usize) -> &str {
 }
 
 impl LoggingAlertDispatcher {
-    /// Create a dispatcher that logs to console only.
+    /// Create a dispatcher that logs to console only, with default thresholds.
     pub fn console_only() -> Self {
-        Self { db_pool: None }
+        Self {
+            db_pool: None,
+            thresholds: TriageThresholds::default(),
+        }
     }
 
-    /// Create a dispatcher that also writes alert events to `activity_feed`.
+    /// Create a dispatcher that also writes alert events to `activity_feed`,
+    /// with default thresholds.
     pub fn with_db(pool: sqlx::PgPool) -> Self {
         Self {
             db_pool: Some(pool),
+            thresholds: TriageThresholds::default(),
         }
     }
+
+    /// Create a database-backed dispatcher that maps severities with the given
+    /// configured thresholds instead of the defaults.
+    pub fn with_db_and_thresholds(pool: sqlx::PgPool, thresholds: TriageThresholds) -> Self {
+        Self {
+            db_pool: Some(pool),
+            thresholds,
+        }
+    }
+}
+
+/// Insert one triage activity-feed row, returning the SQL error.
+///
+/// The caller decides how to surface the failure; discarding it is what made a
+/// failed activity write invisible. `action_type` is bound explicitly so a
+/// failure can be attributed to the event that was lost.
+async fn insert_activity_feed(
+    pool: &sqlx::PgPool,
+    action_type: &str,
+    entity_type: &str,
+    entity_id: &str,
+    entity_name: &str,
+    details: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())",
+    )
+    .bind(Uuid::nil())
+    .bind("ApexIntel Triage Engine")
+    .bind(action_type)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(entity_name)
+    .bind(details)
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 #[async_trait]
@@ -94,15 +138,7 @@ impl AlertDispatcher for LoggingAlertDispatcher {
             entity_name,
         } = request;
 
-        let severity = if composite_score >= 0.80 {
-            "critical"
-        } else if composite_score >= 0.60 {
-            "high"
-        } else if composite_score >= 0.40 {
-            "medium"
-        } else {
-            "low"
-        };
+        let severity = triage_score_to_alert_severity_with(composite_score, &self.thresholds);
 
         let item_type_label = format!("{:?}", item_type);
         tracing::warn!(
@@ -121,17 +157,22 @@ impl AlertDispatcher for LoggingAlertDispatcher {
                 "entity_name": entity_name,
                 "description": truncate_on_char_boundary(description, 500),
             });
-            let _ = sqlx::query(
-                "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
-                 VALUES ($1, $2, 'triage_alert', 'triage_item', $3, $4, $5, NOW())"
+            if let Err(error) = insert_activity_feed(
+                pool,
+                "triage_alert",
+                "triage_item",
+                source_id,
+                entity_name.unwrap_or("unknown"),
+                &details,
             )
-            .bind(Uuid::nil())
-            .bind("ApexIntel Triage Engine")
-            .bind(source_id)
-            .bind(entity_name.unwrap_or("unknown"))
-            .bind(details)
-            .execute(pool)
-            .await;
+            .await
+            {
+                tracing::error!(
+                    action_type = "triage_alert",
+                    error = %error,
+                    "failed to insert triage activity feed event"
+                );
+            }
         }
         Vec::new() // No SSE subscriptions to return from the fallback
     }
@@ -144,16 +185,22 @@ impl AlertDispatcher for LoggingAlertDispatcher {
         );
         if let Some(ref pool) = self.db_pool {
             let details = serde_json::json!({ "stats": stats_json });
-            let _ = sqlx::query(
-                "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
-                 VALUES ($1, $2, 'triage_queue_update', 'triage_queue', $3, 'system', $4, NOW())"
+            if let Err(error) = insert_activity_feed(
+                pool,
+                "triage_queue_update",
+                "triage_queue",
+                &Uuid::nil().to_string(),
+                "system",
+                &details,
             )
-            .bind(Uuid::nil())
-            .bind("ApexIntel Triage Engine")
-            .bind(Uuid::nil())
-            .bind(details)
-            .execute(pool)
-            .await;
+            .await
+            {
+                tracing::error!(
+                    action_type = "triage_queue_update",
+                    error = %error,
+                    "failed to insert triage activity feed event"
+                );
+            }
         }
     }
 
@@ -165,17 +212,22 @@ impl AlertDispatcher for LoggingAlertDispatcher {
         );
         if let Some(ref pool) = self.db_pool {
             let details = serde_json::json!({ "new_status": new_status, "title": title });
-            let _ = sqlx::query(
-                "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
-                 VALUES ($1, $2, 'triage_status_change', 'triage_item', $3, $4, $5, NOW())"
+            if let Err(error) = insert_activity_feed(
+                pool,
+                "triage_status_change",
+                "triage_item",
+                &queue_item_id.to_string(),
+                title,
+                &details,
             )
-            .bind(Uuid::nil())
-            .bind("ApexIntel Triage Engine")
-            .bind(queue_item_id)
-            .bind(title)
-            .bind(details)
-            .execute(pool)
-            .await;
+            .await
+            {
+                tracing::error!(
+                    action_type = "triage_status_change",
+                    error = %error,
+                    "failed to insert triage activity feed event"
+                );
+            }
         }
     }
 }
@@ -220,17 +272,27 @@ impl RouterIntegration {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Map a triage score to an alert severity string.
-pub fn triage_score_to_alert_severity(score: f64) -> String {
-    if score >= 0.80 {
-        "critical".to_string()
-    } else if score >= 0.60 {
-        "high".to_string()
-    } else if score >= 0.40 {
-        "medium".to_string()
-    } else {
-        "low".to_string()
+/// Map a triage score to an alert severity string using configured thresholds.
+///
+/// Delegates to [`apex_core::triage::score_to_band`] — the same configured
+/// mapping the triage queue uses — so alert severity can never drift from the
+/// queue's band labels. The queue's `info` band is folded to `low`: alert
+/// severities have no `info` level and existing callers/tests relied on the
+/// old floor of `low`.
+pub fn triage_score_to_alert_severity_with(score: f64, thresholds: &TriageThresholds) -> String {
+    match apex_core::triage::score_to_band(score, thresholds) {
+        "info" => "low".to_string(),
+        band => band.to_string(),
     }
+}
+
+/// Map a triage score to an alert severity string with default thresholds.
+///
+/// Backwards-compatible helper for existing callers; use
+/// [`triage_score_to_alert_severity_with`] when configured thresholds are
+/// available.
+pub fn triage_score_to_alert_severity(score: f64) -> String {
+    triage_score_to_alert_severity_with(score, &TriageThresholds::default())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -313,6 +375,158 @@ mod tests {
         assert_eq!(triage_score_to_alert_severity(0.50), "medium");
         assert_eq!(triage_score_to_alert_severity(0.30), "low");
         assert_eq!(triage_score_to_alert_severity(0.10), "low");
+    }
+
+    #[test]
+    fn test_custom_thresholds_change_mapped_severity_at_boundary() {
+        // Regression: severity was hard-coded a second time in the dispatcher,
+        // so raising `critical` to 0.90 still mapped 0.85 to "critical".
+        let custom = TriageThresholds {
+            critical: 0.90,
+            high: 0.60,
+            medium: 0.40,
+            low: 0.20,
+        };
+        assert_eq!(
+            triage_score_to_alert_severity_with(0.85, &custom),
+            "high",
+            "0.85 is below a configured critical threshold of 0.90"
+        );
+        assert_eq!(
+            triage_score_to_alert_severity_with(0.90, &custom),
+            "critical"
+        );
+        // The default helper keeps the historical default mapping.
+        assert_eq!(triage_score_to_alert_severity(0.85), "critical");
+
+        // Raising `medium` to 0.55 moves 0.50 from "medium" to "low".
+        let raised_medium = TriageThresholds {
+            medium: 0.55,
+            ..TriageThresholds::default()
+        };
+        assert_eq!(
+            triage_score_to_alert_severity_with(0.50, &raised_medium),
+            "low"
+        );
+        assert_eq!(
+            triage_score_to_alert_severity_with(0.55, &raised_medium),
+            "medium"
+        );
+        assert_eq!(triage_score_to_alert_severity(0.50), "medium");
+    }
+
+    #[test]
+    fn test_no_activity_feed_write_discards_its_error() {
+        // Regression: all three inserts used `let _ = sqlx::query(...)`, which
+        // made a failed activity write invisible.
+        let source = include_str!("router_integration.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            !production.contains("let _ = sqlx::query"),
+            "activity-feed writes must not discard their SQL error"
+        );
+        let observable_calls = production
+            .matches("if let Err(error) = insert_activity_feed(")
+            .count();
+        assert!(
+            observable_calls >= 3,
+            "all three activity-feed inserts must route through the error-observable helper, found {observable_calls}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_activity_insert_failure_is_returned_not_discarded() {
+        // Regression: the three activity-feed inserts used `let _ =`, so a
+        // failed write was invisible. The insert helper must surface the SQL
+        // error to its caller instead.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(500))
+            .connect_lazy("postgres://apex:apex@127.0.0.1:1/apex_unreachable")
+            .expect("lazy pool construction must not require a live database");
+
+        let result = insert_activity_feed(
+            &pool,
+            "triage_status_change",
+            "triage_item",
+            &Uuid::new_v4().to_string(),
+            "Unreachable database",
+            &serde_json::json!({ "new_status": "resolved" }),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a failed activity-feed write must return a SQL error to its caller"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingDispatcher {
+        queue_updates: Arc<std::sync::Mutex<Vec<String>>>,
+        status_changes: Arc<std::sync::Mutex<Vec<(Uuid, String, String)>>>,
+    }
+
+    fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    #[async_trait]
+    impl AlertDispatcher for RecordingDispatcher {
+        async fn dispatch_triage_alert(&self, _request: TriageAlertRequest<'_>) -> Vec<Uuid> {
+            Vec::new()
+        }
+
+        async fn notify_queue_update(&self, stats_json: &str) {
+            lock_or_recover(&self.queue_updates).push(stats_json.to_string());
+        }
+
+        async fn notify_status_change(&self, queue_item_id: Uuid, new_status: &str, title: &str) {
+            lock_or_recover(&self.status_changes).push((
+                queue_item_id,
+                new_status.to_string(),
+                title.to_string(),
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_notify_queue_update_reaches_dispatcher() {
+        let dispatcher = RecordingDispatcher::default();
+        let queue_updates = dispatcher.queue_updates.clone();
+        let integration = RouterIntegration::new(Box::new(dispatcher));
+
+        integration
+            .notify_queue_update(serde_json::json!({ "total": 4 }))
+            .await;
+
+        let recorded = lock_or_recover(&queue_updates).clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].contains("\"total\":4"));
+    }
+
+    #[tokio::test]
+    async fn test_notify_status_change_reaches_dispatcher() {
+        let dispatcher = RecordingDispatcher::default();
+        let status_changes = dispatcher.status_changes.clone();
+        let integration = RouterIntegration::new(Box::new(dispatcher));
+
+        let item_id = Uuid::new_v4();
+        integration
+            .notify_status_change(item_id, "acknowledged", "Suspicious shipment")
+            .await;
+
+        assert_eq!(
+            lock_or_recover(&status_changes).clone(),
+            vec![(
+                item_id,
+                "acknowledged".to_string(),
+                "Suspicious shipment".to_string()
+            )]
+        );
     }
 
     #[tokio::test]

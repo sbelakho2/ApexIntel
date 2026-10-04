@@ -3547,7 +3547,7 @@ static ORG_ENTITY_WORDS: &[&str] = &[
 ];
 
 mod urlencoding {
-    pub fn encode(s: &str) -> String {
+    pub(super) fn encode(s: &str) -> String {
         percent_encode(s)
     }
 

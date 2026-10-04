@@ -320,14 +320,18 @@ impl std::fmt::Display for ToolError {
 impl std::error::Error for ToolError {}
 
 /// A registry of named tools the agent may invoke.
+///
+/// Tools are stored in a `BTreeMap` so [`ToolRegistry::tool_specs_json`] emits a
+/// stable, name-sorted catalog. Prompt hashing depends on byte-identical
+/// prompts, and a `HashMap` iteration order would vary with its random seed.
 pub struct ToolRegistry {
-    tools: std::collections::HashMap<String, std::sync::Arc<dyn Tool>>,
+    tools: std::collections::BTreeMap<String, std::sync::Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
-            tools: std::collections::HashMap::new(),
+            tools: std::collections::BTreeMap::new(),
         }
     }
 
@@ -418,6 +422,34 @@ const MAX_CONVERSATION_BYTES: usize = 262_144;
 /// [`MAX_TOOL_CALLS_PER_ITERATION`] calls are executed.
 const MAX_TOOL_CALLS_PER_ITERATION: usize = 16;
 
+/// Append the registered tool catalog to the system prompt.
+///
+/// [`crate::inference::LlmClient`]'s chat-completions request carries no
+/// `tools` array, so the catalog has to travel in the system prompt; without it
+/// the model has no way to know which tools exist and any tool call it emits is
+/// guesswork. The catalog is the same JSON shape as the OpenAI `tools` entries
+/// (name, description, parameters, required), and the calling convention is
+/// stated explicitly.
+fn system_prompt_with_tools(system_prompt: &str, tools: &[serde_json::Value]) -> String {
+    if tools.is_empty() {
+        return system_prompt.to_string();
+    }
+    let catalog = serde_json::to_string(tools).unwrap_or_else(|error| {
+        warn!(
+            %error,
+            "failed to serialize tool catalog into the system prompt; advertising no tools"
+        );
+        "[]".to_string()
+    });
+    format!(
+        "{system_prompt}\n\n# Available tools\n\
+         To call a tool, reply with a JSON object of the form \
+         {{\"name\": \"<tool>\", \"arguments\": {{...}}}} \
+         or {{\"tool_calls\": [{{\"name\": \"<tool>\", \"arguments\": {{...}}}}]}}. \
+         Tool catalog (JSON): {catalog}"
+    )
+}
+
 /// Serialize a tool result for the conversation, truncating to
 /// [`MAX_TOOL_RESULT_BYTES`] on a UTF-8 boundary.
 fn bounded_tool_result_text(value: &serde_json::Value) -> String {
@@ -433,6 +465,10 @@ fn conversation_bytes(messages: &[ChatMessage]) -> usize {
 /// Run a multi-turn agent loop with the given LLM client, tool registry, and
 /// task prompt.
 ///
+/// The client is accepted as a trait object, so the production shape
+/// (`Arc<dyn apex_llm::LlmClient>` / `Box<dyn apex_llm::LlmClient>`) can be
+/// passed directly via `as_ref()`.
+///
 /// Each iteration: send the conversation (system + user + accumulated tool
 /// results) with the tool specs; if the model emits `tool_calls`, execute each
 /// and append the results as `tool` messages; if the model emits a plain
@@ -442,7 +478,7 @@ fn conversation_bytes(messages: &[ChatMessage]) -> usize {
 /// (defaults to 6), or the conversation byte cap is hit. This closes the
 /// previously-open function-calling loop.
 pub async fn run_agent_loop(
-    client: &crate::inference::LlmClient,
+    client: &dyn crate::LlmClient,
     registry: &ToolRegistry,
     system_prompt: &str,
     task: &str,
@@ -458,11 +494,11 @@ pub async fn run_agent_loop(
         ..Default::default()
     };
 
+    let tools = registry.tool_specs_json();
     let mut messages: Vec<ChatMessage> = vec![
-        ChatMessage::system(system_prompt),
+        ChatMessage::system(system_prompt_with_tools(system_prompt, &tools)),
         ChatMessage::user(task.to_string()),
     ];
-    let tools = registry.tool_specs_json();
     let mut trace: Vec<ToolTraceEntry> = Vec::new();
     let mut iterations = 0u32;
     let mut conversation_len = conversation_bytes(&messages);
@@ -485,10 +521,7 @@ pub async fn run_agent_loop(
         }
         iterations += 1;
 
-        let response = client
-            .complete_with_config(messages.clone(), &config)
-            .await?;
-        let text = response.text;
+        let text = client.complete_messages(messages.clone(), &config).await?;
 
         // Parse any tool_calls embedded in the response. The model may emit them
         // as a JSON object/array under a conventional key when not using native
@@ -536,7 +569,6 @@ pub async fn run_agent_loop(
             conversation_len += tool_message.len();
             messages.push(ChatMessage::user(tool_message));
         }
-        let _ = tools; // tools are declared to the model via the system prompt
     }
 }
 
@@ -613,13 +645,29 @@ fn extract_first_json(s: &str) -> Option<String> {
     None
 }
 
-/// Remove a leading/embedded tool-call JSON block so the final answer is clean prose.
+/// Remove a leading/embedded tool-call JSON block so the final answer is clean
+/// prose.
+///
+/// Only JSON that actually looks like a tool call (a `tool_calls` key or a
+/// string `name`) is removed. A final answer that is itself structured JSON —
+/// e.g. the recipe hypothesis the agent is asked to produce — must survive
+/// intact: [`run_agent_loop`] reaches this function only when
+/// [`parse_tool_calls`] found no call, so stripping arbitrary JSON would
+/// silently discard valid structured answers.
 fn strip_tool_call_block(text: &str) -> String {
     let cleaned = crate::inference::strip_think_tags(text);
     if let Some(json) = extract_first_json(&cleaned) {
-        // If the whole answer is just the JSON tool-call, return empty (no prose answer).
-        let trimmed = cleaned.replace(&json, "");
-        return trimmed.trim().to_string();
+        let looks_like_tool_call = serde_json::from_str::<serde_json::Value>(&json)
+            .map(|value| {
+                value.get("tool_calls").is_some()
+                    || value.get("name").and_then(|name| name.as_str()).is_some()
+            })
+            .unwrap_or(false);
+        if looks_like_tool_call {
+            // If the whole answer is just the JSON tool-call, return empty (no prose answer).
+            let trimmed = cleaned.replace(&json, "");
+            return trimmed.trim().to_string();
+        }
     }
     cleaned.trim().to_string()
 }
@@ -630,6 +678,8 @@ fn strip_tool_call_block(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn string_args(pairs: &[(&str, &str)]) -> serde_json::Value {
@@ -859,6 +909,16 @@ mod tests {
         assert!(out.contains("Here is my answer."));
     }
 
+    #[test]
+    fn strip_tool_call_block_preserves_structured_non_tool_json() {
+        let recipe = r#"{"id":"r1","join":"Entity","outcome":"x","signals":["a"]}"#;
+        assert_eq!(
+            strip_tool_call_block(recipe),
+            recipe,
+            "a structured final answer must not be stripped as a tool-call block"
+        );
+    }
+
     struct EchoTool;
 
     #[async_trait::async_trait]
@@ -920,5 +980,462 @@ mod tests {
         };
         let err = reg.execute_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
+
+    // ── #93: run_agent_loop correctness tests ─────────────────────────────
+    //
+    // These drive the loop against a minimal local OpenAI-compatible endpoint
+    // so the stop conditions, caps, and trace bookkeeping are exercised for
+    // real (no HTTP client trait abstraction is introduced).
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn chat_completion(content: &str) -> String {
+        serde_json::json!({
+            "choices": [{
+                "message": { "content": content },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string()
+    }
+
+    async fn read_http_request_body(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            if let Some(header_end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                let body_start = header_end + 4;
+                while buf.len() < body_start + content_length {
+                    let read = socket.read(&mut chunk).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..read]);
+                }
+                return buf[body_start..(body_start + content_length).min(buf.len())].to_vec();
+            }
+            let read = socket.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                return buf;
+            }
+            buf.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    /// Minimal OpenAI-compatible server: answers one request per scripted
+    /// response (in order) and returns the captured request bodies.
+    async fn mock_llm_server(
+        responses: Vec<String>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut captured = Vec::with_capacity(responses.len());
+            for response in responses {
+                let accepted =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+                        .await;
+                let Ok(Ok((mut socket, _))) = accepted else {
+                    break;
+                };
+                let body = read_http_request_body(&mut socket).await;
+                captured.push(String::from_utf8_lossy(&body).to_string());
+                let payload = response.as_bytes();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                );
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(payload).await.unwrap();
+                socket.flush().await.unwrap();
+                let _ = socket.shutdown().await;
+            }
+            captured
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn test_client(base_url: &str) -> crate::inference::LlmClient {
+        crate::inference::LlmClient::new(
+            base_url,
+            None,
+            crate::inference::InferenceConfig {
+                max_retries: 0,
+                timeout: std::time::Duration::from_secs(10),
+                ..Default::default()
+            },
+        )
+    }
+
+    struct FailingTool;
+
+    #[async_trait::async_trait]
+    impl Tool for FailingTool {
+        fn spec(&self) -> FunctionSpec {
+            FunctionSpec {
+                name: "fail".to_string(),
+                description: "Always fails.".to_string(),
+                parameters: HashMap::new(),
+                required: Vec::new(),
+            }
+        }
+
+        async fn execute(&self, _args: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Err(ToolError::ExecutionFailed {
+                name: "fail".to_string(),
+                message: "simulated backend outage".to_string(),
+            })
+        }
+    }
+
+    struct SilentTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for SilentTool {
+        fn spec(&self) -> FunctionSpec {
+            FunctionSpec {
+                name: self.0.to_string(),
+                description: format!("{} test tool", self.0),
+                parameters: HashMap::new(),
+                required: Vec::new(),
+            }
+        }
+
+        async fn execute(&self, _args: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    #[test]
+    fn tool_specs_json_is_deterministically_sorted() {
+        let mut first = ToolRegistry::new();
+        first.register(std::sync::Arc::new(SilentTool("zeta")));
+        first.register(std::sync::Arc::new(SilentTool("alpha")));
+        let mut second = ToolRegistry::new();
+        second.register(std::sync::Arc::new(SilentTool("alpha")));
+        second.register(std::sync::Arc::new(SilentTool("zeta")));
+
+        let names = |specs: &[serde_json::Value]| {
+            specs
+                .iter()
+                .map(|spec| {
+                    spec["function"]["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&first.tool_specs_json()), vec!["alpha", "zeta"]);
+        assert_eq!(
+            names(&first.tool_specs_json()),
+            names(&second.tool_specs_json()),
+            "tool ordering must not depend on registration order"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_advertises_registered_tools_in_system_prompt() {
+        let (url, server) = mock_llm_server(vec![chat_completion("done")]).await;
+        let client = test_client(&url);
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(EchoTool));
+
+        let result = run_agent_loop(&client, &registry, "You are a test agent.", "say hi", 3)
+            .await
+            .expect("agent loop should complete");
+        assert_eq!(result.final_answer, "done");
+        assert_eq!(result.iterations, 1);
+
+        let captured = server.await.unwrap();
+        assert_eq!(captured.len(), 1);
+        let request = &captured[0];
+        assert!(
+            request.contains("Available tools"),
+            "system prompt must announce the tool catalog: {request}"
+        );
+        assert!(
+            request.contains("echo"),
+            "registered tool must be named in the system prompt: {request}"
+        );
+        assert!(
+            request.contains("msg"),
+            "tool parameter schema must be advertised: {request}"
+        );
+    }
+
+    /// A client that implements only the single-prompt trait methods. Its
+    /// `complete_messages` must therefore be the trait's default flattening
+    /// implementation — proving the default keeps trait-object callers working.
+    struct SinglePromptOnlyLlm {
+        seen: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::LlmClient for SinglePromptOnlyLlm {
+        async fn generate_json(&self, _system: &str, _user: &str) -> anyhow::Result<String> {
+            Ok("{}".to_string())
+        }
+
+        async fn generate_text(&self, system: &str, user: &str) -> anyhow::Result<String> {
+            let mut seen = self.seen.lock().unwrap_or_else(|error| error.into_inner());
+            seen.push((system.to_string(), user.to_string()));
+            Ok("default-final".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_loop_default_complete_messages_flattens_for_single_prompt_clients() {
+        let client = SinglePromptOnlyLlm {
+            seen: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(EchoTool));
+
+        let result = run_agent_loop(&client, &registry, "system prompt", "do the task", 3)
+            .await
+            .expect("the default complete_messages must run the loop");
+        assert_eq!(result.final_answer, "default-final");
+        assert_eq!(result.iterations, 1);
+
+        let seen = client
+            .seen
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(seen.len(), 1);
+        assert!(
+            seen[0].0.contains("system prompt") && seen[0].0.contains("Available tools"),
+            "system half must carry the prompt and tool catalog: {}",
+            seen[0].0
+        );
+        assert!(
+            seen[0].1.contains("[user]\ndo the task"),
+            "user half must carry the role-labelled task turn: {}",
+            seen[0].1
+        );
+    }
+
+    // The exact production shape: worker code holds `Arc<dyn LlmClient>`, not
+    // the concrete `inference::LlmClient`. This pins both boxing shapes and
+    // proves a multi-turn (tool-call) conversation survives the trait object.
+    #[tokio::test]
+    async fn agent_loop_runs_through_boxed_and_arced_trait_objects() {
+        let tool_call = r#"{"tool_calls":[{"name":"echo","arguments":{"msg":"hi"}}]}"#;
+        let (url, server) = mock_llm_server(vec![
+            chat_completion("boxed answer"),
+            chat_completion(tool_call),
+            chat_completion("arced answer"),
+        ])
+        .await;
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(EchoTool));
+
+        let boxed: Box<dyn crate::LlmClient> = Box::new(test_client(&url));
+        let result = run_agent_loop(boxed.as_ref(), &registry, "system", "task", 3)
+            .await
+            .expect("boxed trait object must run the loop");
+        assert_eq!(result.final_answer, "boxed answer");
+
+        let arced: std::sync::Arc<dyn crate::LlmClient> = std::sync::Arc::new(test_client(&url));
+        let result = run_agent_loop(arced.as_ref(), &registry, "system", "task", 3)
+            .await
+            .expect("arced trait object must run the multi-turn loop");
+        assert_eq!(result.iterations, 2);
+        assert_eq!(result.tool_trace.len(), 1);
+        assert_eq!(result.final_answer, "arced answer");
+
+        let captured = server.await.unwrap();
+        assert_eq!(
+            captured.len(),
+            3,
+            "every trait-object call must reach the model endpoint"
+        );
+        assert!(
+            captured[2].contains(r#""role":"assistant""#) && captured[2].contains("[tool_result]"),
+            "the post-tool request must carry the assistant and tool-result turns: {}",
+            captured[2]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_preserves_structured_json_final_answer() {
+        let recipe = r#"{"id":"r1","join":"Entity","outcome":"supplier_distress","signals":["late_filing"]}"#;
+        let (url, server) = mock_llm_server(vec![chat_completion(recipe)]).await;
+        let client = test_client(&url);
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(EchoTool));
+
+        let result = run_agent_loop(&client, &registry, "system", "task", 3)
+            .await
+            .expect("agent loop should complete");
+        assert_eq!(
+            result.final_answer, recipe,
+            "the model's structured final answer must reach the caller verbatim"
+        );
+        assert_eq!(result.iterations, 1);
+
+        let captured = server.await.unwrap();
+        assert_eq!(captured.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_stops_at_max_iterations() {
+        let tool_call = r#"{"tool_calls":[{"name":"echo","arguments":{"msg":"hi"}}]}"#;
+        let (url, server) =
+            mock_llm_server(vec![chat_completion(tool_call), chat_completion(tool_call)]).await;
+        let client = test_client(&url);
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(EchoTool));
+
+        let result = run_agent_loop(&client, &registry, "system", "task", 2)
+            .await
+            .expect("hitting the iteration cap must not be an error");
+        assert_eq!(result.iterations, 2);
+        assert_eq!(result.tool_trace.len(), 2);
+        assert!(
+            result.final_answer.contains("max tool-call iterations"),
+            "sentinel answer must explain the stop: {}",
+            result.final_answer
+        );
+
+        let captured = server.await.unwrap();
+        assert_eq!(captured.len(), 2, "no model call may happen after the cap");
+    }
+
+    #[tokio::test]
+    async fn agent_loop_stops_at_conversation_byte_cap() {
+        let tool_call = serde_json::json!({
+            "tool_calls": [{"name": "echo", "arguments": {"msg": "hi"}}],
+            "padding": "x".repeat(MAX_CONVERSATION_BYTES),
+        })
+        .to_string();
+        assert!(tool_call.len() > MAX_CONVERSATION_BYTES);
+        let (url, server) = mock_llm_server(vec![chat_completion(&tool_call)]).await;
+        let client = test_client(&url);
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(EchoTool));
+
+        let result = run_agent_loop(&client, &registry, "system", "task", 5)
+            .await
+            .expect("hitting the byte cap must not be an error");
+        assert_eq!(
+            result.iterations, 1,
+            "the second model call must not happen"
+        );
+        assert_eq!(result.tool_trace.len(), 1);
+        assert!(
+            result.final_answer.contains("byte cap"),
+            "sentinel answer must explain the stop: {}",
+            result.final_answer
+        );
+
+        let captured = server.await.unwrap();
+        assert_eq!(captured.len(), 1, "no model call may happen after the cap");
+    }
+
+    #[tokio::test]
+    async fn agent_loop_caps_tool_calls_per_iteration() {
+        let calls: Vec<serde_json::Value> = (0..20)
+            .map(|index| {
+                serde_json::json!({
+                    "name": "echo",
+                    "arguments": { "msg": format!("m{index}") },
+                })
+            })
+            .collect();
+        assert!(calls.len() > MAX_TOOL_CALLS_PER_ITERATION);
+        let tool_call = serde_json::json!({ "tool_calls": calls }).to_string();
+        let (url, _server) =
+            mock_llm_server(vec![chat_completion(&tool_call), chat_completion("final")]).await;
+        let client = test_client(&url);
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(EchoTool));
+
+        let result = run_agent_loop(&client, &registry, "system", "task", 3)
+            .await
+            .expect("agent loop should complete");
+        assert_eq!(result.iterations, 2);
+        assert_eq!(
+            result.tool_trace.len(),
+            MAX_TOOL_CALLS_PER_ITERATION,
+            "only the first {MAX_TOOL_CALLS_PER_ITERATION} calls from one response may execute"
+        );
+        assert_eq!(result.final_answer, "final");
+    }
+
+    #[test]
+    fn bounded_tool_result_text_truncates_on_utf8_boundary() {
+        let value = serde_json::json!({"blob": "日".repeat(20_000)});
+        let original = serde_json::to_string(&value).unwrap();
+        assert!(original.len() > MAX_TOOL_RESULT_BYTES);
+
+        let text = bounded_tool_result_text(&value);
+        assert!(text.len() <= MAX_TOOL_RESULT_BYTES);
+        assert!(
+            original.starts_with(&text),
+            "truncation must be a clean prefix of the serialized payload"
+        );
+        assert!(
+            text.len() > MAX_TOOL_RESULT_BYTES - 4,
+            "truncation must back off at most one multi-byte character: {}",
+            text.len()
+        );
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "the byte cut must land on a UTF-8 character boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_records_tool_error_with_ok_false() {
+        let tool_call = r#"{"name":"fail","arguments":{}}"#;
+        let (url, server) = mock_llm_server(vec![
+            chat_completion(tool_call),
+            chat_completion("recovered"),
+        ])
+        .await;
+        let client = test_client(&url);
+        let mut registry = ToolRegistry::new();
+        registry.register(std::sync::Arc::new(FailingTool));
+
+        let result = run_agent_loop(&client, &registry, "system", "task", 3)
+            .await
+            .expect("tool errors are fed back to the model, not fatal");
+        assert_eq!(result.final_answer, "recovered");
+        assert_eq!(result.tool_trace.len(), 1);
+        let entry = &result.tool_trace[0];
+        assert_eq!(entry.name, "fail");
+        assert!(
+            !entry.ok,
+            "a failed tool execution must be traced with ok=false"
+        );
+        assert_eq!(entry.result["kind"], "ExecutionFailed");
+        assert!(
+            entry.result["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("simulated backend outage")),
+            "trace must carry the tool failure message: {:?}",
+            entry.result
+        );
+
+        let captured = server.await.unwrap();
+        assert_eq!(captured.len(), 2);
+        assert!(
+            captured[1].contains("ExecutionFailed"),
+            "the tool error must be fed back into the conversation: {}",
+            captured[1]
+        );
     }
 }

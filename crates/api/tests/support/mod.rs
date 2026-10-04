@@ -23,7 +23,7 @@ use apex_store::postgres::{
     WarningListFilters, WarningOrderBy, WarningRow,
 };
 
-pub fn admin_auth_context() -> ApiAuthContext {
+pub(crate) fn admin_auth_context() -> ApiAuthContext {
     ApiAuthContext {
         key_id: "admin-key".to_string(),
         user_id: "user-admin".into(),
@@ -31,7 +31,7 @@ pub fn admin_auth_context() -> ApiAuthContext {
     }
 }
 
-pub fn readonly_auth_context() -> ApiAuthContext {
+pub(crate) fn readonly_auth_context() -> ApiAuthContext {
     ApiAuthContext {
         key_id: "viewer-key".to_string(),
         user_id: "user-viewer".into(),
@@ -39,7 +39,10 @@ pub fn readonly_auth_context() -> ApiAuthContext {
     }
 }
 
-pub fn delete_all_warnings_headers(confirmation: Option<&str>, reason: Option<&str>) -> HeaderMap {
+pub(crate) fn delete_all_warnings_headers(
+    confirmation: Option<&str>,
+    reason: Option<&str>,
+) -> HeaderMap {
     let mut headers = HeaderMap::new();
     if let Some(value) = confirmation {
         headers.insert(
@@ -56,12 +59,12 @@ pub fn delete_all_warnings_headers(confirmation: Option<&str>, reason: Option<&s
     headers
 }
 
-pub fn valid_delete_all_warnings_headers(reason: &str) -> HeaderMap {
+pub(crate) fn valid_delete_all_warnings_headers(reason: &str) -> HeaderMap {
     delete_all_warnings_headers(Some(DELETE_ALL_WARNINGS_CONFIRM_VALUE), Some(reason))
 }
 
 #[derive(Default)]
-pub struct FakeStore {
+pub(crate) struct FakeStore {
     warnings: Mutex<Vec<WarningRow>>,
     warning_count_sequence: Mutex<Vec<i64>>,
     insights: Mutex<Vec<InsightRow>>,
@@ -75,7 +78,7 @@ pub struct FakeStore {
 }
 
 impl FakeStore {
-    pub fn seeded() -> Arc<Self> {
+    pub(crate) fn seeded() -> Arc<Self> {
         let now = Utc::now();
         let company_id = Uuid::new_v4();
         Arc::new(Self {
@@ -205,26 +208,26 @@ impl FakeStore {
         })
     }
 
-    pub fn delete_all_call_count(&self) -> usize {
+    pub(crate) fn delete_all_call_count(&self) -> usize {
         *self.delete_all_calls.lock().expect("delete calls")
     }
 
-    pub fn audit_events(&self) -> Vec<(String, String, Value)> {
+    pub(crate) fn audit_events(&self) -> Vec<(String, String, Value)> {
         self.audit_events.lock().expect("audit events").clone()
     }
 
-    pub fn warnings_snapshot(&self) -> Vec<WarningRow> {
+    pub(crate) fn warnings_snapshot(&self) -> Vec<WarningRow> {
         self.warnings.lock().expect("warnings").clone()
     }
 
-    pub fn set_warning_count_sequence(&self, counts: Vec<i64>) {
+    pub(crate) fn set_warning_count_sequence(&self, counts: Vec<i64>) {
         *self
             .warning_count_sequence
             .lock()
             .expect("warning count sequence") = counts;
     }
 
-    pub fn seeded_company_id(&self) -> Uuid {
+    pub(crate) fn seeded_company_id(&self) -> Uuid {
         self.warnings_snapshot()[0]
             .entity_ids
             .as_ref()
@@ -378,7 +381,7 @@ impl Phase01Store for FakeStore {
     }
 }
 
-pub fn build_test_router() -> (Router, Arc<FakeStore>) {
+pub(crate) fn build_test_router() -> (Router, Arc<FakeStore>) {
     let store = FakeStore::seeded();
     let router = build_phase01_router(Phase01State {
         store: store.clone(),
@@ -389,15 +392,15 @@ pub fn build_test_router() -> (Router, Arc<FakeStore>) {
     (router, store)
 }
 
-pub fn admin_auth_header() -> HeaderValue {
+pub(crate) fn admin_auth_header() -> HeaderValue {
     HeaderValue::from_static("Bearer admin-secret-key")
 }
 
-pub fn viewer_auth_header() -> HeaderValue {
+pub(crate) fn viewer_auth_header() -> HeaderValue {
     HeaderValue::from_static("Bearer viewer-secret-key")
 }
 
-pub fn request(method: &str, path: &str) -> Request<Body> {
+pub(crate) fn request(method: &str, path: &str) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(path)

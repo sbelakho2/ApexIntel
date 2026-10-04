@@ -8,7 +8,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
-pub struct SupplyRiskItem {
+pub(crate) struct SupplyRiskItem {
     pub id: String,
     pub name: String,
     /// Risk level recorded on the activity details; `None` = not recorded

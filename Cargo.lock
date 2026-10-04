@@ -448,6 +448,7 @@ dependencies = [
  "anyhow",
  "apex-core",
  "apex-crawl",
+ "apex-graph",
  "apex-insights",
  "apex-learning",
  "apex-llm",

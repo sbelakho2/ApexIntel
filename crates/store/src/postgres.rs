@@ -260,7 +260,9 @@ mod heartbeats;
 pub use heartbeats::ServiceHeartbeatRow;
 pub use heartbeats::{latest_service_instance_heartbeat, WORKER_HEARTBEAT_STALE_AFTER_SECS};
 mod history;
+mod insight_analysis;
 mod insights;
+pub use insight_analysis::InsightAnalysisRunRow;
 pub use insights::InsightClaimRow;
 pub use warning_analysis::{NewWarningAnalysisRun, WarningAnalysisClaimRow, WarningAnalysisRunRow};
 mod learning_eval;
@@ -1023,6 +1025,9 @@ pub struct ProductionRecipeRow {
     /// Measured false-positive rate; `None` when unmeasured.
     pub false_positive_rate: Option<f64>,
     pub fpr_baseline: Option<f64>,
+    /// Reviewed warning outcomes (TP + FP) backing the measured rates; 0 when
+    /// nothing was reviewed.
+    pub reviewed_warnings_total: i64,
     pub warnings_generated_last_week: i64,
     pub last_triggered_at: Option<DateTime<Utc>>,
     pub days_inactive: i32,

@@ -72,6 +72,8 @@ pub struct WarningListItem {
     pub confidence: Option<f64>,
     pub confidence_pct: Option<i64>,
     pub created_at: String,
+    /// Date-only variant of `created_at` for dense table columns.
+    pub created_date: String,
     pub acknowledged: bool,
     pub evidence_count: i64,
 }
@@ -631,6 +633,7 @@ pub async fn list_warnings(
                 confidence: w.confidence,
                 confidence_pct: w.confidence.map(confidence_to_pct),
                 created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
+                created_date: w.ts_utc.format("%Y-%m-%d").to_string(),
                 acknowledged: w.acknowledged,
                 evidence_count: w.source_urls.as_ref().map_or(0, |v| v.len() as i64),
             }

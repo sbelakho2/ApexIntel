@@ -108,6 +108,70 @@ async fn dedup_items_survive_a_process_restart() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
+async fn stale_dedup_candidates_can_be_pruned() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrations apply");
+    let item_type = TriageItemType::Warning;
+    let stale_id = format!("prune-stale-{}", uuid::Uuid::new_v4());
+    let kept_id = format!("prune-kept-{}", uuid::Uuid::new_v4());
+    let store = PgSemanticDedupStore::new(pool.clone());
+
+    for id in [&stale_id, &kept_id] {
+        store
+            .store_item_with_vector(
+                &item_type,
+                id,
+                "Prune fixture",
+                "Prune fixture body text for dedup",
+                Some(&unit_vector()),
+            )
+            .await
+            .expect("store candidate");
+    }
+
+    store
+        .prune_item(&item_type, &stale_id)
+        .await
+        .expect("prune the stale candidate");
+
+    let remaining: Vec<(String,)> = sqlx::query_as(
+        "SELECT item_id FROM semantic_dedup_items \
+         WHERE item_type = $1 AND item_id IN ($2, $3)",
+    )
+    .bind(item_type.as_str())
+    .bind(&stale_id)
+    .bind(&kept_id)
+    .fetch_all(&pool)
+    .await
+    .expect("read remaining candidates");
+    assert_eq!(remaining.len(), 1, "only the kept candidate may remain");
+    assert_eq!(remaining[0].0, kept_id);
+
+    let vector_hits = store
+        .find_similar_by_vector(&item_type, &unit_vector(), 10)
+        .await
+        .expect("vector lookup");
+    assert!(
+        !vector_hits.iter().any(|hit| hit.id == stale_id),
+        "a pruned candidate must never match again"
+    );
+    assert!(vector_hits.iter().any(|hit| hit.id == kept_id));
+
+    sqlx::query("DELETE FROM semantic_dedup_items WHERE item_type = $1 AND item_id IN ($2, $3)")
+        .bind(item_type.as_str())
+        .bind(&stale_id)
+        .bind(&kept_id)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
 async fn recorded_backend_state_round_trips_and_rejects_unknown_backends() {
     let pool = connect().await;
     sqlx::migrate!("../../migrations")

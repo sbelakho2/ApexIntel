@@ -835,3 +835,730 @@ async fn llm_cache_is_grounded_prompt_bound_and_expiring() {
         .await
         .unwrap();
 }
+
+/// #132: the company list's region/tier filters, LIMIT/OFFSET and the whole-
+/// filtered-set totals run in SQL. The old handler loaded every match and then
+/// filtered/paged it in memory, so these assertions pin the SQL predicates.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn company_list_region_tier_filters_and_pagination_run_in_sql() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("CLST");
+
+    let scores = [0.90_f64, 0.72, 0.60, 0.40, 0.10];
+    let mut inserted = Vec::new();
+    for i in 0..30usize {
+        let mut company = Company::new(format!("{p} Co {i:03}"), CompanyType::Oem);
+        company.region = Some(match i % 3 {
+            0 => "TN".to_string(),
+            1 => "europe".to_string(),
+            _ => "us".to_string(),
+        });
+        company.risk_score = scores[i % 5];
+        company.metadata = serde_json::json!({"is_competitor": i % 2 == 0});
+        store
+            .insert_company(&company)
+            .await
+            .expect("insert company");
+        inserted.push(company.id);
+    }
+
+    let filters = CompanyListFilters {
+        search: Some(p.clone()),
+        ..Default::default()
+    };
+    let all = store
+        .list_companies_filtered(
+            &filters,
+            None,
+            None,
+            Some(CompanyOrderBy::Name),
+            false,
+            500,
+            0,
+        )
+        .await
+        .expect("all filtered companies");
+    assert_eq!(all.len(), 30);
+
+    // Region filter through canonical aliases: "Tunisia" matches "TN", "EU"
+    // matches "europe", "United States" matches "us".
+    for (requested, expected_len) in [("Tunisia", 10), ("EU", 10), ("United States", 10)] {
+        let rows = store
+            .list_companies_filtered(
+                &filters,
+                Some(requested),
+                None,
+                Some(CompanyOrderBy::Name),
+                false,
+                500,
+                0,
+            )
+            .await
+            .expect("region-filtered companies");
+        assert_eq!(rows.len(), expected_len, "region={requested}");
+        assert!(rows.iter().all(|row| row.name.starts_with(p.as_str())));
+    }
+
+    // Tier filter bands on the truncated 0–100 score: 0.90 → T1.
+    let t1 = store
+        .list_companies_filtered(
+            &filters,
+            None,
+            Some("T1"),
+            Some(CompanyOrderBy::Name),
+            false,
+            500,
+            0,
+        )
+        .await
+        .expect("tier T1");
+    assert_eq!(t1.len(), 6);
+    assert!(t1.iter().all(|row| {
+        let score = (row.risk_score.expect("seeded score") * 100.0) as i64;
+        score >= 85
+    }));
+
+    // Combined filters intersect.
+    let combined = store
+        .list_companies_filtered(
+            &filters,
+            Some("Tunisia"),
+            Some("T1"),
+            Some(CompanyOrderBy::Name),
+            false,
+            500,
+            0,
+        )
+        .await
+        .expect("combined filters");
+    assert_eq!(combined.len(), 2);
+    for row in &combined {
+        assert_eq!(row.region.as_deref(), Some("TN"));
+        assert!((row.risk_score.expect("seeded score") * 100.0) as i64 >= 85);
+    }
+
+    // Pagination: disjoint SQL pages that concatenate to the full ordered set.
+    let mut paged = Vec::new();
+    for offset in (0..30).step_by(7) {
+        let page = store
+            .list_companies_filtered(
+                &filters,
+                None,
+                None,
+                Some(CompanyOrderBy::Name),
+                false,
+                7,
+                offset as i64,
+            )
+            .await
+            .expect("page");
+        assert!(page.len() <= 7);
+        paged.extend(page);
+    }
+    assert_eq!(paged.len(), 30);
+    let paged_ids: HashSet<Uuid> = paged.iter().map(|row| row.id).collect();
+    assert_eq!(paged_ids.len(), 30, "pages must not overlap");
+    let page_names: Vec<&str> = paged.iter().map(|row| row.name.as_str()).collect();
+    let mut sorted = page_names.clone();
+    sorted.sort_unstable();
+    assert_eq!(page_names, sorted, "SQL ordering holds across pages");
+
+    // Totals describe the whole filtered set, not one page: 30 rows, 15
+    // competitors (even indexes), 12 high-risk (0.90/0.72 bands), average
+    // truncated risk 1632/30 = 54.
+    let (total, competitors, high_risk, avg_risk) = store
+        .summarize_companies_filtered(&filters, None, None)
+        .await
+        .expect("summary");
+    assert_eq!((total, competitors, high_risk, avg_risk), (30, 15, 12, 54));
+
+    let (region_total, _, region_high_risk, _) = store
+        .summarize_companies_filtered(&filters, Some("Tunisia"), None)
+        .await
+        .expect("region summary");
+    // Tunisia rows are i % 3 == 0; their 0.90/0.72 scores land on i = 0, 6,
+    // 15, 21.
+    assert_eq!((region_total, region_high_risk), (10, 4));
+
+    let (combined_total, ..) = store
+        .summarize_companies_filtered(&filters, Some("Tunisia"), Some("T1"))
+        .await
+        .expect("combined summary");
+    assert_eq!(combined_total, 2, "combined totals match the filtered set");
+
+    // Region breakdown groups the filtered set by raw stored region.
+    let regions = store
+        .count_companies_by_region_filtered(&filters, None, None)
+        .await
+        .expect("region counts");
+    let by_region: std::collections::HashMap<String, i64> = regions.into_iter().collect();
+    assert_eq!(by_region.get("TN"), Some(&10));
+    assert_eq!(by_region.get("europe"), Some(&10));
+    assert_eq!(by_region.get("us"), Some(&10));
+
+    // Per-entity counts are bounded to the requested ids (the current page).
+    let counted_id = inserted[0];
+    for (idx, title) in [(0, "one"), (1, "two")] {
+        store
+            .insert_warning(
+                "clst_metric",
+                &format!("{p} warning {title}"),
+                Some(&format!("clst description {idx}")),
+                "high",
+                Some("Tunisia"),
+                None,
+                Some(vec![counted_id]),
+                None,
+                Some(0.8),
+                true,
+            )
+            .await
+            .expect("insert warning");
+    }
+    store
+        .insert_insight(
+            &format!("{p} insight one"),
+            &format!("summary {} for {p}", alpha_token(0)),
+            Some("competitive"),
+            None,
+            Some(0.5),
+            None,
+            Some(vec![counted_id]),
+            None,
+            None,
+        )
+        .await
+        .expect("insert insight");
+
+    let page_ids = vec![counted_id, inserted[1]];
+    let counts = store
+        .get_warning_counts_for_entity_ids(&page_ids)
+        .await
+        .expect("warning counts");
+    assert_eq!(counts, vec![(counted_id, 2)]);
+    let counts = store
+        .get_insight_counts_for_entity_ids(&page_ids)
+        .await
+        .expect("insight counts");
+    assert_eq!(counts, vec![(counted_id, 1)]);
+
+    for id in &inserted {
+        sqlx::query("DELETE FROM warnings WHERE $1 = ANY(entity_ids)")
+            .bind(*id)
+            .execute(&pool)
+            .await
+            .expect("cleanup warnings");
+        sqlx::query("DELETE FROM insights WHERE $1 = ANY(entity_ids)")
+            .bind(*id)
+            .execute(&pool)
+            .await
+            .expect("cleanup insights");
+        sqlx::query("DELETE FROM companies WHERE id = $1")
+            .bind(*id)
+            .execute(&pool)
+            .await
+            .expect("cleanup companies");
+    }
+}
+
+/// #133: the detail page's warning/insight totals and description are real
+/// store reads — a COUNT(*) beyond the 50-row display cap and
+/// `companies.narrative`, never the capped list length or the legal name.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn company_detail_counts_and_narrative_are_real_reads() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("CDET");
+    let company = Company::new(format!("{p} Co"), CompanyType::Oem);
+    store
+        .insert_company(&company)
+        .await
+        .expect("insert company");
+
+    for i in 0..55usize {
+        store
+            .insert_warning(
+                "cdet_metric",
+                &format!("{p} warning {i:04}"),
+                Some(&format!("cdet description {i}")),
+                "medium",
+                None,
+                None,
+                Some(vec![company.id]),
+                None,
+                Some(0.5),
+                true,
+            )
+            .await
+            .expect("insert warning");
+        store
+            .insert_insight(
+                &format!("{p} Insight {i:04}"),
+                &format!("summary {} for {p}", alpha_token(i)),
+                Some("competitive"),
+                None,
+                Some(0.5),
+                None,
+                Some(vec![company.id]),
+                None,
+                None,
+            )
+            .await
+            .expect("insert insight");
+    }
+    // An internal insight must not inflate the visible count.
+    store
+        .insert_insight(
+            &format!("{p} internal llm row"),
+            &format!("summary {} for {p}", alpha_token(200)),
+            Some("llm_narrative"),
+            None,
+            Some(0.5),
+            None,
+            Some(vec![company.id]),
+            None,
+            None,
+        )
+        .await
+        .expect("insert internal insight");
+
+    let capped_warnings = store
+        .get_warnings_by_entity_ids(&[company.id], 50)
+        .await
+        .expect("capped warnings");
+    assert_eq!(capped_warnings.len(), 50, "the display list is capped");
+    assert_eq!(
+        store
+            .count_warnings_for_entity(company.id)
+            .await
+            .expect("warning count"),
+        55,
+        "the total is a real count, not the capped page length"
+    );
+
+    let capped_insights = store
+        .get_insights_by_entity_ids(&[company.id], 50)
+        .await
+        .expect("capped insights");
+    assert!(capped_insights.len() <= 50, "the display list is capped");
+    assert_eq!(
+        store
+            .count_insights_for_entity(company.id)
+            .await
+            .expect("insight count"),
+        55,
+        "the visible total ignores capped pages and internal rows"
+    );
+
+    // The description is the stored narrative, not the legal name.
+    assert_eq!(
+        store
+            .get_company_narrative(company.id)
+            .await
+            .expect("narrative read"),
+        None
+    );
+    sqlx::query("UPDATE companies SET narrative = $1 WHERE id = $2")
+        .bind("Real stored narrative.")
+        .bind(company.id)
+        .execute(&pool)
+        .await
+        .expect("set narrative");
+    assert_eq!(
+        store
+            .get_company_narrative(company.id)
+            .await
+            .expect("narrative read"),
+        Some("Real stored narrative.".to_string())
+    );
+
+    sqlx::query("DELETE FROM warnings WHERE $1 = ANY(entity_ids)")
+        .bind(company.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup warnings");
+    sqlx::query("DELETE FROM insights WHERE $1 = ANY(entity_ids)")
+        .bind(company.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup insights");
+    sqlx::query("DELETE FROM companies WHERE id = $1")
+        .bind(company.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup company");
+}
+
+/// #157: snapshot metrics compare the latest measured value per period and
+/// per entity; additive metrics keep summing their buckets.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn snapshot_trend_metrics_use_latest_per_period_not_sum() {
+    use apex_store::postgres::trends::{is_snapshot_metric, TrendComparisonQuery};
+
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+
+    let previous_start = chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+    let current_start = chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+    let current_latest = chrono::NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+    let range_end = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+
+    let comparison = |metric: &str| {
+        let store = store.clone();
+        let metric = metric.to_string();
+        async move {
+            store
+                .get_trend_comparison(&TrendComparisonQuery {
+                    metric_name: metric,
+                    current_period_start: current_start,
+                    previous_period_start: previous_start,
+                    period_duration_days: 30,
+                    entity_type: None,
+                    entity_id: None,
+                })
+                .await
+                .expect("trend comparison")
+        }
+    };
+
+    for metric in [
+        "companies_tracked",
+        "persons_tracked",
+        "active_recipes",
+        "unacknowledged_warnings",
+    ] {
+        assert!(is_snapshot_metric(metric), "{metric} must be a gauge");
+        store
+            .upsert_trend_rollup(previous_start, "monthly", None, None, metric, 40)
+            .await
+            .expect("seed previous gauge");
+        store
+            .upsert_trend_rollup(current_start, "monthly", None, None, metric, 50)
+            .await
+            .expect("seed current gauge");
+        // The later measurement inside the period must win; 50+55 (or
+        // 40+50+55) would be the old SUM-style fabrication.
+        store
+            .upsert_trend_rollup(current_latest, "monthly", None, None, metric, 55)
+            .await
+            .expect("seed latest gauge");
+
+        let result = comparison(metric).await;
+        assert_eq!(
+            result.current_total, 55,
+            "{metric}: latest current-period value, not the sum"
+        );
+        assert_eq!(
+            result.previous_total, 40,
+            "{metric}: latest previous-period value, not the sum"
+        );
+    }
+
+    // Additive metrics keep summing their buckets.
+    store
+        .upsert_trend_rollup(current_start, "monthly", None, None, "warnings", 3)
+        .await
+        .expect("seed current additive");
+    store
+        .upsert_trend_rollup(current_latest, "monthly", None, None, "warnings", 4)
+        .await
+        .expect("seed latest additive");
+    assert_eq!(
+        comparison("warnings").await.current_total,
+        7,
+        "additive metrics still sum all buckets"
+    );
+
+    // Entity breakdown: gauges take each entity's latest value, additive
+    // metrics keep summing.
+    let entity_a = Uuid::new_v4().to_string();
+    let entity_b = Uuid::new_v4().to_string();
+    store
+        .upsert_trend_rollup(
+            current_start,
+            "monthly",
+            Some("company"),
+            Some(&entity_a),
+            "companies_tracked",
+            10,
+        )
+        .await
+        .expect("seed gauge entity a");
+    store
+        .upsert_trend_rollup(
+            current_latest,
+            "monthly",
+            Some("company"),
+            Some(&entity_a),
+            "companies_tracked",
+            13,
+        )
+        .await
+        .expect("seed latest gauge entity a");
+    store
+        .upsert_trend_rollup(
+            current_start,
+            "monthly",
+            Some("company"),
+            Some(&entity_b),
+            "companies_tracked",
+            7,
+        )
+        .await
+        .expect("seed gauge entity b");
+
+    let breakdown = store
+        .get_entity_metric_breakdown("companies_tracked", "monthly", current_start, range_end, 10)
+        .await
+        .expect("gauge breakdown");
+    assert_eq!(breakdown.len(), 2);
+    assert_eq!(breakdown[0].entity_id, entity_a);
+    assert_eq!(
+        breakdown[0].value, 13,
+        "each entity's latest value, not 10+13"
+    );
+    assert_eq!(breakdown[1].value, 7);
+
+    store
+        .upsert_trend_rollup(
+            current_start,
+            "monthly",
+            Some("company"),
+            Some(&entity_a),
+            "warnings",
+            3,
+        )
+        .await
+        .expect("seed additive entity");
+    store
+        .upsert_trend_rollup(
+            current_latest,
+            "monthly",
+            Some("company"),
+            Some(&entity_a),
+            "warnings",
+            4,
+        )
+        .await
+        .expect("seed later additive entity");
+    let breakdown = store
+        .get_entity_metric_breakdown("warnings", "monthly", current_start, range_end, 10)
+        .await
+        .expect("additive breakdown");
+    assert_eq!(breakdown[0].value, 7, "additive entity breakdown sums");
+
+    sqlx::query(
+        "DELETE FROM trend_rollups \
+         WHERE bucket_date >= $1 AND bucket_date <= $2 AND metric_name = ANY($3)",
+    )
+    .bind(previous_start)
+    .bind(range_end)
+    .bind(vec![
+        "companies_tracked",
+        "persons_tracked",
+        "active_recipes",
+        "unacknowledged_warnings",
+        "warnings",
+    ])
+    .execute(&pool)
+    .await
+    .expect("cleanup trend rollups");
+}
+
+/// Inserts one rollup row with an explicit `updated_at`, so "latest per
+/// period" is deterministic regardless of statement timing.
+async fn insert_trend_rollup_at(
+    pool: &PgPool,
+    bucket_date: chrono::NaiveDate,
+    entity_type: Option<&str>,
+    entity_id: Option<&str>,
+    metric_name: &str,
+    metric_value: i64,
+    updated_at: &str,
+) {
+    sqlx::query(
+        "INSERT INTO trend_rollups \
+             (bucket_date, bucket_type, entity_type, entity_id, metric_name, \
+              metric_value, created_at, updated_at) \
+         VALUES ($1, 'monthly', $2, $3, $4, $5, $6::timestamptz, $6::timestamptz)",
+    )
+    .bind(bucket_date)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(metric_name)
+    .bind(metric_value)
+    .bind(updated_at)
+    .execute(pool)
+    .await
+    .expect("insert trend rollup row");
+}
+
+/// #157 residual: the summary cards must fold snapshot metrics to the latest
+/// measurement per period before aggregating; additive metrics still sum.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn trend_summary_uses_latest_per_period_for_gauges() {
+    use apex_store::postgres::trends::TrendQuery;
+
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+
+    let first_period = chrono::NaiveDate::from_ymd_opt(2025, 3, 1).unwrap();
+    let second_period = chrono::NaiveDate::from_ymd_opt(2025, 4, 1).unwrap();
+    let range_start = first_period;
+    let range_end = chrono::NaiveDate::from_ymd_opt(2025, 4, 30).unwrap();
+
+    let gauges = [
+        "companies_tracked",
+        "persons_tracked",
+        "active_recipes",
+        "unacknowledged_warnings",
+    ];
+    for metric in gauges {
+        // Two measurements in the first period: only the freshest (130, at
+        // 02:00) counts; the stale 100 from 01:00 must not be added.
+        insert_trend_rollup_at(
+            &pool,
+            first_period,
+            Some("company"),
+            Some("a"),
+            metric,
+            100,
+            "2025-03-01T01:00:00Z",
+        )
+        .await;
+        insert_trend_rollup_at(
+            &pool,
+            first_period,
+            Some("company"),
+            Some("b"),
+            metric,
+            130,
+            "2025-03-01T02:00:00Z",
+        )
+        .await;
+        insert_trend_rollup_at(
+            &pool,
+            second_period,
+            Some("company"),
+            Some("a"),
+            metric,
+            120,
+            "2025-04-01T01:00:00Z",
+        )
+        .await;
+
+        let summary = store
+            .get_trend_summary(&TrendQuery {
+                bucket_type: "monthly".to_string(),
+                metric_name: metric.to_string(),
+                from_date: Some(range_start),
+                to_date: Some(range_end),
+                entity_type: None,
+                entity_id: None,
+                limit: Some(500),
+            })
+            .await
+            .expect("gauge summary");
+        assert_eq!(
+            summary.data_points, 2,
+            "{metric}: one point per period, not per raw row"
+        );
+        assert_eq!(
+            summary.total, 250,
+            "{metric}: latest per period (130+120), not 100+130+120"
+        );
+        assert_eq!(summary.min, 120, "{metric}");
+        assert_eq!(summary.max, 130, "{metric}");
+        assert!(
+            (summary.average - 125.0).abs() < f64::EPSILON,
+            "{metric}: average over per-period latest values"
+        );
+
+        // An entity-scoped summary follows the same gauge rule: entity a has
+        // 100 in March and 120 in April.
+        let scoped = store
+            .get_trend_summary(&TrendQuery {
+                bucket_type: "monthly".to_string(),
+                metric_name: metric.to_string(),
+                from_date: Some(range_start),
+                to_date: Some(range_end),
+                entity_type: Some("company".to_string()),
+                entity_id: Some("a".to_string()),
+                limit: Some(500),
+            })
+            .await
+            .expect("entity-scoped gauge summary");
+        assert_eq!(scoped.data_points, 2, "{metric}: entity a has two periods");
+        assert_eq!(scoped.total, 220, "{metric}: entity a latest per period");
+        assert_eq!(scoped.max, 120, "{metric}");
+    }
+
+    // Additive metrics keep summing every row in the range.
+    insert_trend_rollup_at(
+        &pool,
+        first_period,
+        Some("company"),
+        Some("a"),
+        "warnings",
+        30,
+        "2025-03-01T01:00:00Z",
+    )
+    .await;
+    insert_trend_rollup_at(
+        &pool,
+        first_period,
+        Some("company"),
+        Some("b"),
+        "warnings",
+        20,
+        "2025-03-01T02:00:00Z",
+    )
+    .await;
+    insert_trend_rollup_at(
+        &pool,
+        second_period,
+        Some("company"),
+        Some("a"),
+        "warnings",
+        10,
+        "2025-04-01T01:00:00Z",
+    )
+    .await;
+    let summary = store
+        .get_trend_summary(&TrendQuery {
+            bucket_type: "monthly".to_string(),
+            metric_name: "warnings".to_string(),
+            from_date: Some(range_start),
+            to_date: Some(range_end),
+            entity_type: None,
+            entity_id: None,
+            limit: Some(500),
+        })
+        .await
+        .expect("additive summary");
+    assert_eq!(summary.data_points, 3, "additive metrics count every row");
+    assert_eq!(summary.total, 60, "additive metrics still sum");
+    assert!((summary.average - 20.0).abs() < f64::EPSILON);
+
+    sqlx::query(
+        "DELETE FROM trend_rollups \
+         WHERE bucket_date >= $1 AND bucket_date <= $2 AND metric_name = ANY($3)",
+    )
+    .bind(range_start)
+    .bind(range_end)
+    .bind(vec![
+        "companies_tracked",
+        "persons_tracked",
+        "active_recipes",
+        "unacknowledged_warnings",
+        "warnings",
+    ])
+    .execute(&pool)
+    .await
+    .expect("cleanup trend rollups");
+}

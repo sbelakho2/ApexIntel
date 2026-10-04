@@ -121,8 +121,10 @@ fn saved_search_ui_is_part_of_the_server_rendered_page() {
 #[test]
 fn endpoint_count_matches_the_catalogued_surface() {
     // Verified after wiring the saved-search handlers (unchanged then), after
-    // adding the public `/api/version` provenance endpoint, and after replacing
+    // adding the public `/api/version` provenance endpoint, after replacing
     // the blocking `/api/warnings/:id/analyze` endpoint with the async enqueue
-    // (`/api/warnings/:id/analysis`) plus run-status (`.../:run_id`) pair.
-    assert_eq!(all_endpoints().len(), 106);
+    // (`/api/warnings/:id/analysis`) plus run-status (`.../:run_id`) pair, and
+    // after cataloguing the durable insight-analysis poll route
+    // (`GET /api/insights/:id/analyze/latest`, #169).
+    assert_eq!(all_endpoints().len(), 107);
 }

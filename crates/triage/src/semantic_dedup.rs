@@ -14,6 +14,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use apex_core::triage::{TriageDimensions, TriageItemType};
 use apex_llm::embeddings::EmbeddingClient;
@@ -118,6 +119,16 @@ pub trait DedupStore: Send + Sync {
         _vector: Option<&[f64]>,
     ) -> Result<()> {
         self.store_item(item_type, id, title, text).await
+    }
+
+    /// Remove a stored candidate so it can never match again.
+    ///
+    /// The ingress calls this when a similarity hit points at a queue row
+    /// that has been deleted, is no longer active, or fell outside the dedup
+    /// window — such a candidate can never be a legitimate merge target.
+    /// Stores without candidate retention may keep the default no-op.
+    async fn prune_item(&self, _item_type: &TriageItemType, _id: &str) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -230,6 +241,13 @@ impl DedupStore for InMemoryDedupStore {
                 items.remove(0);
             }
         }
+        Ok(())
+    }
+
+    async fn prune_item(&self, item_type: &TriageItemType, id: &str) -> Result<()> {
+        let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        let item_type_str = item_type.as_str();
+        items.retain(|item| !(item.id == id && item.item_type == item_type_str));
         Ok(())
     }
 
@@ -378,6 +396,16 @@ impl DedupStore for PgSemanticDedupStore {
         Ok(())
     }
 
+    async fn prune_item(&self, item_type: &TriageItemType, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM semantic_dedup_items WHERE item_type = $1 AND item_id = $2")
+            .bind(item_type.as_str())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("semantic dedup item prune failed")?;
+        Ok(())
+    }
+
     async fn find_similar_by_vector(
         &self,
         item_type: &TriageItemType,
@@ -415,9 +443,27 @@ impl DedupStore for PgSemanticDedupStore {
     }
 }
 
+/// Seam over the embedding client.
+///
+/// The ingress embeds a submission at most once per submit: the vector is
+/// reused for the similarity search and, when the item is new, for storage.
+/// The trait keeps that call path observable in tests without an embedding
+/// server.
+#[async_trait]
+trait TextEmbedder: Send + Sync {
+    async fn embed(&self, text: &str) -> Result<Vec<f64>>;
+}
+
+#[async_trait]
+impl TextEmbedder for EmbeddingClient {
+    async fn embed(&self, text: &str) -> Result<Vec<f64>> {
+        EmbeddingClient::embed(self, text).await
+    }
+}
+
 /// Semantic deduplication engine using embedding similarity with fallback.
 pub struct SemanticDedup {
-    embedding_client: Option<EmbeddingClient>,
+    embedding_client: Option<Arc<dyn TextEmbedder>>,
     dedup_store: Option<Box<dyn DedupStore>>,
     config: DedupConfig,
 }
@@ -432,7 +478,22 @@ impl SemanticDedup {
         config: DedupConfig,
     ) -> Self {
         Self {
-            embedding_client,
+            embedding_client: embedding_client
+                .map(|client| Arc::new(client) as Arc<dyn TextEmbedder>),
+            dedup_store,
+            config,
+        }
+    }
+
+    /// Test-only constructor accepting a custom [`TextEmbedder`].
+    #[cfg(test)]
+    fn with_embedder(
+        embedder: Arc<dyn TextEmbedder>,
+        dedup_store: Option<Box<dyn DedupStore>>,
+        config: DedupConfig,
+    ) -> Self {
+        Self {
+            embedding_client: Some(embedder),
             dedup_store,
             config,
         }
@@ -461,18 +522,35 @@ impl SemanticDedup {
         title: &str,
         description: &str,
     ) -> Result<DedupResult> {
+        Ok(self
+            .check_duplicate_with_embedding(item_type, title, description)
+            .await?
+            .0)
+    }
+
+    /// Like [`Self::check_duplicate`], but also returns the embedding computed
+    /// for this submission (when one was produced) so the caller can store a
+    /// new item without embedding it a second time.
+    pub async fn check_duplicate_with_embedding(
+        &self,
+        item_type: &TriageItemType,
+        title: &str,
+        description: &str,
+    ) -> Result<(DedupResult, Option<Vec<f64>>)> {
         let text = format!("{}: {}", title, description);
 
         // Skip dedup for very short texts (not enough signal)
         if text.len() < self.config.min_text_length {
-            return Ok(DedupResult::unique());
+            return Ok((DedupResult::unique(), None));
         }
 
-        // Try embedding-based dedup first
+        // Try embedding-based dedup first. A failed or empty embedding falls
+        // back to text similarity, exactly like `check_duplicate` always did.
+        let mut embedding = None;
         if let Some(client) = &self.embedding_client {
-            match self.check_via_embedding(client, item_type, &text).await {
-                Ok(Some(result)) => return Ok(result),
-                Ok(None) => {}
+            match client.embed(&text).await {
+                Ok(vector) if !vector.is_empty() => embedding = Some(vector),
+                Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
@@ -483,18 +561,36 @@ impl SemanticDedup {
             }
         }
 
-        // Fallback: use text-based similarity via dedup store or built-in trigrams
-        self.check_via_text(item_type, &text).await
+        let result = if let Some(vector) = &embedding {
+            match self
+                .check_via_embedding_vector(item_type, vector, &text)
+                .await
+            {
+                Ok(Some(result)) => result,
+                Ok(None) => self.check_via_text(item_type, &text).await?,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        item_type = %item_type.as_str(),
+                        "Embedding-based dedup failed, falling back to text similarity"
+                    );
+                    self.check_via_text(item_type, &text).await?
+                }
+            }
+        } else {
+            self.check_via_text(item_type, &text).await?
+        };
+
+        Ok((result, embedding))
     }
 
     /// Check via embedding vector search.
-    async fn check_via_embedding(
+    async fn check_via_embedding_vector(
         &self,
-        client: &EmbeddingClient,
         item_type: &TriageItemType,
+        embedding: &[f64],
         text: &str,
     ) -> Result<Option<DedupResult>> {
-        let embedding = client.embed(text).await?;
         if embedding.is_empty() {
             return Ok(None);
         }
@@ -506,7 +602,7 @@ impl SemanticDedup {
         // scores that essentially never reach it (dedup never fired).
         if let Some(store) = &self.dedup_store {
             let mut hits = store
-                .find_similar_by_vector(item_type, &embedding, self.config.max_candidates)
+                .find_similar_by_vector(item_type, embedding, self.config.max_candidates)
                 .await?;
             // Items stored before embeddings were available have no vector;
             // merge text-based hits so they remain comparable.
@@ -564,6 +660,9 @@ impl SemanticDedup {
     }
 
     /// Store a newly triaged item for future dedup lookups.
+    ///
+    /// Embeds the text once here; callers that already embedded the submission
+    /// should use [`Self::store_triaged_item_with_embedding`] instead.
     pub async fn store_triaged_item(
         &self,
         item_type: &TriageItemType,
@@ -572,18 +671,48 @@ impl SemanticDedup {
         description: &str,
     ) -> Result<()> {
         let text = format!("{}: {}", title, description);
+        let embedding = match &self.embedding_client {
+            Some(client) => client.embed(&text).await.ok(),
+            None => None,
+        };
+        self.store_triaged_item_with_embedding(
+            item_type,
+            id,
+            title,
+            description,
+            embedding.as_deref(),
+        )
+        .await
+    }
+
+    /// Store a newly triaged item together with an embedding computed by the
+    /// caller (see [`Self::check_duplicate_with_embedding`]) so the submission
+    /// is embedded exactly once.
+    pub async fn store_triaged_item_with_embedding(
+        &self,
+        item_type: &TriageItemType,
+        id: &str,
+        title: &str,
+        description: &str,
+        embedding: Option<&[f64]>,
+    ) -> Result<()> {
+        let text = format!("{}: {}", title, description);
         if let Some(store) = &self.dedup_store {
             // B343: store the embedding alongside the text so future
             // vector comparisons have something to compare against.
-            let embedding = match &self.embedding_client {
-                Some(client) => client.embed(&text).await.ok(),
-                None => None,
-            };
             store
-                .store_item_with_vector(item_type, id, title, &text, embedding.as_deref())
+                .store_item_with_vector(item_type, id, title, &text, embedding)
                 .await?;
         }
         Ok(())
+    }
+
+    /// Remove a stored dedup candidate that can no longer be a merge target.
+    pub async fn prune_stored_item(&self, item_type: &TriageItemType, id: &str) -> Result<()> {
+        match &self.dedup_store {
+            Some(store) => store.prune_item(item_type, id).await,
+            None => Ok(()),
+        }
     }
 
     /// Compute cosine similarity between two embedding vectors.
@@ -633,6 +762,11 @@ impl SemanticDedup {
 pub const DEFAULT_ESCALATE_HIGH_AT: i64 = 3;
 /// Default occurrence count at which repeated merges raise severity to `critical`.
 pub const DEFAULT_ESCALATE_CRITICAL_AT: i64 = 5;
+
+/// Minimum text similarity (trigram Jaccard) for the same-entity/time-window
+/// merge stage. Entity identity alone is not evidence of duplication:
+/// unrelated signals about one company must stay separate rows.
+pub const SAME_ENTITY_MIN_TEXT_SIMILARITY: f64 = 0.25;
 
 /// A candidate triage item submitted to the ingress.
 #[derive(Debug, Clone)]
@@ -873,6 +1007,16 @@ pub fn severity_rank(severity: &str) -> i32 {
     }
 }
 
+/// True when merging `incoming` into a row carrying `existing` severity would
+/// bury a stricter signal: the incoming severity is strictly higher than the
+/// target row's.
+///
+/// Unknown severities rank below `low`, so an unknown incoming signal never
+/// blocks a merge on its own.
+pub fn merge_would_weaken_severity(existing: Option<&str>, incoming: Option<&str>) -> bool {
+    severity_rank(incoming.unwrap_or_default()) > severity_rank(existing.unwrap_or_default())
+}
+
 /// Escalate a severity based on the incoming severity and repeat count.
 ///
 /// Returns the effective severity name, or `None` when neither the existing
@@ -971,10 +1115,15 @@ impl<Q: IngestQueue> TriageIngestor<Q> {
             .find_recent(&item_type, self.config.entity_window)
             .await?;
 
-        // Stage 2 — lexical near-duplicate.
+        // Stage 2 — lexical near-duplicate, but only within the same entity
+        // identity: text similarity across two different entities (or across
+        // a missing entity and a set one) is a false positive. When both
+        // sides carry an entity id they must be equal; a null id never
+        // matches a different entity's item.
         let normalized = text.to_lowercase();
         let lexical = recent
             .iter()
+            .filter(|item| item.entity_id == submission.entity_id)
             .map(|item| {
                 (
                     jaccard_trigram_similarity(&normalized, &item.text().to_lowercase()),
@@ -993,30 +1142,75 @@ impl<Q: IngestQueue> TriageIngestor<Q> {
                 .await;
         }
 
-        // Stage 3 — embedding similarity.
-        if let Ok(dedup_result) = self
+        // Stage 3 — embedding similarity. The submission is embedded once and
+        // the vector is reused below if the item turns out to be new. A hit
+        // may only merge into a queue row that is an active, in-window
+        // candidate (the same set `find_recent` exposes); a hit pointing at a
+        // deleted, inactive or out-of-window row prunes the stale dedup
+        // candidate so it can never match again.
+        let (dedup_result, embedding) = self
             .dedup
-            .check_duplicate(&item_type, &submission.title, &submission.description)
+            .check_duplicate_with_embedding(&item_type, &submission.title, &submission.description)
             .await
-        {
-            if dedup_result.is_duplicate {
-                let target_id = dedup_result
-                    .best_match_id
-                    .as_deref()
-                    .and_then(|id| Uuid::parse_str(id).ok());
-                if let Some(target_id) = target_id {
-                    if let Some(target) = self.queue.find_by_id(target_id).await? {
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    %error,
+                    item_type = %item_type.as_str(),
+                    "semantic dedup lookup failed; continuing without a merge candidate"
+                );
+                (DedupResult::unique(), None)
+            });
+        if dedup_result.is_duplicate {
+            let target_id = dedup_result
+                .best_match_id
+                .as_deref()
+                .and_then(|id| Uuid::parse_str(id).ok());
+            if let Some(target_id) = target_id {
+                let target = self.queue.find_by_id(target_id).await?;
+                match target {
+                    Some(target) if recent.iter().any(|item| item.id == target_id) => {
                         return self
                             .merge(target, &submission, MergeReason::EmbeddingSimilarity)
                             .await;
+                    }
+                    Some(_) | None => {
+                        if let Err(error) = self
+                            .dedup
+                            .prune_stored_item(&item_type, &target_id.to_string())
+                            .await
+                        {
+                            tracing::debug!(
+                                %error,
+                                %target_id,
+                                "triage ingress: failed to prune a stale dedup candidate"
+                            );
+                        }
                     }
                 }
             }
         }
 
-        // Stage 4 — same entity within the time window.
+        // Stage 4 — same entity within the time window. Entity identity alone
+        // is not duplication: the texts must also be similar, and a stricter
+        // incoming signal must never be absorbed by a weaker row (that would
+        // hide the escalation behind a soft target).
         if let Some(entity_id) = submission.entity_id {
-            if let Some(target) = recent.iter().find(|item| item.entity_id == Some(entity_id)) {
+            let incoming_severity = submission.static_severity.as_deref();
+            let candidate = recent
+                .iter()
+                .filter(|item| item.entity_id == Some(entity_id))
+                .map(|item| {
+                    (
+                        jaccard_trigram_similarity(&normalized, &item.text().to_lowercase()),
+                        item,
+                    )
+                })
+                .filter(|(score, _)| *score >= SAME_ENTITY_MIN_TEXT_SIMILARITY)
+                .filter(|(_, item)| {
+                    !merge_would_weaken_severity(item.static_severity.as_deref(), incoming_severity)
+                })
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some((_, target)) = candidate {
                 return self
                     .merge(
                         target.clone(),
@@ -1047,11 +1241,12 @@ impl<Q: IngestQueue> TriageIngestor<Q> {
         }
         if let Err(e) = self
             .dedup
-            .store_triaged_item(
+            .store_triaged_item_with_embedding(
                 &item_type,
                 &item.id.to_string(),
                 &submission.title,
                 &submission.description,
+                embedding.as_deref(),
             )
             .await
         {
@@ -1422,6 +1617,10 @@ mod tests {
     #[derive(Default)]
     struct InMemoryIngestQueue {
         rows: std::sync::Mutex<Vec<IngestQueueItem>>,
+        /// Rows simulating non-active triage statuses: still findable by id,
+        /// but excluded from `find_recent` (mirroring the SQL
+        /// `status IN ('pending', 'triaged', 'acknowledged')` filter).
+        inactive_ids: std::sync::Mutex<std::collections::HashSet<Uuid>>,
     }
 
     impl InMemoryIngestQueue {
@@ -1435,6 +1634,20 @@ mod tests {
 
         fn snapshot(&self) -> Vec<IngestQueueItem> {
             self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+
+        fn push_row(&self, row: IngestQueueItem) {
+            self.rows
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(row);
+        }
+
+        fn mark_inactive(&self, id: Uuid) {
+            self.inactive_ids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id);
         }
 
         fn merge_row(
@@ -1486,10 +1699,12 @@ mod tests {
             window: Duration,
         ) -> Result<Vec<IngestQueueItem>> {
             let cutoff = Utc::now() - window;
+            let inactive = self.inactive_ids.lock().unwrap_or_else(|e| e.into_inner());
             let rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
             Ok(rows
                 .iter()
                 .filter(|r| &r.item_type == item_type)
+                .filter(|r| !inactive.contains(&r.id))
                 .filter(|r| r.last_seen_at.unwrap_or(r.created_at) >= cutoff)
                 .cloned()
                 .collect())
@@ -1577,6 +1792,58 @@ mod tests {
         TriageIngestor::new(queue, SemanticDedup::with_in_memory_fallback())
     }
 
+    /// Test [`TextEmbedder`] that returns a fixed vector and counts calls.
+    struct CountingEmbedder {
+        calls: std::sync::atomic::AtomicUsize,
+        vector: Vec<f64>,
+    }
+
+    impl CountingEmbedder {
+        fn new(vector: Vec<f64>) -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                vector,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl TextEmbedder for CountingEmbedder {
+        async fn embed(&self, _text: &str) -> Result<Vec<f64>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.vector.clone())
+        }
+    }
+
+    /// Seed a queue row directly so tests can control its age/severity.
+    fn queue_row(
+        source_id: &str,
+        title: &str,
+        description: &str,
+        entity_id: Option<Uuid>,
+        last_seen_at: DateTime<Utc>,
+    ) -> IngestQueueItem {
+        IngestQueueItem {
+            id: Uuid::new_v4(),
+            item_type: TriageItemType::Warning,
+            source_id: source_id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            entity_id,
+            entity_name: None,
+            static_severity: Some("low".to_string()),
+            occurrence_count: 1,
+            last_seen_at: Some(last_seen_at),
+            merged_observation_ids: Vec::new(),
+            merged_source_urls: Vec::new(),
+            created_at: last_seen_at,
+        }
+    }
+
     #[tokio::test]
     async fn duplicate_submit_merges_single_row_and_keeps_evidence() {
         let queue = InMemoryIngestQueue::new();
@@ -1646,8 +1913,10 @@ mod tests {
         assert_eq!(ingestor.queue().len(), 1);
     }
 
+    /// #120: same entity within the window is not enough — unrelated text
+    /// must stay two rows.
     #[tokio::test]
-    async fn same_entity_within_window_merges() {
+    async fn same_entity_with_unrelated_text_stays_separate() {
         let queue = InMemoryIngestQueue::new();
         let ingestor = ingestor(queue);
         let entity = Uuid::new_v4();
@@ -1670,9 +1939,413 @@ mod tests {
         second.observation_ids = vec![Uuid::new_v4()];
         let outcome = ingestor.submit(second).await.unwrap();
 
-        assert!(outcome.merged(), "same entity in window must merge");
-        assert_eq!(outcome.item().occurrence_count, 2);
+        assert!(
+            !outcome.merged(),
+            "same entity with unrelated text must not merge"
+        );
+        assert_eq!(ingestor.queue().len(), 2);
+    }
+
+    /// #120: same entity plus similar text (above the same-entity floor,
+    /// below the lexical threshold and the embedding threshold) merges.
+    #[tokio::test]
+    async fn same_entity_with_similar_text_merges() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+        let entity = Uuid::new_v4();
+
+        let mut first = submission(
+            "warning-1",
+            "Port congestion at Shanghai",
+            "Container backlog grows",
+        );
+        first.entity_id = Some(entity);
+        ingestor.submit(first).await.unwrap();
+
+        let mut second = submission(
+            "warning-2",
+            "Shanghai port delays",
+            "Growing container backlog and demurrage fees",
+        );
+        second.entity_id = Some(entity);
+        let outcome = ingestor.submit(second).await.unwrap();
+
+        match outcome {
+            IngestOutcome::Merged { item, reason } => {
+                assert_eq!(reason, MergeReason::SameEntityTimeWindow);
+                assert_eq!(item.occurrence_count, 2);
+            }
+            other => panic!("expected a same-entity merge, got {other:?}"),
+        }
         assert_eq!(ingestor.queue().len(), 1);
+    }
+
+    /// #120: a stricter signal must never be absorbed by a weaker row.
+    #[tokio::test]
+    async fn more_severe_signal_is_not_merged_into_a_weaker_row() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+        let entity = Uuid::new_v4();
+
+        let mut first = submission(
+            "warning-1",
+            "Port congestion at Shanghai",
+            "Container backlog grows",
+        );
+        first.entity_id = Some(entity);
+        first.static_severity = Some("medium".to_string());
+        ingestor.submit(first).await.unwrap();
+
+        let mut critical = submission(
+            "warning-2",
+            "Shanghai port delays",
+            "Growing container backlog and demurrage fees",
+        );
+        critical.entity_id = Some(entity);
+        critical.static_severity = Some("critical".to_string());
+        let outcome = ingestor.submit(critical).await.unwrap();
+
+        assert!(
+            !outcome.merged(),
+            "a critical signal must not be absorbed by a medium row"
+        );
+        assert_eq!(ingestor.queue().len(), 2);
+    }
+
+    /// #120: the reverse direction is fine — a weaker signal may join a
+    /// stricter row.
+    #[tokio::test]
+    async fn weaker_signal_may_merge_into_a_more_severe_row() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+        let entity = Uuid::new_v4();
+
+        let mut first = submission(
+            "warning-1",
+            "Port congestion at Shanghai",
+            "Container backlog grows",
+        );
+        first.entity_id = Some(entity);
+        first.static_severity = Some("high".to_string());
+        ingestor.submit(first).await.unwrap();
+
+        let mut low = submission(
+            "warning-2",
+            "Shanghai port delays",
+            "Growing container backlog and demurrage fees",
+        );
+        low.entity_id = Some(entity);
+        low.static_severity = Some("low".to_string());
+        let outcome = ingestor.submit(low).await.unwrap();
+
+        assert!(outcome.merged(), "a weaker signal may join a stricter row");
+        assert_eq!(ingestor.queue().len(), 1);
+    }
+
+    /// #118: lexical near-duplicates must share an entity identity; similar
+    /// text across different entities is a false positive.
+    #[tokio::test]
+    async fn lexical_merge_requires_a_matching_entity_id() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+
+        let mut first = submission(
+            "warning-1",
+            "Foxconn quality crisis",
+            "Quality defect recall at Foxconn Tunisia manufacturing plant",
+        );
+        first.entity_id = Some(Uuid::new_v4());
+        ingestor.submit(first).await.unwrap();
+
+        let mut different_entity = submission(
+            "warning-2",
+            "Foxconn quality issue",
+            "Defect and recall at Foxconn Tunisia factory",
+        );
+        different_entity.entity_id = Some(Uuid::new_v4());
+        let outcome = ingestor.submit(different_entity).await.unwrap();
+
+        assert!(
+            !outcome.merged(),
+            "two different entities must never merge on text alone"
+        );
+        assert_eq!(ingestor.queue().len(), 2);
+    }
+
+    /// #118: a null entity id must not match a different entity's item.
+    #[tokio::test]
+    async fn lexical_merge_rejects_a_missing_entity_against_a_set_entity() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+
+        let mut first = submission(
+            "warning-1",
+            "Foxconn quality crisis",
+            "Quality defect recall at Foxconn Tunisia manufacturing plant",
+        );
+        first.entity_id = Some(Uuid::new_v4());
+        ingestor.submit(first).await.unwrap();
+
+        let missing_entity = submission(
+            "warning-2",
+            "Foxconn quality issue",
+            "Defect and recall at Foxconn Tunisia factory",
+        );
+        let outcome = ingestor.submit(missing_entity).await.unwrap();
+
+        assert!(
+            !outcome.merged(),
+            "a missing entity id must not match a different entity's item"
+        );
+        assert_eq!(ingestor.queue().len(), 2);
+    }
+
+    /// #118: the reverse direction — a set entity id must not match a stored
+    /// item with no entity id — is also a mismatch.
+    #[tokio::test]
+    async fn lexical_merge_rejects_a_set_entity_against_a_missing_entity() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+
+        let first = submission(
+            "warning-1",
+            "Foxconn quality crisis",
+            "Quality defect recall at Foxconn Tunisia manufacturing plant",
+        );
+        ingestor.submit(first).await.unwrap();
+
+        let mut with_entity = submission(
+            "warning-2",
+            "Foxconn quality issue",
+            "Defect and recall at Foxconn Tunisia factory",
+        );
+        with_entity.entity_id = Some(Uuid::new_v4());
+        let outcome = ingestor.submit(with_entity).await.unwrap();
+
+        assert!(
+            !outcome.merged(),
+            "a set entity id must not match an item with no entity id"
+        );
+        assert_eq!(ingestor.queue().len(), 2);
+    }
+
+    /// #119: a similarity hit pointing at a target older than the configured
+    /// window must not merge, and its dedup candidate is pruned.
+    #[tokio::test]
+    async fn similarity_hit_does_not_merge_into_an_old_target() {
+        let queue = InMemoryIngestQueue::new();
+        let old_time = Utc::now() - Duration::hours(48);
+        let target = queue_row(
+            "warning-old",
+            "Samsung fab investment",
+            "New semiconductor investment in Korea",
+            None,
+            old_time,
+        );
+        let target_id = target.id;
+        queue.push_row(target);
+
+        let store = InMemoryDedupStore::new(10);
+        store
+            .store_item_with_vector(
+                &TriageItemType::Warning,
+                &target_id.to_string(),
+                "Samsung fab investment",
+                "New semiconductor investment in Korea",
+                Some(&[1.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        let embedder = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
+        let dedup =
+            SemanticDedup::with_embedder(embedder, Some(Box::new(store)), DedupConfig::default());
+        let ingestor = TriageIngestor::new(queue, dedup);
+
+        let outcome = ingestor
+            .submit(submission(
+                "warning-new",
+                "Port workers strike",
+                "Dockworkers walk out at Rotterdam terminal",
+            ))
+            .await
+            .unwrap();
+
+        assert!(
+            !outcome.merged(),
+            "an out-of-window target must not absorb a new signal"
+        );
+        assert_eq!(ingestor.queue().len(), 2);
+        let hits = ingestor
+            .dedup
+            .dedup_store
+            .as_ref()
+            .unwrap()
+            .find_similar_by_vector(&TriageItemType::Warning, &[1.0, 0.0], 10)
+            .await
+            .unwrap();
+        assert!(
+            !hits.iter().any(|hit| hit.id == target_id.to_string()),
+            "the stale dedup candidate must be pruned"
+        );
+        assert!(
+            hits.iter()
+                .any(|hit| hit.id == outcome.item().id.to_string()),
+            "the new item's candidate must still be stored"
+        );
+    }
+
+    /// #119: a similarity hit pointing at an inactive row (findable by id,
+    /// absent from the active candidate set) must not merge either.
+    #[tokio::test]
+    async fn similarity_hit_does_not_merge_into_an_inactive_target() {
+        let queue = InMemoryIngestQueue::new();
+        let target = queue_row(
+            "warning-resolved",
+            "Samsung fab investment",
+            "New semiconductor investment in Korea",
+            None,
+            Utc::now(),
+        );
+        let target_id = target.id;
+        queue.push_row(target);
+        queue.mark_inactive(target_id);
+
+        let store = InMemoryDedupStore::new(10);
+        store
+            .store_item_with_vector(
+                &TriageItemType::Warning,
+                &target_id.to_string(),
+                "Samsung fab investment",
+                "New semiconductor investment in Korea",
+                Some(&[1.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        let embedder = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
+        let dedup =
+            SemanticDedup::with_embedder(embedder, Some(Box::new(store)), DedupConfig::default());
+        let ingestor = TriageIngestor::new(queue, dedup);
+
+        let outcome = ingestor
+            .submit(submission(
+                "warning-new",
+                "Port workers strike",
+                "Dockworkers walk out at Rotterdam terminal",
+            ))
+            .await
+            .unwrap();
+
+        assert!(
+            !outcome.merged(),
+            "an inactive target must not absorb a new signal"
+        );
+        assert_eq!(ingestor.queue().len(), 2);
+        let hits = ingestor
+            .dedup
+            .dedup_store
+            .as_ref()
+            .unwrap()
+            .find_similar_by_vector(&TriageItemType::Warning, &[1.0, 0.0], 10)
+            .await
+            .unwrap();
+        assert!(
+            !hits.iter().any(|hit| hit.id == target_id.to_string()),
+            "the inactive dedup candidate must be pruned"
+        );
+    }
+
+    /// #119 positive control: an active, in-window target is still merged.
+    #[tokio::test]
+    async fn similarity_hit_merges_into_an_active_recent_target() {
+        let queue = InMemoryIngestQueue::new();
+        let target = queue_row(
+            "warning-active",
+            "Samsung fab investment",
+            "New semiconductor investment in Korea",
+            None,
+            Utc::now(),
+        );
+        let target_id = target.id;
+        queue.push_row(target);
+
+        let store = InMemoryDedupStore::new(10);
+        store
+            .store_item_with_vector(
+                &TriageItemType::Warning,
+                &target_id.to_string(),
+                "Samsung fab investment",
+                "New semiconductor investment in Korea",
+                Some(&[1.0, 0.0]),
+            )
+            .await
+            .unwrap();
+        let embedder = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
+        let dedup =
+            SemanticDedup::with_embedder(embedder, Some(Box::new(store)), DedupConfig::default());
+        let ingestor = TriageIngestor::new(queue, dedup);
+
+        let outcome = ingestor
+            .submit(submission(
+                "warning-new",
+                "Port workers strike",
+                "Dockworkers walk out at Rotterdam terminal",
+            ))
+            .await
+            .unwrap();
+
+        match outcome {
+            IngestOutcome::Merged { item, reason } => {
+                assert_eq!(reason, MergeReason::EmbeddingSimilarity);
+                assert_eq!(item.id, target_id);
+                assert_eq!(item.occurrence_count, 2);
+            }
+            other => panic!("expected an embedding merge, got {other:?}"),
+        }
+        assert_eq!(ingestor.queue().len(), 1);
+    }
+
+    /// #119: a brand-new item is embedded exactly once; the vector from the
+    /// similarity search is reused for storage instead of embedding again.
+    #[tokio::test]
+    async fn new_item_is_embedded_once_and_vector_is_stored() {
+        let queue = InMemoryIngestQueue::new();
+        let store = InMemoryDedupStore::new(10);
+        let embedder = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
+        let dedup = SemanticDedup::with_embedder(
+            embedder.clone(),
+            Some(Box::new(store)),
+            DedupConfig::default(),
+        );
+        let ingestor = TriageIngestor::new(queue, dedup);
+
+        let outcome = ingestor
+            .submit(submission(
+                "warning-new",
+                "Unique headline",
+                "Unique body long enough for dedup",
+            ))
+            .await
+            .unwrap();
+
+        assert!(!outcome.merged());
+        assert_eq!(
+            embedder.calls(),
+            1,
+            "a new submission must be embedded exactly once"
+        );
+        let hits = ingestor
+            .dedup
+            .dedup_store
+            .as_ref()
+            .unwrap()
+            .find_similar_by_vector(&TriageItemType::Warning, &[1.0, 0.0], 5)
+            .await
+            .unwrap();
+        assert!(
+            hits.iter()
+                .any(|hit| { hit.id == outcome.item().id.to_string() && hit.similarity >= 0.99 }),
+            "the embedding from the search must be stored with the new item"
+        );
     }
 
     #[tokio::test]
@@ -1765,5 +2438,18 @@ mod tests {
         assert_eq!(severity_rank("HIGH"), 2);
         assert_eq!(severity_rank("critical"), 3);
         assert_eq!(severity_rank("unknown"), -1);
+    }
+
+    #[test]
+    fn severity_comparison_decides_whether_a_merge_weakens_the_row() {
+        assert!(merge_would_weaken_severity(
+            Some("medium"),
+            Some("critical")
+        ));
+        assert!(merge_would_weaken_severity(None, Some("low")));
+        assert!(!merge_would_weaken_severity(Some("high"), Some("low")));
+        assert!(!merge_would_weaken_severity(Some("high"), Some("high")));
+        assert!(!merge_would_weaken_severity(None, None));
+        assert!(!merge_would_weaken_severity(Some("low"), Some("unknown")));
     }
 }

@@ -64,7 +64,7 @@
         <a href="/workspaces/{{ ws.id }}" class="block">
           <div class="flex items-start justify-between gap-2">
             <h2 class="text-sm font-black uppercase tracking-[0.08em] text-rams-foreground">{{ ws.name }}</h2>
-            {% if ws.status == "open" %}
+            {% if ws.status != "closed" && ws.status != "archived" %}
             <span class="apex-badge apex-badge-high">open</span>
             {% else %}
             <span class="apex-badge apex-badge-neutral">closed</span>

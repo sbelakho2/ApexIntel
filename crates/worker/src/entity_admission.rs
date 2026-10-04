@@ -17,27 +17,27 @@ use apex_store::postgres::{EntityReviewRow, PgStore};
 use async_trait::async_trait;
 use uuid::Uuid;
 
-pub use apex_insights::entity_admission::EntityAdmissionResult;
+pub(crate) use apex_insights::entity_admission::EntityAdmissionResult;
 
 /// Minimum candidate confidence worth *verifying*. This is a pre-filter only:
 /// it can never admit a company.
-pub const ENTITY_ADMISSION_MIN_CONFIDENCE: f64 = 0.45;
+pub(crate) const ENTITY_ADMISSION_MIN_CONFIDENCE: f64 = 0.45;
 
 /// [`AdmissionStore`] over `PgStore` (`companies` + `entity_review_queue`).
-pub struct PgAdmissionStore {
+pub(crate) struct PgAdmissionStore {
     store: PgStore,
 }
 
 impl PgAdmissionStore {
     /// Build from a pool.
-    pub fn new(pool: sqlx::PgPool) -> Self {
+    pub(crate) fn new(pool: sqlx::PgPool) -> Self {
         Self {
             store: PgStore { pool },
         }
     }
 
     /// Build from a shared store (clones the pool handle).
-    pub fn from_store(store: &PgStore) -> Self {
+    pub(crate) fn from_store(store: &PgStore) -> Self {
         Self {
             store: PgStore {
                 pool: store.pool.clone(),
@@ -81,7 +81,7 @@ impl AdmissionStore for PgAdmissionStore {
 /// Uses [`build_production_entity_verifier`] with the process environment's
 /// capability flags (`ENTITY_VERIFY_*`, `ENTITY_REGISTRY_ENDPOINTS`) and
 /// persists evidence through the `PgStore` pool.
-pub fn build_entity_admission_service(
+pub(crate) fn build_entity_admission_service(
     store: &PgStore,
     admission_source: &str,
     company_type_label: &str,

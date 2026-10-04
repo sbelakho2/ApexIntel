@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
-use apex_core::triage::TriageDimensions;
+use apex_core::triage::{TriageDimensions, TriageStats, TriageThresholds};
 use apex_store::postgres::PgStore;
+use apex_triage::router_integration::{LoggingAlertDispatcher, RouterIntegration};
 use apex_triage::{TriageConfig, TriageQueue, TriageScorer};
 
 use crate::{JobKind, JobRun};
@@ -62,6 +63,9 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
     #[cfg(feature = "llm")]
     {
         let llm = build_triage_llm_client();
+        // Captured before `config` moves into the scorer; the notification
+        // dispatcher maps severity with the same configured thresholds.
+        let thresholds = config.thresholds.clone();
         let scorer = TriageScorer::new(llm, config);
 
         // #92: the triage batch borrows one process-wide LLM permit for the
@@ -86,6 +90,7 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
         match queue.batch_update_scores(score_entries).await {
             Ok(count) => {
                 run.succeed(count, &format!("scored {} items", unscored.len()));
+                notify_scored_queue(store, &queue, &thresholds).await;
             }
             Err(e) => {
                 run.fail(&format!("failed to persist scores: {e}"));
@@ -99,6 +104,49 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
     }
 
     run
+}
+
+/// Send a queue-update notification through the given dispatcher.
+///
+/// A serialization failure is logged with `error!`; a failed activity-feed
+/// write is logged by the dispatcher and never fails the job.
+async fn emit_queue_update(integration: &RouterIntegration, stats: &TriageStats) {
+    let stats_json = match serde_json::to_value(stats) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "triage: failed to serialize queue stats for notification"
+            );
+            return;
+        }
+    };
+    integration.notify_queue_update(stats_json).await;
+}
+
+/// Production queue-update path: after a scoring pass the queue contents
+/// changed, so notify the dispatcher with the fresh stats. The scoring job is
+/// the only bulk writer of triage rows, which is why the queue-update event
+/// belongs here rather than on read-only stats endpoints.
+async fn notify_scored_queue(
+    store: &Arc<PgStore>,
+    queue: &TriageQueue,
+    thresholds: &TriageThresholds,
+) {
+    let stats = match queue.stats().await {
+        Ok(stats) => stats,
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "triage: failed to read queue stats for notification"
+            );
+            return;
+        }
+    };
+    let integration = RouterIntegration::new(Box::new(
+        LoggingAlertDispatcher::with_db_and_thresholds(store.pool.clone(), thresholds.clone()),
+    ));
+    emit_queue_update(&integration, &stats).await;
 }
 
 /// Build a lightweight LLM client for triage scoring.
@@ -122,4 +170,102 @@ fn build_triage_llm_client() -> Box<dyn apex_llm::LlmClient> {
         .ok()
         .map(apex_llm::ApiKeySecret::from);
     Box::new(apex_llm::OpenAiCompatibleClient::new(llm_config))
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apex_triage::router_integration::{AlertDispatcher, TriageAlertRequest};
+
+    #[derive(Clone, Default)]
+    struct RecordingDispatcher {
+        queue_updates: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AlertDispatcher for RecordingDispatcher {
+        async fn dispatch_triage_alert(&self, _request: TriageAlertRequest<'_>) -> Vec<uuid::Uuid> {
+            Vec::new()
+        }
+
+        async fn notify_queue_update(&self, stats_json: &str) {
+            self.queue_updates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(stats_json.to_string());
+        }
+
+        async fn notify_status_change(
+            &self,
+            _queue_item_id: uuid::Uuid,
+            _new_status: &str,
+            _title: &str,
+        ) {
+        }
+    }
+
+    fn sample_stats() -> TriageStats {
+        TriageStats {
+            total: 7,
+            pending: 1,
+            triaged: 2,
+            acknowledged: 1,
+            resolved: 2,
+            dismissed: 1,
+            critical_count: 1,
+            high_count: 2,
+            medium_count: 2,
+            low_count: 2,
+            avg_urgency: 0.4,
+            avg_impact: 0.5,
+            avg_actionability: 0.6,
+            avg_novelty: 0.3,
+            avg_confidence: 0.7,
+            avg_composite: 0.5,
+            overridden_count: 0,
+            override_rate: 0.0,
+            resolution_rate: 0.4,
+        }
+    }
+
+    /// Regression: the scoring job is the production queue-update path and
+    /// must call the notification helper after a successful scoring pass.
+    /// Before wiring, nothing notified the dispatcher from this job.
+    #[test]
+    fn scoring_pass_wires_queue_update_notification() {
+        let source = include_str!("triage.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            production.contains("notify_scored_queue(store, &queue, &thresholds).await"),
+            "the successful scoring branch must emit a queue update notification"
+        );
+        assert!(
+            production.contains("emit_queue_update(&integration, &stats).await"),
+            "the queue update must go through the dispatcher"
+        );
+    }
+
+    /// Regression: a scoring pass that changed queue contents must notify the
+    /// dispatcher with the fresh queue stats.
+    #[tokio::test]
+    async fn scoring_pass_notifies_dispatcher_with_queue_stats() {
+        let dispatcher = RecordingDispatcher::default();
+        let recorded = dispatcher.queue_updates.clone();
+        let integration = RouterIntegration::new(Box::new(dispatcher));
+
+        emit_queue_update(&integration, &sample_stats()).await;
+
+        let recorded = recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            recorded[0].contains("\"total\":7"),
+            "queue stats payload must round-trip: {}",
+            recorded[0]
+        );
+    }
 }

@@ -8,8 +8,10 @@ fn average_artifacts_per_person(total_persons: i64, total_artifacts: i64) -> f64
     }
 }
 
-fn trigger_row_to_result(row: Option<(Uuid, String)>) -> Option<(String, String)> {
-    row.map(|(id, kind)| (id.to_string(), kind))
+fn trigger_row_to_result(
+    row: Option<(Uuid, String, Option<serde_json::Value>)>,
+) -> Option<(String, String, Option<serde_json::Value>)> {
+    row.map(|(id, kind, payload)| (id.to_string(), kind, payload))
 }
 
 pub fn is_valid_manual_trigger_kind(kind: &str) -> bool {
@@ -22,6 +24,11 @@ pub fn is_valid_manual_trigger_kind(kind: &str) -> bool {
             | "process_pending_observations"
             | "run_nightly_pipeline"
             | "run_weekly_pipeline"
+            // #173: the manual hypothesis-generation job runs the real
+            // mining → generation → staging pipeline; it is excluded from the
+            // default schedule as a duplicate of the nightly pass, so the
+            // manual trigger endpoint is its only on-demand entry point.
+            | "hypothesis_generation"
     )
 }
 
@@ -246,9 +253,16 @@ impl PgStore {
     }
 
     /// Claim the oldest unclaimed job trigger (atomic via UPDATE ... RETURNING).
-    /// Returns `(trigger_id, job_kind)` or `None` if the queue is empty.
-    pub async fn pop_job_trigger(&self) -> Result<Option<(String, String)>> {
-        let row: Option<(Uuid, String)> = sqlx::query_as(
+    /// Returns `(trigger_id, job_kind, payload)` or `None` if the queue is
+    /// empty.
+    ///
+    /// `payload` is the JSON the enqueuer attached (migration 104); triggers
+    /// written before the column existed — and triggers enqueued by
+    /// [`PgStore::queue_job_trigger`] — carry `None`.
+    pub async fn pop_job_trigger_with_payload(
+        &self,
+    ) -> Result<Option<(String, String, Option<serde_json::Value>)>> {
+        let row: Option<(Uuid, String, Option<serde_json::Value>)> = sqlx::query_as(
             r#"WITH candidate AS (
                    SELECT queue.id
                    FROM worker_trigger_queue AS queue
@@ -270,11 +284,54 @@ impl PgStore {
                SET claimed_at = now()
                FROM candidate
                WHERE queue.id = candidate.id
-               RETURNING queue.id, queue.job_kind"#,
+               RETURNING queue.id, queue.job_kind, queue.payload"#,
         )
         .fetch_optional(&self.pool)
         .await?;
         Ok(trigger_row_to_result(row))
+    }
+
+    /// Enqueue a manual trigger carrying a JSON payload.
+    ///
+    /// Deduplicates against an uncompleted trigger with the same kind and
+    /// payload (the same active-trigger rule as [`PgStore::queue_job_trigger`],
+    /// plus payload equality), so retrying an enqueue for the same run cannot
+    /// queue it twice. Returns the trigger id.
+    pub async fn enqueue_job_trigger_with_payload(
+        &self,
+        job_kind: &str,
+        payload: &serde_json::Value,
+    ) -> Result<String> {
+        let existing: Option<(Uuid,)> = sqlx::query_as(
+            r#"SELECT id
+               FROM worker_trigger_queue
+               WHERE job_kind = $1
+                 AND payload IS NOT DISTINCT FROM $2
+                 AND completed_at IS NULL
+                 AND (
+                     claimed_at IS NOT NULL
+                     OR recovered_at IS NULL
+                 )
+               ORDER BY claimed_at DESC NULLS LAST, requested_at ASC
+               LIMIT 1"#,
+        )
+        .bind(job_kind)
+        .bind(payload)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((id,)) = existing {
+            return Ok(id.to_string());
+        }
+
+        let (id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO worker_trigger_queue (job_kind, payload) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(job_kind)
+        .bind(payload)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(id.to_string())
     }
 
     pub async fn complete_job_trigger(&self, trigger_id: &str, error: Option<&str>) -> Result<()> {
@@ -374,8 +431,33 @@ impl PgStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{average_artifacts_per_person, trigger_row_to_result};
+    use super::{
+        average_artifacts_per_person, is_valid_manual_trigger_kind, trigger_row_to_result,
+    };
     use uuid::Uuid;
+
+    #[test]
+    fn test_manual_trigger_kind_whitelist() {
+        // Every job kind the admin trigger surface advertises must be
+        // accepted; #173's manual hypothesis generation included.
+        for kind in [
+            "dns_posture_scan",
+            "lookalike_domain_scan",
+            "kev_catalog_fetch",
+            "full_crawl",
+            "process_pending_observations",
+            "run_nightly_pipeline",
+            "run_weekly_pipeline",
+            "hypothesis_generation",
+        ] {
+            assert!(
+                is_valid_manual_trigger_kind(kind),
+                "{kind} must be a valid manual trigger kind"
+            );
+        }
+        assert!(!is_valid_manual_trigger_kind("drop_database"));
+        assert!(!is_valid_manual_trigger_kind(""));
+    }
 
     #[test]
     fn test_average_artifacts_per_person_handles_zero_people() {
@@ -386,11 +468,33 @@ mod tests {
     fn test_trigger_row_to_result_formats_uuid() {
         let id = Uuid::new_v4();
 
-        let result = trigger_row_to_result(Some((id, "dns_posture_scan".to_string())));
+        let result = trigger_row_to_result(Some((id, "dns_posture_scan".to_string(), None)));
 
         assert_eq!(
             result,
-            Some((id.to_string(), "dns_posture_scan".to_string()))
+            Some((id.to_string(), "dns_posture_scan".to_string(), None))
         );
+    }
+
+    #[test]
+    fn test_trigger_row_to_result_keeps_the_payload() {
+        let id = Uuid::new_v4();
+        let payload = serde_json::json!({"run_id": Uuid::new_v4(), "insight_id": Uuid::new_v4()});
+
+        let result = trigger_row_to_result(Some((
+            id,
+            "insight_analysis".to_string(),
+            Some(payload.clone()),
+        )));
+
+        assert_eq!(
+            result,
+            Some((
+                id.to_string(),
+                "insight_analysis".to_string(),
+                Some(payload)
+            ))
+        );
+        assert_eq!(trigger_row_to_result(None), None);
     }
 }

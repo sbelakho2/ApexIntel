@@ -35,7 +35,7 @@ use apex_worker::nats_stream::{AlertEvent, AlertEventType};
 
 /// SHA-256 (hex) of the exact alert-rules file content. Stable across restarts
 /// so readiness can publish and compare the engine's configuration hash.
-pub fn config_hash(yaml: &str) -> String {
+pub(crate) fn config_hash(yaml: &str) -> String {
     hex::encode(Sha256::digest(yaml.as_bytes()))
 }
 
@@ -45,7 +45,7 @@ pub fn config_hash(yaml: &str) -> String {
 
 /// Top-level alert rules configuration file.
 #[derive(Debug, Clone, Deserialize)]
-pub struct AlertRulesConfig {
+pub(crate) struct AlertRulesConfig {
     pub version: u32,
     pub routes: Option<AlertRoutes>,
     pub rules: Vec<AlertRule>,
@@ -53,14 +53,14 @@ pub struct AlertRulesConfig {
 
 /// Routing destinations for fired alerts.
 #[derive(Debug, Clone, Deserialize)]
-pub struct AlertRoutes {
+pub(crate) struct AlertRoutes {
     pub pager_webhook_env: Option<String>,
     pub warning_email_env: Option<String>,
 }
 
 /// A single alert rule.
 #[derive(Debug, Clone, Deserialize)]
-pub struct AlertRule {
+pub(crate) struct AlertRule {
     pub name: String,
     /// The source metric/event type this rule watches (e.g. `warning_count`,
     /// `api_health_deep`, `crawl_success_total`).
@@ -110,7 +110,7 @@ fn parse_duration(input: &str) -> Duration {
 
 /// A domain event that may trigger alert rules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DomainEvent {
+pub(crate) struct DomainEvent {
     /// Unique event identifier.
     pub id: Uuid,
     /// The source type matches `rule.source` for routing.
@@ -133,7 +133,7 @@ pub struct DomainEvent {
 
 impl DomainEvent {
     /// Create a new domain event from an insight or warning.
-    pub fn new(
+    pub(crate) fn new(
         source: impl Into<String>,
         severity: impl Into<String>,
         title: impl Into<String>,
@@ -153,14 +153,14 @@ impl DomainEvent {
     }
 
     /// Attach entity information.
-    pub fn with_entity(mut self, id: Uuid, name: impl Into<String>) -> Self {
+    pub(crate) fn with_entity(mut self, id: Uuid, name: impl Into<String>) -> Self {
         self.entity_id = Some(id);
         self.entity_name = Some(name.into());
         self
     }
 
     /// Attach custom metadata.
-    pub fn with_metadata(mut self, meta: serde_json::Value) -> Self {
+    pub(crate) fn with_metadata(mut self, meta: serde_json::Value) -> Self {
         self.metadata = meta;
         self
     }
@@ -182,7 +182,7 @@ struct DedupKey {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Evaluates domain events against alert rules and publishes fired alerts.
-pub struct AlertEvaluator {
+pub(crate) struct AlertEvaluator {
     /// Loaded alert rules.
     rules: Vec<AlertRule>,
     /// Dedup cache: maps (rule, entity) → last fired timestamp.
@@ -199,7 +199,7 @@ pub struct AlertEvaluator {
 
 impl AlertEvaluator {
     /// Load alert rules from a YAML file.
-    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
+    pub(crate) fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let content =
             std::fs::read_to_string(path.as_ref()).context("failed to read alert-rules.yaml")?;
         let mut evaluator = Self::load_from_yaml(&content)?;
@@ -208,7 +208,7 @@ impl AlertEvaluator {
     }
 
     /// Load alert rules from a YAML string.
-    pub fn load_from_yaml(yaml: &str) -> Result<Self> {
+    pub(crate) fn load_from_yaml(yaml: &str) -> Result<Self> {
         let config: AlertRulesConfig =
             serde_yaml::from_str(yaml).context("failed to parse alert-rules.yaml")?;
 
@@ -229,27 +229,27 @@ impl AlertEvaluator {
     }
 
     /// Number of rules currently loaded in memory.
-    pub fn rule_count(&self) -> usize {
+    pub(crate) fn rule_count(&self) -> usize {
         self.rules.len()
     }
 
     /// Rules-file schema version.
-    pub fn version(&self) -> u32 {
+    pub(crate) fn version(&self) -> u32 {
         self.version
     }
 
     /// SHA-256 of the YAML the loaded rules were parsed from.
-    pub fn config_hash(&self) -> &str {
+    pub(crate) fn config_hash(&self) -> &str {
         &self.config_hash
     }
 
     /// Path the rules were loaded from, when loaded from disk.
-    pub fn source_path(&self) -> Option<&str> {
+    pub(crate) fn source_path(&self) -> Option<&str> {
         self.source_path.as_deref()
     }
 
     /// Set a custom cooldown duration (overrides rule `for` field).
-    pub fn with_cooldown(mut self, cooldown: Duration) -> Self {
+    pub(crate) fn with_cooldown(mut self, cooldown: Duration) -> Self {
         self.cooldown = cooldown;
         self
     }
@@ -258,7 +258,7 @@ impl AlertEvaluator {
     ///
     /// Returns a list of [`AlertEvent`]s that should be fired (i.e. rules whose
     /// conditions were met and whose dedup window has passed).
-    pub async fn evaluate(&self, event: &DomainEvent) -> Vec<AlertEvent> {
+    pub(crate) async fn evaluate(&self, event: &DomainEvent) -> Vec<AlertEvent> {
         let mut fired = Vec::new();
 
         for rule in &self.rules {
@@ -346,7 +346,7 @@ impl AlertEvaluator {
     /// without releasing it the retry would silently suppress the rule alert.
     /// Releasing may re-deliver rule alerts that were published before the
     /// failure in the same batch; at-least-once beats silent loss.
-    pub async fn forget_firings(&self, event: &DomainEvent) {
+    pub(crate) async fn forget_firings(&self, event: &DomainEvent) {
         let entity_id = event.entity_id.map(|id| id.to_string());
         let mut dedup = self.dedup.write().await;
         for rule in &self.rules {

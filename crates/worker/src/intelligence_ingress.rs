@@ -76,7 +76,7 @@ const NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// for the warning category and severity, and an unresolved alert reaches
 /// nobody instead of every connected user.
 #[derive(Debug, Clone)]
-pub struct NewWarning {
+pub(crate) struct NewWarning {
     warning_type: String,
     title: String,
     description: Option<String>,
@@ -93,7 +93,7 @@ pub struct NewWarning {
 impl NewWarning {
     /// Create a warning with the three required fields. Alerts are enabled and
     /// targeted (never an implicit broadcast).
-    pub fn new(
+    pub(crate) fn new(
         warning_type: impl Into<String>,
         title: impl Into<String>,
         severity: impl Into<String>,
@@ -115,7 +115,7 @@ impl NewWarning {
 
     /// Set whether this warning produces an alert event (default `true`).
     /// Disabled warnings are still persisted, deduplicated and triaged.
-    pub fn enabled(mut self, enabled: bool) -> Self {
+    pub(crate) fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
@@ -125,28 +125,28 @@ impl NewWarning {
     /// Only operational, non-entity warnings (for example a source outage that
     /// affects every consumer) should use this; entity warnings must stay
     /// targeted so they are resolved against `user_alert_subscriptions`.
-    pub fn system_broadcast(mut self) -> Self {
+    pub(crate) fn system_broadcast(mut self) -> Self {
         self.is_system_broadcast = true;
         self
     }
 
     /// Whether this warning alerts at all.
-    pub fn alerts_enabled(&self) -> bool {
+    pub(crate) fn alerts_enabled(&self) -> bool {
         self.enabled
     }
 
     /// Whether this warning is a deliberate system-wide broadcast.
-    pub fn is_system_broadcast(&self) -> bool {
+    pub(crate) fn is_system_broadcast(&self) -> bool {
         self.is_system_broadcast
     }
 
     /// Whether this warning's audience can resolve any subscriber.
-    pub fn audience_resolvable(&self) -> bool {
+    pub(crate) fn audience_resolvable(&self) -> bool {
         self.is_system_broadcast || !self.entity_ids.is_empty()
     }
 
     /// The audience for this warning's alert event.
-    pub fn audience(&self) -> AlertAudience {
+    pub(crate) fn audience(&self) -> AlertAudience {
         if self.is_system_broadcast {
             AlertAudience::Broadcast
         } else {
@@ -154,32 +154,32 @@ impl NewWarning {
         }
     }
 
-    pub fn description(mut self, description: impl Into<String>) -> Self {
+    pub(crate) fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
-    pub fn region(mut self, region: impl Into<String>) -> Self {
+    pub(crate) fn region(mut self, region: impl Into<String>) -> Self {
         self.region = Some(region.into());
         self
     }
 
-    pub fn recipe_code(mut self, recipe_code: impl Into<String>) -> Self {
+    pub(crate) fn recipe_code(mut self, recipe_code: impl Into<String>) -> Self {
         self.recipe_code = Some(recipe_code.into());
         self
     }
 
-    pub fn entity_ids<I: IntoIterator<Item = Uuid>>(mut self, entity_ids: I) -> Self {
+    pub(crate) fn entity_ids<I: IntoIterator<Item = Uuid>>(mut self, entity_ids: I) -> Self {
         self.entity_ids = entity_ids.into_iter().collect();
         self
     }
 
-    pub fn source_urls<I: IntoIterator<Item = String>>(mut self, source_urls: I) -> Self {
+    pub(crate) fn source_urls<I: IntoIterator<Item = String>>(mut self, source_urls: I) -> Self {
         self.source_urls = source_urls.into_iter().collect();
         self
     }
 
-    pub fn confidence(mut self, confidence: f64) -> Self {
+    pub(crate) fn confidence(mut self, confidence: f64) -> Self {
         self.confidence = Some(confidence);
         self
     }
@@ -187,7 +187,7 @@ impl NewWarning {
 
 /// A persisted warning, with the deterministic dedup outcome attached.
 #[derive(Debug, Clone)]
-pub struct StoredWarning {
+pub(crate) struct StoredWarning {
     pub id: Uuid,
     /// `true` when this submission created the row; `false` when it was
     /// deterministically deduplicated into an existing warning.
@@ -244,7 +244,7 @@ pub(crate) fn build_alert_event(
 
 /// Outcome of submitting a warning to the semantic triage ingress.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TriageSubmissionOutcome {
+pub(crate) enum TriageSubmissionOutcome {
     /// A new triage queue row was created.
     Enqueued {
         item_id: Uuid,
@@ -276,7 +276,7 @@ impl TriageSubmissionOutcome {
     }
 
     /// Occurrence count of the resulting triage row (`0` when triage failed).
-    pub fn occurrence_count(&self) -> i64 {
+    pub(crate) fn occurrence_count(&self) -> i64 {
         match self {
             Self::Enqueued {
                 occurrence_count, ..
@@ -289,18 +289,18 @@ impl TriageSubmissionOutcome {
     }
 
     /// Whether the submission merged into an existing triage row.
-    pub fn merged(&self) -> bool {
+    pub(crate) fn merged(&self) -> bool {
         matches!(self, Self::Merged { .. })
     }
 
-    pub fn item_id(&self) -> Option<Uuid> {
+    pub(crate) fn item_id(&self) -> Option<Uuid> {
         match self {
             Self::Enqueued { item_id, .. } | Self::Merged { item_id, .. } => Some(*item_id),
             Self::Failed { .. } => None,
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Enqueued { .. } => "enqueued",
             Self::Merged { .. } => "merged",
@@ -311,7 +311,7 @@ impl TriageSubmissionOutcome {
 
 /// Real outcome of one `submit_warning` call.
 #[derive(Debug, Clone)]
-pub struct WarningSubmissionResult {
+pub(crate) struct WarningSubmissionResult {
     pub warning: StoredWarning,
     pub triage: TriageSubmissionOutcome,
     /// `true` only when an alert sink was configured AND the publish succeeded.
@@ -322,28 +322,28 @@ pub struct WarningSubmissionResult {
 }
 
 impl WarningSubmissionResult {
-    pub fn warning_id(&self) -> Uuid {
+    pub(crate) fn warning_id(&self) -> Uuid {
         self.warning.id
     }
 
     /// `false` when the deterministic warning dedup merged this submission into
     /// an existing row.
-    pub fn created(&self) -> bool {
+    pub(crate) fn created(&self) -> bool {
         self.warning.created
     }
 
     /// Occurrence count of the resulting triage queue row.
-    pub fn occurrence_count(&self) -> i64 {
+    pub(crate) fn occurrence_count(&self) -> i64 {
         self.triage.occurrence_count()
     }
 
     /// Whether the triage ingress merged this submission into an existing row.
-    pub fn triage_merged(&self) -> bool {
+    pub(crate) fn triage_merged(&self) -> bool {
         self.triage.merged()
     }
 
     /// `true` when any non-fatal step (triage, alerts, activity) failed.
-    pub fn degraded(&self) -> bool {
+    pub(crate) fn degraded(&self) -> bool {
         matches!(self.triage, TriageSubmissionOutcome::Failed { .. })
             || self.alert_error.is_some()
             || self.activity_error.is_some()
@@ -358,7 +358,7 @@ impl WarningSubmissionResult {
 /// a job which persisted warnings but never completed triage must not report
 /// success.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct IngressCounters {
+pub(crate) struct IngressCounters {
     /// Warnings whose row committed (created or deduplicated).
     pub warnings_persisted: u64,
     /// Submissions whose semantic triage step succeeded.
@@ -373,7 +373,7 @@ pub struct IngressCounters {
 
 impl IngressCounters {
     /// Record one successful `submit_warning` outcome.
-    pub fn record(&mut self, result: &WarningSubmissionResult) {
+    pub(crate) fn record(&mut self, result: &WarningSubmissionResult) {
         self.warnings_persisted += 1;
         if !matches!(result.triage, TriageSubmissionOutcome::Failed { .. }) {
             self.triage_completed += 1;
@@ -394,7 +394,7 @@ impl IngressCounters {
     /// Persisted warnings with zero completed triage submissions mean the
     /// alert-generation pipeline never ran: counting that as success hides a
     /// total alerting outage.
-    pub fn success_blocker(&self) -> Option<String> {
+    pub(crate) fn success_blocker(&self) -> Option<String> {
         if self.warnings_persisted > 0 && self.triage_completed == 0 {
             return Some(format!(
                 "{} warning(s) persisted but 0 triage completions — alerts were never generated",
@@ -405,7 +405,7 @@ impl IngressCounters {
     }
 
     /// One-line counter summary for job notes.
-    pub fn summary(&self) -> String {
+    pub(crate) fn summary(&self) -> String {
         format!(
             "warnings_persisted={} triage_completed={} alerts_published={} \
              activities_recorded={} degraded_warnings={}",
@@ -420,7 +420,7 @@ impl IngressCounters {
 
 /// Persistence half of the ingress.
 #[async_trait]
-pub trait WarningWriter: Send + Sync {
+pub(crate) trait WarningWriter: Send + Sync {
     /// Deterministically upsert the warning and report whether it was created
     /// or deduplicated into an existing row.
     async fn upsert_warning(&self, warning: &NewWarning) -> anyhow::Result<StoredWarning>;
@@ -438,7 +438,7 @@ pub trait WarningWriter: Send + Sync {
 
 /// Alert/domain-event publication half of the ingress.
 #[async_trait]
-pub trait AlertSink: Send + Sync {
+pub(crate) trait AlertSink: Send + Sync {
     /// Whether this sink can actually deliver alerts.
     fn enabled(&self) -> bool {
         true
@@ -465,18 +465,18 @@ pub trait AlertSink: Send + Sync {
 /// Object-safe view of the ingress used where a concrete generic type is
 /// awkward (e.g. job helpers that only need to submit a warning).
 #[async_trait]
-pub trait WarningSubmitter: Send + Sync {
+pub(crate) trait WarningSubmitter: Send + Sync {
     async fn submit_warning(&self, warning: NewWarning) -> anyhow::Result<WarningSubmissionResult>;
 }
 
 /// Production [`WarningWriter`]: deterministic warning upsert plus activity log.
-pub struct WarningService {
+pub(crate) struct WarningService {
     store: Arc<PgStore>,
     activity: ActivityLogger,
 }
 
 impl WarningService {
-    pub fn new(store: Arc<PgStore>) -> Self {
+    pub(crate) fn new(store: Arc<PgStore>) -> Self {
         let activity = ActivityLogger::new(store.pool.clone());
         Self { store, activity }
     }
@@ -594,7 +594,7 @@ fn non_empty<T>(values: Vec<T>) -> Option<Vec<T>> {
 /// Production [`AlertSink`]: publishes a `new_warning` alert event to the NATS
 /// JetStream `alerts` stream. Gracefully degrades to a disabled sink when NATS
 /// is not configured/unreachable.
-pub struct AlertPublisher {
+pub(crate) struct AlertPublisher {
     publisher: NatsPublisher,
     enabled: bool,
     store: Arc<PgStore>,
@@ -602,7 +602,7 @@ pub struct AlertPublisher {
 }
 
 impl AlertPublisher {
-    pub fn new(
+    pub(crate) fn new(
         publisher: NatsPublisher,
         store: Arc<PgStore>,
         evaluator: Option<Arc<AlertEvaluator>>,
@@ -617,13 +617,13 @@ impl AlertPublisher {
     }
 
     /// A publisher that never delivers alerts (no NATS configured).
-    pub fn disabled(store: Arc<PgStore>) -> Self {
+    pub(crate) fn disabled(store: Arc<PgStore>) -> Self {
         Self::new(NatsPublisher::disabled(), store, None)
     }
 
     /// A disabled publisher for deployments where NATS is required: every
     /// delivery reports an error instead of silently succeeding.
-    pub fn disabled_with_requirement(required: bool, store: Arc<PgStore>) -> Self {
+    pub(crate) fn disabled_with_requirement(required: bool, store: Arc<PgStore>) -> Self {
         Self::new(
             NatsPublisher::disabled_with_requirement(required),
             store,
@@ -632,7 +632,7 @@ impl AlertPublisher {
     }
 
     /// Connect to NATS with a bounded timeout.
-    pub async fn connect(
+    pub(crate) async fn connect(
         nats_url: &str,
         store: Arc<PgStore>,
         evaluator: Option<Arc<AlertEvaluator>>,
@@ -696,7 +696,7 @@ impl AlertSink for AlertPublisher {
 ///
 /// Generic over its three collaborators so tests can inject fakes; the worker
 /// binary uses the default production types.
-pub struct IntelligenceIngress<W = WarningService, Q = TriageQueue, A = AlertPublisher>
+pub(crate) struct IntelligenceIngress<W = WarningService, Q = TriageQueue, A = AlertPublisher>
 where
     W: WarningWriter,
     Q: IngestQueue,
@@ -713,7 +713,7 @@ where
     Q: IngestQueue,
     A: AlertSink,
 {
-    pub fn new(warnings: W, triage: TriageIngestor<Q>, alerts: A) -> Self {
+    pub(crate) fn new(warnings: W, triage: TriageIngestor<Q>, alerts: A) -> Self {
         Self {
             warnings,
             triage,
@@ -721,7 +721,7 @@ where
         }
     }
 
-    pub fn triage(&self) -> &TriageIngestor<Q> {
+    pub(crate) fn triage(&self) -> &TriageIngestor<Q> {
         &self.triage
     }
 
@@ -731,7 +731,7 @@ where
     /// so the caller must not count the warning as generated. Everything after
     /// persistence is best-effort and surfaced in the result as a degraded
     /// outcome rather than an error, because the warning row already exists.
-    pub async fn submit_warning(
+    pub(crate) async fn submit_warning(
         &self,
         warning: NewWarning,
     ) -> anyhow::Result<WarningSubmissionResult> {
@@ -846,7 +846,7 @@ where
 /// When `NATS_URL` is unset or unreachable the publisher degrades, and in a
 /// required deployment (`REQUIRE_NATS`/`APEX_ENV=production`) submissions are
 /// reported degraded instead of silently unpublished.
-pub async fn build(
+pub(crate) async fn build(
     store: Arc<PgStore>,
     evaluator: Option<Arc<AlertEvaluator>>,
 ) -> IntelligenceIngress {
@@ -905,8 +905,8 @@ pub async fn build(
         ),
     );
 
-    let alerts = match std::env::var("NATS_URL") {
-        Ok(url) if !url.trim().is_empty() => {
+    let alerts = match apex_core::config::AppConfig::nats_url_configured_from_env() {
+        Some(url) => {
             let publisher =
                 AlertPublisher::connect(url.trim(), Arc::clone(&store), evaluator).await;
             if publisher.enabled() {

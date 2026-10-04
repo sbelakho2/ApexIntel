@@ -206,6 +206,11 @@ impl CrawlClient {
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {
+            // Politeness: reserve this domain's next request slot before
+            // taking the fleet-wide concurrency permit, so a rate-limit wait
+            // never pins an HTTP slot that another domain could use.
+            self.pace_domain(domain).await;
+
             // Acquire the fleet-wide permit per attempt, after robots handling:
             // holding it across backoff sleeps let one hostile host pin a slot
             // for hours.
@@ -327,6 +332,21 @@ impl CrawlClient {
             message: "request exhausted retries without a terminal response".to_string(),
             category: CrawlFailureCategory::Unknown,
         }))
+    }
+
+    /// Wait out the configured per-domain request interval for `domain`.
+    ///
+    /// `fetch_text` calls this before every attempt; it is public so callers
+    /// that fetch outside this client (the headless renderer path in the
+    /// worker) share the same configured pacing instead of bypassing it.
+    pub async fn pace_domain(&self, domain: &str) {
+        let wait = {
+            let mut rate_limits = self.config.rate_limits.lock().await;
+            rate_limits.reserve_slot(domain)
+        };
+        if !wait.is_zero() {
+            sleep(wait).await;
+        }
     }
 
     async fn handle_retryable_error(
@@ -709,6 +729,37 @@ mod tests {
         assert_eq!(response.body, "ok");
         assert_eq!(response.attempts, 2);
         assert_eq!(client.metrics().get("127.0.0.1"), 2);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[tokio::test]
+    async fn fetch_text_applies_configured_domain_interval() {
+        let addr = start_test_server(vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+        ])
+        .await;
+        // 0.2 req/s must pace this domain at 5 s; the fetch itself stamps the
+        // domain's slot, so a subsequent reservation still has to wait ~5 s.
+        let rate_limits = Arc::new(Mutex::new(RateLimitManager::with_requests_per_second(0.2)));
+        let config = CrawlClientConfig {
+            enforce_robots_txt: false,
+            allow_private_targets: true,
+            rate_limits: rate_limits.clone(),
+            ..CrawlClientConfig::default()
+        };
+        let client = CrawlClient::new(config)
+            .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
+        let response = client
+            .fetch_text(&CrawlRequest::new(&format!("http://{addr}/feed")))
+            .await
+            .unwrap_or_else(|error| panic!("test: fetch should succeed: {error}"));
+        assert_eq!(response.status, 200);
+
+        let remaining = rate_limits.lock().await.reserve_slot("127.0.0.1");
+        assert!(
+            remaining > Duration::from_secs(4),
+            "the fetch must have consumed the configured 5 s domain slot, got remaining {remaining:?}"
+        );
     }
 
     #[allow(clippy::unwrap_used, clippy::expect_used)]

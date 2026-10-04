@@ -169,6 +169,25 @@ impl LlmClient for CachedLlmClient {
         self.cached_or_generate("text", || self.inner.generate_text(system, user))
             .await
     }
+
+    /// Multi-turn conversations are forwarded to the inner client verbatim.
+    ///
+    /// The cache key is derived from the workflow/model/prompt-version and the
+    /// evidence-id set — not from the conversation bytes. The inherited
+    /// default (`complete_messages` → `flatten_messages` → `generate_text`)
+    /// would additionally collapse the turn structure that the agent loop
+    /// depends on, and could serve one turn's completion for a different
+    /// tool-bearing conversation whenever the evidence set is unchanged.
+    /// Tool results are attacker-influenced, so multi-turn agent traffic is
+    /// deliberately never prompt-cached: this override bypasses the cache and
+    /// delegates straight to the inner client.
+    async fn complete_messages(
+        &self,
+        messages: Vec<crate::inference::ChatMessage>,
+        config: &crate::inference::InferenceConfig,
+    ) -> Result<String> {
+        self.inner.complete_messages(messages, config).await
+    }
 }
 
 #[cfg(test)]
@@ -326,5 +345,102 @@ mod tests {
         client.generate_text("s", "u").await.expect("text");
         assert_eq!(inner.calls(), 2);
         assert_eq!(cache.len(), 2);
+    }
+
+    /// Records every multi-turn conversation it is handed. If the cache wrapper
+    /// falls back to the trait's flattened default, `generate_text` would be
+    /// called instead and this recorder would stay empty.
+    struct MultiTurnRecordingClient {
+        seen: Mutex<Vec<Vec<(crate::inference::Role, String)>>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for MultiTurnRecordingClient {
+        async fn generate_json(&self, _system: &str, _user: &str) -> Result<String> {
+            anyhow::bail!("generate_json must not be used for a multi-turn conversation")
+        }
+
+        async fn generate_text(&self, _system: &str, _user: &str) -> Result<String> {
+            anyhow::bail!("generate_text must not be used for a multi-turn conversation")
+        }
+
+        async fn complete_messages(
+            &self,
+            messages: Vec<crate::inference::ChatMessage>,
+            _config: &crate::inference::InferenceConfig,
+        ) -> Result<String> {
+            let mut seen = self.seen.lock().unwrap_or_else(|error| error.into_inner());
+            seen.push(
+                messages
+                    .into_iter()
+                    .map(|message| (message.role, message.content))
+                    .collect(),
+            );
+            Ok("multi-turn-final".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_messages_forwards_tool_conversation_turn_by_turn() {
+        let inner = Arc::new(MultiTurnRecordingClient {
+            seen: Mutex::new(Vec::new()),
+        });
+        let cache = Arc::new(MemoryLlmCache::new());
+        let client = CachedLlmClient::new(
+            inner.clone(),
+            cache.clone(),
+            "agentic_hypothesis_generation",
+            "model-v1",
+            "prompt-v1",
+            evidence(&["ev-1"]),
+        );
+
+        let conversation = vec![
+            crate::inference::ChatMessage::system("system prompt"),
+            crate::inference::ChatMessage::user("task"),
+            crate::inference::ChatMessage::assistant(r#"{"tool_calls":[]}"#),
+            crate::inference::ChatMessage::user("[tool_result] {\"ok\":true}"),
+        ];
+        let answer = client
+            .complete_messages(
+                conversation.clone(),
+                &crate::inference::InferenceConfig::default(),
+            )
+            .await
+            .expect("multi-turn conversation must be forwarded");
+        assert_eq!(answer, "multi-turn-final");
+
+        let forwarded: Vec<(crate::inference::Role, String)> = conversation
+            .iter()
+            .map(|message| (message.role.clone(), message.content.clone()))
+            .collect();
+        {
+            let seen = inner.seen.lock().unwrap_or_else(|error| error.into_inner());
+            assert_eq!(
+                seen.len(),
+                1,
+                "the inner client must be called exactly once"
+            );
+            assert_eq!(
+                seen[0], forwarded,
+                "every turn must reach the inner client verbatim, not flattened"
+            );
+        }
+
+        // Multi-turn traffic is deliberately not cached: a second identical
+        // conversation must reach the model again rather than replay a cached
+        // completion keyed only on the evidence set.
+        client
+            .complete_messages(conversation, &crate::inference::InferenceConfig::default())
+            .await
+            .expect("second identical conversation");
+        assert_eq!(
+            inner.seen.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            2
+        );
+        assert!(
+            cache.is_empty(),
+            "multi-turn conversations bypass the cache"
+        );
     }
 }

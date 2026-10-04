@@ -6,10 +6,13 @@ use std::time::Duration;
 use crate::entity_admission::EntityAdmissionResult;
 use crate::intelligence_ingress::NewWarning;
 use aho_corasick::{AhoCorasick, MatchKind};
+use apex_core::config::AppConfig;
 use apex_crawl::browser::{BrowserFetcher, BrowserRequest};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 use apex_crawl::errors::CrawlError;
 use apex_crawl::governor_limiter::CrawlGovernor;
+use apex_crawl::proxy::ProxyRotator;
+use apex_crawl::rate_limit::RateLimitManager;
 use apex_crawl::rss::{parse_feed_with_base, FeedItem};
 use apex_crawl::sources::{
     crawl_source_budget_from_env, dispatch_source_fetch, scheduler_backlog, select_due_sources,
@@ -28,6 +31,11 @@ use futures::StreamExt;
 use tokio::sync::Semaphore;
 use url::Url;
 
+#[cfg(feature = "llm")]
+use super::agent_tools::{
+    generate_hypotheses_for_mode, stage_hypothesis_results, HypothesisGenerationMode,
+    HypothesisStageOutcome, MAX_AGENTIC_CANDIDATES,
+};
 use super::JobExecutionContext;
 use crate::*;
 
@@ -38,8 +46,6 @@ const NIGHTLY_STAGE_ATTEMPTS: usize = 3;
 const GLOBAL_HTTP_CONCURRENCY: usize = 12;
 /// Maximum concurrent browser-driven fetches (headless Chromium is expensive).
 const BROWSER_CONCURRENCY: usize = 2;
-/// Per-domain request rate enforced on top of the concurrency caps.
-const CRAWL_DOMAIN_RPS: u32 = 1;
 /// Hard cap on feed items materialized from one source per cycle. The HTTP
 /// body is capped, but a hostile feed can pack thousands of tiny items into
 /// that budget; without this each item costs at least one observation insert.
@@ -99,6 +105,104 @@ struct SourceObservation {
 /// bodies never satisfy the contract.
 fn parser_contract_satisfied(body: &str, extracted_text: Option<&str>) -> bool {
     !extracted_text.unwrap_or(body).trim().is_empty()
+}
+
+/// Crawl-path settings consumed from [`AppConfig`]. Kept as a small value type
+/// so construction from configuration is unit-testable without env or network.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CrawlSettings {
+    pub(crate) requests_per_second: f64,
+    pub(crate) proxy_pool_size: usize,
+    pub(crate) proxy_rotation_enabled: bool,
+    pub(crate) browser_enabled: bool,
+}
+
+impl Default for CrawlSettings {
+    fn default() -> Self {
+        Self {
+            requests_per_second: apex_crawl::rate_limit::DEFAULT_REQUESTS_PER_SECOND,
+            proxy_pool_size: crate::DEFAULT_PROXY_POOL_SIZE,
+            proxy_rotation_enabled: false,
+            browser_enabled: false,
+        }
+    }
+}
+
+impl CrawlSettings {
+    /// Consume the operator's [`AppConfig`] values for the crawl path.
+    pub(crate) fn from_app_config(config: &AppConfig) -> Self {
+        Self {
+            requests_per_second: config.default_requests_per_second,
+            proxy_pool_size: config.proxy_pool_size,
+            proxy_rotation_enabled: config.enable_proxy_rotation,
+            browser_enabled: config.enable_headless_browser,
+        }
+    }
+
+    /// Resolve from the process environment. The worker validates `AppConfig`
+    /// at startup; a load failure here (tests, custom binaries) falls back to
+    /// the documented defaults with a warning.
+    pub(crate) fn resolve() -> Self {
+        match AppConfig::from_env() {
+            Ok(config) => Self::from_app_config(&config),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "crawl_cycle: AppConfig load failed; using documented crawl defaults"
+                );
+                Self::default()
+            }
+        }
+    }
+}
+
+/// Coarse integer per-domain token bucket for [`CrawlGovernor`], derived from
+/// the configured rate with `ceil`. The exact pacing — including sub-1 rates
+/// such as 0.2 req/s — is enforced by the client's [`RateLimitManager`], so
+/// this bucket never runs stricter than the configured rate and cannot rewrite
+/// 0.2 req/s into 1 req/s.
+pub(crate) fn governor_domain_rps(requests_per_second: f64) -> u32 {
+    let rps = if requests_per_second.is_finite() && requests_per_second > 0.0 {
+        requests_per_second
+    } else {
+        apex_crawl::rate_limit::DEFAULT_REQUESTS_PER_SECOND
+    };
+    rps.ceil().clamp(1.0, u32::MAX as f64) as u32
+}
+
+/// Whether browser-strategy sources may dispatch to the headless renderer.
+/// Both the configured flag and a live renderer are required; when either is
+/// missing the source is marked unavailable rather than downgraded to HTTP.
+pub(crate) fn browser_capability_available(config_enabled: bool, renderer_present: bool) -> bool {
+    config_enabled && renderer_present
+}
+
+/// Gate the proxy rotator on the configured flag: disabled rotation yields no
+/// rotator at all, so the crawl client cannot route through a proxy.
+pub(crate) fn configured_proxy_rotator(
+    proxy_rotation_enabled: bool,
+    rotator: Option<Arc<tokio::sync::Mutex<ProxyRotator>>>,
+) -> Option<Arc<tokio::sync::Mutex<ProxyRotator>>> {
+    if proxy_rotation_enabled {
+        rotator
+    } else {
+        None
+    }
+}
+
+/// Build the crawl client configuration from resolved settings. Pure so the
+/// rate-limiter interval and proxy gating decisions are unit-testable.
+pub(crate) fn crawl_client_config(
+    settings: &CrawlSettings,
+    proxy_rotator: Option<Arc<tokio::sync::Mutex<ProxyRotator>>>,
+) -> CrawlClientConfig {
+    CrawlClientConfig {
+        rate_limits: Arc::new(tokio::sync::Mutex::new(
+            RateLimitManager::with_requests_per_second(settings.requests_per_second),
+        )),
+        proxy_rotator: configured_proxy_rotator(settings.proxy_rotation_enabled, proxy_rotator),
+        ..CrawlClientConfig::default()
+    }
 }
 
 /// Build one observation per parsed feed item, capped at
@@ -178,6 +282,7 @@ fn feed_observations(
 async fn fetch_source(
     crawl_client: &CrawlClient,
     browser: Option<&Arc<dyn BrowserFetcher>>,
+    browser_available: bool,
     governor: &CrawlGovernor,
     browser_permits: &Arc<Semaphore>,
     source: &Source,
@@ -187,8 +292,10 @@ async fn fetch_source(
     let prefers_browser_ua = source.slug == "globes_il_tech";
 
     // Single dispatch decision: `Browser` sources either render with the
-    // shared Chromium renderer or fail as a capability gap — never HTTP.
-    let dispatch = match dispatch_source_fetch(source, browser.is_some()) {
+    // shared Chromium renderer or fail as a capability gap — never HTTP. The
+    // decision consults the configured headless flag, not just renderer
+    // presence, so `enable_headless_browser = false` is authoritative.
+    let dispatch = match dispatch_source_fetch(source, browser_available) {
         Ok(dispatch) => dispatch,
         Err(error) => {
             return SourceFetchOutcome {
@@ -223,8 +330,9 @@ async fn fetch_source(
         None
     };
 
-    if let Some(domain) = source.domain() {
-        governor.wait_for_slot(&domain).await;
+    let domain = source.domain();
+    if let Some(domain) = domain.as_deref() {
+        governor.wait_for_slot(domain).await;
     }
 
     if dispatch == FetchDispatch::Browser {
@@ -243,6 +351,11 @@ async fn fetch_source(
                 }),
             };
         };
+        // The rendered fetch bypasses `CrawlClient::fetch_text`, so share the
+        // configured per-domain pacing explicitly instead of skipping it.
+        if let Some(domain) = domain.as_deref() {
+            crawl_client.pace_domain(domain).await;
+        }
         let started = std::time::Instant::now();
         return match browser.fetch(BrowserRequest::new(endpoint)).await {
             Ok(page) => SourceFetchOutcome {
@@ -1020,17 +1133,32 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
         "crawl_cycle: source selection complete"
     );
 
-    let proxy_rotator =
-        build_proxy_rotator_from_env().map(|rotator| Arc::new(tokio::sync::Mutex::new(rotator)));
+    // Crawl behavior comes from the validated AppConfig: per-domain rate,
+    // proxy pool capacity/rotation, and the headless-browser capability.
+    let settings = CrawlSettings::resolve();
+    tracing::info!(
+        requests_per_second = settings.requests_per_second,
+        proxy_pool_size = settings.proxy_pool_size,
+        proxy_rotation_enabled = settings.proxy_rotation_enabled,
+        browser_enabled = settings.browser_enabled,
+        "crawl_cycle: crawl settings resolved"
+    );
+
+    let proxy_rotator = configured_proxy_rotator(
+        settings.proxy_rotation_enabled,
+        build_proxy_rotator_with_capacity(
+            settings.proxy_rotation_enabled,
+            settings.proxy_pool_size,
+        )
+        .map(|rotator| Arc::new(tokio::sync::Mutex::new(rotator))),
+    );
     if let Some(rotator) = proxy_rotator.as_ref() {
         let proxy_health = rotator.lock().await.health_summary();
         tracing::info!(proxy_health = %proxy_health, "crawl_cycle: proxy rotation enabled");
     }
 
-    let crawl_client = match CrawlClient::new(CrawlClientConfig {
-        proxy_rotator: proxy_rotator.clone(),
-        ..CrawlClientConfig::default()
-    }) {
+    let crawl_client = match CrawlClient::new(crawl_client_config(&settings, proxy_rotator.clone()))
+    {
         Ok(client) => client,
         Err(error) => {
             run.fail(&format!(
@@ -1081,9 +1209,14 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     // degraded, never a clean success.
     let mut scheduler_state_write_failures: u64 = 0;
 
-    let governor = CrawlGovernor::with_limits(CRAWL_DOMAIN_RPS, GLOBAL_HTTP_CONCURRENCY as u32);
+    let governor = CrawlGovernor::with_limits(
+        governor_domain_rps(settings.requests_per_second),
+        GLOBAL_HTTP_CONCURRENCY as u32,
+    );
     let browser_permits = Arc::new(Semaphore::new(BROWSER_CONCURRENCY));
     let browser = ctx.browser();
+    let browser_available =
+        browser_capability_available(settings.browser_enabled, browser.is_some());
     let mut in_flight: FuturesUnordered<BoxFuture<'_, SourceFetchOutcome>> =
         FuturesUnordered::new();
     let mut pending = fetch_sources.iter().enumerate().peekable();
@@ -1094,6 +1227,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
         in_flight.push(Box::pin(fetch_source(
             &crawl_client,
             browser,
+            browser_available,
             &governor,
             &browser_permits,
             source,
@@ -1106,6 +1240,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             in_flight.push(Box::pin(fetch_source(
                 &crawl_client,
                 browser,
+                browser_available,
                 &governor,
                 &browser_permits,
                 source,
@@ -1777,17 +1912,84 @@ async fn run_pattern_mining_stats_only(kind: &JobKind, store: &Arc<PgStore>) -> 
     run
 }
 
-/// Real pattern-mining pipeline (production path). Loads entity-linked
-/// observation event streams over a long lookback window, mines statistically
-/// robust cross-signal candidates (Fisher exact + cross-split stability +
-/// Benjamini-Hochberg FDR), persists them for audit, and generates + stages
-/// LLM-backed recipe hypotheses for human review.
+/// Terminal state of the shared mined-hypothesis pipeline.
+///
+/// Both the scheduled `PatternMining` cycle and the manual
+/// `HypothesisGeneration` job run this same pipeline, so the manual job can
+/// never report DB-derived counters as if it had generated hypotheses.
 #[cfg(feature = "llm")]
-async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
-    use apex_learning::miner::MinerConfig;
+enum MiningPipeline {
+    /// Loading the entity-linked observation streams failed.
+    LoadFailed { error: String },
+    /// Fewer than two usable streams: there is nothing to correlate.
+    InsufficientStreams {
+        streams: usize,
+        min_events: usize,
+        lookback_days: i64,
+    },
+    /// Streams were mined and persisted; hypotheses generated and staged.
+    Completed {
+        candidates_found: u64,
+        outcome: HypothesisStageOutcome,
+    },
+}
 
-    let mut run = JobRun::new(kind.clone());
-    run.start();
+/// Validate an environment-derived [`apex_learning::miner::MinerConfig`],
+/// falling back to the strict library defaults when a hand-edited environment
+/// produces an invalid combination. Pure (no I/O), so the fallback policy is
+/// unit-testable.
+#[cfg(feature = "llm")]
+fn resolve_miner_config(
+    candidate: apex_learning::miner::MinerConfig,
+) -> apex_learning::miner::MinerConfig {
+    let errors = candidate.validate();
+    if errors.is_empty() {
+        candidate
+    } else {
+        tracing::warn!(
+            ?errors,
+            "pattern_mining: invalid miner config from environment; using strict defaults"
+        );
+        apex_learning::miner::MinerConfig::default()
+    }
+}
+
+/// Map the shared pipeline's mined counts onto the hypothesis-generation stage
+/// payload (the manual job's report). Pure so the wiring is unit-testable.
+#[cfg(feature = "llm")]
+fn hypothesis_stage_result(outcome: &HypothesisStageOutcome) -> HypothesisGenerationStageResult {
+    HypothesisGenerationStageResult {
+        candidates_submitted: outcome.submitted,
+        hypotheses_generated: outcome.generated,
+        hypotheses_failed: outcome.failed,
+        recipes_staged: outcome.staged,
+        errors: outcome.errors.clone(),
+    }
+}
+
+/// The real mining → generation → staging pipeline (production path).
+///
+/// Loads entity-linked observation event streams over a long lookback window,
+/// mines statistically robust cross-signal candidates (Fisher exact + cross-split
+/// stability + Benjamini-Hochberg FDR), persists them for audit, and generates +
+/// stages LLM-backed recipe hypotheses for human review.
+///
+/// `mode` selects the generator for the (already capped) mined candidates: the
+/// scheduled pattern-mining cycle keeps the single-completion batch generator,
+/// while the manual hypothesis-generation job uses the bounded agentic loop.
+///
+/// Assemble the statistical-miner gate configuration from the (clamped)
+/// environment-backed tunables. Defaults are identical to
+/// `MinerConfig::default()`; operators may calibrate sensitivity without a
+/// recompile. We still `validate()` defensively and fall back to the strict
+/// library defaults if a hand-edited environment ever produces an invalid
+/// combination, logging the reason.
+#[cfg(feature = "llm")]
+async fn run_mining_pipeline(
+    store: &Arc<PgStore>,
+    mode: HypothesisGenerationMode,
+) -> MiningPipeline {
+    use apex_learning::miner::MinerConfig;
 
     let lookback_days = *crate::config::PATTERN_MINING_LOOKBACK_DAYS;
     let min_events = *crate::config::PATTERN_MINING_MIN_EVENTS;
@@ -1795,32 +1997,14 @@ async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRu
     let max_candidates = *crate::config::PATTERN_MINING_MAX_CANDIDATES;
     let max_q = *crate::config::PATTERN_MINING_MAX_Q;
 
-    // Assemble the statistical-miner gate configuration from the (clamped)
-    // environment-backed tunables. Defaults are identical to
-    // `MinerConfig::default()`; operators may calibrate sensitivity without a
-    // recompile. We still `validate()` defensively and fall back to the strict
-    // library defaults if a hand-edited environment ever produces an invalid
-    // combination, logging the reason.
-    let miner_config = {
-        let candidate = MinerConfig {
-            max_lag_days: (*crate::config::PATTERN_MINING_MAX_LAG_DAYS) as i32,
-            min_effect: *crate::config::PATTERN_MINING_MIN_EFFECT,
-            max_p: *crate::config::PATTERN_MINING_MAX_P,
-            min_stability: *crate::config::PATTERN_MINING_MIN_STABILITY,
-            time_splits: *crate::config::PATTERN_MINING_TIME_SPLITS,
-            entity_min_count: *crate::config::PATTERN_MINING_ENTITY_MIN_COUNT,
-        };
-        let errors = candidate.validate();
-        if errors.is_empty() {
-            candidate
-        } else {
-            tracing::warn!(
-                ?errors,
-                "pattern_mining: invalid miner config from environment; using strict defaults"
-            );
-            MinerConfig::default()
-        }
-    };
+    let miner_config = resolve_miner_config(MinerConfig {
+        max_lag_days: (*crate::config::PATTERN_MINING_MAX_LAG_DAYS) as i32,
+        min_effect: *crate::config::PATTERN_MINING_MIN_EFFECT,
+        max_p: *crate::config::PATTERN_MINING_MAX_P,
+        min_stability: *crate::config::PATTERN_MINING_MIN_STABILITY,
+        time_splits: *crate::config::PATTERN_MINING_TIME_SPLITS,
+        entity_min_count: *crate::config::PATTERN_MINING_ENTITY_MIN_COUNT,
+    });
     tracing::info!(
         max_lag_days = miner_config.max_lag_days,
         min_effect = miner_config.min_effect,
@@ -1850,21 +2034,18 @@ async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRu
     {
         Ok(s) => s,
         Err(e) => {
-            run.fail(&format!(
-                "pattern_mining: failed to load observation streams: {e}"
-            ));
-            return run;
+            return MiningPipeline::LoadFailed {
+                error: e.to_string(),
+            };
         }
     };
 
     if streams.len() < 2 {
-        run.skip(&format!(
-            "pattern_mining: insufficient observation streams ({} with >= {} events over {} days)",
-            streams.len(),
+        return MiningPipeline::InsufficientStreams {
+            streams: streams.len(),
             min_events,
-            lookback_days
-        ));
-        return run;
+            lookback_days,
+        };
     }
 
     // 2. Mine statistically robust candidates across all ordered signal pairs.
@@ -1884,7 +2065,7 @@ async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRu
     }
 
     // 4. LLM-backed hypothesis generation + staging.
-    let outcome = generate_and_stage_hypotheses(store, &candidates).await;
+    let outcome = generate_and_stage_hypotheses(store, &candidates, mode).await;
     tracing::info!(
         candidates = candidates.len(),
         generated = outcome.generated,
@@ -1893,69 +2074,108 @@ async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRu
         "pattern_mining: hypothesis generation complete"
     );
 
-    let candidates_found = candidates.len() as u64;
-    finalize_mining_run(
-        &mut run,
-        &MiningStageResult {
+    MiningPipeline::Completed {
+        candidates_found: candidates.len() as u64,
+        outcome,
+    }
+}
+
+/// Scheduled pattern-mining entry point: runs the real mining pipeline and
+/// reports the mining funnel.
+#[cfg(feature = "llm")]
+async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+    let mut run = JobRun::new(kind.clone());
+    run.start();
+
+    match run_mining_pipeline(store, HypothesisGenerationMode::Batch).await {
+        MiningPipeline::LoadFailed { error } => {
+            run.fail(&format!(
+                "pattern_mining: failed to load observation streams: {error}"
+            ));
+        }
+        MiningPipeline::InsufficientStreams {
+            streams,
+            min_events,
+            lookback_days,
+        } => {
+            run.skip(&format!(
+                "pattern_mining: insufficient observation streams ({} with >= {} events over {} days)",
+                streams, min_events, lookback_days
+            ));
+        }
+        MiningPipeline::Completed {
             candidates_found,
-            candidates_passed_gates: candidates_found,
-            hypotheses_generated: outcome.generated,
-            recipes_staged: outcome.staged,
-            errors: outcome.errors,
-        },
-    );
+            outcome,
+        } => {
+            finalize_mining_run(
+                &mut run,
+                &MiningStageResult {
+                    candidates_found,
+                    candidates_passed_gates: candidates_found,
+                    hypotheses_generated: outcome.generated,
+                    recipes_staged: outcome.staged,
+                    errors: outcome.errors,
+                },
+            );
+        }
+    }
     run
 }
 
+/// Manual hypothesis-generation entry point. Runs the same real
+/// mining → generation → staging pipeline as the scheduled pattern-mining
+/// cycle (instead of re-reading aggregate counters) and reports the counts the
+/// run actually produced.
 pub(super) async fn run_hypothesis_generation(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     #[cfg(feature = "llm")]
     {
-        let since = Utc::now() - chrono::Duration::hours(24);
-        let mining_stats = match super::resilience::run_stage_with_retry(
-            "hypothesis_generation.load_stats",
-            NIGHTLY_STAGE_TIMEOUT,
-            NIGHTLY_STAGE_ATTEMPTS,
-            |_| async { store.get_mining_stats(since).await },
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
+        // Manual runs use the bounded agentic generator; the scheduled
+        // pattern-mining cycle (`run_pattern_mining_mined`) keeps the batch
+        // generator, so manual usage cannot change the scheduled cost profile.
+        match run_mining_pipeline(store, HypothesisGenerationMode::Agentic).await {
+            MiningPipeline::LoadFailed { error } => {
                 run.fail(&format!(
-                    "hypothesis_generation: failed to load mining stats from DB: {e}"
+                    "hypothesis_generation: failed to load observation streams: {error}"
                 ));
-                return run;
             }
-        };
-        let stage = process_hypothesis_generation_stage(&HypothesisGenerationStageResult {
-            candidates_submitted: mining_stats.candidates_passed_gates,
-            hypotheses_generated: mining_stats.hypotheses_generated,
-            hypotheses_failed: mining_stats
-                .candidates_passed_gates
-                .saturating_sub(mining_stats.hypotheses_generated),
-            recipes_staged: mining_stats.recipes_staged,
-            errors: Vec::new(),
-        });
-        match stage.run.status {
-            apex_worker::scheduler::JobStatus::Succeeded { .. } => {
-                run.succeed(
-                    stage.items,
-                    &format!("hypothesis gen completed: {}", stage.run.notes),
-                );
+            MiningPipeline::InsufficientStreams {
+                streams,
+                min_events,
+                lookback_days,
+            } => {
+                run.skip(&format!(
+                    "hypothesis_generation: insufficient observation streams ({} with >= {} events over {} days); nothing to generate",
+                    streams, min_events, lookback_days
+                ));
             }
-            apex_worker::scheduler::JobStatus::Degraded { ref reason, .. } => {
-                run.degrade(
-                    stage.items,
-                    &format!("hypothesis gen degraded: {reason} ({})", stage.run.notes),
-                );
-            }
-            apex_worker::scheduler::JobStatus::Failed { .. } => {
-                run.fail(&format!("hypothesis gen failed: {}", stage.run.notes));
-            }
-            _ => {
-                run.skip(&format!("hypothesis gen not terminal: {}", stage.run.notes));
+            MiningPipeline::Completed {
+                candidates_found: _,
+                outcome,
+            } => {
+                let stage_result = hypothesis_stage_result(&outcome);
+                let stage = process_hypothesis_generation_stage(&stage_result);
+                match stage.run.status {
+                    apex_worker::scheduler::JobStatus::Succeeded { .. } => {
+                        run.succeed(
+                            stage.items,
+                            &format!("hypothesis gen completed: {}", stage.run.notes),
+                        );
+                    }
+                    apex_worker::scheduler::JobStatus::Degraded { ref reason, .. } => {
+                        run.degrade(
+                            stage.items,
+                            &format!("hypothesis gen degraded: {reason} ({})", stage.run.notes),
+                        );
+                    }
+                    apex_worker::scheduler::JobStatus::Failed { .. } => {
+                        run.fail(&format!("hypothesis gen failed: {}", stage.run.notes));
+                    }
+                    _ => {
+                        run.skip(&format!("hypothesis gen not terminal: {}", stage.run.notes));
+                    }
+                }
             }
         }
     }
@@ -2030,19 +2250,6 @@ pub(super) async fn run_feature_drift_check(kind: &JobKind, store: &Arc<PgStore>
 // Pattern-mining helpers (LLM build only)
 // ────────────────────────────────────────────
 
-/// Aggregate outcome of the hypothesis generation + staging stage.
-#[cfg(feature = "llm")]
-struct HypothesisStageOutcome {
-    /// Number of candidates for which the LLM produced a validated hypothesis.
-    generated: u64,
-    /// Number of validated hypotheses successfully persisted as staging recipes.
-    staged: u64,
-    /// Number of candidates that failed validation or hit an LLM error.
-    failed: u64,
-    /// Hard errors (LLM/infra/persistence) surfaced to the stage reporter.
-    errors: Vec<String>,
-}
-
 /// Enumerate every ordered `(outcome, signal)` observation-type pair, mine each
 /// for a statistically robust lagged correlation, then apply FDR correction,
 /// dedup overlapping candidates, rank by composite score, and cap the result.
@@ -2115,8 +2322,18 @@ fn mined_candidate_row(
     }
 }
 
-/// Generate recipe hypotheses for the mined candidates via the LLM and persist
-/// each validated hypothesis as a `staging` recipe for human review.
+/// Generate recipe hypotheses for the mined candidates and persist each
+/// validated hypothesis as a `staging` recipe for human review.
+///
+/// `mode` picks the generator: the scheduled `PatternMining` cycle passes
+/// [`HypothesisGenerationMode::Batch`] (one JSON completion per candidate,
+/// unchanged cost profile), while the manual `HypothesisGeneration` job passes
+/// [`HypothesisGenerationMode::Agentic`], which runs the bounded agent loop
+/// (with the read-only store tools) for at most
+/// [`MAX_AGENTIC_CANDIDATES`] candidates. Both generators produce the same
+/// [`HypothesisResult`] vocabulary and both flow through
+/// [`stage_hypothesis_results`], so validation, code namespacing and staging
+/// are identical — the agentic path cannot bypass them.
 ///
 /// Staging recipes are a review/metadata store — recipe firing is driven by the
 /// seed YAML, not the DB — so staging here never auto-injects into the live
@@ -2127,22 +2344,33 @@ fn mined_candidate_row(
 async fn generate_and_stage_hypotheses(
     store: &Arc<PgStore>,
     candidates: &[apex_learning::miner::PatternCandidate],
+    mode: HypothesisGenerationMode,
 ) -> HypothesisStageOutcome {
-    use apex_learning::generate::{generate_hypotheses_batch, HypothesisResult};
+    // The agentic path costs up to `AGENTIC_MAX_ITERATIONS` model calls per
+    // candidate; bound it to the ranked head of the candidate list. The batch
+    // path keeps every mined candidate.
+    let processed: &[apex_learning::miner::PatternCandidate] = match mode {
+        HypothesisGenerationMode::Batch => candidates,
+        HypothesisGenerationMode::Agentic => {
+            &candidates[..candidates.len().min(MAX_AGENTIC_CANDIDATES)]
+        }
+    };
 
     let mut outcome = HypothesisStageOutcome {
+        submitted: processed.len() as u64,
         generated: 0,
         staged: 0,
         failed: 0,
         errors: Vec::new(),
     };
-    if candidates.is_empty() {
+    if processed.is_empty() {
         return outcome;
     }
 
-    // Existing recipe codes drive collision-free namespacing; a failed read
-    // must not be treated as "no recipes exist" (that would produce colliding
-    // codes), so the stage records the input failure and stops.
+    // Existing recipe codes drive collision-free namespacing and duplicate-id
+    // rejection; a failed read must not be treated as "no recipes exist" (that
+    // would produce colliding codes), so the stage records the input failure
+    // and stops.
     let existing_codes = match store.list_recipe_codes().await {
         Ok(codes) => codes,
         Err(error) => {
@@ -2153,182 +2381,29 @@ async fn generate_and_stage_hypotheses(
             return outcome;
         }
     };
-    let mut existing_set: HashSet<String> = existing_codes.iter().cloned().collect();
 
     let client = crate::build_quality_llm_client();
     // #92: hypothesis generation issues model calls for the whole batch under
-    // one process-wide permit.
+    // one process-wide permit. The agentic path can run up to
+    // `AGENTIC_MAX_ITERATIONS` calls per candidate, so the permit is acquired
+    // exactly once per batch — never per candidate (that would let one batch
+    // starve the shared LLM slot).
     let _llm_slot = apex_worker::llm_concurrency::acquire_llm_slot().await;
-    let results = generate_hypotheses_batch(client.as_ref(), candidates, &existing_codes).await;
+    let registry = super::agent_tools::build_store_tool_registry(store.clone());
 
-    for (result, candidate) in results.iter().zip(candidates.iter()) {
-        match result {
-            HypothesisResult::Success(hyp) => {
-                outcome.generated += 1;
-                let code = namespace_recipe_code(&hyp.id, &existing_set);
-                let name = mined_recipe_name(hyp);
-                let definition = hypothesis_to_definition(&code, hyp, candidate);
-                match store
-                    .upsert_recipe_definition(&code, &name, "staging", &definition)
-                    .await
-                {
-                    Ok(()) => {
-                        outcome.staged += 1;
-                        existing_set.insert(code);
-                    }
-                    Err(e) => {
-                        outcome.errors.push(format!("stage '{code}': {e}"));
-                    }
-                }
-            }
-            HypothesisResult::ValidationFailed {
-                candidate_outcome,
-                issues,
-            } => {
-                outcome.failed += 1;
-                tracing::warn!(
-                    outcome = %candidate_outcome,
-                    issues = ?issues,
-                    "pattern_mining: hypothesis validation failed"
-                );
-            }
-            HypothesisResult::LlmError {
-                candidate_outcome,
-                error,
-            } => {
-                outcome.failed += 1;
-                tracing::warn!(
-                    outcome = %candidate_outcome,
-                    error = %error,
-                    "pattern_mining: hypothesis LLM error"
-                );
-                outcome
-                    .errors
-                    .push(format!("llm '{candidate_outcome}': {error}"));
-            }
-        }
-    }
+    let results =
+        generate_hypotheses_for_mode(mode, client.as_ref(), &registry, processed, &existing_codes)
+            .await;
 
-    outcome
-}
-
-/// Derive a stable, unique, namespaced recipe code for a mined hypothesis.
-///
-/// The raw LLM id is lower-cased and sanitized to `[a-z0-9_]`, prefixed with
-/// `mined_` (so it can never collide with curated seed codes), and suffixed
-/// with `_2`, `_3`, … if needed to stay unique within the known code set.
-#[cfg(feature = "llm")]
-fn namespace_recipe_code(raw_id: &str, existing: &HashSet<String>) -> String {
-    let sanitized: String = raw_id
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect();
-    let sanitized = sanitized.trim_matches('_');
-
-    let base = if sanitized.is_empty() {
-        "mined_recipe".to_string()
-    } else if sanitized.starts_with("mined_") {
-        sanitized.to_string()
-    } else {
-        format!("mined_{sanitized}")
-    };
-
-    if !existing.contains(&base) {
-        return base;
-    }
-    let mut suffix = 2u32;
-    loop {
-        let candidate = format!("{base}_{suffix}");
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        suffix += 1;
-    }
-}
-
-/// Build a concise, human-readable display name for a mined recipe.
-#[cfg(feature = "llm")]
-fn mined_recipe_name(hyp: &apex_learning::hypothesis::RecipeHypothesis) -> String {
-    let signals = if hyp.signals.is_empty() {
-        "signal".to_string()
-    } else {
-        hyp.signals.join(" + ")
-    };
-    format!("Mined: {} <- {}", hyp.outcome, signals)
-        .chars()
-        .take(180)
-        .collect()
-}
-
-/// Serialize an LLM hypothesis into a `SeedRecipe`-shaped definition document
-/// (so a future promote step can load it verbatim), enriched with a
-/// `provenance` block capturing the mined statistics. The extra `provenance`
-/// key is ignored by `SeedRecipe` deserialization but available to review tools.
-#[cfg(feature = "llm")]
-fn hypothesis_to_definition(
-    code: &str,
-    hyp: &apex_learning::hypothesis::RecipeHypothesis,
-    candidate: &apex_learning::miner::PatternCandidate,
-) -> serde_json::Value {
-    let transforms: Vec<serde_json::Value> = hyp
-        .transforms
-        .iter()
-        .map(|t| match t.days {
-            Some(days) => serde_json::json!({ "type": t.kind, "days": days }),
-            None => serde_json::json!({ "type": t.kind }),
-        })
-        .collect();
-
-    let (a, b, c, d) = candidate.contingency;
-
-    serde_json::json!({
-        "id": code,
-        "name": mined_recipe_name(hyp),
-        "category": "mined",
-        "join": [hyp.join.clone()],
-        "outcome": hyp.outcome.clone(),
-        "signals": hyp.signals.clone(),
-        "transforms": transforms,
-        "test": { "type": hyp.test_type.clone() },
-        "thresholds": {
-            "min_effect": hyp.thresholds.min_effect,
-            "max_p_value": hyp.thresholds.max_p_value,
-            "min_stability": hyp.thresholds.min_stability,
-            "max_false_alarm_rate": hyp.thresholds.max_false_alarm_rate,
-        },
-        "narrative_template": hyp.narrative_template.clone(),
-        "action_playbook": hyp.action_playbook.clone(),
-        "applicability": {
-            "geos": hyp.applicability.geos.clone(),
-            "industries": hyp.applicability.industries.clone(),
-            "notes": hyp.applicability.notes.clone(),
-        },
-        "provenance": {
-            "source": "pattern_mining",
-            "mined_at": Utc::now().to_rfc3339(),
-            "candidate": {
-                "outcome": candidate.outcome.clone(),
-                "signals": candidate.signals.clone(),
-                "best_lag_days": candidate.best_lag_days,
-                "effect_size": candidate.effect_size,
-                "odds_ratio_ci_low": candidate.odds_ratio_ci_low,
-                "odds_ratio_ci_high": candidate.odds_ratio_ci_high,
-                "minimum_detectable_effect": candidate.minimum_detectable_effect,
-                "p_value": candidate.p_value,
-                "q_value": candidate.q_value,
-                "stability": candidate.stability,
-                "entity_coverage": candidate.entity_coverage,
-                "contingency": [a, b, c, d],
-            }
-        }
-    })
+    stage_hypothesis_results(store.as_ref(), processed, &results, &existing_codes).await
 }
 
 #[cfg(all(test, feature = "llm"))]
 mod pattern_mining_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::super::agent_tools::{
+        hypothesis_to_definition, mined_recipe_name, namespace_recipe_code,
+    };
     use super::*;
     use apex_learning::hypothesis::{
         Applicability, HypothesisThresholds, RecipeHypothesis, TransformSpec,
@@ -2492,6 +2567,84 @@ mod pattern_mining_tests {
         let first = mine_pattern_candidates(&streams, &cfg, 0.99, 10);
         let second = mine_pattern_candidates(&streams, &cfg, 0.99, 10);
         assert_eq!(key(&first), key(&second));
+    }
+
+    #[test]
+    fn resolve_miner_config_keeps_valid_candidate_and_falls_back_on_invalid() {
+        let valid = permissive_config();
+        let resolved = resolve_miner_config(valid.clone());
+        assert_eq!(resolved.max_lag_days, valid.max_lag_days);
+        assert_eq!(resolved.min_effect, valid.min_effect);
+        assert_eq!(resolved.time_splits, valid.time_splits);
+        assert_eq!(resolved.entity_min_count, valid.entity_min_count);
+
+        let invalid = MinerConfig {
+            max_lag_days: 0, // rejected by MinerConfig::validate
+            ..permissive_config()
+        };
+        assert!(!invalid.validate().is_empty());
+        let resolved = resolve_miner_config(invalid);
+        let defaults = MinerConfig::default();
+        assert_eq!(resolved.max_lag_days, defaults.max_lag_days);
+        assert_eq!(resolved.min_effect, defaults.min_effect);
+        assert_eq!(resolved.time_splits, defaults.time_splits);
+    }
+
+    #[test]
+    fn hypothesis_stage_result_reports_pipeline_counts_not_stats() {
+        let outcome = HypothesisStageOutcome {
+            submitted: 7,
+            generated: 3,
+            staged: 2,
+            failed: 1,
+            errors: vec!["llm 'RfQPosted': timeout".to_string()],
+        };
+        let stage = hypothesis_stage_result(&outcome);
+        assert_eq!(
+            stage.candidates_submitted, 7,
+            "submitted = candidates actually handed to the generator"
+        );
+        assert_eq!(stage.hypotheses_generated, 3);
+        assert_eq!(stage.hypotheses_failed, 1);
+        assert_eq!(stage.recipes_staged, 2);
+        assert_eq!(stage.errors, vec!["llm 'RfQPosted': timeout".to_string()]);
+        assert!(stage.validate().is_ok());
+
+        // A run that mined nothing reports zero submitted (the stage processor
+        // then skips it) rather than resurrecting stale DB counters.
+        let empty = HypothesisStageOutcome {
+            submitted: 0,
+            generated: 0,
+            staged: 0,
+            failed: 0,
+            errors: Vec::new(),
+        };
+        let stage = hypothesis_stage_result(&empty);
+        assert_eq!(stage.candidates_submitted, 0);
+        assert_eq!(stage.hypotheses_generated, 0);
+        assert_eq!(stage.recipes_staged, 0);
+        assert!(stage.validate().is_ok());
+    }
+
+    #[test]
+    fn agentic_submission_count_is_the_capped_processed_count() {
+        // The manual agentic path submits at most MAX_AGENTIC_CANDIDATES to the
+        // model; the stage report must state the processed count, never the
+        // full mined count, so the funnel stays arithmetically honest.
+        let outcome = HypothesisStageOutcome {
+            submitted: MAX_AGENTIC_CANDIDATES as u64,
+            generated: 1,
+            staged: 1,
+            failed: 3,
+            errors: Vec::new(),
+        };
+        let stage = hypothesis_stage_result(&outcome);
+        assert_eq!(stage.candidates_submitted, 4);
+        assert!(stage.validate().is_ok());
+        assert_eq!(
+            stage.hypotheses_generated + stage.hypotheses_failed,
+            stage.candidates_submitted
+        );
     }
 
     #[test]
@@ -2989,10 +3142,13 @@ mod browser_dispatch_tests {
 
         let client = CrawlClient::new(CrawlClientConfig::default())
             .expect("crawl client builds without network access");
-        let governor = CrawlGovernor::with_limits(CRAWL_DOMAIN_RPS, GLOBAL_HTTP_CONCURRENCY as u32);
+        let governor = CrawlGovernor::with_limits(
+            governor_domain_rps(CrawlSettings::default().requests_per_second),
+            GLOBAL_HTTP_CONCURRENCY as u32,
+        );
         let permits = Arc::new(Semaphore::new(BROWSER_CONCURRENCY));
 
-        let outcome = fetch_source(&client, None, &governor, &permits, &source, 0).await;
+        let outcome = fetch_source(&client, None, false, &governor, &permits, &source, 0).await;
         match outcome.result {
             Err(failure) => {
                 assert_eq!(failure.kind, SourceFailureKind::BrowserUnavailable);
@@ -3013,6 +3169,129 @@ mod browser_dispatch_tests {
         assert!(
             accepted.is_err(),
             "Browser-strategy source silently fell back to plain HTTP"
+        );
+    }
+
+    #[test]
+    fn browser_capability_requires_config_flag_and_renderer() {
+        assert!(browser_capability_available(true, true));
+        assert!(
+            !browser_capability_available(true, false),
+            "a configured-but-absent renderer is still unavailable"
+        );
+        assert!(
+            !browser_capability_available(false, true),
+            "enable_headless_browser=false must be authoritative over renderer presence"
+        );
+        assert!(!browser_capability_available(false, false));
+    }
+
+    #[test]
+    fn configured_browser_off_marks_browser_strategy_source_unavailable() {
+        let source = browser_source("http://example.invalid/js-only");
+        let dispatch = dispatch_source_fetch(&source, browser_capability_available(false, true));
+        match dispatch {
+            Err(error) => assert!(
+                error.to_string().contains("browser"),
+                "the capability error must explain the missing renderer: {error}"
+            ),
+            Ok(other) => panic!("disabled headless browser must not dispatch {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod crawl_settings_tests {
+    use super::*;
+    use apex_crawl::proxy::ProxyRotator;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn crawl_settings_consume_app_config_fields() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        const KEYS: [&str; 5] = [
+            "DATABASE_URL",
+            "DEFAULT_RPS",
+            "PROXY_POOL_SIZE",
+            "ENABLE_PROXY_ROTATION",
+            "ENABLE_HEADLESS_BROWSER",
+        ];
+        let saved: Vec<(&str, Option<String>)> = KEYS
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect();
+        for key in KEYS {
+            std::env::remove_var(key);
+        }
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://test:test@localhost/crawl-settings",
+        );
+        std::env::set_var("DEFAULT_RPS", "0.2");
+        std::env::set_var("PROXY_POOL_SIZE", "7");
+        std::env::set_var("ENABLE_PROXY_ROTATION", "true");
+        std::env::set_var("ENABLE_HEADLESS_BROWSER", "true");
+
+        let config = AppConfig::from_env().expect("test config loads");
+        let settings = CrawlSettings::from_app_config(&config);
+        assert_eq!(settings.requests_per_second, 0.2);
+        assert_eq!(settings.proxy_pool_size, 7);
+        assert!(settings.proxy_rotation_enabled);
+        assert!(settings.browser_enabled);
+
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_crawl_config_passes_configured_rate_and_gates_proxy() {
+        let settings = CrawlSettings {
+            requests_per_second: 0.2,
+            proxy_pool_size: 3,
+            proxy_rotation_enabled: false,
+            browser_enabled: false,
+        };
+        let rotator = Arc::new(tokio::sync::Mutex::new(ProxyRotator::with_capacity(
+            true, None, 3,
+        )));
+
+        let disabled = crawl_client_config(&settings, Some(rotator.clone()));
+        assert!(
+            disabled.proxy_rotator.is_none(),
+            "rotation disabled must construct the client without a proxy rotator"
+        );
+        assert_eq!(
+            disabled.rate_limits.lock().await.domain_interval(),
+            Duration::from_secs(5),
+            "the configured 0.2 req/s must reach the crawl client's rate limiter"
+        );
+
+        let enabled_settings = CrawlSettings {
+            proxy_rotation_enabled: true,
+            ..settings
+        };
+        let enabled = crawl_client_config(&enabled_settings, Some(rotator));
+        assert!(
+            enabled.proxy_rotator.is_some(),
+            "rotation enabled must carry the rotator into the client"
+        );
+    }
+
+    #[test]
+    fn governor_rate_never_runs_stricter_than_configured() {
+        assert_eq!(governor_domain_rps(0.2), 1);
+        assert_eq!(governor_domain_rps(1.0), 1);
+        assert_eq!(governor_domain_rps(2.5), 3);
+        assert_eq!(
+            governor_domain_rps(f64::NAN),
+            1,
+            "invalid rate falls back to the documented default rate"
         );
     }
 }

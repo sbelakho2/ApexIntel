@@ -18,6 +18,5 @@ crates/api/src/api_handlers/insights.rs | record_insight_feedback | 1 | secondar
 crates/api/src/api_handlers/preferences.rs | record_audit_event | 1 | audit-trail write after the preferences row was persisted
 crates/api/src/api_handlers/recipes.rs | record_audit_event | 2 | audit-trail write after the recipe lifecycle mutation persisted
 crates/api/src/api_handlers/warnings.rs | record_audit_event | 4 | audit-trail write after the primary warning mutation persisted
-crates/api/src/web/insights.rs | create_notification | 2 | notification fan-out after the bookmark/annotation mutation persisted
 crates/api/src/web/insights.rs | record_insight_feedback | 1 | secondary bookmark-feedback record after bookmark_insight_scoped persisted
 crates/api/src/web/warnings.rs | create_notification | 3 | notification fan-out after the acknowledge/annotation mutation persisted

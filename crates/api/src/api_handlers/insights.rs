@@ -466,35 +466,6 @@ pub(crate) async fn unbookmark_insight(
 }
 
 #[cfg_attr(not(feature = "llm"), allow(dead_code))]
-fn strip_analysis_label(s: &str) -> String {
-    let mut result = s.to_string();
-    if result.len() > 2 && result.as_bytes()[0].is_ascii_digit() && result.as_bytes()[1] == b'.' {
-        result = result[2..].trim().to_string();
-    }
-    let labels = [
-        "SITUATION:",
-        "ANALYSIS:",
-        "RISK:",
-        "ACTION:",
-        "THREAT:",
-        "EVIDENCE:",
-        "IMPACT:",
-        "RESPONSE:",
-        "**SITUATION:**",
-        "**ANALYSIS:**",
-        "**RISK:**",
-        "**ACTION:**",
-    ];
-    for label in labels {
-        if result.starts_with(label) {
-            result = result[label.len()..].trim().to_string();
-            break;
-        }
-    }
-    result
-}
-
-#[cfg_attr(not(feature = "llm"), allow(dead_code))]
 fn strip_warning_label(s: &str) -> String {
     let patterns = [
         "THREAT:",
@@ -516,9 +487,19 @@ fn strip_warning_label(s: &str) -> String {
     result
 }
 
+/// POST /api/insights/:id/analyze — enqueue a durable analysis run (#169).
+///
+/// The request never runs the model: it verifies the insight exists, inserts
+/// a `queued` run (deduplicating onto an in-flight one) and the payload-bound
+/// worker trigger in one transaction, then answers `202 Accepted` with
+/// `{run_id, status}`. Poll `GET /api/insights/:id/analyze/latest` for the
+/// status and the persisted result. The model call itself runs in the worker
+/// (`JobKind::InsightAnalysis`), so a client disconnect can no longer discard
+/// the analysis.
 #[cfg(feature = "llm")]
 pub(crate) async fn analyze_insight(
     State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let start = Instant::now();
@@ -533,13 +514,12 @@ pub(crate) async fn analyze_insight(
         }
     };
 
-    let runtime = match state.llm.as_ref() {
-        Some(rt) => rt,
-        None => return llm_service_unavailable("LLM not configured"),
-    };
+    if state.llm.is_none() {
+        return llm_service_unavailable("LLM not configured");
+    }
 
-    let insight = match state.store.get_insight(uid).await {
-        Ok(Some(i)) => i,
+    match state.store.get_insight(uid).await {
+        Ok(Some(_)) => {}
         Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
@@ -553,306 +533,107 @@ pub(crate) async fn analyze_insight(
                 Json(error_response(ApiError::internal("Failed to load insight"))),
             );
         }
-    };
-
-    let entity_ids: Vec<Uuid> = insight.entity_ids.clone().unwrap_or_default();
-
-    let company_names = match state.store.get_company_names_by_ids(&entity_ids).await {
-        Ok(names) => names,
-        Err(err) => {
-            tracing::error!(request_id = %request_id, "analyze_insight: get_company_names_by_ids failed: {err:#}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal(
-                    "Failed to load insight entities",
-                ))),
-            );
-        }
-    };
-    let entity_names: Vec<String> = company_names
-        .iter()
-        .map(|(_, name, _, _)| name.clone())
-        .collect();
-
-    let mut all_observations = Vec::new();
-    for eid in &entity_ids {
-        let obs = match state.store.get_observations_by_entity(*eid, 30).await {
-            Ok(obs) => obs,
-            Err(err) => {
-                tracing::error!(request_id = %request_id, "analyze_insight: get_observations_by_entity failed: {err:#}");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(error_response(ApiError::internal(
-                        "Failed to load insight evidence",
-                    ))),
-                );
-            }
-        };
-        all_observations.extend(obs);
-    }
-    all_observations.sort_by_key(|a| std::cmp::Reverse(a.ts_utc));
-    all_observations.truncate(40);
-
-    {
-        let mut seen_types = std::collections::HashSet::new();
-        all_observations.retain(|obs| {
-            let key = format!(
-                "{}:{}",
-                obs.observation_type,
-                obs.value.to_string().chars().take(80).collect::<String>()
-            );
-            seen_types.insert(key)
-        });
     }
 
-    let related_warnings = match state
+    match state
         .store
-        .get_warnings_by_entity_ids(&entity_ids, 10)
+        .enqueue_insight_analysis(uid, Some(auth_ctx.user_id.as_str()))
         .await
     {
-        Ok(warnings) => warnings,
+        Ok((run, deduplicated)) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_latency("analyze_insight", duration_ms);
+            (
+                StatusCode::ACCEPTED,
+                Json(success_with_meta(
+                    serde_json::json!({
+                        "run_id": run.id,
+                        "insight_id": run.insight_id,
+                        "status": run.status,
+                        "deduplicated": deduplicated,
+                    }),
+                    ResponseMeta::now()
+                        .with_request_id(request_id)
+                        .with_duration(duration_ms),
+                )),
+            )
+        }
         Err(err) => {
-            tracing::error!(request_id = %request_id, "analyze_insight: get_warnings_by_entity_ids failed: {err:#}");
-            return (
+            tracing::error!(request_id = %request_id, "analyze_insight: enqueue failed: {err:#}");
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(error_response(ApiError::internal(
-                    "Failed to load related warnings",
+                    "Failed to enqueue insight analysis",
                 ))),
-            );
+            )
+        }
+    }
+}
+
+/// GET /api/insights/:id/analyze/latest — the most recent durable
+/// insight-analysis run for an insight, whatever its status (#169).
+///
+/// `result` carries the persisted analysis JSON once the run succeeded;
+/// `error` carries the worker's recorded failure reason otherwise. Answers
+/// 404 when the insight has never been analyzed.
+pub(crate) async fn get_latest_insight_analysis_run(
+    State(state): State<AppState>,
+    Extension(_auth_ctx): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let uid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid UUID"))),
+            )
         }
     };
-    let related_insights = match state.store.get_related_insights(&entity_ids, uid, 5).await {
-        Ok(insights) => insights,
+
+    match state.store.get_latest_insight_analysis_run(uid).await {
+        Ok(Some(run)) => (
+            StatusCode::OK,
+            Json(success_with_meta(
+                insight_analysis_run_to_json(&run),
+                ResponseMeta::now(),
+            )),
+        ),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(error_response(ApiError::not_found(
+                "Insight analysis run",
+                &id,
+            ))),
+        ),
         Err(err) => {
-            tracing::error!(request_id = %request_id, "analyze_insight: get_related_insights failed: {err:#}");
-            return (
+            tracing::error!("get_latest_insight_analysis_run failed: {err:#}");
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(error_response(ApiError::internal(
-                    "Failed to load related insights",
+                    "Failed to load insight analysis run",
                 ))),
-            );
-        }
-    };
-    let evidence_urls = insight.evidence_urls.clone().unwrap_or_default();
-    let source_count = evidence_urls.len();
-
-    let mut context_parts: Vec<String> = Vec::new();
-    if !all_observations.is_empty() {
-        context_parts.push(format!("DATA ({} observations):", all_observations.len()));
-        for (i, obs) in all_observations.iter().take(6).enumerate() {
-            let text = obs
-                .value
-                .get("excerpt")
-                .or(obs.value.get("text"))
-                .or(obs.value.get("summary"))
-                .or(obs.value.get("title"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let truncated: String = text.chars().take(100).collect();
-            context_parts.push(format!(
-                "[O{}] {} — {}",
-                i + 1,
-                obs.observation_type,
-                truncated
-            ));
+            )
         }
     }
+}
 
-    for (i, warning) in related_warnings.iter().take(3).enumerate() {
-        context_parts.push(format!(
-            "[W{}] {} ({})",
-            i + 1,
-            warning.title,
-            warning.severity
-        ));
-    }
-
-    let context_block = context_parts.join("\n");
-    let entity_names_str = if entity_names.is_empty() {
-        "unspecified entities".to_string()
-    } else {
-        entity_names.join(", ")
-    };
-    let region = insight.region.as_deref().unwrap_or("Global");
-    let insight_type = insight.insight_type.as_deref().unwrap_or("general");
-    let system_prompt = concat!(
-        "You are a senior OSINT intelligence analyst specializing in electronics, defense, and supply chains. ",
-        "Write a brief analytical report. Be specific — name companies, products, events, and dates. ",
-        "Cite data references like [O1], [W1] where relevant."
-    );
-
-    let summary_truncated: String = insight.summary.chars().take(400).collect();
-    let user_prompt = format!(
-        r#"Write a 4-paragraph intelligence analysis.
-
-SUBJECT: {entities} ({insight_type}, {region})
-CONFIDENCE: {confidence:.0}%
-
-BRIEFING: {summary}
-
-{context}
-
-Write EXACTLY 4 paragraphs, each on a new line:
-1. SITUATION: What is happening and why it matters (3-4 sentences)
-2. ANALYSIS: What the data tells us — correlate observations, identify patterns (3-4 sentences)
-3. RISK: What could go wrong, which sectors are affected, timeline (2-3 sentences)
-4. ACTION: Specific recommendations and what to monitor (2-3 sentences)"#,
-        entities = entity_names_str,
-        insight_type = insight_type,
-        region = region,
-        confidence = insight.confidence.unwrap_or(0.0) * 100.0,
-        summary = summary_truncated,
-        context = context_block,
-    );
-
-    let mut model_config = runtime.primary.clone();
-    model_config.temperature = 0.5;
-    model_config.max_tokens = 1024;
-    model_config.timeout_seconds = 300;
-    let client = OpenAiCompatibleClient::new(model_config);
-
-    let raw_analysis = match client.generate_text(system_prompt, &user_prompt).await {
-        Ok(text) => text,
-        Err(err) => {
-            tracing::error!(request_id = %request_id, "LLM analysis failed: {err:#}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("LLM analysis failed"))),
-            );
-        }
-    };
-
-    let paragraphs: Vec<String> = {
-        let double_split: Vec<&str> = raw_analysis
-            .split("\n\n")
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if double_split.len() >= 4 {
-            double_split
-                .into_iter()
-                .map(|s| s.replace('\n', " "))
-                .collect()
-        } else {
-            raw_analysis
-                .split('\n')
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
-        }
-    };
-
-    let exec_summary = strip_analysis_label(
-        paragraphs
-            .first()
-            .map(|s| s.as_str())
-            .unwrap_or("Analysis unavailable."),
-    );
-    let detailed = strip_analysis_label(paragraphs.get(1).map(|s| s.as_str()).unwrap_or(""));
-    let risk_assessment_text =
-        strip_analysis_label(paragraphs.get(2).map(|s| s.as_str()).unwrap_or(""));
-    let recommendations_text =
-        strip_analysis_label(paragraphs.get(3).map(|s| s.as_str()).unwrap_or(""));
-
-    let risk_lower = risk_assessment_text.to_lowercase();
-    let risk_level = if risk_lower.contains("critical") || risk_lower.contains("severe") {
-        "critical"
-    } else if risk_lower.contains("high") || risk_lower.contains("significant") {
-        "high"
-    } else if risk_lower.contains("low") || risk_lower.contains("minimal") {
-        "low"
-    } else {
-        "medium"
-    };
-
-    let source_diversity = if source_count >= 8 {
-        "excellent"
-    } else if source_count >= 5 {
-        "good"
-    } else if source_count >= 3 {
-        "moderate"
-    } else {
-        "limited"
-    };
-
-    let data_sufficiency = if source_count >= 6 && all_observations.len() >= 5 {
-        "strong"
-    } else if source_count >= 3 {
-        "adequate"
-    } else if source_count >= 1 {
-        "limited"
-    } else {
-        "insufficient"
-    };
-
-    let overall_confidence = insight.confidence.unwrap_or(0.0);
-
-    let analysis = serde_json::json!({
-        "executive_summary": exec_summary,
-        "key_findings": [{
-            "finding": detailed.chars().take(200).collect::<String>(),
-            "evidence": format!("{} observations, {} sources", all_observations.len(), source_count),
-            "confidence": overall_confidence,
-            "impact": risk_level,
-        }],
-        "detailed_analysis": detailed,
-        "source_analysis": {
-            "total_sources": source_count,
-            "observation_signals": all_observations.len(),
-            "corroborating_sources": std::cmp::max(1, source_count.saturating_sub(1)),
-            "contradicting_signals": 0,
-            "source_diversity_assessment": source_diversity,
-        },
-        "risk_assessment": {
-            "overall_risk": risk_level,
-            "probability": overall_confidence,
-            "time_horizon": "near_term",
-            "affected_sectors": entity_names,
-            "escalation_potential": risk_assessment_text,
-        },
-        "correlations": if detailed.len() > 10 { vec![detailed.clone()] } else { vec![] },
-        "recommendations": [{
-            "action": recommendations_text.chars().take(200).collect::<String>(),
-            "priority": if risk_level == "critical" || risk_level == "high" { "high" } else { "medium" },
-            "rationale": format!("Based on {} observations from {} sources at {:.0}% confidence",
-                all_observations.len(), source_count, overall_confidence * 100.0),
-        }],
-        "monitoring_indicators": if !recommendations_text.is_empty() {
-            vec![recommendations_text.clone()]
-        } else {
-            vec![format!("Monitor {} for further developments", entity_names_str)]
-        },
-        "analytical_confidence": {
-            "overall": overall_confidence,
-            "data_sufficiency": data_sufficiency,
-            "key_uncertainties": [],
-        },
-    });
-
-    let result = serde_json::json!({
-        "insight_id": insight.id,
-        "insight_title": insight.title,
-        "analysis": analysis,
-        "context_used": {
-            "source_count": source_count,
-            "observation_count": all_observations.len(),
-            "warning_count": related_warnings.len(),
-            "related_insight_count": related_insights.len(),
-            "entity_count": entity_ids.len(),
-        }
-    });
-
-    let dur = start.elapsed().as_millis() as u64;
-    log_latency("analyze_insight", dur);
-    (
-        StatusCode::OK,
-        Json(success_with_meta(
-            result,
-            ResponseMeta::now()
-                .with_request_id(request_id)
-                .with_duration(dur),
-        )),
-    )
+/// Serialize a persisted run for the API. `result`/`error` are `null` until
+/// the run reaches the corresponding terminal state.
+fn insight_analysis_run_to_json(
+    run: &apex_store::postgres::InsightAnalysisRunRow,
+) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": run.id,
+        "insight_id": run.insight_id,
+        "status": run.status,
+        "requested_by": run.requested_by,
+        "requested_at": run.requested_at,
+        "started_at": run.started_at,
+        "completed_at": run.completed_at,
+        "result": run.result,
+        "error": run.error,
+    })
 }
 
 /// POST /api/insights/:id/investigate — open a deep investigation from an
@@ -971,7 +752,9 @@ pub(crate) async fn investigate_insight(
         }),
     });
 
-    // Run the investigation engine.
+    // Run the investigation engine. #170: the engine is CPU-bound and can
+    // block a runtime worker for the whole analysis, so it runs on a blocking
+    // thread with owned inputs; a join failure is an internal error.
     let engine = apex_investigation::investigations::InvestigationEngine::new();
     let investigation_type = match insight.insight_type.as_deref() {
         Some("supply_chain_risk") => {
@@ -990,14 +773,29 @@ pub(crate) async fn investigate_insight(
     };
     let investigation_type_label = format!("{investigation_type:?}");
 
-    let mut investigation = engine.create_investigation(
+    let investigation = engine.create_investigation(
         &format!("Investigation: {}", insight.title),
         investigation_type,
         &entity_name,
         "company",
     );
 
-    let result = engine.run_investigation(&mut investigation, evidence_items);
+    let (investigation, result) =
+        match run_investigation_blocking(investigation, evidence_items).await {
+            Ok(value) => value,
+            Err(join_error) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    "investigate_insight: investigation task failed: {join_error}"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Investigation engine failed",
+                    ))),
+                );
+            }
+        };
 
     // Serialize the investigation result for the API response.
     let response = serde_json::json!({
@@ -1052,6 +850,31 @@ pub(crate) async fn investigate_insight(
     )
 }
 
+/// Run the CPU-bound `apex_investigation` engine on a blocking thread (#170).
+///
+/// The engine performs hypothesis generation, chain-of-thought reasoning and
+/// narrative synthesis synchronously; running it directly on the async
+/// runtime blocks a worker for the whole analysis. Inputs are moved into the
+/// task and the mutated investigation is returned alongside the result.
+async fn run_investigation_blocking(
+    investigation: apex_investigation::investigations::Investigation,
+    evidence_items: Vec<apex_investigation::reasoning::EvidenceItem>,
+) -> Result<
+    (
+        apex_investigation::investigations::Investigation,
+        apex_investigation::investigations::InvestigationResult,
+    ),
+    tokio::task::JoinError,
+> {
+    tokio::task::spawn_blocking(move || {
+        let engine = apex_investigation::investigations::InvestigationEngine::new();
+        let mut investigation = investigation;
+        let result = engine.run_investigation(&mut investigation, evidence_items);
+        (investigation, result)
+    })
+    .await
+}
+
 #[cfg(not(feature = "llm"))]
 pub(crate) async fn analyze_insight(
     State(_state): State<AppState>,
@@ -1089,22 +912,25 @@ fn value_as_text(value: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_bookmarked_by, strip_analysis_label, strip_warning_label};
+    use super::{resolve_bookmarked_by, run_investigation_blocking, strip_warning_label};
 
-    #[test]
-    fn test_strip_analysis_label_removes_numbered_prefix() {
-        assert_eq!(
-            strip_analysis_label("1. SITUATION: Supply risk rising"),
-            "Supply risk rising"
+    #[tokio::test]
+    async fn investigation_engine_runs_off_the_async_runtime() {
+        let engine = apex_investigation::investigations::InvestigationEngine::new();
+        let investigation = engine.create_investigation(
+            "Investigation: test",
+            apex_investigation::investigations::InvestigationType::CompanyDeepDive,
+            "Acme Corp",
+            "company",
         );
-    }
+        let expected_id = investigation.id.clone();
 
-    #[test]
-    fn test_strip_analysis_label_removes_markdown_prefix() {
-        assert_eq!(
-            strip_analysis_label("**ACTION:** Monitor inventory"),
-            "Monitor inventory"
-        );
+        let (investigation, result) = run_investigation_blocking(investigation, Vec::new())
+            .await
+            .expect("blocking investigation task must not panic");
+
+        assert_eq!(investigation.id, expected_id);
+        assert_eq!(result.investigation_id, expected_id);
     }
 
     #[test]

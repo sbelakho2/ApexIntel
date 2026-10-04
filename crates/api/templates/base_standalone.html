@@ -30,7 +30,15 @@
         window.__apexThemeState = { theme: normalized, resolved };
         document.dispatchEvent(new CustomEvent('apex:themechange', { detail: { theme: normalized, resolved } }));
       };
-      const getTheme = () => normalizeTheme(window.localStorage?.getItem(storageKey) || root.dataset.theme || 'system');
+      const readCookie = (name) => {
+        if (!document.cookie) return null;
+        const prefix = name + '=';
+        const match = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
+        return match ? decodeURIComponent(match.slice(prefix.length)) : null;
+      };
+      // The server-written cookie mirrors the account preference; prefer it so
+      // the login page matches the theme the operator sees after sign-in.
+      const getTheme = () => normalizeTheme(readCookie('apex_theme') || window.localStorage?.getItem(storageKey) || root.dataset.theme || 'system');
       const setTheme = (theme) => {
         const normalized = normalizeTheme(theme);
         window.localStorage?.setItem(storageKey, normalized);

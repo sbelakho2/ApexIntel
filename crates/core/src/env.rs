@@ -3,6 +3,8 @@ pub const REDIS_URL: &str = "REDIS_URL";
 pub const NATS_URL: &str = "NATS_URL";
 pub const MINIO_URL: &str = "MINIO_URL";
 pub const MINIO_BUCKET: &str = "MINIO_BUCKET";
+pub const MINIO_ACCESS_KEY: &str = "MINIO_ACCESS_KEY";
+pub const MINIO_SECRET_KEY: &str = "MINIO_SECRET_KEY";
 
 pub const GOOGLE_API_KEY: &str = "GOOGLE_API_KEY";
 pub const GOOGLE_SEARCH_ENGINE_ID: &str = "GOOGLE_SEARCH_ENGINE_ID";

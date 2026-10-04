@@ -746,14 +746,16 @@ pub async fn graph_page(
 
         let degree = *degree_map.get(&node.id).unwrap_or(&1);
         let size = (12_i64 + (degree * 2)).clamp(12, 28);
+        // Mirrors NODE_COLORS in static/js/graph.js (the legend's source of
+        // truth) so painted nodes and legend swatches can never diverge.
         let color = match node_type.as_str() {
-            "company" => "#4A90E2",
-            "person" => "#2D8C3C",
-            "region" => "#FFBE00",
-            "country" => "#FFBE00",
-            "cert" => "#4A90E2",
-            "tender" => "#D62D2D",
-            _ => "#D62D2D",
+            "company" => "#2563EB",
+            "person" => "#059669",
+            "region" | "country" => "#D97706",
+            "cert" | "insight" => "#7C3AED",
+            "tender" | "warning" => "#DC2626",
+            "domain" => "#0891B2",
+            _ => "#475569",
         };
 
         let label = if is_generic_graph_label(&node.label) {

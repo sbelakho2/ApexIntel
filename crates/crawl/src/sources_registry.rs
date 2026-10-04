@@ -279,30 +279,34 @@ impl Default for DeploymentCapabilities {
 }
 
 impl DeploymentCapabilities {
+    /// Capabilities configured in this deployment from the application
+    /// configuration (`AppConfig`) plus the same environment the crawl workers
+    /// use for proxy endpoints and adapter credentials.
+    ///
+    /// Prefer this over [`Self::from_env`] in code that already holds a
+    /// validated [`apex_core::config::AppConfig`]: it consumes the configured
+    /// `enable_headless_browser` / `enable_proxy_rotation` values instead of
+    /// re-deriving them from raw environment variables.
+    pub fn from_app_config(config: &apex_core::config::AppConfig) -> Self {
+        Self {
+            browser: config.enable_headless_browser,
+            proxy: config.enable_proxy_rotation && configured_proxy_endpoints(),
+            credentialed_api_adapters: credentialed_api_adapters_from_env(),
+        }
+    }
+
     /// Capabilities configured in this deployment, read from the same
     /// environment the crawl workers use (`ENABLE_HEADLESS_BROWSER`,
     /// `ENABLE_PROXY_ROTATION` plus proxy endpoints, and
     /// [`CREDENTIALED_API_ADAPTERS_ENV`]).
     pub fn from_env() -> Self {
         let browser = env_truthy(apex_core::env::ENABLE_HEADLESS_BROWSER);
-        let proxy = env_truthy(apex_core::env::ENABLE_PROXY_ROTATION)
-            && (env_non_empty("PROXY_LIST")
-                || (env_non_empty("PROXY_HOST") && env_non_empty("PROXY_PORT")));
-        let credentialed_api_adapters = std::env::var(CREDENTIALED_API_ADAPTERS_ENV)
-            .ok()
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|entry| !entry.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let proxy =
+            env_truthy(apex_core::env::ENABLE_PROXY_ROTATION) && configured_proxy_endpoints();
         Self {
             browser,
             proxy,
-            credentialed_api_adapters,
+            credentialed_api_adapters: credentialed_api_adapters_from_env(),
         }
     }
 
@@ -323,6 +327,26 @@ fn env_non_empty(name: &str) -> bool {
     std::env::var(name)
         .ok()
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+/// Whether at least one free or paid proxy endpoint is configured.
+fn configured_proxy_endpoints() -> bool {
+    env_non_empty("PROXY_LIST") || (env_non_empty("PROXY_HOST") && env_non_empty("PROXY_PORT"))
+}
+
+/// API adapter ids whose credentials are configured in this deployment.
+fn credentialed_api_adapters_from_env() -> HashSet<String> {
+    std::env::var(CREDENTIALED_API_ADAPTERS_ENV)
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Resolve the credential prerequisite of a source from adapter prerequisites
@@ -4506,6 +4530,85 @@ mod scheduler_tests {
             dispatch_source_fetch(&http_source, true),
             Ok(FetchDispatch::Http)
         );
+    }
+
+    static DEPLOYMENT_CAPS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn restore_env(saved: Vec<(&'static str, Option<String>)>) {
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    /// The deployment-capability hook must consume `AppConfig`'s configured
+    /// flags (not just raw env reads), so a disabled browser marks
+    /// browser-strategy sources unavailable and a disabled proxy marks
+    /// proxied sources unavailable.
+    #[test]
+    fn deployment_capabilities_from_app_config_consumes_configured_flags() {
+        let _guard = DEPLOYMENT_CAPS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        const KEYS: [&str; 6] = [
+            "DATABASE_URL",
+            "ENABLE_HEADLESS_BROWSER",
+            "ENABLE_PROXY_ROTATION",
+            "PROXY_LIST",
+            "PROXY_HOST",
+            "PROXY_PORT",
+        ];
+        let saved: Vec<(&'static str, Option<String>)> = KEYS
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect();
+        for key in KEYS {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("DATABASE_URL", "postgres://test:test@localhost/config-test");
+        std::env::set_var("ENABLE_HEADLESS_BROWSER", "true");
+        std::env::set_var("ENABLE_PROXY_ROTATION", "true");
+        std::env::set_var("PROXY_LIST", "http://proxy.example:8080");
+
+        let enabled = apex_core::config::AppConfig::from_env()
+            .unwrap_or_else(|error| panic!("test config loads: {error}"));
+        let caps = DeploymentCapabilities::from_app_config(&enabled);
+        assert!(caps.browser, "configured enable_headless_browser=true");
+        assert!(
+            caps.proxy,
+            "configured enable_proxy_rotation=true + endpoint"
+        );
+
+        let browser_source = synthetic_source("config_forum", Region::Global, Category::Forum, 4);
+        assert_eq!(
+            effective_capability(&browser_source, None, &caps),
+            SourceCapability::Unvalidated,
+            "an enabled browser keeps browser sources schedulable"
+        );
+
+        std::env::set_var("ENABLE_HEADLESS_BROWSER", "false");
+        std::env::set_var("ENABLE_PROXY_ROTATION", "false");
+        let disabled = apex_core::config::AppConfig::from_env()
+            .unwrap_or_else(|error| panic!("test config loads: {error}"));
+        let caps = DeploymentCapabilities::from_app_config(&disabled);
+        assert!(!caps.browser, "configured enable_headless_browser=false");
+        assert!(!caps.proxy, "configured enable_proxy_rotation=false");
+        assert_eq!(
+            effective_capability(&browser_source, None, &caps),
+            SourceCapability::UnavailableMissingCapability,
+            "a browser source must be unavailable when the configured flag is off"
+        );
+        let mut proxied = synthetic_source("config_proxied", Region::Global, Category::News, 2);
+        proxied.needs_proxy = true;
+        assert_eq!(
+            effective_capability(&proxied, None, &caps),
+            SourceCapability::UnavailableMissingProxy,
+            "a proxy-needing source must be unavailable when the configured flag is off"
+        );
+
+        restore_env(saved);
     }
 
     #[test]

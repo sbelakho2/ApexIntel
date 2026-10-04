@@ -310,6 +310,9 @@ mod tests {
     #[test]
     fn test_manual_trigger_kind_allows_whitelisted_job() {
         assert!(is_valid_manual_trigger_kind("dns_posture_scan"));
+        // #173: the manual hypothesis-generation job must be reachable from
+        // the admin trigger endpoint.
+        assert!(is_valid_manual_trigger_kind("hypothesis_generation"));
         assert!(!is_valid_manual_trigger_kind("drop_database"));
     }
 }

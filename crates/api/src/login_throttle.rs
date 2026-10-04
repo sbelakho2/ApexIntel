@@ -247,9 +247,9 @@ mod redis_backend {
         LOGIN_TEMP_LOCK_THRESHOLD_10M, LOGIN_WINDOW_10M_SECS, LOGIN_WINDOW_1H_SECS,
     };
 
-    pub const KEY_PREFIX: &str = "login_throttle:";
+    const KEY_PREFIX: &str = "login_throttle:";
 
-    pub fn storage_key(attempt_key: &str) -> String {
+    pub(super) fn storage_key(attempt_key: &str) -> String {
         format!("{KEY_PREFIX}{attempt_key}")
     }
 
@@ -397,7 +397,7 @@ return {{allowed, retry, f10, f1h, admin and 1 or 0}}
         })
     }
 
-    pub async fn evaluate(
+    pub(super) async fn evaluate(
         connection: redis::aio::ConnectionManager,
         attempt_key: &str,
         now: DateTime<Utc>,
@@ -405,7 +405,7 @@ return {{allowed, retry, f10, f1h, admin and 1 or 0}}
         run(connection, attempt_key, "evaluate", now).await
     }
 
-    pub async fn record_failure(
+    pub(super) async fn record_failure(
         connection: redis::aio::ConnectionManager,
         attempt_key: &str,
         now: DateTime<Utc>,
@@ -413,7 +413,7 @@ return {{allowed, retry, f10, f1h, admin and 1 or 0}}
         run(connection, attempt_key, "record", now).await
     }
 
-    pub async fn reserve(
+    pub(super) async fn reserve(
         connection: redis::aio::ConnectionManager,
         attempt_key: &str,
         now: DateTime<Utc>,

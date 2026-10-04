@@ -25,9 +25,15 @@ pub struct StagedRecipe {
     /// Promotion readiness heuristic (NOT recall).
     pub promotion_evidence_score: f64,
     /// False-positive rate from reviewed outcomes; `None` = not measured.
+    /// Informational only: precision is the gate (FPR is exactly
+    /// `1 - precision` over the same reviewed outcomes).
     pub false_positive_rate: Option<f64>,
     pub alerts_fired: u64,
     pub true_positives: u64,
+    /// Reviewed warning outcomes (true + false positives) backing
+    /// `precision`/`false_positive_rate`; `0` = nothing reviewed.
+    #[serde(default)]
+    pub reviewed_warnings: u64,
 }
 
 impl StagedRecipe {
@@ -52,9 +58,14 @@ pub struct ProductionRecipe {
     pub precision_history: Vec<f64>,
     pub recall_history: Vec<f64>,
     /// Measured false-positive rate; `None` = not measured (never a favorable
-    /// implicit zero).
+    /// implicit zero). Informational only: precision is the gate (FPR is
+    /// exactly `1 - precision` over the same reviewed outcomes).
     pub false_positive_rate: Option<f64>,
     pub alerts_fired_total: u64,
+    /// Reviewed warning outcomes (true + false positives) backing the measured
+    /// precision history; `0` = nothing reviewed.
+    #[serde(default)]
+    pub reviewed_warnings: u64,
 }
 
 impl ProductionRecipe {
@@ -69,6 +80,14 @@ impl ProductionRecipe {
     }
 }
 
+/// Default evidence floor for precision-based policy decisions.
+///
+/// A single reviewed false positive in a quiet week must never be enough to
+/// retire a production recipe or reject a staged one.
+fn default_min_reviewed() -> u64 {
+    10
+}
+
 /// Promotion policy thresholds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromotionPolicy {
@@ -77,8 +96,15 @@ pub struct PromotionPolicy {
     /// Minimum promotion-evidence heuristic (measured precision + sample
     /// maturity); not a recall requirement.
     pub min_promotion_evidence: f64,
+    /// Retained for configuration/serde compatibility. NOT used as a gate:
+    /// FPR is exactly `1 - precision` over the same reviewed outcomes, so the
+    /// `min_precision` gate already decides it.
     pub max_false_positive_rate: f64,
     pub min_alerts_fired: u64,
+    /// Minimum number of reviewed warning outcomes before any precision-based
+    /// decision. Below it, a recipe stays staged (`Keep`).
+    #[serde(default = "default_min_reviewed")]
+    pub min_reviewed: u64,
 }
 
 impl Default for PromotionPolicy {
@@ -89,6 +115,7 @@ impl Default for PromotionPolicy {
             min_promotion_evidence: 0.3,
             max_false_positive_rate: 0.05,
             min_alerts_fired: 3,
+            min_reviewed: default_min_reviewed(),
         }
     }
 }
@@ -98,8 +125,15 @@ impl Default for PromotionPolicy {
 pub struct DeprecationPolicy {
     pub precision_threshold: f64,
     pub min_weeks_declining: u32,
+    /// Retained for configuration/serde compatibility. NOT used as a gate:
+    /// FPR is exactly `1 - precision` over the same reviewed outcomes.
     pub max_false_positive_rate: f64,
     pub inactivity_weeks: u32,
+    /// Minimum number of reviewed warning outcomes before the
+    /// precision-decline rule may fire. The inactivity rule is not
+    /// precision-based and is not gated by this.
+    #[serde(default = "default_min_reviewed")]
+    pub min_reviewed: u64,
 }
 
 impl Default for DeprecationPolicy {
@@ -109,6 +143,7 @@ impl Default for DeprecationPolicy {
             min_weeks_declining: 3,
             max_false_positive_rate: 0.15,
             inactivity_weeks: 8,
+            min_reviewed: default_min_reviewed(),
         }
     }
 }
@@ -197,11 +232,25 @@ pub fn evaluate_promotion(recipe: &StagedRecipe, policy: &PromotionPolicy) -> Pr
         };
     }
 
-    // Promotion requires measured, reviewed outcomes: an unmeasured
-    // precision/FPR is unverifiable evidence, not a passing gate.
+    // Evidence floor: no precision-based decision (promote or reject) without
+    // enough reviewed outcomes. One reviewed false positive in a quiet week
+    // must never reject a staged recipe.
+    if recipe.reviewed_warnings < policy.min_reviewed {
+        return PromotionDecision::Keep {
+            reason: format!(
+                "only {}/{} reviewed warnings — insufficient evidence",
+                recipe.reviewed_warnings, policy.min_reviewed
+            ),
+        };
+    }
+
+    // Promotion requires measured, reviewed outcomes: an unmeasured precision
+    // is unverifiable evidence, not a passing gate. With enough reviews an
+    // unmeasured precision still cannot decide, so the recipe stays staged.
     let Some(precision) = recipe.precision else {
-        return PromotionDecision::Reject {
-            reason: "precision not measured (no reviewed outcomes)".to_string(),
+        return PromotionDecision::Keep {
+            reason: "precision not measured despite reviewed warnings — insufficient evidence"
+                .to_string(),
         };
     };
     if precision < policy.min_precision {
@@ -219,28 +268,17 @@ pub fn evaluate_promotion(recipe: &StagedRecipe, policy: &PromotionPolicy) -> Pr
         };
     }
 
-    let Some(false_positive_rate) = recipe.false_positive_rate else {
-        return PromotionDecision::Reject {
-            reason: "false-positive rate not measured (no reviewed outcomes)".to_string(),
-        };
-    };
-    if false_positive_rate > policy.max_false_positive_rate {
-        return PromotionDecision::Reject {
-            reason: format!(
-                "FPR {:.3} > {:.3}",
-                false_positive_rate, policy.max_false_positive_rate
-            ),
-        };
-    }
-
+    // FPR is deliberately NOT a gate: over the same reviewed outcomes
+    // `FPR = 1 - precision`, so `max_false_positive_rate` only duplicates the
+    // precision gate (kept for configuration compatibility).
     PromotionDecision::Promote {
         reason: format!(
-            "precision={:.2}, promotion_evidence={:.2}, FPR={:.3}, {} alerts over {} weeks",
+            "precision={:.2}, promotion_evidence={:.2}, {} alerts over {} weeks, {} reviewed",
             precision,
             recipe.promotion_evidence_score,
-            false_positive_rate,
             recipe.alerts_fired,
             recipe.weeks_in_staging,
+            recipe.reviewed_warnings,
         ),
     }
 }
@@ -299,8 +337,9 @@ pub struct PromotionBoardResult {
 
 /// Per-recipe outcome of the deprecation-check stage.
 ///
-/// `Deprecate` carries a human-readable `reason` string (FPR too high,
-/// precision declining, inactive, etc.).  `Keep` means all thresholds pass.
+/// `Deprecate` carries a human-readable `reason` string (precision declining
+/// below threshold over enough reviews, or inactivity).  `Keep` means no
+/// deprecation rule fired.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DeprecationDecision {
     Deprecate { reason: String },
@@ -331,23 +370,22 @@ pub fn evaluate_deprecation(
         };
     }
 
-    // High FPR — only a measured rate can trip a measured threshold.
-    if let Some(fpr) = recipe.false_positive_rate {
-        if fpr > policy.max_false_positive_rate {
-            return DeprecationDecision::Deprecate {
-                reason: format!("FPR {fpr:.3} > {:.3}", policy.max_false_positive_rate),
-            };
-        }
-    }
-
-    // Precision declining for N consecutive weeks
-    if is_declining(&recipe.precision_history, policy.min_weeks_declining) {
+    // Precision declining for N consecutive weeks. This is a precision-based
+    // decision, so it requires the reviewed-evidence floor: an unmeasured or
+    // barely-reviewed decline is not enough to retire a production recipe.
+    // FPR is deliberately NOT a gate (it is exactly `1 - precision`).
+    if recipe.reviewed_warnings >= policy.min_reviewed
+        && is_declining(&recipe.precision_history, policy.min_weeks_declining)
+    {
         let recent = recipe.precision_history.last().copied().unwrap_or(0.0);
         if recent < policy.precision_threshold {
             return DeprecationDecision::Deprecate {
                 reason: format!(
-                    "precision declining for {}+ weeks, now {:.2} < {:.2}",
-                    policy.min_weeks_declining, recent, policy.precision_threshold
+                    "precision declining for {}+ weeks, now {:.2} < {:.2} ({} reviewed)",
+                    policy.min_weeks_declining,
+                    recent,
+                    policy.precision_threshold,
+                    recipe.reviewed_warnings,
                 ),
             };
         }
@@ -979,6 +1017,7 @@ mod tests {
             false_positive_rate: Some(0.02),
             alerts_fired: 10,
             true_positives: 9,
+            reviewed_warnings: 20,
         }
     }
 
@@ -992,6 +1031,7 @@ mod tests {
             false_positive_rate: Some(0.01),
             alerts_fired: 5,
             true_positives: 5,
+            reviewed_warnings: 20,
         }
     }
 
@@ -1005,6 +1045,7 @@ mod tests {
             false_positive_rate: Some(0.08),
             alerts_fired: 15,
             true_positives: 6,
+            reviewed_warnings: 20,
         }
     }
 
@@ -1018,6 +1059,7 @@ mod tests {
             false_positive_rate: Some(0.0),
             alerts_fired: 1,
             true_positives: 1,
+            reviewed_warnings: 20,
         }
     }
 
@@ -1030,6 +1072,7 @@ mod tests {
             recall_history: vec![0.45, 0.47, 0.44, 0.46, 0.45],
             false_positive_rate: Some(0.03),
             alerts_fired_total: 150,
+            reviewed_warnings: 30,
         }
     }
 
@@ -1042,6 +1085,7 @@ mod tests {
             recall_history: vec![0.40, 0.35, 0.30, 0.25],
             false_positive_rate: Some(0.08),
             alerts_fired_total: 80,
+            reviewed_warnings: 20,
         }
     }
 
@@ -1054,6 +1098,7 @@ mod tests {
             recall_history: vec![],
             false_positive_rate: Some(0.0),
             alerts_fired_total: 0,
+            reviewed_warnings: 0,
         }
     }
 
@@ -1066,6 +1111,7 @@ mod tests {
             recall_history: vec![0.50, 0.48, 0.45],
             false_positive_rate: Some(0.20),
             alerts_fired_total: 100,
+            reviewed_warnings: 20,
         }
     }
 
@@ -1143,16 +1189,19 @@ mod tests {
         }
     }
 
+    /// #160: FPR is exactly `1 - precision` over the same reviewed outcomes,
+    /// so it must not be a second gate. A high FPR field on otherwise
+    /// high-precision evidence cannot reject the recipe (old code did).
     #[test]
-    fn test_reject_high_fpr() {
+    fn test_high_fpr_is_not_a_promotion_gate() {
         let mut recipe = sample_staged_good();
         recipe.false_positive_rate = Some(0.10);
         let policy = PromotionPolicy::default();
         let decision = evaluate_promotion(&recipe, &policy);
-        assert!(matches!(decision, PromotionDecision::Reject { .. }));
-        if let PromotionDecision::Reject { reason } = decision {
-            assert!(reason.contains("FPR"));
-        }
+        assert!(
+            matches!(decision, PromotionDecision::Promote { .. }),
+            "FPR must not gate promotion: {decision}"
+        );
     }
 
     #[test]
@@ -1167,28 +1216,86 @@ mod tests {
         }
     }
 
-    /// A recipe whose precision/FPR were never reviewed cannot be promoted:
-    /// unmeasured is not a passing gate.
+    /// #160: an unreviewed recipe cannot be promoted OR rejected on precision:
+    /// the evidence floor keeps it staged. Old code rejected unmeasured
+    /// precision outright.
     #[test]
-    fn test_unmeasured_precision_or_fpr_rejects_promotion() {
+    fn test_unreviewed_staged_recipe_is_kept() {
+        let mut recipe = sample_staged_good();
+        recipe.reviewed_warnings = 0;
+        let policy = PromotionPolicy::default();
+        let decision = evaluate_promotion(&recipe, &policy);
+        match decision {
+            PromotionDecision::Keep { reason } => {
+                assert!(reason.contains("0/10 reviewed warnings"), "{reason}");
+            }
+            other => panic!("unreviewed recipe must be kept, got {other}"),
+        }
+    }
+
+    /// #160: with enough reviews but no measured precision the decision still
+    /// cannot be made, so the recipe stays staged (old code rejected).
+    #[test]
+    fn test_unmeasured_precision_with_reviews_is_kept() {
         let mut recipe = sample_staged_good();
         recipe.precision = None;
         let policy = PromotionPolicy::default();
-        if let PromotionDecision::Reject { reason } = evaluate_promotion(&recipe, &policy) {
-            assert!(reason.contains("precision not measured"), "{reason}");
-        } else {
-            panic!("unmeasured precision must reject");
+        match evaluate_promotion(&recipe, &policy) {
+            PromotionDecision::Keep { reason } => {
+                assert!(reason.contains("precision not measured"), "{reason}");
+            }
+            other => panic!("unmeasured precision must not reject, got {other}"),
         }
+    }
 
+    /// The evidence floor only blocks precision-based decisions: an
+    /// unreviewed recipe with unmeasured FPR is kept for lack of reviews, and
+    /// a measured one with a missing FPR field is promoted (FPR is not a gate).
+    #[test]
+    fn test_false_positive_rate_field_is_not_required_for_promotion() {
         let mut recipe = sample_staged_good();
         recipe.false_positive_rate = None;
-        if let PromotionDecision::Reject { reason } = evaluate_promotion(&recipe, &policy) {
-            assert!(
-                reason.contains("false-positive rate not measured"),
-                "{reason}"
-            );
-        } else {
-            panic!("unmeasured FPR must reject");
+        let policy = PromotionPolicy::default();
+        assert!(matches!(
+            evaluate_promotion(&recipe, &policy),
+            PromotionDecision::Promote { .. }
+        ));
+    }
+
+    /// #160: exactly `min_reviewed` reviews are enough to decide; one fewer
+    /// is not.
+    #[test]
+    fn test_promotion_review_evidence_floor_boundary() {
+        let policy = PromotionPolicy::default();
+        assert_eq!(policy.min_reviewed, 10);
+
+        let mut recipe = sample_staged_good();
+        recipe.reviewed_warnings = policy.min_reviewed - 1; // 9
+        match evaluate_promotion(&recipe, &policy) {
+            PromotionDecision::Keep { reason } => {
+                assert!(reason.contains("9/10 reviewed warnings"), "{reason}");
+            }
+            other => panic!("9 reviews must not decide, got {other}"),
+        }
+
+        recipe.reviewed_warnings = policy.min_reviewed; // 10
+        assert!(matches!(
+            evaluate_promotion(&recipe, &policy),
+            PromotionDecision::Promote { .. }
+        ));
+    }
+
+    /// #160: with the evidence floor met, precision decides.
+    #[test]
+    fn test_ten_reviewed_low_precision_rejects() {
+        let mut recipe = sample_staged_low_precision();
+        recipe.reviewed_warnings = 10;
+        let policy = PromotionPolicy::default();
+        match evaluate_promotion(&recipe, &policy) {
+            PromotionDecision::Reject { reason } => {
+                assert!(reason.contains("precision"), "{reason}");
+            }
+            other => panic!("low precision with 10 reviews must reject, got {other}"),
         }
     }
 
@@ -1226,6 +1333,7 @@ mod tests {
             min_promotion_evidence: 0.20,
             max_false_positive_rate: 0.10,
             min_alerts_fired: 3,
+            min_reviewed: 10,
         };
         let decision = evaluate_promotion(&recipe, &policy);
         assert!(matches!(decision, PromotionDecision::Promote { .. }));
@@ -1238,7 +1346,7 @@ mod tests {
         recipe.weeks_in_staging = policy.min_weeks_staged;
         recipe.precision = Some(policy.min_precision);
         recipe.promotion_evidence_score = policy.min_promotion_evidence;
-        recipe.false_positive_rate = Some(policy.max_false_positive_rate);
+        recipe.reviewed_warnings = policy.min_reviewed;
         recipe.alerts_fired = policy.min_alerts_fired;
         let decision = evaluate_promotion(&recipe, &policy);
         assert!(matches!(decision, PromotionDecision::Promote { .. }));
@@ -1276,14 +1384,65 @@ mod tests {
         }
     }
 
+    /// #160: one false-positive review in a quiet week must not retire a
+    /// production recipe: below the reviewed-evidence floor the FPR (and any
+    /// precision) cannot deprecate. Old code deprecated on the FPR gate.
     #[test]
-    fn test_deprecate_high_fpr() {
-        let recipe = sample_prod_high_fpr();
+    fn test_bad_fpr_below_review_floor_keeps() {
+        let mut recipe = sample_prod_high_fpr();
+        recipe.reviewed_warnings = 3; // 3/10 reviewed — insufficient evidence
         let policy = DeprecationPolicy::default();
         let decision = evaluate_deprecation(&recipe, &policy);
-        assert!(matches!(decision, DeprecationDecision::Deprecate { .. }));
-        if let DeprecationDecision::Deprecate { reason } = decision {
-            assert!(reason.contains("FPR"));
+        assert_eq!(
+            decision,
+            DeprecationDecision::Keep,
+            "a bad FPR with fewer than 10 reviews must not deprecate"
+        );
+    }
+
+    /// #160: a high FPR is not an independent deprecation trigger even with
+    /// enough reviews; only a measured precision decline below threshold is.
+    #[test]
+    fn test_high_fpr_with_sufficient_reviews_is_not_deprecated_by_fpr_alone() {
+        let recipe = ProductionRecipe {
+            recipe_id: "P006".to_string(),
+            promoted_at: utc(2025, 6, 1, 0, 0, 0),
+            weeks_in_production: 15,
+            precision_history: vec![0.80, 0.80, 0.80, 0.80],
+            recall_history: vec![],
+            false_positive_rate: Some(0.20),
+            alerts_fired_total: 100,
+            reviewed_warnings: 20,
+        };
+        let policy = DeprecationPolicy::default();
+        let decision = evaluate_deprecation(&recipe, &policy);
+        assert_eq!(
+            decision,
+            DeprecationDecision::Keep,
+            "FPR must not deprecate on its own"
+        );
+    }
+
+    /// #160: the precision-decline rule only fires at or above the reviewed
+    /// evidence floor.
+    #[test]
+    fn test_precision_decline_requires_review_floor() {
+        let policy = DeprecationPolicy::default();
+
+        let mut recipe = sample_prod_declining();
+        recipe.reviewed_warnings = policy.min_reviewed - 1; // 9
+        assert_eq!(
+            evaluate_deprecation(&recipe, &policy),
+            DeprecationDecision::Keep,
+            "9/10 reviewed must block the precision-decline rule"
+        );
+
+        recipe.reviewed_warnings = policy.min_reviewed; // 10
+        match evaluate_deprecation(&recipe, &policy) {
+            DeprecationDecision::Deprecate { reason } => {
+                assert!(reason.contains("precision declining"), "{reason}");
+            }
+            other => panic!("10/10 reviewed must allow deprecation, got {other}"),
         }
     }
 
@@ -1297,6 +1456,7 @@ mod tests {
             recall_history: vec![],
             false_positive_rate: Some(0.0),
             alerts_fired_total: 0,
+            reviewed_warnings: 10,
         };
         let policy = DeprecationPolicy::default();
         let decision = evaluate_deprecation(&recipe, &policy);
@@ -1596,6 +1756,7 @@ mod tests {
         let json = serde_json::to_string(&policy).unwrap();
         let back: PromotionPolicy = serde_json::from_str(&json).unwrap();
         assert!((back.min_precision - 0.85).abs() < 0.01);
+        assert_eq!(back.min_reviewed, 10);
     }
 
     #[test]
@@ -1604,6 +1765,31 @@ mod tests {
         let json = serde_json::to_string(&policy).unwrap();
         let back: DeprecationPolicy = serde_json::from_str(&json).unwrap();
         assert!((back.precision_threshold - 0.5).abs() < 0.01);
+        assert_eq!(back.min_reviewed, 10);
+    }
+
+    /// Config compatibility (#160): pre-existing policy files predate
+    /// `min_reviewed`, which must default to 10 instead of failing to parse.
+    #[test]
+    fn test_policy_deserialization_defaults_min_reviewed_to_ten() {
+        let promotion: PromotionPolicy = serde_json::from_value(serde_json::json!({
+            "min_weeks_staged": 4,
+            "min_precision": 0.85,
+            "min_promotion_evidence": 0.3,
+            "max_false_positive_rate": 0.05,
+            "min_alerts_fired": 3,
+        }))
+        .unwrap();
+        assert_eq!(promotion.min_reviewed, 10);
+
+        let deprecation: DeprecationPolicy = serde_json::from_value(serde_json::json!({
+            "precision_threshold": 0.5,
+            "min_weeks_declining": 3,
+            "max_false_positive_rate": 0.15,
+            "inactivity_weeks": 8,
+        }))
+        .unwrap();
+        assert_eq!(deprecation.min_reviewed, 10);
     }
 
     #[test]
@@ -1612,6 +1798,25 @@ mod tests {
         let json = serde_json::to_string(&recipe).unwrap();
         let back: StagedRecipe = serde_json::from_str(&json).unwrap();
         assert_eq!(back.recipe_id, "R001");
+        assert_eq!(back.reviewed_warnings, 20);
+    }
+
+    /// Legacy weekly input files predate `reviewed_warnings`; they must still
+    /// deserialize (as zero reviews), not fail the worker.
+    #[test]
+    fn test_legacy_staged_and_production_recipes_deserialize() {
+        let mut staged = serde_json::to_value(sample_staged_good()).unwrap();
+        staged.as_object_mut().unwrap().remove("reviewed_warnings");
+        let staged: StagedRecipe = serde_json::from_value(staged).unwrap();
+        assert_eq!(staged.reviewed_warnings, 0);
+
+        let mut production = serde_json::to_value(sample_prod_healthy()).unwrap();
+        production
+            .as_object_mut()
+            .unwrap()
+            .remove("reviewed_warnings");
+        let production: ProductionRecipe = serde_json::from_value(production).unwrap();
+        assert_eq!(production.reviewed_warnings, 0);
     }
 
     #[test]
@@ -2118,6 +2323,10 @@ mod tests {
         assert!(
             json.contains("\"promotion_evidence_score\""),
             "missing promotion_evidence_score"
+        );
+        assert!(
+            json.contains("\"reviewed_warnings\""),
+            "missing reviewed_warnings"
         );
         // Round-trip must preserve all values
         let back: StagedRecipe = serde_json::from_str(&json).expect("must deserialize");

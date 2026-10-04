@@ -665,6 +665,38 @@
     @apply text-info;
   }
 
+  /* @tailwindcss/forms resets checkbox/radio to appearance:none, which makes
+     accent-color inert and renders the plugin's blue checked fill. Style the
+     controls directly with Rams tokens instead. */
+  input[type='checkbox'] {
+    appearance: none;
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+    margin: 0;
+    border: 1px solid var(--rams-line-strong);
+    border-radius: var(--radius-sm, 2px);
+    background-color: var(--rams-module);
+    display: inline-block;
+    vertical-align: middle;
+    cursor: pointer;
+  }
+  input[type='checkbox']:checked {
+    border-color: var(--rams-orange);
+    background-color: var(--rams-orange);
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+    background-size: 0.8rem;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  input[type='checkbox']:focus-visible {
+    outline: none;
+    box-shadow: var(--rams-shadow-focus);
+  }
+  input[type='radio'] {
+    accent-color: var(--rams-orange);
+  }
+
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { @apply bg-muted/50 rounded-full; }
   ::-webkit-scrollbar-thumb { @apply bg-muted-foreground/20 rounded-full; }
@@ -921,6 +953,22 @@
     letter-spacing: 0.04em;
   }
 
+  /* Axis-label density: 30-day frames show every 5th label, 24-hour dual
+     frames every 3rd, at every viewport width. Full per-point names remain in
+     each bar's title/aria-label. */
+  .apex-viz-frame:not(.apex-viz-frame-dual) .apex-viz-column .apex-viz-label {
+    visibility: hidden;
+  }
+  .apex-viz-frame:not(.apex-viz-frame-dual) .apex-viz-column:nth-child(5n + 1) .apex-viz-label {
+    visibility: visible;
+  }
+  .apex-viz-frame-dual .apex-viz-column .apex-viz-label {
+    visibility: hidden;
+  }
+  .apex-viz-frame-dual .apex-viz-column:nth-child(3n + 1) .apex-viz-label {
+    visibility: visible;
+  }
+
   .apex-line-chart,
   .apex-compare-chart {
     width: 100%;
@@ -1043,13 +1091,10 @@
       letter-spacing: 0.02em;
     }
 
-    /* Crawl activity (24 cols): show every 3rd label at tablet */
+    /* Crawl activity (24 cols): compact labels at tablet */
     .apex-viz-frame-dual .apex-viz-column .apex-viz-label {
       font-size: 7px;
       letter-spacing: 0;
-    }
-    .apex-viz-frame-dual .apex-viz-column:not(:nth-child(3n + 1)) .apex-viz-label {
-      visibility: hidden;
     }
 
     /* Hide secondary values on dual bar at tablet */
@@ -1455,9 +1500,9 @@
   /* ── Table (one implementation: .apex-table; no .data-table alias) ─────── */
   .apex-table { @apply w-full border-collapse font-sans; }
   .apex-table th {
-    @apply text-left text-[11px] font-bold uppercase tracking-[0.08em] text-muted-foreground px-4 py-2.5 border-b bg-muted sticky top-0;
+    @apply text-left text-[11px] font-bold uppercase tracking-[0.08em] text-muted-foreground px-3 py-2.5 border-b bg-muted sticky top-0;
   }
-  .apex-table td { @apply px-4 py-3 border-b text-[14px] font-medium tabular-nums bg-card; }
+  .apex-table td { @apply px-3 py-3 border-b text-[14px] font-medium tabular-nums bg-card; }
   .apex-table td, .apex-table th { @apply align-top; line-height: 1.45; }
   .apex-table tr:hover { @apply bg-secondary; }
   .apex-table tr[role="button"]:hover { @apply bg-secondary; }
@@ -1790,7 +1835,7 @@
     background: var(--rams-panel);
   }
   .apex-table td {
-    padding: 12px 16px;
+    padding: 12px;
     border-bottom: 1px solid var(--rams-line);
     color: var(--rams-foreground);
     font-variant-numeric: tabular-nums lining-nums;
@@ -1955,6 +2000,11 @@
     font-size: 10px;
     font-weight: 800;
     fill: currentColor;
+    /* Chassis-colored halo keeps labels legible when node labels collide. */
+    stroke: var(--rams-chassis);
+    stroke-width: 3px;
+    paint-order: stroke;
+    stroke-linejoin: round;
     pointer-events: none;
     opacity: 0;
     transition: opacity 160ms ease;

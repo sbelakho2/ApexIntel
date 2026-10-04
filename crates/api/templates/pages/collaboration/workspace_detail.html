@@ -28,7 +28,7 @@
       </div>
     </div>
     <div>
-      {% if workspace.status == "open" %}
+      {% if workspace.status != "closed" && workspace.status != "archived" %}
       <form action="/workspaces/{{ workspace.id }}/close" method="post" class="inline" data-confirm="Close this workspace? This cannot be undone.">
         <button type="submit" class="apex-btn apex-btn-danger">Close Workspace</button>
       </form>

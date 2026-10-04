@@ -23,6 +23,7 @@
 //! ```
 
 use anyhow::{anyhow, bail, Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
@@ -576,6 +577,42 @@ impl LlmClient {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Trait adapter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// [`crate::LlmClient`] adapter: lets this concrete client run behind a trait
+/// object (`Box<dyn apex_llm::LlmClient>` / `Arc<dyn apex_llm::LlmClient>`),
+/// which is the shape production worker code holds.
+#[async_trait]
+impl crate::LlmClient for LlmClient {
+    async fn generate_json(&self, system: &str, user: &str) -> Result<String> {
+        let config = InferenceConfig {
+            model: self.default_config.model.clone(),
+            ..InferenceConfig::json_structured()
+        };
+        let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
+        Ok(self.complete_with_config(messages, &config).await?.text)
+    }
+
+    async fn generate_text(&self, system: &str, user: &str) -> Result<String> {
+        let config = InferenceConfig {
+            json_mode: false,
+            ..self.default_config.clone()
+        };
+        let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
+        Ok(self.complete_with_config(messages, &config).await?.text)
+    }
+
+    async fn complete_messages(
+        &self,
+        messages: Vec<ChatMessage>,
+        config: &InferenceConfig,
+    ) -> Result<String> {
+        Ok(self.complete_with_config(messages, config).await?.text)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -633,7 +670,7 @@ pub fn strip_think_tags(text: &str) -> String {
 
 /// Inject `/no_think` into the last system message (or add a new one) so the
 /// Qwen3 model skips its chain-of-thought reasoning block.
-fn inject_no_think(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+pub(crate) fn inject_no_think(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     // Find an existing system message and append the directive.
     for msg in &mut messages {
         if msg.role == Role::System {
@@ -688,7 +725,7 @@ fn structural_signature(text: &str) -> Result<Option<(String, String)>> {
     }
 }
 
-fn assert_structural_determinism(first: &str, second: &str) -> Result<()> {
+pub(crate) fn assert_structural_determinism(first: &str, second: &str) -> Result<()> {
     let first_signature = structural_signature(first)?;
     let second_signature = structural_signature(second)?;
     if let (Some(first_signature), Some(second_signature)) = (first_signature, second_signature) {

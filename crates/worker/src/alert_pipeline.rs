@@ -67,7 +67,7 @@ const DEFAULT_ALERT_RULES_PATH: &str = "config/runtime/alert-rules.yaml";
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Maximum events claimed per drain batch.
-pub const DEFAULT_BATCH_SIZE: i64 = 25;
+pub(crate) const DEFAULT_BATCH_SIZE: i64 = 25;
 
 /// Upper bound for one publish + ACK round trip. Bounds how long one event's
 /// lease must cover when the broker accepts messages but never acknowledges
@@ -110,7 +110,7 @@ async fn persist_engine_state(
 /// evaluator, not the file: a rules file edited after startup is recorded as a
 /// failed reload (restart required) instead of reporting rules the running
 /// engine does not evaluate.
-pub async fn refresh_alert_engine_state(
+pub(crate) async fn refresh_alert_engine_state(
     store: &PgStore,
     evaluator: Option<&Arc<AlertEvaluator>>,
 ) -> anyhow::Result<AlertEngineStateRecord> {
@@ -168,7 +168,9 @@ pub async fn refresh_alert_engine_state(
 /// Records both success and failure to `alert_engine_state`, so
 /// `/api/health/ready` can distinguish a loaded engine from a
 /// missing/unparseable rules file.
-pub async fn load_rules_evaluator_with_state(store: &PgStore) -> Option<Arc<AlertEvaluator>> {
+pub(crate) async fn load_rules_evaluator_with_state(
+    store: &PgStore,
+) -> Option<Arc<AlertEvaluator>> {
     let path = alert_rules_path_from_env();
     match AlertEvaluator::load_from_path(&path) {
         Ok(evaluator) => {
@@ -195,7 +197,7 @@ pub async fn load_rules_evaluator_with_state(store: &PgStore) -> Option<Arc<Aler
 
 /// Claim owner identity: instance id (or hostname) plus process id, so two
 /// workers on one host never share a lease identity.
-pub fn claim_owner() -> String {
+pub(crate) fn claim_owner() -> String {
     let instance = std::env::var("APEX_INSTANCE_ID")
         .ok()
         .map(|value| value.trim().to_string())
@@ -213,7 +215,7 @@ pub fn claim_owner() -> String {
 /// Storage half of the publisher: claim (TX1), settle (TX2), and the operator
 /// dead-letter alert.
 #[async_trait]
-pub trait OutboxClaimStore: Send + Sync {
+pub(crate) trait OutboxClaimStore: Send + Sync {
     /// TX1: claim up to `limit` publishable rows with a lease and commit.
     async fn claim_batch(&self, owner: &str, limit: i64) -> anyhow::Result<OutboxClaim>;
 
@@ -236,7 +238,7 @@ pub trait OutboxClaimStore: Send + Sync {
 /// Publication half of the publisher. Implementations must await the JetStream
 /// ACK before returning `Ok`.
 #[async_trait]
-pub trait OutboxEventPublisher: Send + Sync {
+pub(crate) trait OutboxEventPublisher: Send + Sync {
     /// Publish `event` and await the broker ACK.
     ///
     /// `msg_id` is the stable transport identity (`Nats-Msg-Id`).
@@ -276,13 +278,13 @@ impl OutboxClaimStore for PgStore {
 
 /// Production publisher: evaluates alert rules, then publishes the alert event
 /// through the alert transport and awaits the broker ACK.
-pub struct NatsAlertEventPublisher {
+pub(crate) struct NatsAlertEventPublisher {
     transport: AlertTransport,
     evaluator: Option<Arc<AlertEvaluator>>,
 }
 
 impl NatsAlertEventPublisher {
-    pub fn new(publisher: NatsPublisher, evaluator: Option<Arc<AlertEvaluator>>) -> Self {
+    pub(crate) fn new(publisher: NatsPublisher, evaluator: Option<Arc<AlertEvaluator>>) -> Self {
         Self {
             transport: AlertTransport::new(publisher),
             evaluator,
@@ -290,7 +292,7 @@ impl NatsAlertEventPublisher {
     }
 
     /// Build around an already-wrapped transport (tests / shared connection).
-    pub fn with_transport(
+    pub(crate) fn with_transport(
         transport: AlertTransport,
         evaluator: Option<Arc<AlertEvaluator>>,
     ) -> Self {
@@ -530,7 +532,7 @@ async fn publish_claimed_events(
 }
 
 /// Drain one outbox batch: claim (TX1) then publish outside any transaction.
-pub async fn drain_once(
+pub(crate) async fn drain_once(
     store: &dyn OutboxClaimStore,
     publisher: &dyn OutboxEventPublisher,
     owner: &str,
@@ -549,7 +551,7 @@ pub async fn drain_once(
 ///   or it is dead-lettered; delivery is left to the drain.
 /// * `Err` — this call held the lease, the publish failed, and the failure was
 ///   recorded for retry.
-pub async fn deliver_outbox_event(
+pub(crate) async fn deliver_outbox_event(
     store: &dyn OutboxClaimStore,
     publisher: &dyn OutboxEventPublisher,
     owner: &str,
@@ -570,7 +572,7 @@ pub async fn deliver_outbox_event(
 }
 
 /// Unpublished/dead-letter backlog for metrics and readiness checks.
-pub async fn outbox_backlog(
+pub(crate) async fn outbox_backlog(
     store: &PgStore,
     stuck_before: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<OutboxBacklog> {
@@ -583,7 +585,7 @@ pub async fn outbox_backlog(
 /// is not configured the task logs and exits (events stay queued for a later
 /// restart with NATS configured); when NATS is temporarily unreachable the task
 /// reconnects on its poll interval.
-pub fn spawn(store: Arc<PgStore>, evaluator: Option<Arc<AlertEvaluator>>) {
+pub(crate) fn spawn(store: Arc<PgStore>, evaluator: Option<Arc<AlertEvaluator>>) {
     let enabled = std::env::var("REALTIME_ALERTS_ENABLED")
         .ok()
         .map(|v| apex_core::env::parse_truthy_flag(&v))
@@ -594,9 +596,9 @@ pub fn spawn(store: Arc<PgStore>, evaluator: Option<Arc<AlertEvaluator>>) {
     }
 
     tokio::spawn(async move {
-        let nats_url = match std::env::var("NATS_URL") {
-            Ok(url) if !url.trim().is_empty() => url.trim().to_string(),
-            _ => {
+        let nats_url = match apex_core::config::AppConfig::nats_url_configured_from_env() {
+            Some(url) => url.trim().to_string(),
+            None => {
                 info!(
                     "outbox alert publisher: NATS_URL unset; alert events stay queued until \
                      a worker with NATS configured drains them"

@@ -106,7 +106,7 @@ impl PgStore {
                        END AS precision_observed,
                        COALESCE(COUNT(w.id), 0)::INT AS sample_size,
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')), 0)::INT AS reviewed_warnings_total,
-                       COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive')), 0)::INT AS reviewed_true_positives,
+                       COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'true_positive'), 0)::INT AS reviewed_true_positives,
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'), 0)::INT AS false_positive_warnings_total,
                        COALESCE(COUNT(*) FILTER (WHERE w.id IS NOT NULL AND NOT w.acknowledged), 0)::INT AS active_count,
                        EXTRACT(DAY FROM (NOW() - r.created_at))::INT AS days_in_staging,
@@ -135,6 +135,11 @@ impl PgStore {
                            THEN false_positive_warnings_total::DOUBLE PRECISION / reviewed_warnings_total::DOUBLE PRECISION
                        ELSE NULL
                    END AS false_positive_rate,
+                   -- Evidence floor plumbing: the promotion policy requires a
+                   -- minimum number of reviewed outcomes before any
+                   -- precision-based decision.
+                   reviewed_warnings_total,
+                   reviewed_true_positives,
                    sample_size,
                    days_in_staging,
                    created_at
@@ -220,6 +225,10 @@ impl PgStore {
                            ELSE NULL
                        END
                    ) AS fpr_baseline,
+                   -- Evidence floor plumbing: the deprecation policy requires a
+                   -- minimum number of reviewed outcomes before any
+                   -- precision-based decision.
+                   recipe_warning_stats.reviewed_warnings_total,
                    recipe_warning_stats.warnings_generated_last_week,
                    recipe_warning_stats.last_triggered_at,
                    EXTRACT(DAY FROM (NOW() - COALESCE(recipe_warning_stats.last_triggered_at, recipe_warning_stats.created_at)))::INT AS days_inactive,

@@ -79,7 +79,15 @@ pub fn available_llm_slots() -> usize {
 /// unable to allocate; callers treat that as "no slot" and skip the call
 /// rather than panicking.
 pub async fn acquire_llm_slot() -> Option<OwnedSemaphorePermit> {
-    Arc::clone(&gate().semaphore).acquire_owned().await.ok()
+    match Arc::clone(&gate().semaphore).acquire_owned().await {
+        Ok(permit) => Some(permit),
+        Err(error) => {
+            // The gate is never closed; this only happens during runtime
+            // teardown. Surface it instead of silently dropping the slot.
+            tracing::error!(%error, "llm_concurrency: failed to acquire model-call slot");
+            None
+        }
+    }
 }
 
 /// Try to acquire a model-call slot immediately.

@@ -44,6 +44,10 @@
 #      license/advisory checks (cargo-deny). Licenses are blocking; advisories
 #      report the known Cargo.lock debt non-blockingly until the dependency
 #      bump lands (see deny.toml for the pinned ignore rationale).
+#  15. unused-public-API guard: `RUSTFLAGS="-W unreachable_pub"` over the whole
+#      workspace and all targets; the step fails when any `pub` item is only
+#      reachable within its own crate (stable rustc lint; see
+#      scripts/ci/check_unused_public_items.sh).
 #
 # Runtime readiness additionally proves the schema lineage (applied migration
 # head == embedded head + checksum verification) through the `schema`
@@ -85,6 +89,15 @@ steps:
     commands:
       - apk add --no-cache git bash
       - bash scripts/ci/check_repo_contamination.sh
+
+  # Fails when the CPV 2008 reference dataset is not the official 9,454-row
+  # `code,description` CSV. The previous revision was a saved HTML page, so a
+  # malformed/truncated dataset must never reach the training pipeline again.
+  - name: dataset-formats
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    commands:
+      - apk add --no-cache bash grep
+      - bash scripts/ci/check_dataset_formats.sh
 
   # Fails when a `#[ignore = "requires PostgreSQL"]` test target exists that the
   # canonical PostgreSQL runner does not execute — adding a suite can never
@@ -250,6 +263,20 @@ steps:
       # Release build of the deployable binaries (the Docker images ship these)
       - cargo build --release --bins -p apex-api -p apex-worker --features llm --locked
 
+  # Unused-public-API guard (#166): `RUSTFLAGS="-W unreachable_pub"` flags a
+  # `pub` item that nothing outside its crate can reach; the step fails when any
+  # finding exists. Stable rustc lint, no nightly needed. Warn level (instead of
+  # deny) keeps the whole workspace compiling so the complete finding list is
+  # reported in one run. Runs after `rust` so the two workspace-wide cargo
+  # builds do not race for memory or the target dir.
+  - name: unused-public-items
+    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+    depends_on: [rust]
+    environment:
+      CARGO_TERM_COLOR: always
+    commands:
+      - bash scripts/ci/check_unused_public_items.sh
+
   - name: ui-assets
     image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
     commands:
@@ -281,6 +308,21 @@ steps:
     commands:
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
       - bash scripts/ci/run_pg_integration_suites.sh
+
+  # N3: the deleted parallel `crates/store/migrations/` lineage (versions
+  # 066/067/095) must never appear in an applied environment. Runs against the
+  # same apex_ci database the canonical `migrations` step just bootstrapped;
+  # blocking (no `failure: ignore`).
+  - name: legacy-migration-lineage
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    depends_on: [migrations]
+    environment:
+      DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
+      TEST_DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
+    commands:
+      - apk add --no-cache bash postgresql16-client
+      - until pg_isready -h database -p 5432 -U apex >/dev/null 2>&1; do sleep 1; done
+      - bash scripts/ci/check_legacy_migration_lineage.sh
 
   # SMOKE STAGE — server-rendered UI route sweep only. Builds the API (rust
   # image also has Node), starts it against the database service, and drives a

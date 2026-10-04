@@ -149,14 +149,15 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)
         ));
     }
 
-    // 2. Redirect graph edges
+    // 2. Redirect graph edges. All id parameters are explicitly cast so the
+    //    text bindings used by the executor are safe for uuid columns.
     for source_id in &event.source_ids {
         stmts.push((
-            "UPDATE graph_edges SET source_id = $1 WHERE source_id = $2".to_string(),
+            "UPDATE graph_edges SET source_id = $1::uuid WHERE source_id = $2::uuid".to_string(),
             vec![event.target_id.clone(), source_id.clone()],
         ));
         stmts.push((
-            "UPDATE graph_edges SET target_id = $1 WHERE target_id = $2".to_string(),
+            "UPDATE graph_edges SET target_id = $1::uuid WHERE target_id = $2::uuid".to_string(),
             vec![event.target_id.clone(), source_id.clone()],
         ));
     }
@@ -164,15 +165,45 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)
     // 3. Redirect observations
     for source_id in &event.source_ids {
         stmts.push((
-            "UPDATE observations SET entity_id = $1 WHERE entity_id = $2".to_string(),
+            "UPDATE observations SET entity_id = $1::uuid WHERE entity_id = $2::uuid".to_string(),
             vec![event.target_id.clone(), source_id.clone()],
         ));
     }
 
-    // 4. Record in audit log (schema column is `event_type`, not `action`)
+    // 4. Rewrite warning/insight entity references (#165).
+    //    `array_replace` rewrites every occurrence of the merged-away id and
+    //    preserves all other entities in the array — a wholesale
+    //    `entity_ids = ARRAY[...]` overwrite would either drop co-referenced
+    //    entities or leave the stale id behind. The singular `entity_id` is
+    //    re-pointed in the same statement so the sync trigger sees consistent
+    //    before/after values instead of a stale survivor.
+    for source_id in &event.source_ids {
+        for table in ["warnings", "insights"] {
+            stmts.push((
+                format!(
+                    "UPDATE {table} \
+                     SET entity_ids = ( \
+                             SELECT array_agg(dedup.id ORDER BY dedup.ord) \
+                             FROM ( \
+                                 SELECT DISTINCT ON (u.id) u.id, u.ord \
+                                 FROM unnest(array_replace(entity_ids, $1::uuid, $2::uuid)) \
+                                      WITH ORDINALITY AS u(id, ord) \
+                                 ORDER BY u.id, u.ord \
+                             ) AS dedup \
+                         ), \
+                         entity_id = CASE WHEN entity_id = $1::uuid THEN $2::uuid ELSE entity_id END \
+                     WHERE $1::uuid = ANY(entity_ids) OR entity_id = $1::uuid"
+                ),
+                vec![source_id.clone(), event.target_id.clone()],
+            ));
+        }
+    }
+
+    // 5. Record in audit log (schema column is `event_type`, not `action`;
+    //    `detail` is jsonb, so the serialized event is cast explicitly)
     stmts.push((
         "INSERT INTO audit_log (event_type, entity_type, entity_id, detail) \
-         VALUES ($1, $2, $3, $4)"
+         VALUES ($1, $2, $3, $4::jsonb)"
             .to_string(),
         vec![
             "entity_merge".to_string(),
@@ -182,13 +213,13 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)
         ],
     ));
 
-    // 5. Soft-delete source entities (mark as merged)
+    // 6. Soft-delete source entities (mark as merged)
     for source_id in &event.source_ids {
         // Serialize with serde_json so a hostile target id cannot inject
         // JSON keys into the metadata object.
         let metadata_val = serde_json::json!({ "merged_into": &event.target_id }).to_string();
         stmts.push((
-            format!("UPDATE {table} SET metadata = metadata || $1::jsonb WHERE id = $2"),
+            format!("UPDATE {table} SET metadata = metadata || $1::jsonb WHERE id = $2::uuid"),
             vec![metadata_val, source_id.clone()],
         ));
     }
@@ -262,6 +293,96 @@ mod tests {
     fn entity_type_equality() {
         assert_eq!(EntityType::Company, EntityType::Company);
         assert_ne!(EntityType::Company, EntityType::Person);
+    }
+
+    // ── #165: warning/insight entity arrays must be rewritten, not overwritten ──
+
+    #[test]
+    fn merge_sql_rewrites_warning_and_insight_entity_arrays_with_array_replace() {
+        let event = build_merge_event(
+            EntityType::Person,
+            vec!["src-a".into(), "src-b".into()],
+            "target-1".into(),
+            MergeReason::AutoResolution {
+                similarity_score: 0.9,
+            },
+            0.9,
+            "poi_resolver",
+        );
+        let stmts = generate_merge_sql(&event);
+
+        for table in ["warnings", "insights"] {
+            let updates: Vec<&(String, Vec<String>)> = stmts
+                .iter()
+                .filter(|(sql, _)| sql.starts_with(&format!("UPDATE {table} ")))
+                .collect();
+            assert_eq!(
+                updates.len(),
+                2,
+                "one {table} rewrite per merged source id must be generated"
+            );
+
+            for (sql, params) in &updates {
+                assert!(
+                    sql.contains("array_replace(entity_ids"),
+                    "{table} rewrite must use array_replace: {sql}"
+                );
+                assert!(
+                    sql.contains("entity_id = CASE WHEN entity_id = $1::uuid THEN $2::uuid"),
+                    "{table} rewrite must re-point the singular entity_id: {sql}"
+                );
+                // A survivor that was already co-referenced must not appear
+                // twice after `array_replace`.
+                assert!(
+                    sql.contains("DISTINCT ON (u.id)"),
+                    "{table} rewrite must deduplicate the rewritten entity array: {sql}"
+                );
+                assert_eq!(params.len(), 2);
+            }
+
+            let mut bound: Vec<(String, String)> = updates
+                .iter()
+                .map(|(_, params)| (params[0].clone(), params[1].clone()))
+                .collect();
+            bound.sort();
+            let mut expected: Vec<(String, String)> = event
+                .source_ids
+                .iter()
+                .map(|source| (source.clone(), event.target_id.clone()))
+                .collect();
+            expected.sort();
+            assert_eq!(
+                bound, expected,
+                "{table} updates must bind (source_id, target_id) for every merged source"
+            );
+        }
+
+        assert!(
+            stmts
+                .iter()
+                .any(|(sql, _)| sql.starts_with("INSERT INTO entity_merges")),
+            "the merge must stay auditable via entity_merges"
+        );
+    }
+
+    #[test]
+    fn merge_sql_never_overwrites_entity_arrays_wholesale() {
+        let event = build_merge_event(
+            EntityType::Company,
+            vec!["c1".into(), "c2".into()],
+            "c3".into(),
+            MergeReason::ManualMerge {
+                operator_notes: "duplicates".into(),
+            },
+            1.0,
+            "operator",
+        );
+        for (sql, _) in generate_merge_sql(&event) {
+            assert!(
+                !sql.contains("entity_ids = ARRAY["),
+                "entity_ids must never be overwritten with a bare array: {sql}"
+            );
+        }
     }
 
     #[test]

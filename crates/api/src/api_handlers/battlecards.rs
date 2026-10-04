@@ -12,14 +12,14 @@ use apex_store::postgres::{BattlecardWriteOutcome, CompanyRow, CreateBattlecardO
 
 /// GET /api/battlecards — list all battlecards with optional filters.
 #[derive(Debug, Deserialize)]
-pub struct ListBattlecardsQuery {
+pub(crate) struct ListBattlecardsQuery {
     pub status: Option<String>,
     pub page: Option<u32>,
     pub per_page: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct BattlecardItem {
+pub(crate) struct BattlecardItem {
     pub id: String,
     pub account_name: String,
     pub status: String,
@@ -185,7 +185,7 @@ pub(crate) async fn list_battlecards(
 
 /// POST /api/battlecards — create a new battlecard.
 #[derive(Debug, Deserialize)]
-pub struct CreateBattlecardRequest {
+pub(crate) struct CreateBattlecardRequest {
     pub our_company_id: String,
     pub competitor_id: String,
     pub title: String,
@@ -383,7 +383,7 @@ pub(crate) async fn delete_battlecard(
 
 /// PUT /api/battlecards/:id/section — update a battlecard section.
 #[derive(Debug, Deserialize)]
-pub struct UpdateSectionRequest {
+pub(crate) struct UpdateSectionRequest {
     pub section: String,
     pub data: serde_json::Value,
 }
@@ -438,7 +438,7 @@ pub(crate) async fn update_battlecard_section(
 /// PATCH /api/battlecards/:id — update title, status and/or sections.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PatchBattlecardRequest {
+pub(crate) struct PatchBattlecardRequest {
     pub title: Option<String>,
     pub status: Option<String>,
     #[serde(default)]

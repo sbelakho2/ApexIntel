@@ -1,7 +1,10 @@
 mod adversarial;
+#[cfg(feature = "llm")]
+mod agent_tools;
 mod anomaly_scan;
 mod custom;
 mod dark_web;
+mod insight_analysis;
 mod insights;
 mod intelligence;
 mod nightly;
@@ -118,11 +121,24 @@ async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogge
         .await;
 }
 
-#[tracing::instrument(skip(kind, store, ctx), fields(job = %kind.as_str()))]
 pub(crate) async fn execute_job(
     kind: &JobKind,
     store: &Arc<PgStore>,
     ctx: &JobExecutionContext,
+) -> JobRun {
+    execute_job_with_payload(kind, store, ctx, None).await
+}
+
+/// Execute a job that may carry a trigger payload (#169). Scheduled jobs pass
+/// `None`; the manual-trigger path passes the payload the enqueuer attached so
+/// payload-bound jobs (insight analysis) execute the exact row they were
+/// queued for.
+#[tracing::instrument(name = "execute_job", skip(kind, store, ctx, payload), fields(job = %kind.as_str()))]
+pub(crate) async fn execute_job_with_payload(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ctx: &JobExecutionContext,
+    payload: Option<&serde_json::Value>,
 ) -> JobRun {
     tracing::debug!(job = %kind.as_str(), "job_start");
     let logger = ActivityLogger::new(store.pool.clone());
@@ -164,6 +180,9 @@ pub(crate) async fn execute_job(
             apex_worker::trend_aggregator::run_trend_aggregation(kind, store).await
         }
         JobKind::InsightGeneration => insights::run_insight_generation(kind, store).await,
+        JobKind::InsightAnalysis => {
+            insight_analysis::run_insight_analysis(kind, store, payload).await
+        }
         JobKind::ThreatIntelRefresh => {
             threat_intel::run_threat_intel_refresh(kind, store, &ctx.ingress).await
         }

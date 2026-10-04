@@ -8,7 +8,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
-pub struct ThreatIntelItem {
+pub(crate) struct ThreatIntelItem {
     pub id: String,
     pub title: String,
     pub description: String,

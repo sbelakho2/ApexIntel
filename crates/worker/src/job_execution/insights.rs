@@ -12,7 +12,7 @@
 //! function with NO LLM call, NO grounding, and a broken dedup — which
 //! produced formulaic "Intelligence Analysis: {co} (N observations)" noise
 //! with empty evidence URLs. That path has been removed.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -24,6 +24,7 @@ use crate::{JobKind, JobRun, PgStore};
 use {
     crate::{EntityContext, EvidenceSignal, InferenceLlmClient},
     apex_core::claims::InsightClaim,
+    apex_insights::dynamic_poi_discovery::significant_name_tokens,
     apex_llm::inference::InferenceConfig,
     apex_poi::model::RoleFamily as PoiRoleFamily,
 };
@@ -230,13 +231,13 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
 /// An observation's text plus its source URL (when the provenance carries one).
 #[cfg(feature = "llm")]
 #[derive(Debug, Clone)]
-pub(super) struct ObservationText {
+pub(crate) struct ObservationText {
     pub id: uuid::Uuid,
     pub text: String,
     pub url: Option<String>,
 }
 
-async fn load_recent_observations_by_company(
+pub(crate) async fn load_recent_observations_by_company(
     store: &PgStore,
     since: chrono::DateTime<Utc>,
 ) -> Result<HashMap<uuid::Uuid, Vec<ObservationText>>, sqlx::Error> {
@@ -259,24 +260,37 @@ async fn load_recent_observations_by_company(
     // through `observation_entity_graph`, a table with NO writer anywhere in
     // the codebase (0 rows in production), so the join always came back
     // empty and insight generation silently skipped every run.
+    // #99: `SELECT DISTINCT ON (o.id) ... ORDER BY o.id` kept an arbitrary
+    // observation per id and then a 5000-row cap let one noisy company crowd
+    // out every other company's evidence, so `.take(12)` was not the newest
+    // 12 per company. Rank per company instead (newest first, id as the
+    // deterministic tie-breaker) and keep only the newest
+    // `MAX_EVIDENCE_SIGNALS` rows each.
     let rows = sqlx::query_as::<_, ObsCompanyRow>(
-        r#"SELECT DISTINCT ON (o.id)
-                   o.id AS observation_id,
-                   o.entity_id AS company_id,
-                   COALESCE(o.value->>'content', o.value->>'body', o.value->>'body_excerpt',
-                            o.value->>'text', o.value->>'description', o.value->>'title', '') AS content,
-                   o.provenance->>'url' AS url
-            FROM observations o
-            WHERE o.created_at >= $1
-              AND o.entity_id IS NOT NULL
-              AND o.entity_type = 'company'
-              AND LENGTH(COALESCE(o.value->>'content', o.value->>'body', o.value->>'body_excerpt',
-                            o.value->>'text', o.value->>'description', '')) >= $2
-            ORDER BY o.id, o.created_at DESC
-            LIMIT 5000"#,
+        r#"SELECT observation_id, company_id, content, url
+            FROM (
+                SELECT o.id AS observation_id,
+                       o.entity_id AS company_id,
+                       COALESCE(o.value->>'content', o.value->>'body', o.value->>'body_excerpt',
+                                o.value->>'text', o.value->>'description', o.value->>'title', '') AS content,
+                       o.provenance->>'url' AS url,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY o.entity_id
+                           ORDER BY o.created_at DESC, o.id DESC
+                       ) AS rn
+                FROM observations o
+                WHERE o.created_at >= $1
+                  AND o.entity_id IS NOT NULL
+                  AND o.entity_type = 'company'
+                  AND LENGTH(COALESCE(o.value->>'content', o.value->>'body', o.value->>'body_excerpt',
+                                o.value->>'text', o.value->>'description', '')) >= $2
+            ) ranked
+            WHERE rn <= $3
+            ORDER BY company_id, rn"#,
     )
     .bind(since)
     .bind(MIN_OBSERVATION_TEXT_LEN as i32)
+    .bind(MAX_EVIDENCE_SIGNALS as i64)
     .fetch_all(&store.pool)
     .await?;
 
@@ -296,17 +310,17 @@ async fn load_recent_observations_by_company(
 /// A simplified POI reference used during insight generation for stakeholder-aware recommendations.
 #[cfg(feature = "llm")]
 #[derive(Debug, Clone)]
-struct CompanyPoiRef {
-    id: uuid::Uuid,
-    name: String,
-    role: String,
-    role_family: String,
-    org: String,
-    is_buyer_relevant: bool,
+pub(crate) struct CompanyPoiRef {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub role: String,
+    pub role_family: String,
+    pub org: String,
+    pub is_buyer_relevant: bool,
 }
 
 #[cfg(feature = "llm")]
-async fn load_company_pois(
+pub(crate) async fn load_company_pois(
     store: &PgStore,
     company_id: &uuid::Uuid,
 ) -> Result<Vec<CompanyPoiRef>, sqlx::Error> {
@@ -325,7 +339,7 @@ async fn load_company_pois(
         r#"SELECT
                p.id,
                p.name,
-               COALESCE(p.\"current_role\", 'Unknown') AS role,
+               COALESCE(p."current_role", 'Unknown') AS role,
                COALESCE(p.metadata->>'role_family', 'unknown') AS role_family,
                COALESCE(c.name, p.primary_org_id::text) AS org
            FROM persons p
@@ -471,6 +485,90 @@ struct CachedInsightOutput {
     recommendation: String,
     confidence: f64,
     metadata: serde_json::Value,
+}
+
+/// Minimum grounding ratio an LLM output must reach before it may be stored or
+/// cached (audit #100). Below this the output is discarded unpersisted.
+#[cfg(feature = "llm")]
+const MIN_GROUNDING_RATIO: f64 = 0.3;
+
+/// True when an output grounded at `grounding_ratio` may be persisted to the
+/// prompt-bound `llm_cache`. Pure so the "ungrounded output is never cached"
+/// policy is unit-testable without a database.
+#[cfg(feature = "llm")]
+fn should_persist_grounded_llm_output(grounding_ratio: f64) -> bool {
+    grounding_ratio >= MIN_GROUNDING_RATIO
+}
+
+/// Canonical fingerprint of every variable input to the rendered insight
+/// prompt: the operator's `COMPANY_PROFILE` override, the category, the entity
+/// context and every evidence signal. `generate_llm_insight` renders its prompt
+/// from exactly these values, so a changed fingerprint means a different
+/// rendered prompt. Static template text is covered by the prompt version,
+/// which participates in the base cache key.
+#[cfg(feature = "llm")]
+fn rendered_prompt_fingerprint(
+    entity_ctx: &EntityContext,
+    category: &str,
+    evidence_signals: &[EvidenceSignal],
+) -> String {
+    let evidence: Vec<serde_json::Value> = evidence_signals
+        .iter()
+        .map(|signal| {
+            serde_json::json!({
+                "title": signal.title,
+                "description": signal.description,
+                "source_url": signal.source_url,
+                "signal_type": signal.signal_type,
+                "extracted_facts": signal.extracted_facts,
+                "date_context": signal.date_context,
+                "relevance_score": signal.relevance_score,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "company_profile": std::env::var("COMPANY_PROFILE").unwrap_or_default(),
+        "category": category,
+        "entity": {
+            "name": entity_ctx.name,
+            "region": entity_ctx.region,
+            "entity_type": entity_ctx.entity_type,
+            "is_competitor": entity_ctx.is_competitor,
+            "industry_tags": entity_ctx.industry_tags,
+            "certifications": entity_ctx.certifications,
+            "capabilities": entity_ctx.capabilities,
+            "key_persons": entity_ctx.key_persons,
+            "recent_changes": entity_ctx.recent_changes,
+            "threat_score": entity_ctx.threat_score,
+            "overlap_score": entity_ctx.overlap_score,
+            "strategic_relevance": entity_ctx.strategic_relevance,
+            "revenue_estimate_usd": entity_ctx.revenue_estimate_usd,
+            "employee_estimate": entity_ctx.employee_estimate,
+            "competitor_names": entity_ctx.competitor_names,
+            "sites_summary": entity_ctx.sites_summary,
+            "competitor_events": entity_ctx.competitor_events,
+            "domain": entity_ctx.domain,
+            "context_unavailable": entity_ctx.context_unavailable,
+        },
+        "evidence": evidence,
+    })
+    .to_string()
+}
+
+/// True when `phrase_lower` shares at least one significant whole token with
+/// the known proper-noun token set (#101). Whole-token comparison stops an
+/// unrelated name that merely contains another as a substring ("ace" inside
+/// "spacex") from being treated as grounded, while a qualified form still
+/// matches its base name ("foxconn subsidiary" vs "foxconn").
+#[cfg(feature = "llm")]
+fn phrase_supported_by_name_tokens(
+    phrase_lower: &str,
+    known_name_tokens: &HashSet<String>,
+) -> bool {
+    significant_name_tokens(phrase_lower)
+        .iter()
+        .any(|token| known_name_tokens.contains(*token))
 }
 
 /// Evidence reference for claim extraction: the stable row id plus its URL
@@ -680,8 +778,10 @@ async fn generate_insights_for_company(
 
     // ── 5. Call the real grounded LLM insight pipeline ─────────────────────
     // Cache key ingredients (audit P0 #24): same model, prompt version, and
-    // evidence ids must never re-run identical inference. Observation ids are
-    // stable, so unchanged evidence is served from `llm_cache`.
+    // evidence ids. #100: the effective key is additionally bound to the
+    // rendered prompt inputs, so a different rendering of the same evidence
+    // (changed company profile, changed evidence text) can never be served a
+    // stale response.
     const INSIGHT_PROMPT_VERSION: &str = "insight_generation_v1";
     let observation_ids: Vec<uuid::Uuid> = observations
         .iter()
@@ -689,7 +789,7 @@ async fn generate_insights_for_company(
         .map(|o| o.id)
         .collect();
     let cache_evidence_ids: Vec<String> = observation_ids.iter().map(|id| id.to_string()).collect();
-    let cache_key = if cache_evidence_ids.is_empty() {
+    let base_cache_key = if cache_evidence_ids.is_empty() {
         None
     } else {
         Some(apex_llm::cache::cache_key(
@@ -699,37 +799,46 @@ async fn generate_insights_for_company(
             &cache_evidence_ids,
         ))
     };
+    let rendered_prompt = rendered_prompt_fingerprint(&entity_ctx, &category, &evidence_signals);
 
-    let cached_output: Option<CachedInsightOutput> = match cache_key.as_deref() {
-        Some(key) => match store.get_llm_cache(key).await {
-            Ok(Some(raw)) => match serde_json::from_str(&raw) {
-                Ok(cached) => Some(cached),
+    let cached_output: Option<CachedInsightOutput> = match base_cache_key.as_deref() {
+        Some(base_key) => {
+            // The store derives the effective key from (base key, rendered
+            // prompt) with the same derivation `put_llm_cache_grounded` uses.
+            match store
+                .get_llm_cache_for_prompt(base_key, &rendered_prompt)
+                .await
+            {
+                Ok(Some(raw)) => match serde_json::from_str(&raw) {
+                    Ok(cached) => Some(cached),
+                    Err(error) => {
+                        // A corrupt cache row is a miss, but it is logged rather
+                        // than silently discarded.
+                        tracing::warn!(
+                            company = %company_name,
+                            error = %error,
+                            "insight_generation: cached output is not valid JSON; treating as cache miss"
+                        );
+                        None
+                    }
+                },
+                Ok(None) => None,
                 Err(error) => {
-                    // A corrupt cache row is a miss, but it is logged rather
-                    // than silently discarded.
+                    // Storage failure is not a cache miss: surface it and skip the
+                    // cache instead of pretending the cache was consulted.
                     tracing::warn!(
                         company = %company_name,
                         error = %error,
-                        "insight_generation: cached output is not valid JSON; treating as cache miss"
+                        "insight_generation: llm cache read failed; re-running inference"
                     );
                     None
                 }
-            },
-            Ok(None) => None,
-            Err(error) => {
-                // Storage failure is not a cache miss: surface it and skip the
-                // cache instead of pretending the cache was consulted.
-                tracing::warn!(
-                    company = %company_name,
-                    error = %error,
-                    "insight_generation: llm cache read failed; re-running inference"
-                );
-                None
             }
-        },
+        }
         None => None,
     };
 
+    let mut generated_from_model = false;
     let (headline, narrative, recommendation, llm_confidence, insight_metadata) =
         if let Some(cached) = cached_output {
             tracing::debug!(
@@ -744,7 +853,8 @@ async fn generate_insights_for_company(
                 cached.metadata,
             )
         } else {
-            let generated = match crate::generate_llm_insight(
+            generated_from_model = true;
+            match crate::generate_llm_insight(
                 &llm_client,
                 &entity_ctx,
                 &category,
@@ -762,43 +872,7 @@ async fn generate_insights_for_company(
                     );
                     return Ok(CompanyInsightOutcome::default());
                 }
-            };
-            if let Some(key) = cache_key.as_deref() {
-                let payload = CachedInsightOutput {
-                    headline: generated.0.clone(),
-                    narrative: generated.1.clone(),
-                    recommendation: generated.2.clone(),
-                    confidence: generated.3,
-                    metadata: generated.4.clone(),
-                };
-                match serde_json::to_string(&payload) {
-                    Ok(serialized) => {
-                        if let Err(e) = store
-                            .put_llm_cache(
-                                key,
-                                apex_llm::tiering::Workflow::FinalSynthesis.as_str(),
-                                &model_name,
-                                INSIGHT_PROMPT_VERSION,
-                                &observation_ids,
-                                &serialized,
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                company = %company_name,
-                                error = %e,
-                                "insight_generation: failed to cache LLM output"
-                            );
-                        }
-                    }
-                    Err(e) => tracing::warn!(
-                        company = %company_name,
-                        error = %e,
-                        "insight_generation: failed to serialize LLM output for cache"
-                    ),
-                }
             }
-            generated
         };
 
     // ── 6. Anti-hallucination grounding validation ────────────────────────
@@ -811,13 +885,62 @@ async fn generate_insights_for_company(
         &evidence_signals,
         company_name,
     );
-    if grounding_ratio < 0.3 {
+    if !should_persist_grounded_llm_output(grounding_ratio) {
         tracing::warn!(
             company = %company_name,
             grounding_ratio,
             "insight_generation: grounding validation failed (<0.3); skipping ungrounded insight"
         );
         return Ok(CompanyInsightOutcome::default());
+    }
+
+    // ── 6b. Cache the grounded output (audit #100) ────────────────────────
+    // The cache write happens only AFTER grounding passed: a failed grounding
+    // has already returned above, so an ungrounded response can never become
+    // a cache hit. `put_llm_cache_grounded` re-checks the `grounded` flag and
+    // binds the effective key to the rendered prompt.
+    if generated_from_model {
+        if let Some(base_key) = base_cache_key.as_deref() {
+            let payload = CachedInsightOutput {
+                headline: headline.clone(),
+                narrative: narrative.clone(),
+                recommendation: recommendation.clone(),
+                confidence: llm_confidence,
+                metadata: insight_metadata.clone(),
+            };
+            match serde_json::to_string(&payload) {
+                Ok(serialized) => match store
+                    .put_llm_cache_grounded(
+                        base_key,
+                        apex_llm::tiering::Workflow::FinalSynthesis.as_str(),
+                        &model_name,
+                        INSIGHT_PROMPT_VERSION,
+                        &observation_ids,
+                        &rendered_prompt,
+                        should_persist_grounded_llm_output(grounding_ratio),
+                        chrono::Duration::days(7),
+                        &serialized,
+                    )
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => tracing::warn!(
+                        company = %company_name,
+                        "insight_generation: grounded LLM output was not cached (key already populated)"
+                    ),
+                    Err(e) => tracing::warn!(
+                        company = %company_name,
+                        error = %e,
+                        "insight_generation: failed to cache grounded LLM output"
+                    ),
+                },
+                Err(e) => tracing::warn!(
+                    company = %company_name,
+                    error = %e,
+                    "insight_generation: failed to serialize LLM output for cache"
+                ),
+            }
+        }
     }
 
     // ── 7. Append buying-center-aware contact recommendations ─────────────
@@ -1136,7 +1259,6 @@ pub(crate) fn validate_grounding_with_entity(
     entity_corpus: &str,
 ) -> f64 {
     use apex_llm::anti_hallucination::SourceGroundingValidator;
-    use std::collections::HashSet;
 
     let mut validator = SourceGroundingValidator::new();
 
@@ -1204,15 +1326,25 @@ pub(crate) fn validate_grounding_with_entity(
     let known_proper_nouns = extract_known_proper_nouns(&known_corpus);
     let output_proper_nouns = extract_proper_noun_phrases(&combined);
 
+    // #101: compare whole name tokens, never substrings. The previous check
+    // (`k.contains(&lower) || lower.contains(k)`) marked "SpaceX" as evidence
+    // for "Ace" and "Iran" as evidence for "Iranian" — exactly the class of
+    // proper-noun hallucination this layer exists to catch.
+    let known_name_tokens: HashSet<String> = known_proper_nouns
+        .iter()
+        .flat_map(|noun| significant_name_tokens(noun))
+        .map(str::to_string)
+        .collect();
+
     // Count how many output proper-noun phrases are NOT supported by evidence.
     let mut unsupported_count = 0usize;
     let mut supported_count = 0usize;
     for phrase in &output_proper_nouns {
         let lower = phrase.to_lowercase();
-        // A phrase is supported if it (or a token overlap) appears in the known set.
-        let is_supported = known_proper_nouns
-            .iter()
-            .any(|k| k == &lower || k.contains(&lower) || lower.contains(k));
+        // A phrase is supported when any of its significant whole tokens is a
+        // known token: "foxconn subsidiary" matches "foxconn", while "ace"
+        // shares no token with "spacex".
+        let is_supported = phrase_supported_by_name_tokens(&lower, &known_name_tokens);
         if is_supported {
             supported_count += 1;
         } else {
@@ -1510,4 +1642,101 @@ fn extract_proper_noun_phrases(text: &str) -> Vec<String> {
     phrases.sort();
     phrases.dedup();
     phrases
+}
+
+#[cfg(all(test, feature = "llm"))]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn test_entity_context() -> EntityContext {
+        EntityContext {
+            name: "Acme Manufacturing".to_string(),
+            region: "Morocco".to_string(),
+            entity_type: Some("company".to_string()),
+            is_competitor: false,
+            industry_tags: vec!["electronics".to_string()],
+            certifications: Vec::new(),
+            capabilities: Vec::new(),
+            key_persons: Vec::new(),
+            recent_changes: Vec::new(),
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: Vec::new(),
+            sites_summary: Vec::new(),
+            competitor_events: Vec::new(),
+            domain: None,
+            context_unavailable: Vec::new(),
+        }
+    }
+
+    fn test_evidence_signal(description: &str) -> EvidenceSignal {
+        EvidenceSignal {
+            title: "Observation 1".to_string(),
+            description: description.to_string(),
+            source_url: "https://example.com/a".to_string(),
+            signal_type: "observation".to_string(),
+            extracted_facts: Vec::new(),
+            date_context: None,
+            relevance_score: 0.7,
+        }
+    }
+
+    #[test]
+    fn grounding_failure_is_never_persisted_to_cache() {
+        assert!(!should_persist_grounded_llm_output(0.0));
+        assert!(!should_persist_grounded_llm_output(0.29));
+        assert!(should_persist_grounded_llm_output(0.3));
+        assert!(should_persist_grounded_llm_output(1.0));
+    }
+
+    #[test]
+    fn prompt_fingerprint_is_stable_and_changes_with_prompt_inputs() {
+        let ctx = test_entity_context();
+        let evidence = [test_evidence_signal("Acme opened a plant in Tangier")];
+        let baseline = rendered_prompt_fingerprint(&ctx, "competitor_market", &evidence);
+
+        assert_eq!(
+            baseline,
+            rendered_prompt_fingerprint(&ctx, "competitor_market", &evidence),
+            "the same prompt inputs must produce the same fingerprint"
+        );
+        assert_ne!(
+            baseline,
+            rendered_prompt_fingerprint(&ctx, "supply_chain_risk", &evidence),
+            "a different category renders a different prompt and must change the key"
+        );
+        let changed = [test_evidence_signal("Acme opened a plant in Casablanca")];
+        assert_ne!(
+            baseline,
+            rendered_prompt_fingerprint(&ctx, "competitor_market", &changed),
+            "different evidence text renders a different prompt and must change the key"
+        );
+    }
+
+    #[test]
+    fn proper_noun_matching_compares_whole_tokens_not_substrings() {
+        fn known(names: &[&str]) -> HashSet<String> {
+            names
+                .iter()
+                .flat_map(|name| significant_name_tokens(name))
+                .map(str::to_string)
+                .collect()
+        }
+
+        let foxconn = known(&["foxconn"]);
+        assert!(phrase_supported_by_name_tokens("foxconn", &foxconn));
+        assert!(phrase_supported_by_name_tokens(
+            "foxconn subsidiary",
+            &foxconn
+        ));
+
+        let spacex = known(&["spacex"]);
+        assert!(!phrase_supported_by_name_tokens("ace", &spacex));
+        assert!(phrase_supported_by_name_tokens("ace", &known(&["ace"])));
+    }
 }

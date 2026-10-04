@@ -3,6 +3,9 @@ use crate::errors::{ApexError, Result};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
+/// NATS endpoint used when `NATS_URL` is unset/blank (B289).
+pub const DEFAULT_NATS_URL: &str = "nats://127.0.0.1:4222";
+
 /// Global application configuration, loaded from environment variables.
 ///
 /// # Loading
@@ -22,8 +25,8 @@ use serde::{Deserialize, Serialize};
 /// | `LLM_MODEL`               | `Qwen3-30B-A3B-Q4_K_M`        | Locally deployed quantized model     |
 /// | `ENABLE_PROXY_ROTATION`   | `false`                       | Enable only in production            |
 /// | `ENABLE_HEADLESS_BROWSER` | `false`                       | Enable only when scraping JS pages; requires Chromium under the non-root `apexintel` service account (no `--no-sandbox`) |
-/// | `ENABLE_WASM_PREVIEW`     | `true`                        | Gate the Rust/WASM preview UI        |
-/// | `CRAWL_INTERVAL_SECS`     | `21600` (6 h)                 | How often to re-crawl domains        |
+/// | `ENABLE_WASM_PREVIEW`     | `false`                       | **Retired** — the Rust/WASM preview UI was removed and CI forbids the crate; setting this to `true` fails `AppConfig::validate()` |
+/// | `CRAWL_INTERVAL_SECS`     | `3600` (1 h)                 | How often to re-crawl domains        |
 /// | `NIGHTLY_HOUR_UTC`        | `2`                           | UTC hour for the nightly pipeline    |
 /// | `WEEKLY_DAY`              | `0` (Monday)                  | 0=Mon … 6=Sun                        |
 /// | `DEFAULT_RPS`             | `0.2`                         | Requests/second per domain           |
@@ -72,11 +75,15 @@ pub struct AppConfig {
     pub enable_proxy_rotation: bool,
     /// Enable headless-browser crawl fallback.  Default: `false`.
     pub enable_headless_browser: bool,
-    /// Expose the Rust/WASM preview UI. Default: `true`.
+    /// **Retired.** Gate for the Rust/WASM preview UI; the preview crate was
+    /// removed from the workspace and CI forbids it. Default: `false`. Setting
+    /// this to `true` is rejected by [`AppConfig::validate`] so an operator who
+    /// still sets `ENABLE_WASM_PREVIEW=true` fails loudly instead of the flag
+    /// being silently ignored.
     pub enable_wasm_preview: bool,
 
     // ── Scheduling ──────────────────────────────────────────────
-    /// Crawl polling interval in seconds.  Default: `21600` (6 hours).
+    /// Crawl polling interval in seconds.  Default: `3600` (1 hour).
     pub crawl_interval_secs: u64,
     /// UTC hour (0–23) when the nightly pipeline fires.  Default: `2`.
     pub nightly_hour_utc: u32,
@@ -99,7 +106,7 @@ impl AppConfig {
         Ok(Self {
             database_url: require_secret_env(env::DATABASE_URL)?,
             redis_url: env_or_secret(env::REDIS_URL, "redis://127.0.0.1:6379"),
-            nats_url: env_or(env::NATS_URL, "nats://127.0.0.1:4222"),
+            nats_url: nats_url_from_env(),
             minio_url: env_or(env::MINIO_URL, "http://127.0.0.1:9000"),
             minio_bucket: env_or(env::MINIO_BUCKET, "apexintel"),
 
@@ -118,9 +125,9 @@ impl AppConfig {
 
             enable_proxy_rotation: parse_bool_env(env::ENABLE_PROXY_ROTATION, false)?,
             enable_headless_browser: parse_bool_env(env::ENABLE_HEADLESS_BROWSER, false)?,
-            enable_wasm_preview: parse_bool_env(env::ENABLE_WASM_PREVIEW, true)?,
+            enable_wasm_preview: parse_bool_env(env::ENABLE_WASM_PREVIEW, false)?,
 
-            crawl_interval_secs: parse_u64_env(env::CRAWL_INTERVAL_SECS, 21600)?,
+            crawl_interval_secs: parse_u64_env(env::CRAWL_INTERVAL_SECS, 3600)?,
             nightly_hour_utc: parse_u32_env(env::NIGHTLY_HOUR_UTC, 2)?.min(23),
             weekly_day: parse_u32_env(env::WEEKLY_DAY, 0)?.min(6),
 
@@ -138,6 +145,20 @@ impl AppConfig {
 
     pub fn database_url_value(&self) -> &str {
         self.database_url.expose_secret()
+    }
+
+    /// `NATS_URL` only when explicitly set and non-empty (after trimming).
+    ///
+    /// [`AppConfig::nats_url`] always carries the localhost default; the
+    /// worker's alert publishers must distinguish "not configured" (they
+    /// disable publishing and leave events queued) from "dial the local
+    /// broker", so they resolve their endpoint through this helper instead.
+    /// The raw value is returned so call sites keep their exact trim and log
+    /// behavior.
+    pub fn nats_url_configured_from_env() -> Option<String> {
+        std::env::var(env::NATS_URL)
+            .ok()
+            .filter(|url| !url.trim().is_empty())
     }
 
     pub fn redis_url_value(&self) -> &str {
@@ -190,6 +211,7 @@ impl AppConfig {
     /// | `weekly_day`              | `<= 6`        | Mon=0 … Sun=6                           |
     /// | `default_requests_per_second` | `> 0.0`   | Must be a positive rate                 |
     /// | `proxy_pool_size`         | `>= 1`        | At least one proxy slot required        |
+    /// | `enable_wasm_preview`     | `false`       | Retired Rust/WASM preview UI; `true` is rejected |
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
 
@@ -226,6 +248,14 @@ impl AppConfig {
                 "AppConfig.proxy_pool_size = {} must be >= 1",
                 self.proxy_pool_size
             ));
+        }
+        if self.enable_wasm_preview {
+            errors.push(
+                "AppConfig.enable_wasm_preview = true is invalid: the Rust/WASM preview UI is \
+                 retired (the crate was removed and CI forbids it); unset ENABLE_WASM_PREVIEW or \
+                 set it to false"
+                    .to_string(),
+            );
         }
 
         errors
@@ -398,6 +428,14 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Resolve `NATS_URL` with the documented localhost default (B289).
+///
+/// Single source for the default so `AppConfig::from_env` and runtime probes
+/// can never drift apart.
+pub fn nats_url_from_env() -> String {
+    env_or(env::NATS_URL, DEFAULT_NATS_URL)
+}
+
 fn env_or_secret(key: &str, default: &str) -> SecretString {
     SecretString::from(env_or(key, default))
 }
@@ -561,8 +599,40 @@ mod tests {
             "postgres://test:test@localhost/test"
         );
         assert_eq!(cfg.llm_model, "Qwen3-30B-A3B-Q4_K_M");
-        assert_eq!(cfg.crawl_interval_secs, 21600);
+        assert_eq!(cfg.crawl_interval_secs, 3600);
         assert!(!cfg.enable_proxy_rotation);
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_nats_url_flows_through_and_defaults_to_localhost() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        std::env::set_var("DATABASE_URL", "postgres://test:test@localhost/nats-test");
+
+        std::env::remove_var(env::NATS_URL);
+        let cfg = AppConfig::from_env().unwrap();
+        assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
+        assert_eq!(nats_url_from_env(), DEFAULT_NATS_URL);
+        assert_eq!(AppConfig::nats_url_configured_from_env(), None);
+
+        std::env::set_var(env::NATS_URL, "nats://nats.internal:4333");
+        let cfg = AppConfig::from_env().unwrap();
+        assert_eq!(cfg.nats_url, "nats://nats.internal:4333");
+        assert_eq!(nats_url_from_env(), "nats://nats.internal:4333");
+        assert_eq!(
+            AppConfig::nats_url_configured_from_env().as_deref(),
+            Some("nats://nats.internal:4333")
+        );
+
+        // A set-but-blank value keeps the historical semantics: the defaulted
+        // config field preserves the raw value, and the worker publishers
+        // treat it as unconfigured.
+        std::env::set_var(env::NATS_URL, "   ");
+        let cfg = AppConfig::from_env().unwrap();
+        assert_eq!(cfg.nats_url, "   ");
+        assert_eq!(AppConfig::nats_url_configured_from_env(), None);
+
+        std::env::remove_var(env::NATS_URL);
         std::env::remove_var("DATABASE_URL");
     }
 
@@ -630,6 +700,46 @@ mod tests {
         assert!(errs
             .iter()
             .any(|e| e.contains("default_requests_per_second")));
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_from_env_wasm_preview_defaults_false() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
+        std::env::remove_var(env::ENABLE_WASM_PREVIEW);
+        let cfg = AppConfig::from_env().unwrap();
+        assert!(
+            !cfg.enable_wasm_preview,
+            "the retired WASM preview flag must default to false"
+        );
+        assert!(
+            cfg.validate().is_empty(),
+            "the default configuration must validate cleanly"
+        );
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_app_config_wasm_preview_true_is_rejected() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
+        std::env::set_var(env::ENABLE_WASM_PREVIEW, "true");
+        let cfg = AppConfig::from_env().unwrap();
+        assert!(
+            cfg.enable_wasm_preview,
+            "an explicit true is parsed honestly, then rejected by validate()"
+        );
+        let errs = cfg.validate();
+        assert!(
+            errs.iter().any(|e| e.contains("enable_wasm_preview")),
+            "an explicitly enabled retired flag must fail validation: {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.contains("retired")),
+            "the validation error must explain the flag is retired: {errs:?}"
+        );
+        std::env::remove_var(env::ENABLE_WASM_PREVIEW);
         std::env::remove_var("DATABASE_URL");
     }
 

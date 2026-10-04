@@ -3,6 +3,16 @@
 
 {% block title %}Historical Trends — ApexIntel{% endblock %}
 
+{% block breadcrumbs %}
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1.5 text-[12px] font-medium tracking-normal text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
+    <li class="select-none" aria-hidden="true">/</li>
+    <li class="text-rams-foreground" aria-current="page">Trends</li>
+  </ol>
+</nav>
+{% endblock %}
+
 {% block content %}
 {% call m::page_header("Trends", "bar-chart-3", "Long-term trend analysis across all metrics", "") %}
 
@@ -133,7 +143,7 @@
 <!-- ── Comparison Cards ────────────────────────────────────────────────── -->
 <div class="trends-comparison-grid mb-6">
   {% if let Some(mom) = mom_comparison %}
-  <div class="apex-card">
+  <div class="apex-card p-4">
     <h3>{{ mom.label }}</h3>
     <div class="flex items-center justify-between mt-2">
       <div>
@@ -168,7 +178,7 @@
   {% endif %}
 
   {% if let Some(yoy) = yoy_comparison %}
-  <div class="apex-card">
+  <div class="apex-card p-4">
     <h3>{{ yoy.label }}</h3>
     <div class="flex items-center justify-between mt-2">
       <div>

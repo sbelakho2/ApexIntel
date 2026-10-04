@@ -149,12 +149,22 @@ impl PaidEndpoint {
 // Rotator
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Default capacity of the free-proxy pool, matching
+/// `AppConfig.proxy_pool_size` (env `PROXY_POOL_SIZE`).
+pub const DEFAULT_PROXY_POOL_CAPACITY: usize = 50;
+
 /// Intelligent proxy pool with weighted selection and session affinity.
 ///
 /// # Selection priority
 /// 1. Healthy paid endpoint — rotated round-robin; skips endpoints in backoff.
 /// 2. Weighted random pick from free pool — weight = health_score × kind_multiplier.
 /// 3. Pure round-robin fallback when all free weights are zero (all in backoff).
+///
+/// # Capacity
+/// The free pool is bounded by [`Self::capacity`] (configured via
+/// `PROXY_POOL_SIZE`). [`Self::add_proxies`] refuses proxies beyond that
+/// bound instead of growing silently; unhealthy proxies are already evicted
+/// by [`Self::report_failure`], which frees slots for replacements.
 pub struct ProxyRotator {
     proxies: Vec<String>,
     health: HashMap<String, ProxyHealth>,
@@ -164,14 +174,24 @@ pub struct ProxyRotator {
     paid_cursor: usize,
     /// session_id → pinned proxy URL.
     sessions: HashMap<String, String>,
+    /// Maximum number of free-pool proxies admitted by `add_proxies`.
+    capacity: usize,
 }
 
 impl ProxyRotator {
-    /// Create a new rotator.
+    /// Create a new rotator with the documented default capacity (50).
     ///
     /// * `paid_proxy_url` — legacy single paid endpoint (retained for backward-
     ///   compat); use `add_paid_endpoints` for multiple endpoints.
     pub fn new(enabled: bool, paid_proxy_url: Option<String>) -> Self {
+        Self::with_capacity(enabled, paid_proxy_url, DEFAULT_PROXY_POOL_CAPACITY)
+    }
+
+    /// Create a new rotator whose free pool admits at most `capacity` proxies.
+    ///
+    /// A `capacity` of 0 is clamped to 1: a pool that cannot hold a single
+    /// proxy is indistinguishable from rotation being disabled.
+    pub fn with_capacity(enabled: bool, paid_proxy_url: Option<String>, capacity: usize) -> Self {
         let mut paid_endpoints = Vec::new();
         if let Some(url) = paid_proxy_url {
             paid_endpoints.push(PaidEndpoint::new(url));
@@ -184,15 +204,32 @@ impl ProxyRotator {
             paid_endpoints,
             paid_cursor: 0,
             sessions: HashMap::new(),
+            capacity: capacity.max(1),
         }
     }
 
-    pub fn add_proxies(&mut self, proxies: Vec<String>) {
+    /// Admit free-pool proxies up to [`Self::capacity`]. Duplicates and
+    /// overflow entries are refused rather than growing the pool silently.
+    ///
+    /// Returns the number of newly inserted proxies so callers can report how
+    /// many configured entries were refused.
+    pub fn add_proxies(&mut self, proxies: Vec<String>) -> usize {
+        let mut accepted = 0;
         for proxy in proxies {
+            if self.proxies.len() >= self.capacity {
+                break;
+            }
             if !self.proxies.contains(&proxy) {
                 self.proxies.push(proxy);
+                accepted += 1;
             }
         }
+        accepted
+    }
+
+    /// Maximum number of free-pool proxies admitted by [`Self::add_proxies`].
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Register additional paid endpoint URLs.
@@ -531,13 +568,17 @@ impl ProxyRotator {
         result
     }
 
-    /// Load and tag proxies from an annotated list.
+    /// Load and tag proxies from an annotated list. Entries refused by the
+    /// pool capacity are not tagged: health state is only created for proxies
+    /// the rotator actually holds.
     pub fn load_annotated(&mut self, text: &str) {
         let entries = Self::parse_annotated_proxy_list(text);
         let urls: Vec<String> = entries.iter().map(|(u, _, _)| u.clone()).collect();
         self.add_proxies(urls);
         for (url, kind, country) in entries {
-            self.tag_proxy(&url, kind, country);
+            if self.proxies.contains(&url) {
+                self.tag_proxy(&url, kind, country);
+            }
         }
     }
 }
@@ -715,5 +756,72 @@ mod tests {
     fn test_health_summary() {
         let r = ProxyRotator::new(false, None);
         assert!(r.health_summary().contains("free="));
+    }
+
+    // ── Bounded capacity ─────────────────────────────────────────────
+
+    #[test]
+    fn add_proxies_refuses_beyond_capacity() {
+        let mut rotator = ProxyRotator::with_capacity(true, None, 2);
+        assert_eq!(rotator.capacity(), 2);
+        let accepted = rotator.add_proxies(vec![
+            "http://a:8080".to_string(),
+            "http://b:8080".to_string(),
+            "http://c:8080".to_string(),
+        ]);
+        assert_eq!(accepted, 2, "only the capacity allows two inserts");
+        assert_eq!(rotator.proxy_count(), 2);
+        assert!(!rotator.proxies.contains(&"http://c:8080".to_string()));
+
+        assert_eq!(
+            rotator.add_proxies(vec!["http://d:8080".to_string()]),
+            0,
+            "a full pool must refuse new proxies, not evict silently"
+        );
+        assert_eq!(rotator.proxy_count(), 2);
+    }
+
+    #[test]
+    fn add_proxies_does_not_charge_capacity_for_duplicates() {
+        let mut rotator = ProxyRotator::with_capacity(true, None, 2);
+        assert_eq!(
+            rotator.add_proxies(vec![
+                "http://a:8080".to_string(),
+                "http://a:8080".to_string(),
+            ]),
+            1
+        );
+        assert_eq!(rotator.proxy_count(), 1);
+        assert_eq!(rotator.add_proxies(vec!["http://b:8080".to_string()]), 1);
+    }
+
+    #[test]
+    fn capacity_zero_is_clamped_to_one() {
+        let mut rotator = ProxyRotator::with_capacity(true, None, 0);
+        assert_eq!(rotator.capacity(), 1);
+        rotator.add_proxies(vec![
+            "http://a:8080".to_string(),
+            "http://b:8080".to_string(),
+        ]);
+        assert_eq!(rotator.proxy_count(), 1);
+    }
+
+    #[test]
+    fn default_capacity_matches_documented_pool_size() {
+        assert_eq!(
+            ProxyRotator::new(true, None).capacity(),
+            DEFAULT_PROXY_POOL_CAPACITY
+        );
+    }
+
+    #[test]
+    fn load_annotated_ignores_tags_for_refused_entries() {
+        let mut rotator = ProxyRotator::with_capacity(true, None, 1);
+        rotator.load_annotated("1.2.3.4:8080|residential|US\n5.6.7.8:3128|mobile|IL");
+        assert_eq!(rotator.proxy_count(), 1);
+        assert!(
+            !rotator.health.contains_key("http://5.6.7.8:3128"),
+            "refused proxies must not leave health state behind"
+        );
     }
 }

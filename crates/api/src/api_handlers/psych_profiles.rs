@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 /// One row of the psych-profiles list view, derived from real schema columns only.
 #[derive(Debug, Serialize)]
-pub struct PsychProfileItem {
+pub(crate) struct PsychProfileItem {
     pub person_id: String,
     pub person_name: String,
     pub current_role: String,

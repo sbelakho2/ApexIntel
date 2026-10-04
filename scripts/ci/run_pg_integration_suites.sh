@@ -68,6 +68,7 @@ run cargo test -p apex-store \
   --test rls_scoped_integration \
   --test auth_hardening_integration \
   --test insight_claim_evidence_integration \
+  --test insight_analysis_run_integration \
   --test warning_analysis_run_integration \
   --test warning_evidence_integration \
   --test evidence_lineage_integration \
@@ -79,6 +80,7 @@ run cargo test -p apex-store \
 # ── Triage semantic dedup / warning ingress ──────────────────────────────────
 run cargo test -p apex-triage --test triage_ingest_integration --locked -- --ignored --test-threads=1
 run cargo test -p apex-triage --test semantic_dedup_pg_integration --locked -- --ignored --test-threads=1
+run cargo test -p apex-triage --test router_integration_pg_integration --locked -- --ignored --test-threads=1
 
 # ── Notification delivery crash-window idempotency ───────────────────────────
 # Receiver accepts -> settlement write lost -> lease expires -> row reclaimed:
@@ -86,6 +88,19 @@ run cargo test -p apex-triage --test semantic_dedup_pg_integration --locked -- -
 run cargo test -p apex-worker \
   --test notification_delivery_idempotency_integration \
   --locked -- --ignored --test-threads=1
+
+# ── Insight loaders: POI current_role (N6), newest-12 evidence (#99), ────────
+# prompt-bound grounded LLM cache (#100) ─────────────────────────────────────
+run cargo test -p apex-worker --test insight_poi_loading_integration --locked -- --ignored --test-threads=1
+
+# ── POI person resolution: corroborated merges, warning/insight entity-array ─
+# rewrites (#165), and same-source photo change detection (#164) ─────────────
+run cargo test -p apex-worker --test poi_resolver_merge_integration --locked -- --ignored --test-threads=1
+
+# ── Agentic hypothesis generation: real store tools + production staging ─────
+# (W3) Valid final answers stage exactly one `staging` recipe; invalid answers
+# stage none. Local runs use an isolated database (e.g. apexintel_ci_w3).
+run cargo test -p apex-worker --test agentic_hypothesis_generation_integration --locked -- --ignored --test-threads=1
 
 # ── Insight evidence persistence (unit-test target) ──────────────────────────
 run cargo test -p apex-insights --lib --locked -- --ignored --test-threads=1

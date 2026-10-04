@@ -93,7 +93,7 @@ static SECONDARY_MARKETS: LazyLock<Vec<String>> =
 
 /// Where a demand-side entity sits relative to Starz's sales footprint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MarketTier {
+pub(crate) enum MarketTier {
     /// Primary market — Morocco, Tunisia, Egypt.
     Primary,
     /// Secondary market — European Union.
@@ -111,7 +111,7 @@ pub enum MarketTier {
 /// only when it is unambiguous — ambiguous macro-regions such as "MENA" or
 /// "North Africa" (which mix target and non-target countries) yield
 /// [`MarketTier::Unknown`] so that no entity is wrongly penalised.
-pub fn classify_market(country_code: Option<&str>, region: Option<&str>) -> MarketTier {
+pub(crate) fn classify_market(country_code: Option<&str>, region: Option<&str>) -> MarketTier {
     if let Some(code) = country_code {
         let code = code.trim().to_ascii_uppercase();
         if !code.is_empty() {
@@ -158,7 +158,7 @@ pub fn classify_market(country_code: Option<&str>, region: Option<&str>) -> Mark
 }
 
 /// Ranking multiplier for a demand-side entity in the given market tier.
-pub fn demand_geo_weight(tier: MarketTier) -> f64 {
+pub(crate) fn demand_geo_weight(tier: MarketTier) -> f64 {
     match tier {
         MarketTier::Primary => *crate::config::GEO_PRIMARY_DEMAND_WEIGHT,
         MarketTier::Secondary => *crate::config::GEO_SECONDARY_DEMAND_WEIGHT,
@@ -169,7 +169,7 @@ pub fn demand_geo_weight(tier: MarketTier) -> f64 {
 
 /// Whether an entity is monitored globally (competitors and upstream suppliers)
 /// and must therefore be exempt from any geographic demand weighting.
-pub fn is_global_monitoring_entity(is_competitor: bool, company_type: Option<&str>) -> bool {
+pub(crate) fn is_global_monitoring_entity(is_competitor: bool, company_type: Option<&str>) -> bool {
     if is_competitor {
         return true;
     }
@@ -189,7 +189,7 @@ pub fn is_global_monitoring_entity(is_competitor: bool, company_type: Option<&st
 /// * `1.0` for competitors and upstream suppliers (global monitoring — never
 ///   re-weighted by geography);
 /// * otherwise the demand weight for the entity's [`MarketTier`].
-pub fn ranking_geo_multiplier(
+pub(crate) fn ranking_geo_multiplier(
     is_competitor: bool,
     company_type: Option<&str>,
     country_code: Option<&str>,

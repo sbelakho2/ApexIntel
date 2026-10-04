@@ -77,6 +77,7 @@ pub fn job_may_use_llm(kind: &JobKind) -> bool {
             | JobKind::EmbeddingReindex
             | JobKind::TriageProcessing
             | JobKind::InsightGeneration
+            | JobKind::InsightAnalysis
             | JobKind::RecipeFire
             | JobKind::SelfImprovementCycle
     )
@@ -99,6 +100,10 @@ pub enum Schedule {
         hour: u32,
         minute: u32,
     },
+    /// Never runs on a schedule. The job is registered so the manual-trigger
+    /// path gets its lease, timeout, and persisted state (#105), but
+    /// `due_jobs` admits it only through the trigger queue.
+    Manual,
 }
 
 impl Schedule {
@@ -109,6 +114,7 @@ impl Schedule {
     /// - `DailyAt` / `WeeklyOn` with `hour > 23` or `minute > 59`
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Schedule::Manual => {}
             Schedule::IntervalSecs(secs) => {
                 if *secs < MIN_INTERVAL_SECS {
                     return Err(format!(
@@ -232,6 +238,11 @@ pub enum JobKind {
     TrendAggregation,
     /// Insight generation — produces competitive intelligence insights from recent observations.
     InsightGeneration,
+    /// Insight analysis — runs the LLM analysis for one queued
+    /// `insight_analysis_runs` row. Manual/non-periodic: it is enqueued by
+    /// `POST /api/insights/:id/analyze` (with the run id in the trigger
+    /// payload) and never fires on a schedule.
+    InsightAnalysis,
     /// Threat intelligence refresh — updates threat actor profiles, campaigns, and supply chain risk scores.
     ThreatIntelRefresh,
     /// Psychological profile computation — recalculates psych profiles for all POIs from current artifacts.
@@ -317,6 +328,7 @@ impl JobKind {
             Self::TriageProcessing => "triage_processing",
             Self::TrendAggregation => "trend_aggregation",
             Self::InsightGeneration => "insight_generation",
+            Self::InsightAnalysis => "insight_analysis",
             Self::ThreatIntelRefresh => "threat_intel_refresh",
             Self::PsychProfileCompute => "psych_profile_compute",
             Self::PoiRoleReclassify => "poi_role_reclassify",
@@ -366,6 +378,7 @@ impl JobKind {
             "triage_processing" => Self::TriageProcessing,
             "trend_aggregation" => Self::TrendAggregation,
             "insight_generation" => Self::InsightGeneration,
+            "insight_analysis" => Self::InsightAnalysis,
             "threat_intel_refresh" => Self::ThreatIntelRefresh,
             "psych_profile_compute" => Self::PsychProfileCompute,
             "poi_role_reclassify" => Self::PoiRoleReclassify,
@@ -802,6 +815,13 @@ impl Scheduler {
         self.jobs
             .values()
             .filter(|def| {
+                // A manual job is admitted only through the trigger queue. It
+                // has no schedule, and a circuit-broken manual job must not
+                // become due as a probe: the probe carries no payload, so it
+                // could only skip.
+                if matches!(def.schedule, Schedule::Manual) {
+                    return false;
+                }
                 // B238: never schedule a second run while the first is still in-flight
                 if matches!(def.last_status.as_ref(), Some(JobStatus::Running)) {
                     tracing::debug!(
@@ -1026,6 +1046,7 @@ pub fn is_due_with_jitter(
     jitter_offset_secs: u32,
 ) -> bool {
     match schedule {
+        Schedule::Manual => false,
         Schedule::IntervalSecs(secs) => {
             let Some(last) = last_run else {
                 return true; // never ran → due immediately regardless of jitter
@@ -1069,6 +1090,7 @@ pub fn is_due_with_jitter(
 /// Is a job due to run at `now`, given its schedule and when it last ran?
 pub fn is_due(schedule: &Schedule, last_run: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     match schedule {
+        Schedule::Manual => false,
         Schedule::IntervalSecs(secs) => {
             let Some(last) = last_run else {
                 return true; // never ran → due immediately
@@ -1137,6 +1159,9 @@ pub fn is_due(schedule: &Schedule, last_run: Option<DateTime<Utc>>, now: DateTim
 /// Compute the next fire time for a schedule relative to `now`.
 pub fn next_fire_time(schedule: &Schedule, now: DateTime<Utc>) -> DateTime<Utc> {
     match schedule {
+        // A manual job has no next fire time. `DateTime::MAX_UTC` is the
+        // explicit "never" sentinel rather than falsely returning `now`.
+        Schedule::Manual => DateTime::<Utc>::MAX_UTC,
         Schedule::IntervalSecs(secs) => now + chrono::Duration::seconds(*secs as i64),
         Schedule::DailyAt { hour, minute } => {
             let today_target = now
@@ -1182,182 +1207,200 @@ pub fn next_fire_time(schedule: &Schedule, now: DateTime<Utc>) -> DateTime<Utc> 
 // Default schedule presets
 // ────────────────────────────────────────────
 
-/// Build the default nightly + weekly scheduler.
+/// Timing knobs for [`default_scheduler_with_overrides`], sourced from the
+/// validated [`apex_core::config::AppConfig`] at worker startup.
+///
+/// The defaults reproduce the historical literal schedule exactly, so
+/// [`default_scheduler`] remains byte-identical to the pre-config wiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchedulerOverrides {
+    /// Crawl cycle interval in seconds. Clamped to `>= 60` by
+    /// [`default_scheduler_from_config`].
+    pub crawl_interval_secs: u64,
+    /// UTC hour anchoring the nightly pipeline (the historical anchor was
+    /// `02:00`). Clamped to `<= 23` by [`default_scheduler_from_config`].
+    pub nightly_hour_utc: u32,
+    /// Weekly pipeline day: `0 = Monday … 6 = Sunday`. Clamped to `<= 6` by
+    /// [`default_scheduler_from_config`].
+    pub weekly_day: u32,
+}
+
+impl Default for SchedulerOverrides {
+    fn default() -> Self {
+        Self {
+            crawl_interval_secs: 3600,
+            nightly_hour_utc: 2,
+            weekly_day: 0,
+        }
+    }
+}
+
+/// Hard-stop for one crawl cycle at the given interval: 55 minutes at the
+/// historical hourly cadence, scaled down for shorter intervals, never below
+/// the 60 s floor, and always short enough to finish before the next tick.
+fn crawl_timeout_secs(interval_secs: u64) -> u64 {
+    interval_secs.saturating_sub(60).clamp(60, 3300)
+}
+
+/// Shift a nightly-pipeline hour tuned around the historical 02:00 anchor to
+/// the configured anchor, wrapping through midnight.
+fn shifted_nightly_hour(hour: u32, nightly_hour_utc: u32) -> u32 {
+    (hour + nightly_hour_utc + 22) % 24
+}
+
+/// Map `0 = Monday … 6 = Sunday` to the serialisable ISO weekday.
+fn iso_weekday_from_index(day: u32) -> IsoWeekday {
+    match day % 7 {
+        0 => IsoWeekday::Mon,
+        1 => IsoWeekday::Tue,
+        2 => IsoWeekday::Wed,
+        3 => IsoWeekday::Thu,
+        4 => IsoWeekday::Fri,
+        5 => IsoWeekday::Sat,
+        _ => IsoWeekday::Sun,
+    }
+}
+
+/// Build the default nightly + weekly scheduler with the historical timings.
 pub fn default_scheduler() -> Scheduler {
+    default_scheduler_with_overrides(SchedulerOverrides::default())
+}
+
+/// Build the default scheduler from the validated application configuration.
+///
+/// `crawl_interval_secs` is clamped to the 60 s floor, `nightly_hour_utc` to
+/// `[0, 23]`, and `weekly_day` to `[0, 6]`, so a hand-edited config that
+/// bypassed [`apex_core::config::AppConfig::validate`] cannot install an
+/// invalid schedule.
+pub fn default_scheduler_from_config(config: &apex_core::config::AppConfig) -> Scheduler {
+    default_scheduler_with_overrides(SchedulerOverrides {
+        crawl_interval_secs: config.crawl_interval_secs.max(60),
+        nightly_hour_utc: config.nightly_hour_utc.min(23),
+        weekly_day: config.weekly_day.min(6),
+    })
+}
+
+/// Build the default nightly + weekly scheduler with explicit timing
+/// overrides (see [`SchedulerOverrides`]).
+pub fn default_scheduler_with_overrides(o: SchedulerOverrides) -> Scheduler {
     let mut s = Scheduler::new();
 
-    // Hourly crawl — jitter spreads retries within the hour (B231)
-    s.register(
-        JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(3600))
-            .with_jitter(0)
-            .with_timeout(3300), // 55 min hard-stop — must complete before next tick
-    );
+    // The `daily`/`weekly` helpers re-anchor the historical literals: daily
+    // hours were tuned around 02:00 UTC, weekly jobs around Monday.
+    let daily = |hour: u32, minute: u32| Schedule::DailyAt {
+        hour: shifted_nightly_hour(hour, o.nightly_hour_utc),
+        minute,
+    };
+    let weekly = |hour: u32, minute: u32| Schedule::WeeklyOn {
+        day: iso_weekday_from_index(o.weekly_day),
+        hour,
+        minute,
+    };
 
-    // Nightly at 02:00 UTC; each job staggered 2 min apart (B231)
+    // Crawl on the configured interval — jitter spreads retries within it (B231)
     s.register(
         JobDef::new(
-            JobKind::PatternMining,
-            Schedule::DailyAt { hour: 2, minute: 0 },
+            JobKind::CrawlCycle,
+            Schedule::IntervalSecs(o.crawl_interval_secs),
         )
         .with_jitter(0)
-        .with_timeout(7200), // 2 h
+        .with_timeout(crawl_timeout_secs(o.crawl_interval_secs)),
+    );
+
+    // Nightly at the configured anchor; each job staggered 2 min apart (B231)
+    s.register(
+        JobDef::new(JobKind::PatternMining, daily(2, 0))
+            .with_jitter(0)
+            .with_timeout(7200), // 2 h
     );
 
     // (No standalone hypothesis-generation job: pattern mining already runs
-    // generation + staging over the mined candidates. `run_hypothesis_generation`
-    // only re-reads stats and is kept for manual/custom invocation.)
+    // generation + staging over the mined candidates, and
+    // `run_hypothesis_generation` now runs that same real pipeline for manual
+    // invocation — registering it as well would duplicate the nightly pass.)
 
     s.register(
-        JobDef::new(
-            JobKind::PoiRefresh,
-            Schedule::DailyAt { hour: 3, minute: 0 },
-        )
-        .with_jitter(120) // +2 min
-        .with_timeout(3600),
+        JobDef::new(JobKind::PoiRefresh, daily(3, 0))
+            .with_jitter(120) // +2 min
+            .with_timeout(3600),
     );
 
     // POI network expansion discovery: find new POIs from existing seeds (03:30 UTC)
     s.register(
-        JobDef::new(
-            JobKind::PoiDiscovery,
-            Schedule::DailyAt {
-                hour: 3,
-                minute: 30,
-            },
-        )
-        .with_jitter(180) // +3 min
-        .with_timeout(7200), // 2 h — network scraping can be slow
+        JobDef::new(JobKind::PoiDiscovery, daily(3, 30))
+            .with_jitter(180) // +3 min
+            .with_timeout(7200), // 2 h — network scraping can be slow
     );
 
     s.register(
-        JobDef::new(
-            JobKind::FeatureDriftCheck,
-            Schedule::DailyAt { hour: 4, minute: 0 },
-        )
-        .with_jitter(240) // +4 min
-        .with_timeout(3600),
+        JobDef::new(JobKind::FeatureDriftCheck, daily(4, 0))
+            .with_jitter(240) // +4 min
+            .with_timeout(3600),
     );
 
-    // Weekly on Monday at 06:00–08:00 UTC; staggered 2 min each (B231)
+    // Weekly on the configured day at 06:00–08:00 UTC; staggered 2 min each (B231)
     s.register(
-        JobDef::new(
-            JobKind::PromotionBoard,
-            Schedule::WeeklyOn {
-                day: IsoWeekday::Mon,
-                hour: 6,
-                minute: 0,
-            },
-        )
-        .with_jitter(0)
-        .with_timeout(3600),
+        JobDef::new(JobKind::PromotionBoard, weekly(6, 0))
+            .with_jitter(0)
+            .with_timeout(3600),
     );
 
     s.register(
-        JobDef::new(
-            JobKind::StrategyMemo,
-            Schedule::WeeklyOn {
-                day: IsoWeekday::Mon,
-                hour: 7,
-                minute: 0,
-            },
-        )
-        .with_jitter(120)
-        .with_timeout(3600),
+        JobDef::new(JobKind::StrategyMemo, weekly(7, 0))
+            .with_jitter(120)
+            .with_timeout(3600),
     );
 
     s.register(
-        JobDef::new(
-            JobKind::RecipeDeprecation,
-            Schedule::WeeklyOn {
-                day: IsoWeekday::Mon,
-                hour: 8,
-                minute: 0,
-            },
-        )
-        .with_jitter(240)
-        .with_timeout(*JOB_TIMEOUT_SECS),
+        JobDef::new(JobKind::RecipeDeprecation, weekly(8, 0))
+            .with_jitter(240)
+            .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
-    // ── Self-improvement loop (weekly, Mon 09:00–11:00 UTC) ──
+    // ── Self-improvement loop (weekly, 09:00–11:00 UTC) ──
 
     // Source scoring: re-rank crawl sources by yield, freshness, novelty.
     s.register(
-        JobDef::new(
-            JobKind::SourceScoring,
-            Schedule::WeeklyOn {
-                day: IsoWeekday::Mon,
-                hour: 9,
-                minute: 0,
-            },
-        )
-        .with_jitter(0)
-        .with_timeout(*JOB_TIMEOUT_SECS),
+        JobDef::new(JobKind::SourceScoring, weekly(9, 0))
+            .with_jitter(0)
+            .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // Cross-domain combination mining: discover synergistic multi-signal patterns.
     s.register(
-        JobDef::new(
-            JobKind::CrossDomainMining,
-            Schedule::WeeklyOn {
-                day: IsoWeekday::Mon,
-                hour: 10,
-                minute: 0,
-            },
-        )
-        .with_jitter(120)
-        .with_timeout(3600), // 1 h — combinatorial search
+        JobDef::new(JobKind::CrossDomainMining, weekly(10, 0))
+            .with_jitter(120)
+            .with_timeout(3600), // 1 h — combinatorial search
     );
 
     // Outcome tracking: match predictions against observed outcomes, update accuracy.
     s.register(
-        JobDef::new(
-            JobKind::OutcomeTracking,
-            Schedule::WeeklyOn {
-                day: IsoWeekday::Mon,
-                hour: 11,
-                minute: 0,
-            },
-        )
-        .with_jitter(60)
-        .with_timeout(*JOB_TIMEOUT_SECS),
+        JobDef::new(JobKind::OutcomeTracking, weekly(11, 0))
+            .with_jitter(60)
+            .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // ── Security compliance jobs ──────────────────────────────────────────────
 
     // Breach scan: daily at 01:00 UTC — check all monitored domains/emails against HIBP + IntelX.
     s.register(
-        JobDef::new(
-            JobKind::BreachScan,
-            Schedule::DailyAt { hour: 1, minute: 0 },
-        )
-        .with_jitter(0)
-        .with_timeout(3600), // 1h — HIBP/IntelX rate-limited
+        JobDef::new(JobKind::BreachScan, daily(1, 0))
+            .with_jitter(0)
+            .with_timeout(3600), // 1h — HIBP/IntelX rate-limited
     );
 
     // Sanctions screen: daily at 01:30 UTC — fuzzy-match all tracked entities against sanctions lists.
     s.register(
-        JobDef::new(
-            JobKind::SanctionsScreen,
-            Schedule::DailyAt {
-                hour: 1,
-                minute: 30,
-            },
-        )
-        .with_jitter(120)
-        .with_timeout(*JOB_TIMEOUT_SECS),
+        JobDef::new(JobKind::SanctionsScreen, daily(1, 30))
+            .with_jitter(120)
+            .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // Recipe fire: nightly at 02:15 UTC — run seed recipes against observation counts to generate insights.
     s.register(
-        JobDef::new(
-            JobKind::RecipeFire,
-            Schedule::DailyAt {
-                hour: 2,
-                minute: 15,
-            },
-        )
-        .with_jitter(60) // +1 min
-        .with_timeout(*JOB_TIMEOUT_SECS),
+        JobDef::new(JobKind::RecipeFire, daily(2, 15))
+            .with_jitter(60) // +1 min
+            .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // SLA enforcement: every 10 minutes — re-escalate unacknowledged warnings past SLA.
@@ -1374,38 +1417,23 @@ pub fn default_scheduler() -> Scheduler {
 
     // DNS posture scan: daily at 03:30 UTC — check SPF/DKIM/DMARC for all tracked domains.
     s.register(
-        JobDef::new(
-            JobKind::DnsPostureScan,
-            Schedule::DailyAt {
-                hour: 3,
-                minute: 30,
-            },
-        )
-        .with_jitter(120)
-        .with_timeout(*JOB_TIMEOUT_SECS),
+        JobDef::new(JobKind::DnsPostureScan, daily(3, 30))
+            .with_jitter(120)
+            .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // KEV catalog fetch: daily at 04:30 UTC — download CISA KEV catalog.
     s.register(
-        JobDef::new(
-            JobKind::KevCatalogFetch,
-            Schedule::DailyAt {
-                hour: 4,
-                minute: 30,
-            },
-        )
-        .with_jitter(60)
-        .with_timeout(900), // 15 min
+        JobDef::new(JobKind::KevCatalogFetch, daily(4, 30))
+            .with_jitter(60)
+            .with_timeout(900), // 15 min
     );
 
     // Lookalike domain scan: daily at 05:00 UTC — detect typosquat/lookalike domains.
     s.register(
-        JobDef::new(
-            JobKind::LookalikeDomainScan,
-            Schedule::DailyAt { hour: 5, minute: 0 },
-        )
-        .with_jitter(120)
-        .with_timeout(3600), // 1 h
+        JobDef::new(JobKind::LookalikeDomainScan, daily(5, 0))
+            .with_jitter(120)
+            .with_timeout(3600), // 1 h
     );
 
     // Update email digest: every 15 minutes — actual send time is per-user settings (CET).
@@ -1415,28 +1443,18 @@ pub fn default_scheduler() -> Scheduler {
             .with_timeout(300),
     );
 
-    // Self-improvement cycle: weekly Mon at 12:00 UTC — coordinated self-improvement run.
+    // Self-improvement cycle: weekly at 12:00 UTC — coordinated self-improvement run.
     s.register(
-        JobDef::new(
-            JobKind::SelfImprovementCycle,
-            Schedule::WeeklyOn {
-                day: IsoWeekday::Mon,
-                hour: 12,
-                minute: 0,
-            },
-        )
-        .with_jitter(0)
-        .with_timeout(10800), // 3 h
+        JobDef::new(JobKind::SelfImprovementCycle, weekly(12, 0))
+            .with_jitter(0)
+            .with_timeout(10800), // 3 h
     );
 
     // Embedding reindex: nightly at 03:00 UTC — incremental embedding generation.
     s.register(
-        JobDef::new(
-            JobKind::EmbeddingReindex,
-            Schedule::DailyAt { hour: 3, minute: 0 },
-        )
-        .with_jitter(180) // +3 min
-        .with_timeout(7200), // 2 h — LLM embedding inference can be slow
+        JobDef::new(JobKind::EmbeddingReindex, daily(3, 0))
+            .with_jitter(180) // +3 min
+            .with_timeout(7200), // 2 h — LLM embedding inference can be slow
     );
 
     // Observation index: every 5 minutes — incrementally commits new
@@ -1452,10 +1470,7 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::Custom("rebuild-autocomplete".to_string()),
-            Schedule::DailyAt {
-                hour: 4,
-                minute: 15,
-            },
+            daily(4, 15),
         )
         .with_jitter(60) // +1 min
         .with_timeout(600), // 10 min
@@ -1489,12 +1504,9 @@ pub fn default_scheduler() -> Scheduler {
     // Trend aggregation: daily at 01:00 UTC — computes materialized rollup
     // metrics for daily, weekly, monthly, quarterly, and yearly buckets.
     s.register(
-        JobDef::new(
-            JobKind::TrendAggregation,
-            Schedule::DailyAt { hour: 1, minute: 0 },
-        )
-        .with_jitter(0)
-        .with_timeout(3600), // 1 h — database aggregation queries
+        JobDef::new(JobKind::TrendAggregation, daily(1, 0))
+            .with_jitter(0)
+            .with_timeout(3600), // 1 h — database aggregation queries
     );
 
     // ── Competitive Intelligence Insight Generation ─────────────────────
@@ -1505,6 +1517,13 @@ pub fn default_scheduler() -> Scheduler {
         JobDef::new(JobKind::InsightGeneration, Schedule::IntervalSecs(21600))
             .with_jitter(300) // +5 min spread
             .with_timeout(7200), // 2 h — LLM inference can be slow
+    );
+
+    // Insight analysis: manual/non-periodic — one queued insight-analysis run
+    // per trigger. Registered (but never due) so the trigger path gets the
+    // job's lease, timeout, and persisted scheduler state.
+    s.register(
+        JobDef::new(JobKind::InsightAnalysis, Schedule::Manual).with_timeout(1800), // 30 min — one model call plus evidence loads
     );
 
     // ── Threat Intelligence Refresh ─────────────────────────────────────
@@ -1522,15 +1541,9 @@ pub fn default_scheduler() -> Scheduler {
     // Psych profile compute: daily at 05:30 UTC — recalculates psych profiles
     // for all POIs from current artifacts and metadata.
     s.register(
-        JobDef::new(
-            JobKind::PsychProfileCompute,
-            Schedule::DailyAt {
-                hour: 5,
-                minute: 30,
-            },
-        )
-        .with_jitter(180) // +3 min spread
-        .with_timeout(3600), // 1 h — per-person artifact analysis
+        JobDef::new(JobKind::PsychProfileCompute, daily(5, 30))
+            .with_jitter(180) // +3 min spread
+            .with_timeout(3600), // 1 h — per-person artifact analysis
     );
 
     // POI role reclassify: daily at 05:45 UTC — re-derives role_family for every
@@ -1538,15 +1551,9 @@ pub fn default_scheduler() -> Scheduler {
     // stale seeded 'C-Suite' default so procurement/supply-chain/quality
     // contacts are accurately categorized for buying-center recommendations.
     s.register(
-        JobDef::new(
-            JobKind::PoiRoleReclassify,
-            Schedule::DailyAt {
-                hour: 5,
-                minute: 45,
-            },
-        )
-        .with_jitter(120)
-        .with_timeout(900), // 15 min — pure CPU classification, no I/O
+        JobDef::new(JobKind::PoiRoleReclassify, daily(5, 45))
+            .with_jitter(120)
+            .with_timeout(900), // 15 min — pure CPU classification, no I/O
     );
 
     // OSINT enrichment: every 6 hours — invokes structured-source fetchers
@@ -2203,6 +2210,7 @@ mod tests {
             "triage_processing",
             "trend_aggregation",
             "insight_generation",
+            "insight_analysis",
             "threat_intel_refresh",
             "psych_profile_compute",
             "adversarial_analysis",
@@ -2227,15 +2235,308 @@ mod tests {
     }
 
     #[test]
-    fn test_default_scheduler_excludes_stats_only_hypothesis_generation() {
-        // `run_hypothesis_generation` only re-reads mining stats (generation
-        // happens inside pattern mining); scheduling it would burn a slot on
-        // a no-op, so it is not registered by default.
+    fn test_default_scheduler_excludes_duplicate_hypothesis_generation() {
+        // `run_hypothesis_generation` now runs the shared real mining →
+        // generation → staging pipeline; pattern mining already performs that
+        // pass nightly, so a second default registration would duplicate the
+        // LLM work rather than add coverage.
         let s = default_scheduler();
         assert!(
             !s.jobs.contains_key("hypothesis_generation"),
-            "stats-only hypothesis generation must not be a default job"
+            "hypothesis generation must not be duplicated as a default job"
         );
+    }
+
+    // ── Config-driven schedule overrides ───────────────────────────────
+
+    #[test]
+    fn default_scheduler_matches_the_pre_config_literal_schedule() {
+        let s = default_scheduler();
+
+        // Crawl: hourly with the 55-minute hard-stop.
+        assert_eq!(s.jobs["crawl_cycle"].schedule, Schedule::IntervalSecs(3600));
+        assert_eq!(s.jobs["crawl_cycle"].timeout_secs, Some(3300));
+
+        // Every daily job's historical UTC hour, anchored at 02:00.
+        let expected_daily = [
+            ("pattern_mining", 2, 0),
+            ("poi_refresh", 3, 0),
+            ("poi_discovery", 3, 30),
+            ("feature_drift_check", 4, 0),
+            ("breach_scan", 1, 0),
+            ("sanctions_screen", 1, 30),
+            ("recipe_fire", 2, 15),
+            ("dns_posture_scan", 3, 30),
+            ("kev_catalog_fetch", 4, 30),
+            ("lookalike_domain_scan", 5, 0),
+            ("embedding_reindex", 3, 0),
+            ("rebuild-autocomplete", 4, 15),
+            ("trend_aggregation", 1, 0),
+            ("psych_profile_compute", 5, 30),
+            ("poi_role_reclassify", 5, 45),
+        ];
+        for (job, hour, minute) in expected_daily {
+            assert_eq!(
+                s.jobs[job].schedule,
+                Schedule::DailyAt { hour, minute },
+                "{job} must keep its historical hour"
+            );
+        }
+
+        // Every weekly job's historical Monday hour.
+        let expected_weekly = [
+            ("promotion_board", 6, 0),
+            ("strategy_memo", 7, 0),
+            ("recipe_deprecation", 8, 0),
+            ("source_scoring", 9, 0),
+            ("cross_domain_mining", 10, 0),
+            ("outcome_tracking", 11, 0),
+            ("self_improvement_cycle", 12, 0),
+        ];
+        for (job, hour, minute) in expected_weekly {
+            assert_eq!(
+                s.jobs[job].schedule,
+                Schedule::WeeklyOn {
+                    day: IsoWeekday::Mon,
+                    hour,
+                    minute
+                },
+                "{job} must keep its historical Monday slot"
+            );
+        }
+
+        // The durable-analysis manual job is untouched by the overrides.
+        assert_eq!(s.jobs["insight_analysis"].schedule, Schedule::Manual);
+    }
+
+    #[test]
+    fn crawl_interval_override_rescales_interval_and_timeout() {
+        for (interval, expected_timeout) in [
+            (60u64, 60u64),
+            (600, 540),
+            (3600, 3300),
+            (7200, 3300),
+            (21600, 3300),
+        ] {
+            let s = default_scheduler_with_overrides(SchedulerOverrides {
+                crawl_interval_secs: interval,
+                ..SchedulerOverrides::default()
+            });
+            assert_eq!(
+                s.jobs["crawl_cycle"].schedule,
+                Schedule::IntervalSecs(interval),
+                "crawl cycle must follow the configured interval"
+            );
+            assert_eq!(
+                s.jobs["crawl_cycle"].timeout_secs,
+                Some(expected_timeout),
+                "crawl timeout must scale (interval - 60), capped at 3300s and floored at 60s"
+            );
+        }
+
+        // Jobs with their own cadence are untouched by the crawl override.
+        let s = default_scheduler_with_overrides(SchedulerOverrides {
+            crawl_interval_secs: 7200,
+            ..SchedulerOverrides::default()
+        });
+        assert_eq!(
+            s.jobs["sla_enforcement"].schedule,
+            Schedule::IntervalSecs(600)
+        );
+        assert_eq!(
+            s.jobs["insight_generation"].schedule,
+            Schedule::IntervalSecs(21600)
+        );
+    }
+
+    #[test]
+    fn nightly_hour_override_shifts_daily_jobs_with_wraparound() {
+        // Asserts the shifted (job, hour, minute) values per anchor, computed
+        // by hand from `(X + anchor + 22) % 24`.
+        fn assert_daily_shift(anchor: u32, expected: &[(&str, u32, u32)]) {
+            let s = default_scheduler_with_overrides(SchedulerOverrides {
+                nightly_hour_utc: anchor,
+                ..SchedulerOverrides::default()
+            });
+            for &(job, hour, minute) in expected {
+                assert_eq!(
+                    s.jobs[job].schedule,
+                    Schedule::DailyAt { hour, minute },
+                    "{job} must shift to anchor {anchor}"
+                );
+            }
+
+            // Weekly jobs are anchored on the day, not the nightly hour.
+            assert_eq!(
+                s.jobs["promotion_board"].schedule,
+                Schedule::WeeklyOn {
+                    day: IsoWeekday::Mon,
+                    hour: 6,
+                    minute: 0
+                }
+            );
+        }
+
+        assert_daily_shift(
+            0,
+            &[
+                ("pattern_mining", 0, 0),
+                ("breach_scan", 23, 0),
+                ("trend_aggregation", 23, 0),
+                ("kev_catalog_fetch", 2, 30),
+                ("poi_role_reclassify", 3, 45),
+            ],
+        );
+        assert_daily_shift(
+            6,
+            &[
+                ("pattern_mining", 6, 0),
+                ("breach_scan", 5, 0),
+                ("trend_aggregation", 5, 0),
+                ("kev_catalog_fetch", 8, 30),
+                ("poi_role_reclassify", 9, 45),
+            ],
+        );
+        assert_daily_shift(
+            23,
+            &[
+                ("pattern_mining", 23, 0),
+                ("breach_scan", 22, 0),
+                ("trend_aggregation", 22, 0),
+                ("kev_catalog_fetch", 1, 30),
+                ("poi_role_reclassify", 2, 45),
+            ],
+        );
+    }
+
+    #[test]
+    fn weekly_day_override_maps_zero_to_monday_through_six_to_sunday() {
+        let weekly_jobs = [
+            "promotion_board",
+            "strategy_memo",
+            "recipe_deprecation",
+            "source_scoring",
+            "cross_domain_mining",
+            "outcome_tracking",
+            "self_improvement_cycle",
+        ];
+        let weekdays = [
+            IsoWeekday::Mon,
+            IsoWeekday::Tue,
+            IsoWeekday::Wed,
+            IsoWeekday::Thu,
+            IsoWeekday::Fri,
+            IsoWeekday::Sat,
+            IsoWeekday::Sun,
+        ];
+
+        for (index, weekday) in weekdays.into_iter().enumerate() {
+            let s = default_scheduler_with_overrides(SchedulerOverrides {
+                weekly_day: index as u32,
+                ..SchedulerOverrides::default()
+            });
+            assert_eq!(
+                s.jobs["promotion_board"].schedule,
+                Schedule::WeeklyOn {
+                    day: weekday,
+                    hour: 6,
+                    minute: 0
+                },
+                "weekly_day {index} must map to {weekday:?}"
+            );
+            for job in weekly_jobs {
+                match &s.jobs[job].schedule {
+                    Schedule::WeeklyOn { day, .. } => {
+                        assert_eq!(*day, weekday, "{job} must follow weekly_day {index}")
+                    }
+                    other => panic!("{job} must stay weekly, got {other:?}"),
+                }
+            }
+
+            // Daily jobs do not move with the weekly day.
+            assert_eq!(
+                s.jobs["pattern_mining"].schedule,
+                Schedule::DailyAt { hour: 2, minute: 0 }
+            );
+        }
+    }
+
+    #[test]
+    fn default_scheduler_from_config_consumes_and_clamps_config() {
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+
+        const KEYS: [&str; 4] = [
+            "DATABASE_URL",
+            "CRAWL_INTERVAL_SECS",
+            "NIGHTLY_HOUR_UTC",
+            "WEEKLY_DAY",
+        ];
+        let saved: Vec<(&str, Option<String>)> = KEYS
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect();
+
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://test:test@localhost/scheduler-test",
+        );
+        std::env::set_var("CRAWL_INTERVAL_SECS", "7200");
+        std::env::set_var("NIGHTLY_HOUR_UTC", "4");
+        std::env::set_var("WEEKLY_DAY", "2");
+
+        let config = apex_core::config::AppConfig::from_env().expect("test config loads");
+
+        // An env-set value must flow through into the generated schedule.
+        let s = default_scheduler_from_config(&config);
+        assert_eq!(s.jobs["crawl_cycle"].schedule, Schedule::IntervalSecs(7200));
+        assert_eq!(
+            s.jobs["pattern_mining"].schedule,
+            Schedule::DailyAt { hour: 4, minute: 0 }
+        );
+        assert_eq!(
+            s.jobs["promotion_board"].schedule,
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Wed,
+                hour: 6,
+                minute: 0
+            }
+        );
+
+        // Out-of-range values (bypassing AppConfig::validate) are clamped.
+        let mut out_of_range = config;
+        out_of_range.crawl_interval_secs = 5;
+        out_of_range.nightly_hour_utc = 99;
+        out_of_range.weekly_day = 99;
+        let clamped = default_scheduler_from_config(&out_of_range);
+        assert_eq!(
+            clamped.jobs["crawl_cycle"].schedule,
+            Schedule::IntervalSecs(60)
+        );
+        assert_eq!(clamped.jobs["crawl_cycle"].timeout_secs, Some(60));
+        assert_eq!(
+            clamped.jobs["pattern_mining"].schedule,
+            Schedule::DailyAt {
+                hour: 23,
+                minute: 0
+            }
+        );
+        assert_eq!(
+            clamped.jobs["promotion_board"].schedule,
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Sun,
+                hour: 6,
+                minute: 0
+            }
+        );
+
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     #[test]
@@ -3335,10 +3636,79 @@ mod tests {
     #[test]
     fn llm_jobs_are_admitted_through_the_gate_classifier() {
         assert!(job_may_use_llm(&JobKind::InsightGeneration));
+        assert!(job_may_use_llm(&JobKind::InsightAnalysis));
         assert!(job_may_use_llm(&JobKind::TriageProcessing));
         assert!(job_may_use_llm(&JobKind::RecipeFire));
         assert!(job_may_use_llm(&JobKind::EmbeddingReindex));
         assert!(!job_may_use_llm(&JobKind::NotificationDelivery));
         assert!(!job_may_use_llm(&JobKind::CrawlCycle));
+    }
+
+    // ── #169: manual insight analysis is never scheduled ───────────────
+
+    #[test]
+    fn insight_analysis_kind_maps_to_its_wire_name() {
+        assert_eq!(JobKind::InsightAnalysis.as_str(), "insight_analysis");
+        assert_eq!(
+            JobKind::from_str("insight_analysis"),
+            JobKind::InsightAnalysis
+        );
+        // The mapping must not fall through to a Custom job: a payload-bound
+        // trigger would then be executed by the custom-command runner.
+        assert!(!matches!(
+            JobKind::from_str("insight_analysis"),
+            JobKind::Custom(_)
+        ));
+    }
+
+    #[test]
+    fn manual_schedule_is_never_due() {
+        let now = utc(2026, 10, 3, 12, 0, 0);
+        assert!(!is_due(&Schedule::Manual, None, now));
+        assert!(!is_due(&Schedule::Manual, Some(now), now));
+
+        let mut sched = Scheduler::new();
+        assert!(sched.register(JobDef::new(JobKind::InsightAnalysis, Schedule::Manual)));
+        assert!(
+            sched.due_jobs(now).is_empty(),
+            "a manual job must never be admitted by the scheduler"
+        );
+
+        // Even a circuit-broken manual job must not surface as a probe: a
+        // probe dispatch would carry no payload and could only skip.
+        {
+            let def = sched.jobs.get_mut("insight_analysis").expect("registered");
+            def.consecutive_failures = def.max_consecutive_failures;
+            def.enabled = false;
+            def.circuit_opened_at =
+                Some(now - chrono::Duration::seconds(CIRCUIT_PROBE_COOLDOWN_SECS + 1));
+        }
+        assert!(
+            sched.due_jobs(now).is_empty(),
+            "a manual job must not become due as a circuit-breaker probe"
+        );
+        assert_eq!(
+            next_fire_time(&Schedule::Manual, now),
+            DateTime::<Utc>::MAX_UTC,
+            "a manual job has no next fire time"
+        );
+        assert!(Schedule::Manual.validate().is_ok());
+    }
+
+    #[test]
+    fn default_scheduler_registers_insight_analysis_as_manual() {
+        let sched = default_scheduler();
+        let def = sched
+            .jobs
+            .get("insight_analysis")
+            .expect("insight_analysis must be registered so manual triggers get its lease");
+        assert_eq!(def.schedule, Schedule::Manual);
+        assert_eq!(def.timeout_secs, Some(1800));
+        assert!(
+            !sched
+                .due_jobs(utc(2030, 1, 1, 0, 0, 0))
+                .contains(&JobKind::InsightAnalysis),
+            "the registered job must never be due"
+        );
     }
 }

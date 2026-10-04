@@ -16,7 +16,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
-pub struct ActivityQuery {
+pub(crate) struct ActivityQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     pub action_type: Option<String>,
@@ -24,7 +24,7 @@ pub struct ActivityQuery {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ActivityEvent {
+pub(crate) struct ActivityEvent {
     pub id: String,
     pub event_type: String,
     pub title: String,
@@ -156,7 +156,7 @@ pub(crate) async fn get_activity_feed(
 
 /// `POST /api/activity` — insert a new activity event (called by worker/background jobs).
 #[derive(Debug, Deserialize)]
-pub struct CreateActivityRequest {
+pub(crate) struct CreateActivityRequest {
     pub action_type: String,
     pub entity_type: Option<String>,
     pub entity_id: Option<String>,

@@ -273,6 +273,25 @@ fn relative_age(dt: Option<DateTime<Utc>>) -> String {
     }
 }
 
+/// Byte budget for the list preview. [`truncate_utf8`] cuts on a character
+/// boundary, so multi-byte text can never be split mid-codepoint.
+const SUMMARY_PREVIEW_BYTES: usize = 160;
+
+/// Character-safe summary preview. The previous implementation compared the
+/// byte length but sliced by character index, so a multi-byte summary under
+/// the byte budget was rendered with a spurious ellipsis and a long
+/// multi-byte summary was not truncated at all. The ellipsis is appended only
+/// when a truncation actually happened.
+fn summary_preview(summary: &str) -> String {
+    let trimmed = summary.trim();
+    let truncated = apex_core::text::truncate_utf8(trimmed, SUMMARY_PREVIEW_BYTES);
+    if truncated.len() < trimmed.len() {
+        format!("{truncated}…")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn source_diversity_label(evidence_urls: &[String]) -> &'static str {
     let mut domains: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for url in evidence_urls {
@@ -694,17 +713,7 @@ pub async fn list_insights(
                 age_label: relative_age(insight_display_time(i)),
                 bookmarked: false,
                 tags: i.tags.clone().unwrap_or_default(),
-                summary_preview: {
-                    let s = i.summary.trim();
-                    if s.len() > 160 {
-                        format!(
-                            "{}…",
-                            &s[..s.char_indices().nth(160).map(|(i, _)| i).unwrap_or(s.len())]
-                        )
-                    } else {
-                        s.to_string()
-                    }
-                },
+                summary_preview: summary_preview(&i.summary),
                 evidence_count: ev_urls.len() as i64,
                 source_diversity: source_diversity_label(ev_urls).to_string(),
             }
@@ -1048,8 +1057,12 @@ pub async fn get_insight(
             return super::errors::not_found_for(&ctx, "/insights");
         }
         Err(e) => {
-            tracing::error!("Failed to fetch insight {id}: {e}");
-            return super::errors::not_found_for(&ctx, "/insights");
+            // A backing-store failure is a 503 with an incident id, never the
+            // 404 page: rendering "not found" for a database outage hides the
+            // outage and tells the user the insight does not exist.
+            let incident_id = format!("insight-detail-{}", Uuid::new_v4().simple());
+            tracing::error!(insight_id = %id, incident_id = %incident_id, "Failed to fetch insight: {e}");
+            return super::errors::service_unavailable_for(&ctx, &incident_id);
         }
     };
 
@@ -1450,24 +1463,9 @@ pub async fn bookmark_insight_html(
             .await;
     }
 
-    let _ = store
-        .create_notification(
-            &session.user_id,
-            "insight_bookmark",
-            if bookmarked {
-                "Insight bookmarked"
-            } else {
-                "Insight bookmark removed"
-            },
-            &format!(
-                "Insight {id} bookmark state changed by {}.",
-                session.username
-            ),
-            Some("insight"),
-            Some(&id),
-            Some(&format!("/insights/{id}")),
-        )
-        .await;
+    // No notification is written here: the only recipient this action could
+    // address is the session user who just clicked, and a notification must
+    // never be addressed to the actor for their own action.
 
     // #139: return the same button, toggled, so `hx-target="this"` +
     // `hx-swap="outerHTML"` replaces the clicked control in place. The
@@ -1485,15 +1483,15 @@ pub fn render_bookmark_button(id: &str, bookmarked: bool) -> String {
     )
 }
 
-/// POST /insights/:id/analyze — return the rendered analysis panel.
+/// POST /insights/:id/analyze — enqueue a durable analysis run (#169) and
+/// render its current status panel.
 ///
-/// #137: there is no insight analysis engine behind this route. The previous
-/// implementation rendered a fake "Processing…" spinner that never completed
-/// and persisted nothing. The panel below is the honest state: no analysis was
-/// started, and the real synchronous LLM endpoint is named for clients that
-/// need one.
+/// The request never runs the model: it inserts (or deduplicates onto) an
+/// `insight_analysis_runs` row that the worker executes. The returned panel
+/// states the real status — `Queued` for a new run, or the in-flight run's
+/// status when one already exists — with no fake spinner.
 pub async fn analyze_insight_html(
-    _session: Extension<WebSession>,
+    session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
@@ -1509,18 +1507,38 @@ pub async fn analyze_insight_html(
     };
 
     match store.get_insight(uuid).await {
-        Ok(Some(i)) => Html(render_insight_analysis_unavailable(
-            &id,
-            &super::escape_html(&i.title),
-        ))
-        .into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Html(render_insight_analysis_unavailable(&id, "")),
-        )
-            .into_response(),
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html(render_insight_analysis_unavailable(&id, "")),
+            )
+                .into_response();
+        }
         Err(e) => {
             tracing::error!("Failed to fetch insight for analysis {id}: {e}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html(render_insight_analysis_unavailable(&id, "")),
+            )
+                .into_response();
+        }
+    }
+
+    match store
+        .enqueue_insight_analysis(uuid, Some(session.user_id.as_str()))
+        .await
+    {
+        Ok((run, deduplicated)) => Html(render_insight_analysis_status(
+            &id,
+            &run.id.to_string(),
+            &run.status,
+            deduplicated,
+            run.result.as_ref(),
+        ))
+        .into_response(),
+        Err(error) => {
+            tracing::error!(insight_id = %id, error = %error, "failed to enqueue insight analysis");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html(render_insight_analysis_unavailable(&id, "")),
@@ -1530,8 +1548,59 @@ pub async fn analyze_insight_html(
     }
 }
 
-/// Honest "no analysis engine" panel for insights (#137). Pure so the wording
-/// is unit-testable and can never regress into a fake in-progress state.
+/// Status panel for an enqueued insight-analysis run. Pure so the honest-state
+/// contract (a real status, never a fabricated progress indicator) is
+/// unit-testable; the result body is rendered only when one is persisted.
+pub fn render_insight_analysis_status(
+    id: &str,
+    run_id: &str,
+    status: &str,
+    deduplicated: bool,
+    result: Option<&serde_json::Value>,
+) -> String {
+    let label = match status {
+        "queued" => "Queued",
+        "running" => "Running",
+        "succeeded" => "Complete",
+        "failed" => "Failed",
+        other => other,
+    };
+    let detail = if deduplicated {
+        "An analysis for this insight is already in flight; showing that run."
+    } else {
+        "The analysis was queued and will run in the worker."
+    };
+    let summary = result
+        .and_then(|value| value.get("analysis"))
+        .and_then(|analysis| analysis.get("executive_summary"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            format!(
+                r#"<p class="mt-2 text-sm leading-relaxed">{}</p>"#,
+                super::escape_html(value)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        r#"<div class="apex-card p-4" id="analysis-panel"
+                 data-insight-id="{id}" data-run-id="{run_id}" data-run-status="{status}">
+             <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
+             <p class="text-sm leading-relaxed text-muted-foreground">
+               <span class="font-semibold">{label}</span> — {detail}
+             </p>
+             <p class="mt-2 text-[11px] text-muted-foreground">
+               Run <code>{run_id}</code> ·
+               status from <code>GET /api/insights/{id}/analyze/latest</code>
+             </p>
+             {summary}
+           </div>"#
+    )
+}
+
+/// Panel shown when no analysis was started (missing insight, storage failure,
+/// or an enqueue error). Pure so the wording is unit-testable and can never
+/// regress into a fake in-progress state.
 pub fn render_insight_analysis_unavailable(id: &str, escaped_title: &str) -> String {
     let subject = if escaped_title.trim().is_empty() {
         String::new()
@@ -1542,13 +1611,9 @@ pub fn render_insight_analysis_unavailable(id: &str, escaped_title: &str) -> Str
         r#"<div class="apex-card p-4" id="analysis-panel">
              <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
              <p class="text-sm leading-relaxed text-muted-foreground">
-               No AI analysis was started{subject}. In-page analysis is not available for
-               insights; nothing is running in the background.
-             </p>
-             <p class="mt-2 text-[11px] text-muted-foreground">
-               Evidence-bound analysis runs on warnings — open the related warning and use its
-               Analyze action. API clients can request a synchronous LLM analysis through
-               <code>POST /api/insights/{id}/analyze</code>.
+               No analysis was queued{subject}. Nothing is running in the background; retry, or
+               check the durable run status through
+               <code>GET /api/insights/{id}/analyze/latest</code>.
              </p>
            </div>"#
     )
@@ -1570,7 +1635,16 @@ pub async fn create_insight_note(
     }
 
     let tags = parse_tags(form.tags.as_deref());
-    let visibility = form.visibility.as_deref().unwrap_or("team");
+    let Some(visibility) = note_visibility(form.visibility.as_deref()) else {
+        // Reject unknown visibility before any write: an unvalidated value
+        // would otherwise be persisted and read back by the scoped annotation
+        // query as an unrecognized tier.
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("Invalid note visibility".to_string()),
+        )
+            .into_response();
+    };
 
     match store
         .upsert_annotation_scoped(
@@ -1586,17 +1660,9 @@ pub async fn create_insight_note(
         .await
     {
         Ok(_) => {
-            let _ = store
-                .create_notification(
-                    &session.user_id,
-                    "annotation",
-                    "Insight note added",
-                    body,
-                    Some("insight"),
-                    Some(&id),
-                    Some(&format!("/insights/{id}")),
-                )
-                .await;
+            // No notification is written here: a note's only possible
+            // recipient would be its own author, and a notification must never
+            // be addressed to the actor for their own action.
         }
         Err(error) => {
             tracing::error!(insight_id = %id, error = %error, "failed to create insight note");
@@ -1611,6 +1677,24 @@ pub async fn create_insight_note(
     }
 
     Redirect::to(&format!("/insights/{id}")).into_response()
+}
+
+/// The visibility tiers the annotations table accepts. Anything else is
+/// rejected rather than written.
+const NOTE_VISIBILITIES: [&str; 4] = ["private", "team", "organization", "public"];
+
+/// Resolve the visibility submitted with an insight note. Missing or empty
+/// input defaults to `team` (the previous behavior); any other value must be
+/// one of [`NOTE_VISIBILITIES`], otherwise the note is rejected.
+fn note_visibility(raw: Option<&str>) -> Option<&'static str> {
+    let value = raw.map(str::trim).filter(|value| !value.is_empty());
+    match value {
+        None => Some("team"),
+        Some(value) => NOTE_VISIBILITIES
+            .iter()
+            .find(|allowed| **allowed == value)
+            .copied(),
+    }
 }
 
 /// GET /insights/:id/pdf — download insight as PDF (session-auth, not API-key).
@@ -1880,15 +1964,192 @@ mod tests {
     }
 
     #[test]
-    fn insight_analysis_panel_is_honest_and_never_fake_in_progress() {
+    fn insight_analysis_unavailable_panel_is_honest() {
         let panel = render_insight_analysis_unavailable(
             "11111111-1111-1111-1111-111111111111",
             "Acme signal",
         );
-        assert!(panel.contains("No AI analysis was started"));
-        assert!(panel.contains("not available for"));
-        assert!(panel.contains("POST /api/insights/11111111-1111-1111-1111-111111111111/analyze"));
+        assert!(panel.contains("No analysis was queued"));
+        assert!(
+            panel.contains("GET /api/insights/11111111-1111-1111-1111-111111111111/analyze/latest")
+        );
         assert!(!panel.contains("Processing"));
         assert!(!panel.contains("In progress"));
+        assert!(!panel.contains("synchronous"));
+    }
+
+    #[test]
+    fn analysis_status_panel_reports_the_real_run_state() {
+        let panel = render_insight_analysis_status("i-1", "run-1", "queued", false, None);
+        assert!(panel.contains(r#"id="analysis-panel""#));
+        assert!(panel.contains(r#"data-run-status="queued""#));
+        assert!(panel.contains("Run <code>run-1</code>"));
+        assert!(panel.contains("Queued"));
+        assert!(!panel.contains("Processing"));
+        assert!(!panel.contains("In progress"));
+
+        let running = render_insight_analysis_status("i-1", "run-1", "running", true, None);
+        assert!(running.contains(r#"data-run-status="running""#));
+        assert!(running.contains("already in flight"));
+
+        let failed = render_insight_analysis_status("i-1", "run-1", "failed", false, None);
+        assert!(failed.contains("Failed"));
+    }
+
+    #[test]
+    fn analysis_status_panel_surfaces_a_persisted_result() {
+        let result = serde_json::json!({
+            "analysis": {"executive_summary": "Supply risk is rising in EMEA."}
+        });
+        let panel =
+            render_insight_analysis_status("i-1", "run-1", "succeeded", false, Some(&result));
+        assert!(panel.contains("Complete"));
+        assert!(panel.contains("Supply risk is rising in EMEA."));
+    }
+
+    // ── #169: character-safe summary preview ─────────────────────────────
+
+    #[test]
+    fn summary_preview_truncates_multibyte_text_on_character_boundaries() {
+        // 100 three-byte characters: byte length (300) exceeds the budget while
+        // the character count (100) does not, which is exactly the case the
+        // byte-vs-char mismatch rendered wrong.
+        let summary = "日".repeat(100);
+        let preview = summary_preview(&summary);
+
+        assert!(preview.ends_with('…'), "{preview}");
+        assert!(
+            preview.len() <= SUMMARY_PREVIEW_BYTES + '…'.len_utf8(),
+            "preview is {} bytes",
+            preview.len()
+        );
+        assert!(preview.chars().count() < 100);
+        assert!(std::str::from_utf8(preview.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn summary_preview_appends_the_ellipsis_only_when_truncated() {
+        let short = "café ☕ signal";
+        assert_eq!(summary_preview(short), short);
+        assert!(!summary_preview(short).ends_with('…'));
+
+        // 50 three-byte characters = 150 bytes: under the byte budget and under
+        // the character budget, so no ellipsis may be appended.
+        let under_budget = "日".repeat(50);
+        let preview = summary_preview(&under_budget);
+        assert_eq!(preview, under_budget);
+        assert!(!preview.ends_with('…'));
+        assert_eq!(summary_preview("  padded  "), "padded");
+    }
+
+    // ── #169: note visibility validation ─────────────────────────────────
+
+    #[test]
+    fn note_visibility_accepts_only_the_annotations_tiers() {
+        assert_eq!(note_visibility(None), Some("team"));
+        assert_eq!(note_visibility(Some("")), Some("team"));
+        assert_eq!(note_visibility(Some("  ")), Some("team"));
+        for allowed in NOTE_VISIBILITIES {
+            assert_eq!(note_visibility(Some(allowed)), Some(allowed));
+        }
+        assert_eq!(note_visibility(Some("secret")), None);
+        assert_eq!(note_visibility(Some("TEAM")), None);
+        assert_eq!(note_visibility(Some("team; DROP TABLE annotations")), None);
+    }
+
+    #[tokio::test]
+    async fn invalid_note_visibility_is_rejected_before_any_write() {
+        let store = unreachable_store();
+        let id = Uuid::new_v4();
+        let form = InsightNoteForm {
+            body: "A note body long enough".to_string(),
+            tags: None,
+            visibility: Some("secret-project".to_string()),
+        };
+
+        let response = create_insight_note(
+            Extension(test_session()),
+            Extension(store),
+            Path(id),
+            Form(form),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "an invalid visibility must be rejected, never written"
+        );
+    }
+
+    // ── #169: DB failure on the detail page is a 503, not a 404 ──────────
+
+    #[tokio::test]
+    async fn insight_detail_database_error_renders_service_unavailable() {
+        let store = unreachable_store();
+        let id = Uuid::new_v4().to_string();
+
+        let response = get_insight(
+            HeaderMap::new(),
+            Extension(test_session()),
+            Extension(store),
+            Path(id),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a storage failure must not render as the 404 page"
+        );
+    }
+
+    // ── #169: no notification may be addressed to the acting user ────────
+
+    /// The bookmark toggle and the note create used to notify the user who
+    /// performed the action. Build the removed markers at runtime so this
+    /// test's own source cannot satisfy the assertions.
+    #[test]
+    fn insight_actions_never_write_a_self_addressed_notification() {
+        let source = include_str!("insights.rs");
+        let bookmark_category = ["insight", "bookmark"].join("_");
+        let note_title = ["Insight", "note", "added"].join(" ");
+        assert!(
+            !source.contains(&bookmark_category),
+            "the bookmark toggle must not write a self-addressed notification"
+        );
+        assert!(
+            !source.contains(&note_title),
+            "the note create must not write a self-addressed notification"
+        );
+    }
+
+    fn test_session() -> WebSession {
+        use crate::auth::ApiRole;
+        use apex_core::identity::{UserId, Username};
+
+        WebSession {
+            user_id: UserId::new("user-self-notify"),
+            username: Username::new("tester"),
+            role: ApiRole::Analyst,
+            session_version: 1,
+            principal_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            issued_at: 0,
+            expires_at: i64::MAX,
+        }
+    }
+
+    /// A pool that cannot connect: `127.0.0.1:9` refuses immediately, so these
+    /// handler tests exercise the storage-failure branches without a database.
+    fn unreachable_store() -> Arc<PgStore> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(500))
+            .connect_lazy("postgres://127.0.0.1:9/apexintel_unreachable")
+            .expect("lazy pool URL is valid");
+        Arc::new(PgStore::from_pool(pool))
     }
 }

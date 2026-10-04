@@ -4,11 +4,11 @@ use chrono::Duration;
 use sha2::{Digest, Sha256};
 
 /// Default cache lifetime for entries written without an explicit TTL.
-pub const DEFAULT_LLM_CACHE_TTL: Duration = Duration::days(7);
+const DEFAULT_LLM_CACHE_TTL: Duration = Duration::days(7);
 
 /// SHA-256 of the exact rendered prompt, recorded on every cache entry so a
 /// cached response is bound to the prompt text that produced it.
-pub fn hash_llm_prompt(rendered_prompt: &str) -> String {
+fn hash_llm_prompt(rendered_prompt: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"apex-llm-prompt\x1f");
     hasher.update(rendered_prompt.as_bytes());
@@ -18,7 +18,7 @@ pub fn hash_llm_prompt(rendered_prompt: &str) -> String {
 /// Effective cache key for a rendered prompt: the caller's evidence-scoped key
 /// hashed together with the prompt text (domain-separated), so two different
 /// renderings of the same evidence set can never collide on one cache row.
-pub fn llm_prompt_cache_key(base_cache_key: &str, rendered_prompt: &str) -> String {
+fn llm_prompt_cache_key(base_cache_key: &str, rendered_prompt: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"apex-llm-cache-v2\x1f");
     hasher.update(base_cache_key.as_bytes());

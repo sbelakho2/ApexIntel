@@ -3,6 +3,12 @@
 //! When a person's photo_hash changes on their company page, generate
 //! a "profile update" artifact — often signals a promotion, new company,
 //! or significant career change.
+//!
+//! Photo hashes are recorded per source document in
+//! `poi_artifacts.metadata->>'photo_hash'` (the artifact `url` is the source
+//! document).  A hash is only ever compared against the previous hash from
+//! the *same* source document (`pa2.url = pa.url`); a photo seen on one site
+//! is never associated with a photo seen on another.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -62,6 +68,40 @@ pub enum PhotoSignificance {
 }
 
 // ─── Detection engine ───────────────────────────────────────────────────
+
+/// One row of [`photo_change_detection_sql`] output, mapped to Rust.
+///
+/// `previous_hash` is the most recent earlier hash *from the same source URL*
+/// and is `None` when this is the first photo seen for that source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DetectedPhotoRow {
+    pub person_id: String,
+    pub person_name: String,
+    pub source_url: String,
+    pub current_hash: String,
+    pub previous_hash: Option<String>,
+    pub detected_at: DateTime<Utc>,
+}
+
+/// Convert detector query rows into photo changes (pure; no database).
+///
+/// Rows whose hash did not change are filtered out by
+/// [`PhotoDetector::detect`], so callers may persist one artifact per returned
+/// change without re-checking the hashes.
+pub fn detect_changes(rows: &[DetectedPhotoRow]) -> Vec<PhotoChange> {
+    rows.iter()
+        .filter_map(|row| {
+            PhotoDetector::detect(
+                &row.person_id,
+                &row.person_name,
+                &row.source_url,
+                row.previous_hash.as_deref(),
+                &row.current_hash,
+                row.detected_at,
+            )
+        })
+        .collect()
+}
 
 pub struct PhotoDetector;
 
@@ -181,29 +221,45 @@ impl PhotoDetector {
     }
 }
 
-/// SQL to detect photo hash changes across poi_artifacts.
+/// SQL to detect photo hash changes across `poi_artifacts`.
+///
+/// Column mapping to the real schema:
+/// - `poi_artifacts.url` is the source document (`source_url` in the output);
+/// - the photo hash lives in `poi_artifacts.metadata->>'photo_hash'`;
+/// - `poi_artifacts.ts_utc` is the observation time (`crawled_at` in the
+///   output) and `persons.name` is the person's display name.
+///
+/// #164: the previous-hash lookup is restricted to rows from the *same source
+/// document* (`pa2.url = pa.url`).  Without that predicate the detector could
+/// pair a photo hash from one source URL with a hash from a different source
+/// URL and report a spurious "photo changed" event.
 pub fn photo_change_detection_sql() -> &'static str {
     r#"
     SELECT
         p.id AS person_id,
-        p.full_name AS person_name,
-        pa.source_url,
-        pa.photo_hash AS current_hash,
+        p.name AS person_name,
+        pa.url AS source_url,
+        pa.metadata->>'photo_hash' AS current_hash,
         pa_prev.photo_hash AS previous_hash,
-        pa.crawled_at
+        pa.ts_utc AS crawled_at
     FROM persons p
     JOIN poi_artifacts pa ON pa.person_id = p.id
     LEFT JOIN LATERAL (
-        SELECT photo_hash
+        SELECT pa2.metadata->>'photo_hash' AS photo_hash
         FROM poi_artifacts pa2
         WHERE pa2.person_id = p.id
-          AND pa2.crawled_at < pa.crawled_at
-        ORDER BY pa2.crawled_at DESC
+          AND pa2.url = pa.url
+          AND pa2.ts_utc < pa.ts_utc
+          AND pa2.metadata->>'photo_hash' IS NOT NULL
+        ORDER BY pa2.ts_utc DESC
         LIMIT 1
     ) pa_prev ON true
-    WHERE pa.photo_hash IS NOT NULL
-      AND (pa_prev.photo_hash IS NULL OR pa_prev.photo_hash != pa.photo_hash)
-      AND pa.crawled_at > NOW() - INTERVAL '24 hours'
+    WHERE pa.metadata->>'photo_hash' IS NOT NULL
+      AND (
+        pa_prev.photo_hash IS NULL
+        OR pa_prev.photo_hash != pa.metadata->>'photo_hash'
+      )
+      AND pa.ts_utc > NOW() - INTERVAL '24 hours'
     "#
 }
 
@@ -308,5 +364,65 @@ mod tests {
     #[test]
     fn test_sql_not_empty() {
         assert!(photo_change_detection_sql().contains("poi_artifacts"));
+    }
+
+    // ── #164: the previous hash must come from the same source document ──
+
+    #[test]
+    fn test_sql_requires_same_source_document_for_previous_hash() {
+        let sql = photo_change_detection_sql();
+        assert!(
+            sql.contains("pa2.url = pa.url"),
+            "previous-hash lookup must be constrained to the same source URL:\n{sql}"
+        );
+    }
+
+    #[test]
+    fn test_sql_uses_real_poi_artifacts_columns() {
+        let sql = photo_change_detection_sql();
+        assert!(sql.contains("pa.url AS source_url"));
+        assert!(sql.contains("pa.metadata->>'photo_hash' AS current_hash"));
+        assert!(sql.contains("pa.ts_utc AS crawled_at"));
+        assert!(sql.contains("p.name AS person_name"));
+        // Stale column references from the dead query must be gone.
+        assert!(!sql.contains("pa.source_url"));
+        assert!(!sql.contains("pa.photo_hash"));
+        assert!(!sql.contains("crawled_at <"), "must use ts_utc ordering");
+        assert!(!sql.contains("full_name"));
+    }
+
+    #[test]
+    fn test_detect_changes_maps_rows_and_skips_unchanged() {
+        let unchanged = DetectedPhotoRow {
+            person_id: "p-1".into(),
+            person_name: "Ahmed".into(),
+            source_url: "https://example.com/a".into(),
+            current_hash: "same".into(),
+            previous_hash: Some("same".into()),
+            detected_at: Utc::now(),
+        };
+        let changed = DetectedPhotoRow {
+            person_id: "p-1".into(),
+            person_name: "Ahmed".into(),
+            source_url: "https://example.com/a".into(),
+            current_hash: "new".into(),
+            previous_hash: Some("old".into()),
+            detected_at: Utc::now(),
+        };
+        let initial = DetectedPhotoRow {
+            person_id: "p-2".into(),
+            person_name: "Lina".into(),
+            source_url: "https://linkedin.com/in/lina".into(),
+            current_hash: "first".into(),
+            previous_hash: None,
+            detected_at: Utc::now(),
+        };
+
+        let changes = detect_changes(&[unchanged, changed, initial]);
+        assert_eq!(changes.len(), 2, "unchanged hashes must be filtered out");
+        assert_eq!(changes[0].change_type, PhotoChangeType::Updated);
+        assert_eq!(changes[0].old_hash.as_deref(), Some("old"));
+        assert_eq!(changes[1].change_type, PhotoChangeType::Initial);
+        assert_eq!(changes[1].person_id, "p-2");
     }
 }

@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::job_execution::execute_job;
+use crate::job_execution::execute_job_with_payload;
 use crate::job_execution::JobExecutionContext;
 use crate::{
     format_status, JobKind, JobRun, JobStatus, PgStore, Scheduler, SchedulerProgressClock, Utc,
@@ -482,6 +483,25 @@ pub(crate) async fn poll_trigger_queue(
         ),
     }
 
+    // #169: a crash mid-analysis leaves its run `running`; the in-flight
+    // partial unique index would then block every new run for that insight.
+    // Reconcile abandoned runs on the same cadence as abandoned triggers.
+    match store
+        .expire_stale_insight_analysis_runs(manual_trigger_timeout_secs)
+        .await
+    {
+        Ok(expired) if expired > 0 => tracing::warn!(
+            expired,
+            manual_trigger_timeout_secs,
+            "poll_trigger_queue: failed stale insight analysis run(s)"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            error = %e,
+            "poll_trigger_queue: failed to expire stale insight analysis run(s)"
+        ),
+    }
+
     let mut claimed_this_poll: usize = 0;
     loop {
         if claimed_this_poll >= max_claims_per_poll {
@@ -493,11 +513,16 @@ pub(crate) async fn poll_trigger_queue(
             Err(_) => break,
         };
 
-        match store.pop_job_trigger().await {
-            Ok(Some((trigger_id, job_kind_str))) => {
+        match store.pop_job_trigger_with_payload().await {
+            Ok(Some((trigger_id, job_kind_str, payload))) => {
                 claimed_this_poll += 1;
                 let kind = JobKind::from_str(&job_kind_str);
-                tracing::info!(trigger_id = %trigger_id, job = %job_kind_str, "manual trigger: executing job");
+                tracing::info!(
+                    trigger_id = %trigger_id,
+                    job = %job_kind_str,
+                    has_payload = payload.is_some(),
+                    "manual trigger: executing job"
+                );
 
                 // Resolve the same timeout the scheduler would enforce and a
                 // lease that covers 2x it plus slack (mirrors tick_scheduler).
@@ -579,10 +604,10 @@ pub(crate) async fn poll_trigger_queue(
                     // timeout as the scheduled run; on expiry the inner task is
                     // ABORTED rather than detached.
                     let job_store = Arc::clone(&store);
-                    let mut job_handle =
-                        tokio::spawn(
-                            async move { execute_job(&kind, &job_store, &job_context).await },
-                        );
+                    let mut job_handle = tokio::spawn(async move {
+                        execute_job_with_payload(&kind, &job_store, &job_context, payload.as_ref())
+                            .await
+                    });
                     let run = match tokio::time::timeout(
                         Duration::from_secs(timeout_secs),
                         &mut job_handle,

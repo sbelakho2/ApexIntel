@@ -1,6 +1,8 @@
 //! Statistical robustness gates for recipe validation.
 //!
 //! A candidate pattern must pass ALL gates before promotion:
+//! 0. Evidence validity (every field finite, probabilities in range, counts
+//!    consistent) — invalid evidence can never pass, regardless of thresholds.
 //! 1. Effect size (uplift > 1.5× or MI > 0.1)
 //! 2. Significance (p < 0.01)
 //! 3. FDR correction (q < 0.05 Benjamini-Hochberg)
@@ -187,6 +189,65 @@ pub struct GateEvidence {
     pub counterfactual_change: f64, // change in effect when signal removed
 }
 
+impl GateEvidence {
+    /// Validate the evidence payload before any gate consumes it.
+    ///
+    /// Returns an empty `Vec` when every field is well-formed, or a complete
+    /// list of human-readable errors (all problems are reported, not just the
+    /// first).
+    ///
+    /// # Checks performed
+    /// - Every float is finite (rejects `NaN` and `±inf`).
+    /// - `p_value`, `q_value`, and `false_alarm_rate` are probabilities in
+    ///   `[0.0, 1.0]` (inclusive boundaries are structurally valid; the gate
+    ///   thresholds decide acceptance).
+    /// - `time_slices_passed <= total_time_slices` (the slice count cannot
+    ///   exceed its total). `entities_passed` has no total in this payload, so
+    ///   there is no comparable upper bound to enforce.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        let floats = [
+            ("uplift", self.uplift),
+            ("mutual_info", self.mutual_info),
+            ("p_value", self.p_value),
+            ("q_value", self.q_value),
+            ("negative_control_effect", self.negative_control_effect),
+            ("false_alarm_rate", self.false_alarm_rate),
+            ("counterfactual_change", self.counterfactual_change),
+        ];
+        for (name, value) in floats {
+            if !value.is_finite() {
+                errors.push(format!(
+                    "GateEvidence.{name} = {value} must be finite (no NaN or infinity)"
+                ));
+            }
+        }
+
+        let probabilities = [
+            ("p_value", self.p_value),
+            ("q_value", self.q_value),
+            ("false_alarm_rate", self.false_alarm_rate),
+        ];
+        for (name, value) in probabilities {
+            if value.is_finite() && !(0.0..=1.0).contains(&value) {
+                errors.push(format!(
+                    "GateEvidence.{name} = {value} must be within [0.0, 1.0]"
+                ));
+            }
+        }
+
+        if self.time_slices_passed > self.total_time_slices {
+            errors.push(format!(
+                "GateEvidence.time_slices_passed ({}) must not exceed total_time_slices ({})",
+                self.time_slices_passed, self.total_time_slices
+            ));
+        }
+
+        errors
+    }
+}
+
 // ────────────────────────────────────────────
 // Individual gate checks
 // ────────────────────────────────────────────
@@ -237,8 +298,24 @@ pub fn check_counterfactual(evidence: &GateEvidence, config: &GateConfig) -> boo
     evidence.counterfactual_change >= config.counterfactual_min_change
 }
 
+fn evidence_validity_result(evidence: &GateEvidence) -> GateResult {
+    let errors = evidence.validate();
+    let passed = errors.is_empty();
+    GateResult {
+        name: "evidence_validity".to_string(),
+        passed,
+        detail: if passed {
+            "all evidence fields finite; probabilities in [0.0, 1.0]; slice counts consistent"
+                .to_string()
+        } else {
+            errors.join("; ")
+        },
+    }
+}
+
 fn run_all_gates_once(evidence: &GateEvidence, config: &GateConfig) -> Vec<GateResult> {
     vec![
+        evidence_validity_result(evidence),
         GateResult {
             name: "effect_size".to_string(),
             passed: check_effect_size(evidence, config),
@@ -520,6 +597,105 @@ mod tests {
         assert!(check_false_alarm_budget(&ev, &config)); // <= threshold still passes by rule
     }
 
+    // ── #162: evidence validity ──
+
+    fn evidence_validity_gate(ev: &GateEvidence) -> GateResult {
+        run_all_gates(ev, &GateConfig::default())
+            .into_iter()
+            .find(|r| r.name == "evidence_validity")
+            .expect("run_all_gates must include the evidence_validity gate")
+    }
+
+    #[test]
+    fn test_evidence_validity_rejects_nan() {
+        let mut ev = passing_evidence();
+        ev.p_value = f64::NAN;
+        let gate = evidence_validity_gate(&ev);
+        assert!(!gate.passed, "NaN evidence must fail the validity gate");
+        assert!(gate.detail.contains("p_value"), "{}", gate.detail);
+        assert!(!all_gates_pass(&ev, &GateConfig::default()));
+    }
+
+    #[test]
+    fn test_evidence_validity_rejects_positive_infinity() {
+        let mut ev = passing_evidence();
+        ev.uplift = f64::INFINITY;
+        let config = GateConfig::default();
+        let gate = evidence_validity_gate(&ev);
+        assert!(
+            !gate.passed,
+            "infinite evidence must fail the validity gate"
+        );
+        assert!(gate.detail.contains("uplift"), "{}", gate.detail);
+        assert!(!all_gates_pass(&ev, &config));
+        // Every substantive gate passes on its own rules; only validity blocks.
+        assert_eq!(gates_passed_count(&ev, &config), 8);
+        assert_eq!(
+            failed_gates(&ev, &config),
+            vec!["evidence_validity".to_string()]
+        );
+        let report = format_gate_report(&ev, &config);
+        assert!(report.contains("evidence_validity"), "{report}");
+        assert!(
+            report.contains("/9 gates passed"),
+            "9 gates must be evaluated: {report}"
+        );
+    }
+
+    #[test]
+    fn test_evidence_validity_rejects_out_of_range_probabilities() {
+        let cases = [
+            ("p_value", -0.1),
+            ("p_value", 1.2),
+            ("q_value", 1.5),
+            ("false_alarm_rate", -0.2),
+            ("false_alarm_rate", 2.0),
+        ];
+        for (field, value) in cases {
+            let mut ev = passing_evidence();
+            match field {
+                "p_value" => ev.p_value = value,
+                "q_value" => ev.q_value = value,
+                "false_alarm_rate" => ev.false_alarm_rate = value,
+                other => panic!("unknown field {other}"),
+            }
+            let gate = evidence_validity_gate(&ev);
+            assert!(!gate.passed, "{field}={value} must be rejected");
+            assert!(
+                gate.detail.contains(field),
+                "detail must name {field}: {}",
+                gate.detail
+            );
+            assert!(!all_gates_pass(&ev, &GateConfig::default()));
+        }
+    }
+
+    #[test]
+    fn test_evidence_validity_rejects_slices_exceeding_total() {
+        let mut ev = passing_evidence();
+        ev.time_slices_passed = 5;
+        ev.total_time_slices = 3;
+        let config = GateConfig::default();
+        let gate = evidence_validity_gate(&ev);
+        assert!(!gate.passed);
+        assert!(
+            gate.detail.contains("time_slices_passed"),
+            "{}",
+            gate.detail
+        );
+        // Gate 4 alone would accept 5/3 (5 >= min_time_slices); validity blocks.
+        assert!(check_temporal_stability(&ev, &config));
+        assert!(!all_gates_pass(&ev, &config));
+    }
+
+    #[test]
+    fn test_evidence_validity_accepts_valid_control() {
+        let ev = passing_evidence();
+        assert!(ev.validate().is_empty());
+        assert!(evidence_validity_gate(&ev).passed);
+        assert!(all_gates_pass(&ev, &GateConfig::default()));
+    }
+
     #[test]
     fn test_check_negative_control_tiny_uplift_fails() {
         let config = GateConfig::default();
@@ -555,8 +731,10 @@ mod tests {
     #[test]
     fn test_gates_passed_count() {
         let config = GateConfig::default();
-        assert_eq!(gates_passed_count(&passing_evidence(), &config), 8);
-        assert_eq!(gates_passed_count(&failing_evidence(), &config), 0);
+        assert_eq!(gates_passed_count(&passing_evidence(), &config), 9);
+        // The failing evidence is structurally valid, so the evidence_validity
+        // gate still passes; the eight substantive gates all fail.
+        assert_eq!(gates_passed_count(&failing_evidence(), &config), 1);
     }
 
     #[test]
@@ -573,7 +751,8 @@ mod tests {
     fn test_run_all_gates_report() {
         let config = GateConfig::default();
         let results = run_all_gates(&passing_evidence(), &config);
-        assert_eq!(results.len(), 8);
+        assert_eq!(results.len(), 9);
+        assert_eq!(results[0].name, "evidence_validity");
         for r in &results {
             assert!(r.passed, "Gate {} should pass: {}", r.name, r.detail);
         }
@@ -587,7 +766,7 @@ mod tests {
         ev.q_value = 0.1; // and FDR fails
 
         assert!(!all_gates_pass(&ev, &config));
-        assert_eq!(gates_passed_count(&ev, &config), 6);
+        assert_eq!(gates_passed_count(&ev, &config), 7);
         let failed = failed_gates(&ev, &config);
         assert!(failed.contains(&"significance".to_string()));
         assert!(failed.contains(&"fdr_correction".to_string()));
@@ -598,7 +777,7 @@ mod tests {
         let config = GateConfig::default();
         let report = format_gate_report(&passing_evidence(), &config);
         assert!(report.contains("PASS"));
-        assert!(report.contains("8/8 gates passed"));
+        assert!(report.contains("9/9 gates passed"));
         assert!(report.contains("ELIGIBLE FOR STAGING"));
     }
 
@@ -607,7 +786,7 @@ mod tests {
         let config = GateConfig::default();
         let report = format_gate_report(&failing_evidence(), &config);
         assert!(report.contains("FAIL"));
-        assert!(report.contains("0/8 gates passed"));
+        assert!(report.contains("1/9 gates passed"));
         assert!(report.contains("NOT YET ELIGIBLE"));
     }
 

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,6 +6,14 @@ use crate::*;
 
 const WEEKLY_STAGE_TIMEOUT: Duration = Duration::from_secs(45);
 const WEEKLY_STAGE_ATTEMPTS: usize = 3;
+
+/// Calibration rewrites recipe activation thresholds from false-positive
+/// evidence (#159); it belongs to the promotion board only. Running it from
+/// the deprecation audit would mutate production gates as a side effect of a
+/// monitoring pass.
+pub(super) fn calibration_eligible(kind: &JobKind) -> bool {
+    matches!(kind, JobKind::PromotionBoard)
+}
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
@@ -32,28 +41,32 @@ pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) 
         ));
         return run;
     }
-    // Stage: auto-calibrate recipe precision thresholds based on FP rates
-    if let Err(e) = super::resilience::run_stage_with_retry(
-        "weekly_pipeline.auto_calibrate_thresholds",
-        WEEKLY_STAGE_TIMEOUT,
-        WEEKLY_STAGE_ATTEMPTS,
-        |_| async {
-            let adjustments = ctx.store.auto_calibrate_recipe_thresholds().await?;
-            if !adjustments.is_empty() {
-                tracing::info!(
-                    "auto-calibrated {} recipe(s) with high FP rate",
-                    adjustments.len()
-                );
-            }
-            Ok::<_, anyhow::Error>(())
-        },
-    )
-    .await
-    {
-        run.fail(&format!(
-            "weekly_pipeline: failed to auto-calibrate recipe thresholds: {e}"
-        ));
-        return run;
+    // Stage: auto-calibrate recipe precision thresholds based on FP rates.
+    // #159: only the promotion board calibrates; the deprecation audit must
+    // not mutate recipe activation thresholds.
+    if calibration_eligible(kind) {
+        if let Err(e) = super::resilience::run_stage_with_retry(
+            "weekly_pipeline.auto_calibrate_thresholds",
+            WEEKLY_STAGE_TIMEOUT,
+            WEEKLY_STAGE_ATTEMPTS,
+            |_| async {
+                let adjustments = ctx.store.auto_calibrate_recipe_thresholds().await?;
+                if !adjustments.is_empty() {
+                    tracing::info!(
+                        "auto-calibrated {} recipe(s) with high FP rate",
+                        adjustments.len()
+                    );
+                }
+                Ok::<_, anyhow::Error>(())
+            },
+        )
+        .await
+        {
+            run.fail(&format!(
+                "weekly_pipeline: failed to auto-calibrate recipe thresholds: {e}"
+            ));
+            return run;
+        }
     }
     let (staged_recipes, production_recipes, memo_inputs) =
         match super::resilience::run_stage_with_retry(
@@ -255,6 +268,63 @@ async fn apply_recipe_lifecycle(
     Ok(applied)
 }
 
+/// Insight severity: a stored `metadata.severity` wins only when it is one of
+/// the four valid values (case-insensitive); otherwise severity is derived
+/// from the measured confidence band:
+///
+/// | confidence      | severity   |
+/// |-----------------|------------|
+/// | `>= 0.85`       | `critical` |
+/// | `0.70 .. 0.85`  | `high`     |
+/// | `0.40 .. 0.70`  | `medium`   |
+/// | `< 0.40`        | `low`      |
+///
+/// Never a hard-coded constant (#161).
+pub(super) fn severity_from_metadata_or_confidence(
+    metadata: Option<&serde_json::Value>,
+    confidence: f64,
+) -> String {
+    if let Some(stored) = metadata
+        .and_then(|value| value.get("severity"))
+        .and_then(|value| value.as_str())
+    {
+        let normalized = stored.trim().to_ascii_lowercase();
+        if matches!(normalized.as_str(), "high" | "medium" | "low" | "critical") {
+            return normalized;
+        }
+    }
+    if confidence >= 0.85 {
+        "critical".to_string()
+    } else if confidence >= 0.70 {
+        "high".to_string()
+    } else if confidence >= 0.40 {
+        "medium".to_string()
+    } else {
+        "low".to_string()
+    }
+}
+
+/// Resolve an insight's display entity name from its `entity_ids`, preferring
+/// companies and then persons. Returns an empty string when nothing resolves —
+/// never the insight title and never a fabricated name (#161).
+pub(super) fn resolve_entity_name(
+    entity_ids: &[Uuid],
+    company_names: &HashMap<Uuid, String>,
+    person_names: &HashMap<Uuid, String>,
+) -> String {
+    for id in entity_ids {
+        if let Some(name) = company_names.get(id) {
+            return name.clone();
+        }
+    }
+    for id in entity_ids {
+        if let Some(name) = person_names.get(id) {
+            return name.clone();
+        }
+    }
+    String::new()
+}
+
 pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
@@ -283,6 +353,42 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                 return run;
             }
         };
+
+        // #161: resolve entity names from the store (companies first, then
+        // persons). A failed lookup fails the stage instead of fabricating a
+        // name from the insight title.
+        let entity_ids: Vec<Uuid> = insight_rows
+            .iter()
+            .flat_map(|row| row.entity_ids.iter().flatten().copied())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let company_names: HashMap<Uuid, String> =
+            match store.get_company_names_by_ids(&entity_ids).await {
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|(id, name, _region, _company_type)| (id, name))
+                    .collect(),
+                Err(e) => {
+                    run.fail(&format!(
+                        "strategy_memo: failed to resolve company names: {e}"
+                    ));
+                    return run;
+                }
+            };
+        let person_names: HashMap<Uuid, String> =
+            match store.get_person_names_by_ids(&entity_ids).await {
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|(id, name, _role)| (id, name))
+                    .collect(),
+                Err(e) => {
+                    run.fail(&format!(
+                        "strategy_memo: failed to resolve person names: {e}"
+                    ));
+                    return run;
+                }
+            };
 
         let cards: Vec<InsightCard> = insight_rows
             .iter()
@@ -327,8 +433,15 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                         .as_deref()
                         .and_then(|ids| ids.first().copied())
                         .unwrap_or(uuid::Uuid::nil()),
-                    entity_name: row.title.clone(),
-                    severity: "medium".to_string(),
+                    entity_name: resolve_entity_name(
+                        row.entity_ids.as_deref().unwrap_or(&[]),
+                        &company_names,
+                        &person_names,
+                    ),
+                    severity: severity_from_metadata_or_confidence(
+                        row.metadata.as_ref(),
+                        confidence,
+                    ),
                     category: row
                         .insight_type
                         .clone()
@@ -459,12 +572,33 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                         .collect::<Vec<_>>()
                 );
                 let sections_json = serde_json::json!(sections_payload);
+                // #161: real store counts for the monitored universe. A failed
+                // count fails the stage; a fabricated zero is never persisted.
+                let companies_monitored = match store
+                    .count_companies(&apex_store::postgres::CompanyListFilters::default())
+                    .await
+                {
+                    Ok(count) => count,
+                    Err(e) => {
+                        run.fail(&format!(
+                            "strategy_memo: failed to count monitored companies: {e}"
+                        ));
+                        return run;
+                    }
+                };
+                let pois_tracked = match store.count_persons(&PersonListFilters::default()).await {
+                    Ok(count) => count,
+                    Err(e) => {
+                        run.fail(&format!("strategy_memo: failed to count tracked POIs: {e}"));
+                        return run;
+                    }
+                };
                 let key_metrics_json = serde_json::json!({
                     "warnings_total": memo.warning_count,
                     "warnings_critical": memo.critical_count,
                     "insights_generated": memo.total_insights,
-                    "companies_monitored": 0,
-                    "pois_tracked": 0,
+                    "companies_monitored": companies_monitored,
+                    "pois_tracked": pois_tracked,
                     "late_period_count": memo.temporal_summary.late_period_count,
                     "early_period_count": memo.temporal_summary.early_period_count,
                     "fused_signal_clusters": memo.fused_signal_clusters.len(),
@@ -495,21 +629,24 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                     )
                     .await
                 {
-                    tracing::warn!(error = %e, "strategy_memo: failed to persist memo to DB");
-                } else {
-                    tracing::info!(
-                        week = memo.week_number,
-                        year = memo.year,
-                        sections = section_count,
-                        "strategy_memo: memo persisted to weekly_memos"
-                    );
-                    // Surface the generated memo in the activity feed.
-                    let memo_logger =
-                        apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
-                    memo_logger
-                        .log_memo_generated(&title, card_count as u32)
-                        .await;
+                    // #161: a memo that was not persisted is not a successful
+                    // stage. Fail the run and do not log memo-generated
+                    // activity for a memo that does not exist.
+                    run.fail(&format!("strategy_memo: failed to persist memo: {e}"));
+                    return run;
                 }
+                tracing::info!(
+                    week = memo.week_number,
+                    year = memo.year,
+                    sections = section_count,
+                    "strategy_memo: memo persisted to weekly_memos"
+                );
+                // Surface the generated memo in the activity feed.
+                let memo_logger =
+                    apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+                memo_logger
+                    .log_memo_generated(&title, card_count as u32)
+                    .await;
                 run.succeed(
                     section_count as u64,
                     &format!(
@@ -583,7 +720,9 @@ pub(super) async fn run_update_email_digest(store: &Arc<PgStore>) -> JobRun {
 #[cfg(test)]
 mod lifecycle_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use super::{recipe_lifecycle_actions, RecipeLifecycleAction, RecipeLifecycleOp};
+    use super::{
+        calibration_eligible, recipe_lifecycle_actions, RecipeLifecycleAction, RecipeLifecycleOp,
+    };
     use crate::JobKind;
     use apex_worker::weekly::{DeprecationResult, PromotionBoardResult, WeeklyReport};
 
@@ -679,5 +818,112 @@ mod lifecycle_tests {
         let report = WeeklyReport::new();
         assert!(recipe_lifecycle_actions(&JobKind::PromotionBoard, &report).is_empty());
         assert!(recipe_lifecycle_actions(&JobKind::RecipeDeprecation, &report).is_empty());
+    }
+
+    /// #159: threshold calibration mutates production recipes and must run
+    /// only for the promotion board job; the deprecation audit (and every
+    /// other weekly kind) must not calibrate.
+    #[test]
+    fn calibration_runs_only_for_the_promotion_board() {
+        assert!(calibration_eligible(&JobKind::PromotionBoard));
+        assert!(!calibration_eligible(&JobKind::RecipeDeprecation));
+        assert!(!calibration_eligible(&JobKind::StrategyMemo));
+    }
+}
+
+#[cfg(test)]
+mod memo_helper_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::{resolve_entity_name, severity_from_metadata_or_confidence};
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn metadata(severity: &str) -> serde_json::Value {
+        serde_json::json!({ "severity": severity })
+    }
+
+    /// #161: a valid stored severity wins over the confidence band.
+    #[test]
+    fn stored_severity_is_used_when_valid() {
+        assert_eq!(
+            severity_from_metadata_or_confidence(Some(&metadata("critical")), 0.10),
+            "critical"
+        );
+        assert_eq!(
+            severity_from_metadata_or_confidence(Some(&metadata("HIGH")), 0.10),
+            "high"
+        );
+        assert_eq!(
+            severity_from_metadata_or_confidence(Some(&metadata(" low ")), 0.99),
+            "low"
+        );
+    }
+
+    /// #161: an invalid or absent stored severity falls back to the measured
+    /// confidence band, never to a hard-coded constant.
+    #[test]
+    fn invalid_stored_severity_derives_from_confidence() {
+        assert_eq!(
+            severity_from_metadata_or_confidence(Some(&metadata("urgent")), 0.90),
+            "critical"
+        );
+        assert_eq!(
+            severity_from_metadata_or_confidence(Some(&serde_json::json!({"severity": 7})), 0.75),
+            "high"
+        );
+        assert_eq!(
+            severity_from_metadata_or_confidence(Some(&serde_json::json!({})), 0.50),
+            "medium"
+        );
+        assert_eq!(severity_from_metadata_or_confidence(None, 0.10), "low");
+    }
+
+    /// #161: documented confidence bands (critical >= .85, high >= .70,
+    /// medium >= .40, else low).
+    #[test]
+    fn severity_confidence_band_boundaries() {
+        for (confidence, expected) in [
+            (1.0, "critical"),
+            (0.85, "critical"),
+            (0.8499, "high"),
+            (0.70, "high"),
+            (0.6999, "medium"),
+            (0.40, "medium"),
+            (0.3999, "low"),
+            (0.0, "low"),
+        ] {
+            assert_eq!(
+                severity_from_metadata_or_confidence(None, confidence),
+                expected,
+                "confidence {confidence}"
+            );
+        }
+    }
+
+    /// #161: entity names resolve from companies first, then persons, and an
+    /// unresolvable id yields an empty string (never the title).
+    #[test]
+    fn entity_name_prefers_company_then_person_then_empty() {
+        let company_id = Uuid::new_v4();
+        let person_id = Uuid::new_v4();
+        let unknown_id = Uuid::new_v4();
+        let companies = HashMap::from([(company_id, "Acme Corp".to_string())]);
+        let persons = HashMap::from([(person_id, "Jane Doe".to_string())]);
+
+        assert_eq!(
+            resolve_entity_name(&[unknown_id, company_id], &companies, &persons),
+            "Acme Corp"
+        );
+        assert_eq!(
+            resolve_entity_name(&[unknown_id, person_id], &companies, &persons),
+            "Jane Doe"
+        );
+        assert_eq!(
+            resolve_entity_name(&[person_id, company_id], &companies, &persons),
+            "Acme Corp",
+            "a company anywhere in entity_ids wins over a person"
+        );
+        assert_eq!(resolve_entity_name(&[unknown_id], &companies, &persons), "");
+        assert_eq!(resolve_entity_name(&[], &companies, &persons), "");
     }
 }

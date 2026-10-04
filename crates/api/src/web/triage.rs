@@ -110,16 +110,16 @@ impl QueueStats {
             ((count as f64 / total as f64) * 100.0).round() as i64
         }
     }
-    pub fn critical_pct(&self) -> i64 {
+    pub(crate) fn critical_pct(&self) -> i64 {
         Self::band_pct(self.critical_count, self.total)
     }
-    pub fn high_pct(&self) -> i64 {
+    pub(crate) fn high_pct(&self) -> i64 {
         Self::band_pct(self.high_count, self.total)
     }
-    pub fn medium_pct(&self) -> i64 {
+    pub(crate) fn medium_pct(&self) -> i64 {
         Self::band_pct(self.medium_count, self.total)
     }
-    pub fn low_pct(&self) -> i64 {
+    pub(crate) fn low_pct(&self) -> i64 {
         Self::band_pct(self.low_count, self.total)
     }
 }

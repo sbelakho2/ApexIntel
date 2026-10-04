@@ -25,7 +25,7 @@ fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 
 /// Quality score breakdown record for logging and analysis.
 #[derive(Debug, Clone)]
-pub struct QualityScoreBreakdown {
+pub(crate) struct QualityScoreBreakdown {
     pub observation_id: Uuid,
     pub source_score: f64,
     pub confidence_score: f64,
@@ -37,7 +37,7 @@ pub struct QualityScoreBreakdown {
 
 impl QualityScoreBreakdown {
     /// Log the quality score breakdown using structured logging.
-    pub fn log(&self) {
+    pub(crate) fn log(&self) {
         tracing::info!(
             observation_id = %self.observation_id,
             source_score = %self.source_score,
@@ -53,7 +53,7 @@ impl QualityScoreBreakdown {
 
 /// Gate decision record for tracking quality gate outcomes.
 #[derive(Debug, Clone)]
-pub struct GateDecisionRecord {
+pub(crate) struct GateDecisionRecord {
     pub gate_name: String,
     pub input_hash: String,
     pub score: f64,
@@ -67,7 +67,7 @@ pub struct GateDecisionRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateDecision {
+pub(crate) enum GateDecision {
     Pass,
     Fail,
     SoftFail,
@@ -85,7 +85,7 @@ impl std::fmt::Display for GateDecision {
 
 impl GateDecisionRecord {
     /// Log the gate decision using structured logging.
-    pub fn log(&self) {
+    pub(crate) fn log(&self) {
         tracing::info!(
             gate_name = %self.gate_name,
             input_hash = %self.input_hash,
@@ -103,24 +103,24 @@ impl GateDecisionRecord {
 }
 
 /// Timer for measuring gate evaluation latency.
-pub struct GateTimer {
+pub(crate) struct GateTimer {
     start: Instant,
     gate_name: String,
 }
 
 impl GateTimer {
-    pub fn start(gate_name: impl Into<String>) -> Self {
+    pub(crate) fn start(gate_name: impl Into<String>) -> Self {
         Self {
             start: Instant::now(),
             gate_name: gate_name.into(),
         }
     }
 
-    pub fn elapsed(&self) -> std::time::Duration {
+    pub(crate) fn elapsed(&self) -> std::time::Duration {
         self.start.elapsed()
     }
 
-    pub fn finish(
+    pub(crate) fn finish(
         self,
         score: f64,
         threshold: f64,
@@ -151,7 +151,7 @@ impl GateTimer {
 
 /// In-memory metrics counters for Prometheus export.
 /// These can be scraped by a metrics endpoint.
-pub struct WorkerMetrics {
+pub(crate) struct WorkerMetrics {
     /// Total gate evaluations by gate name
     gate_evaluations: std::sync::RwLock<std::collections::HashMap<String, AtomicU64>>,
     /// Gate failures by gate name
@@ -194,7 +194,7 @@ impl Default for WorkerMetrics {
 }
 
 impl WorkerMetrics {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             gate_evaluations: std::sync::RwLock::new(std::collections::HashMap::new()),
             gate_failures: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -216,7 +216,7 @@ impl WorkerMetrics {
         }
     }
 
-    pub fn record_gate_evaluation(&self, gate_name: &str, passed: bool) {
+    pub(crate) fn record_gate_evaluation(&self, gate_name: &str, passed: bool) {
         // Increment evaluation count
         {
             let mut evals = write_lock(&self.gate_evaluations);
@@ -236,32 +236,32 @@ impl WorkerMetrics {
         }
     }
 
-    pub fn record_llm_retry(&self) {
+    pub(crate) fn record_llm_retry(&self) {
         self.llm_retries.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_llm_success(&self) {
+    pub(crate) fn record_llm_success(&self) {
         self.llm_successes.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_llm_failure(&self) {
+    pub(crate) fn record_llm_failure(&self) {
         self.llm_failures.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_insight_accepted(&self) {
+    pub(crate) fn record_insight_accepted(&self) {
         self.insights_accepted.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_insight_rejected(&self) {
+    pub(crate) fn record_insight_rejected(&self) {
         self.insights_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_insight_fallback(&self) {
+    pub(crate) fn record_insight_fallback(&self) {
         self.insights_fallback.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record one retry-processor cycle's outcome counters.
-    pub fn record_notification_delivery_cycle(
+    pub(crate) fn record_notification_delivery_cycle(
         &self,
         outcome: &apex_worker::notification_delivery::DeliveryCycleOutcome,
     ) {
@@ -276,14 +276,14 @@ impl WorkerMetrics {
     }
 
     /// Record an outbox alert event that exhausted its publish attempts.
-    pub fn record_outbox_dead_lettered(&self) {
+    pub(crate) fn record_outbox_dead_lettered(&self) {
         self.outbox_events_dead_lettered
             .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record one failed self-improvement stage (critique, prompt
     /// improvements, failure hypotheses, ...).
-    pub fn record_self_improvement_stage_failure(&self, stage_name: &str) {
+    pub(crate) fn record_self_improvement_stage_failure(&self, stage_name: &str) {
         let mut failures = write_lock(&self.self_improvement_stage_failures);
         failures
             .entry(stage_name.to_string())
@@ -293,25 +293,25 @@ impl WorkerMetrics {
 
     /// Record a self-improvement metric that had nothing to evaluate. This is
     /// deliberately separate from a failure and from a zero score.
-    pub fn record_self_improvement_not_evaluated(&self) {
+    pub(crate) fn record_self_improvement_not_evaluated(&self) {
         self.self_improvement_not_evaluated
             .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Observed stage-failure count for one self-improvement stage.
-    pub fn self_improvement_stage_failure_count(&self, stage_name: &str) -> u64 {
+    pub(crate) fn self_improvement_stage_failure_count(&self, stage_name: &str) -> u64 {
         read_lock(&self.self_improvement_stage_failures)
             .get(stage_name)
             .map_or(0, |count| count.load(Ordering::Relaxed))
     }
 
     /// Number of self-improvement cycles where a metric was not evaluated.
-    pub fn self_improvement_not_evaluated_count(&self) -> u64 {
+    pub(crate) fn self_improvement_not_evaluated_count(&self) -> u64 {
         self.self_improvement_not_evaluated.load(Ordering::Relaxed)
     }
 
     /// Get gate fire rate (failures / evaluations) for a specific gate.
-    pub fn gate_fire_rate(&self, gate_name: &str) -> Option<f64> {
+    pub(crate) fn gate_fire_rate(&self, gate_name: &str) -> Option<f64> {
         let evals = read_lock(&self.gate_evaluations);
         let fails = read_lock(&self.gate_failures);
 
@@ -329,7 +329,7 @@ impl WorkerMetrics {
     }
 
     /// Get LLM retry rate.
-    pub fn llm_retry_rate(&self) -> f64 {
+    pub(crate) fn llm_retry_rate(&self) -> f64 {
         let total =
             self.llm_successes.load(Ordering::Relaxed) + self.llm_failures.load(Ordering::Relaxed);
         if total == 0 {
@@ -339,7 +339,7 @@ impl WorkerMetrics {
     }
 
     /// Get insight acceptance ratio.
-    pub fn insight_acceptance_ratio(&self) -> f64 {
+    pub(crate) fn insight_acceptance_ratio(&self) -> f64 {
         let total = self.insights_accepted.load(Ordering::Relaxed)
             + self.insights_rejected.load(Ordering::Relaxed)
             + self.insights_fallback.load(Ordering::Relaxed);
@@ -351,7 +351,7 @@ impl WorkerMetrics {
 
     /// Export metrics in Prometheus text format.
     /// This can be used by a /metrics endpoint.
-    pub fn to_prometheus_text(&self) -> String {
+    pub(crate) fn to_prometheus_text(&self) -> String {
         let mut output = String::new();
 
         // LLM metrics
@@ -511,7 +511,7 @@ impl WorkerMetrics {
 
 /// Global worker metrics instance.
 /// Use `WORKER_METRICS.record_*` methods to record metrics.
-pub static WORKER_METRICS: std::sync::LazyLock<WorkerMetrics> =
+pub(crate) static WORKER_METRICS: std::sync::LazyLock<WorkerMetrics> =
     std::sync::LazyLock::new(WorkerMetrics::new);
 
 #[cfg(test)]

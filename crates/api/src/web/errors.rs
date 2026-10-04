@@ -141,6 +141,30 @@ fn normalize_incident_id(incident_id: &str) -> String {
     }
 }
 
+/// 503 for a temporarily unavailable dependency (for example, the database
+/// failing a page's primary read), rendered from the requesting page's context.
+///
+/// Same contract as [`internal_error_for`]: an incident id is always present
+/// and the raw error stays in the server log. Uses the existing shared 5xx
+/// shell; a dedicated 503 page (or a status parameter on the shell) is the
+/// remaining UI follow-up.
+pub fn service_unavailable_for(ctx: &PageContext, incident_id: &str) -> Response {
+    let incident_id = normalize_incident_id(incident_id);
+    tracing::error!(incident_id = %incident_id, "rendering service unavailable page");
+    let tpl = InternalErrorPage {
+        current_path: ctx.current_path.clone(),
+        can_admin: ctx.can_admin,
+        can_write: ctx.can_write,
+        username: ctx.username.clone(),
+        warning_count: ctx.warning_count,
+        theme: ctx.theme.clone(),
+        status_strip: ctx.status_strip.clone(),
+        incident_id,
+    };
+
+    super::render_template_with_status(StatusCode::SERVICE_UNAVAILABLE, &tpl)
+}
+
 /// Compatibility constructor: build a 404 from the pieces available before a
 /// `PageContext` exists (handlers that fail while loading navigation state).
 pub fn not_found_with_context(username: &str, path: &str, warning_count: i64) -> Response {
@@ -281,5 +305,28 @@ mod tests {
         assert!(html.contains("Incident ID"));
         // The raw-error slot no longer exists in the template.
         assert!(!html.contains("Error Context"));
+    }
+
+    #[tokio::test]
+    async fn service_unavailable_for_answers_503_with_incident_id() {
+        let response = service_unavailable_for(&ctx(false), "inc-db42");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read 503 body");
+        let html = String::from_utf8(body.to_vec()).expect("503 body is utf-8");
+        assert!(html.contains("inc-db42"), "incident id must be rendered");
+        assert!(html.contains("Incident ID"));
+    }
+
+    #[tokio::test]
+    async fn service_unavailable_for_generates_an_incident_id_when_absent() {
+        let response = service_unavailable_for(&ctx(false), "   ");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read 503 body");
+        let html = String::from_utf8(body.to_vec()).expect("503 body is utf-8");
+        assert!(html.contains("inc-"), "a fresh incident id is rendered");
     }
 }

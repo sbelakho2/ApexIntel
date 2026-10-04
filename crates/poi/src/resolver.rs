@@ -28,19 +28,171 @@ pub struct MatchCandidate {
     pub match_reasons: Vec<String>,
 }
 
+/// A planned merge of corroborated duplicate profiles.
+///
+/// `survivor_id` is the profile the merged ids are rewritten onto; `merged_ids`
+/// are the duplicate person ids that must not survive in warning/insight
+/// entity arrays.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersonMergePlan {
+    pub survivor_id: String,
+    pub merged_ids: Vec<String>,
+    pub confidence: f64,
+    pub match_reasons: Vec<String>,
+}
+
+/// Minimum primary-name similarity for two records to be considered a name
+/// match.  Below this the pair is unresolved regardless of any other signal.
+const NAME_COMPATIBILITY_THRESHOLD: f64 = 0.5;
+
+/// Minimum organization-name similarity for the employer+role corroborator.
+const EMPLOYER_SIMILARITY_THRESHOLD: f64 = 0.7;
+
+/// Minimum confidence for [`match_profiles`] to emit a candidate.
+const MIN_MATCH_CONFIDENCE: f64 = 0.5;
+
+/// Path markers that identify a URL as an individual person-profile page
+/// (rather than a generic article or company page).
+const PROFILE_URL_MARKERS: [&str; 7] = [
+    "linkedin.com/in/",
+    "linkedin.com/pub/",
+    "/people/",
+    "/profile/",
+    "/team/",
+    "/members/",
+    "/author/",
+];
+
+/// Canonicalize a profile URL for cross-source comparison: lowercase, drop the
+/// query string and fragment, and trim a trailing slash.  Returns `None` when
+/// the URL is empty or is not a person-profile URL.
+fn profile_url_key(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    let without_fragment = lowered.split('#').next().unwrap_or(&lowered);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    let canonical = without_query.trim_end_matches('/');
+    if PROFILE_URL_MARKERS
+        .iter()
+        .any(|marker| canonical.contains(marker))
+    {
+        Some(canonical.to_string())
+    } else {
+        None
+    }
+}
+
+/// Return a profile URL carried by both artifacts of `a` and `b`.
+fn shared_profile_url(a: &PoiProfile, b: &PoiProfile) -> Option<String> {
+    let a_urls: std::collections::HashSet<String> = a
+        .artifacts
+        .iter()
+        .filter_map(|artifact| artifact.source_url.as_deref())
+        .filter_map(profile_url_key)
+        .collect();
+    if a_urls.is_empty() {
+        return None;
+    }
+    b.artifacts
+        .iter()
+        .filter_map(|artifact| artifact.source_url.as_deref())
+        .filter_map(profile_url_key)
+        .find(|url| a_urls.contains(url))
+}
+
+/// Whether two role titles/families are compatible for the employer+role
+/// corroborator.  `RoleFamily::Other` is deliberately excluded: an unknown or
+/// placeholder family is not evidence of a shared role.
+fn roles_compatible(a: &PoiProfile, b: &PoiProfile) -> bool {
+    let role_a = a.current_role.trim().to_lowercase();
+    let role_b = b.current_role.trim().to_lowercase();
+    if !role_a.is_empty() && role_a == role_b {
+        return true;
+    }
+    !matches!(&a.role_family, RoleFamily::Other(_)) && a.role_family == b.role_family
+}
+
+/// Collect the independent identifiers that corroborate a compatible name.
+///
+/// The documented corroborators are:
+/// - `email_match` — normalized public emails are equal and non-empty;
+/// - `org_id_match` — both profiles carry the same non-empty organization id;
+/// - `profile_url_match` — both profiles carry the same person-profile URL
+///   (e.g. a LinkedIn `/in/` URL) among their artifacts;
+/// - `employer_role_match` — organization names are similar AND the role
+///   title/family is compatible.
+///
+/// Name similarity, name variants, country, and role family alone are NOT
+/// corroborators: they are name/attribute evidence, not identifiers.
+fn independent_corroborators(a: &PoiProfile, b: &PoiProfile) -> Vec<&'static str> {
+    let mut corroborators = Vec::new();
+
+    if let (Some(ea), Some(eb)) = (&a.public_email, &b.public_email) {
+        let na = normalize_email(ea);
+        let nb = normalize_email(eb);
+        if !na.is_empty() && na == nb {
+            corroborators.push("email_match");
+        }
+    }
+
+    if let (Some(oa), Some(ob)) = (a.normalized_org_id(), b.normalized_org_id()) {
+        if oa == ob {
+            corroborators.push("org_id_match");
+        }
+    }
+
+    if shared_profile_url(a, b).is_some() {
+        corroborators.push("profile_url_match");
+    }
+
+    if !a.org.is_empty()
+        && !b.org.is_empty()
+        && org_similarity(&a.org, &b.org) > EMPLOYER_SIMILARITY_THRESHOLD
+        && roles_compatible(a, b)
+    {
+        corroborators.push("employer_role_match");
+    }
+
+    corroborators
+}
+
 /// Resolve whether two POI profiles refer to the same person.
+///
+/// # Corroboration rule (#163)
+///
+/// A pair is eligible to merge only when BOTH conditions hold:
+///
+/// 1. the primary names (or a documented name variant) are compatible — name
+///    similarity above [`NAME_COMPATIBILITY_THRESHOLD`]; and
+/// 2. at least one independent identifier matches (see
+///    [`independent_corroborators`]).
+///
+/// Name-only matches — identical or fuzzy names with no independent
+/// corroborator — return `None` ("unresolved"), so two different people who
+/// share a common name are never merged on name evidence alone.  The
+/// confidence score is still computed and thresholded for callers that want a
+/// stricter bar.
 pub fn match_profiles(a: &PoiProfile, b: &PoiProfile) -> Option<MatchCandidate> {
     let mut score: f64 = 0.0;
     let mut reasons = Vec::new();
 
     // 1. Name similarity
     let name_sim = name_similarity(&a.name, &b.name);
+    let mut name_compatible = false;
     if name_sim > 0.8 {
         score += 0.4;
         reasons.push("name_exact_match".to_string());
-    } else if name_sim > 0.5 {
+        name_compatible = true;
+    } else if name_sim > NAME_COMPATIBILITY_THRESHOLD {
         score += 0.2;
         reasons.push("name_fuzzy_match".to_string());
+        name_compatible = true;
     }
 
     // 2. Check name variants — cap total contribution to prevent false positives from many variants
@@ -56,6 +208,24 @@ pub fn match_profiles(a: &PoiProfile, b: &PoiProfile) -> Option<MatchCandidate> 
     if variant_contribution > 0.0 {
         score += variant_contribution;
         reasons.push("variant_match".to_string());
+        name_compatible = true;
+    }
+
+    if !name_compatible {
+        return None;
+    }
+
+    // #163: independent corroboration gate.  A compatible name alone must never
+    // resolve or merge two people.
+    let corroborators = independent_corroborators(a, b);
+    if corroborators.is_empty() {
+        debug!(
+            profile_a = %a.person_id,
+            profile_b = %b.person_id,
+            name_similarity = name_sim,
+            "POI unresolved: compatible name without independent corroboration"
+        );
+        return None;
     }
 
     // 3. Same organization
@@ -78,6 +248,20 @@ pub fn match_profiles(a: &PoiProfile, b: &PoiProfile) -> Option<MatchCandidate> 
         }
     }
 
+    // 4b. Same organization id — a strong independent identifier
+    if let (Some(oa), Some(ob)) = (a.normalized_org_id(), b.normalized_org_id()) {
+        if oa == ob {
+            score += 0.3;
+            reasons.push("org_id_match".to_string());
+        }
+    }
+
+    // 4c. Shared person-profile URL — a strong independent identifier
+    if shared_profile_url(a, b).is_some() {
+        score += 0.35;
+        reasons.push("profile_url_match".to_string());
+    }
+
     // 5. Same role
     if a.role_family == b.role_family {
         score += 0.05;
@@ -90,12 +274,13 @@ pub fn match_profiles(a: &PoiProfile, b: &PoiProfile) -> Option<MatchCandidate> 
         reasons.push("same_country".to_string());
     }
 
-    if score >= 0.5 {
+    if score >= MIN_MATCH_CONFIDENCE {
         // B125: Log merge decisions for observability
         debug!(
             profile_a = %a.person_id,
             profile_b = %b.person_id,
             confidence = score.min(1.0),
+            corroborators = ?corroborators,
             reasons = ?reasons,
             "POI merge candidate identified"
         );
@@ -108,6 +293,56 @@ pub fn match_profiles(a: &PoiProfile, b: &PoiProfile) -> Option<MatchCandidate> 
     } else {
         None
     }
+}
+
+/// Plan person merges for a batch of profiles.
+///
+/// Runs the corroborated resolver over the batch and, for every cluster with
+/// more than one profile, emits one [`PersonMergePlan`] whose survivor is the
+/// lowest-indexed profile in the cluster (callers should feed profiles in a
+/// deterministic order).  Only pairs that passed [`match_profiles`] can appear
+/// in a cluster, so a planned merge always carries independent corroboration.
+///
+/// Plans are sorted by survivor id so callers execute them deterministically.
+pub fn plan_person_merges(profiles: &[PoiProfile], threshold: f64) -> Vec<PersonMergePlan> {
+    let clusters = resolve_batch(profiles, threshold);
+    let mut plans = Vec::new();
+
+    for cluster in clusters {
+        if cluster.len() < 2 {
+            continue;
+        }
+        let survivor_idx = cluster[0];
+        let merged_ids: Vec<String> = cluster[1..]
+            .iter()
+            .map(|index| profiles[*index].person_id.clone())
+            .collect();
+
+        let mut confidence: f64 = 0.0;
+        let mut reasons: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for left in 0..cluster.len() {
+            for right in (left + 1)..cluster.len() {
+                if let Some(candidate) =
+                    match_profiles(&profiles[cluster[left]], &profiles[cluster[right]])
+                {
+                    confidence = confidence.max(candidate.confidence);
+                    reasons.extend(candidate.match_reasons);
+                }
+            }
+        }
+        let mut match_reasons: Vec<String> = reasons.into_iter().collect();
+        match_reasons.sort();
+
+        plans.push(PersonMergePlan {
+            survivor_id: profiles[survivor_idx].person_id.clone(),
+            merged_ids,
+            confidence: confidence.min(1.0),
+            match_reasons,
+        });
+    }
+
+    plans.sort_by(|left, right| left.survivor_id.cmp(&right.survivor_id));
+    plans
 }
 
 /// Resolve a batch of profiles into clusters of duplicates.
@@ -356,9 +591,11 @@ mod tests {
 
     #[test]
     fn test_match_email_only() {
+        // Compatible (fuzzy) name + matching email, different employers: the
+        // email is the sole independent corroborator and the pair must merge.
         let a = make_poi(
             "p1",
-            "A. Ben Ali",
+            "Ahmed Ben Ali",
             "Foxconn",
             Some("ahmed.benali@company.com"),
         );
@@ -526,13 +763,15 @@ mod tests {
 
     #[test]
     fn test_variant_contribution_is_capped() {
+        // Same employer + role corroborates the name so the variant-cap check
+        // measures confidence, not the corroboration gate.
         let mut a = make_poi("p1", "same", "OrgA", None);
-        let mut b = make_poi("p2", "same", "OrgB", None);
+        let mut b = make_poi("p2", "same", "OrgA", None);
         a.name_variants = vec!["Same Variant".to_string(); 20];
         b.name_variants = vec!["Same Variant".to_string(); 20];
 
         let base_a = make_poi("p3", "same", "OrgA", None);
-        let base_b = make_poi("p4", "same", "OrgB", None);
+        let base_b = make_poi("p4", "same", "OrgA", None);
         let baseline = match_profiles(&base_a, &base_b).expect("baseline candidate expected");
 
         let m = match_profiles(&a, &b).expect("profiles should match");
@@ -706,6 +945,162 @@ mod tests {
             clusters.len(),
             2,
             "resolve_batch must drop duplicate person_ids before clustering"
+        );
+    }
+
+    // ── #163: corroboration rule ──
+
+    #[test]
+    fn test_same_name_different_company_stays_separate() {
+        // Same name, same role family, same country, no email / no profile URL:
+        // name-only evidence must never resolve these two people.
+        let a = make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", None);
+        let b = make_poi("p2", "Ahmed Ben Ali", "Samsung Tunisia", None);
+
+        assert!(
+            match_profiles(&a, &b).is_none(),
+            "identical names at different employers without an independent identifier must stay unresolved"
+        );
+
+        let clusters = resolve_batch(&[a, b], 0.5);
+        assert_eq!(
+            clusters.len(),
+            2,
+            "resolve_batch must not cluster name-only duplicates"
+        );
+    }
+
+    #[test]
+    fn test_same_name_matching_email_merges() {
+        let a = make_poi(
+            "p1",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("Ahmed.BenAli@Example.com"),
+        );
+        let b = make_poi(
+            "p2",
+            "Ahmed Ben Ali",
+            "Foxconn Europe",
+            Some("ahmed.benali@example.com"),
+        );
+
+        let candidate = match_profiles(&a, &b).expect("matching email must corroborate");
+        assert!(candidate.match_reasons.contains(&"email_match".to_string()));
+    }
+
+    #[test]
+    fn test_same_name_matching_profile_url_merges() {
+        let profile_url = "https://www.linkedin.com/in/ahmed-ben-ali?trk=public_profile";
+        let mut a = make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", None);
+        a.artifacts.push(PoiArtifact {
+            artifact_type: "profile".to_string(),
+            title: "Company profile".to_string(),
+            content_summary: String::new(),
+            source_url: Some(profile_url.to_string()),
+            ts_utc: 1_700_000_000,
+        });
+        let mut b = make_poi("p2", "Ahmed Ben Ali", "Foxconn Europe", None);
+        b.artifacts.push(PoiArtifact {
+            artifact_type: "profile".to_string(),
+            title: "LinkedIn".to_string(),
+            content_summary: String::new(),
+            source_url: Some("https://www.linkedin.com/in/ahmed-ben-ali#experience".to_string()),
+            ts_utc: 1_700_000_100,
+        });
+
+        let candidate =
+            match_profiles(&a, &b).expect("shared profile URL must corroborate the name");
+        assert!(candidate
+            .match_reasons
+            .contains(&"profile_url_match".to_string()));
+    }
+
+    #[test]
+    fn test_missing_corroborators_stays_unresolved() {
+        // Identical names but no employer, no email, no artifacts, and an
+        // unknown role family: nothing independent corroborates the match.
+        let mut a = make_poi("p1", "Maria Garcia", "", None);
+        a.current_role = String::new();
+        a.role_family = RoleFamily::Other("Unknown".to_string());
+        let mut b = make_poi("p2", "Maria Garcia", "", None);
+        b.current_role = String::new();
+        b.role_family = RoleFamily::Other("Unknown".to_string());
+
+        assert!(
+            match_profiles(&a, &b).is_none(),
+            "a missing corroborator set must leave the pair unresolved"
+        );
+    }
+
+    #[test]
+    fn test_conflicting_emails_are_not_a_corroborator() {
+        // Same name but different, explicitly conflicting emails and different
+        // employers: the emails veto rather than corroborate.
+        let a = make_poi(
+            "p1",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("ahmed@a.com"),
+        );
+        let b = make_poi(
+            "p2",
+            "Ahmed Ben Ali",
+            "Samsung Tunisia",
+            Some("ahmed@b.com"),
+        );
+
+        assert!(
+            match_profiles(&a, &b).is_none(),
+            "conflicting emails must not corroborate a name-only match"
+        );
+    }
+
+    #[test]
+    fn test_matching_org_id_corroborates() {
+        let mut a = make_poi("p1", "Ahmed Ben Ali", "Foxconn", None);
+        a.org_id = Some("org-42".to_string());
+        let mut b = make_poi("p2", "Ahmed Ben Ali", "Foxconn", None);
+        b.org_id = Some("org-42".to_string());
+
+        let candidate = match_profiles(&a, &b).expect("shared org id must corroborate");
+        assert!(candidate
+            .match_reasons
+            .contains(&"org_id_match".to_string()));
+    }
+
+    #[test]
+    fn test_plan_person_merges_emits_corroborated_cluster() {
+        let a = make_poi(
+            "p1",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("ahmed@example.com"),
+        );
+        let b = make_poi(
+            "p2",
+            "Ahmed Ben Ali",
+            "Foxconn Europe",
+            Some("ahmed@example.com"),
+        );
+        let c = make_poi("p3", "John Smith", "Samsung", Some("john@example.com"));
+
+        let plans = plan_person_merges(&[a, b, c], 0.7);
+        assert_eq!(plans.len(), 1, "only the corroborated pair may merge");
+        assert_eq!(plans[0].survivor_id, "p1");
+        assert_eq!(plans[0].merged_ids, vec!["p2".to_string()]);
+        assert!(plans[0].confidence >= 0.7);
+    }
+
+    #[test]
+    fn test_plan_person_merges_skips_name_only_duplicates() {
+        let a = make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", None);
+        let b = make_poi("p2", "Ahmed Ben Ali", "Samsung Tunisia", None);
+
+        let plans = plan_person_merges(&[a, b], 0.5);
+        assert!(
+            plans.is_empty(),
+            "name-only duplicates must never produce a merge plan"
         );
     }
 }

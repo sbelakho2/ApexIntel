@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use apex_core::triage::{TriageItemType, TriageStatus};
 use apex_store::postgres::PgStore;
+use apex_triage::router_integration::{LoggingAlertDispatcher, RouterIntegration};
 use apex_triage::TriageQueue;
 
 use crate::ApiAuthContext;
@@ -158,6 +159,30 @@ fn stats_to_response(stats: apex_core::triage::TriageStats) -> TriageStatsRespon
 
 fn make_queue(pool: Arc<PgStore>) -> TriageQueue {
     TriageQueue::new(pool.pool.clone())
+}
+
+/// Production dispatcher for triage mutations: the fallback writes status
+/// changes to the activity feed through the shared pool.
+fn triage_router(state: &AppState) -> RouterIntegration {
+    RouterIntegration::new(Box::new(LoggingAlertDispatcher::with_db(
+        state.store.pool.clone(),
+    )))
+}
+
+/// Notify the dispatcher that a triage item's status changed.
+///
+/// Called after every successful REST mutation so a queue status change is
+/// observable in the activity feed; the dispatcher logs write failures itself
+/// and never fails the mutation.
+async fn emit_status_change(
+    integration: &RouterIntegration,
+    queue_item_id: Uuid,
+    new_status: &str,
+    title: &str,
+) {
+    integration
+        .notify_status_change(queue_item_id, new_status, title)
+        .await;
 }
 
 #[allow(dead_code)]
@@ -311,7 +336,16 @@ pub(crate) async fn override_triage_score(
     let overridden_by = payload.reason.as_deref().unwrap_or("api-override");
 
     match queue.override_score(id, payload.score, overridden_by).await {
-        Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
+        Ok(item) => {
+            emit_status_change(
+                &triage_router(&state),
+                item.id,
+                item.status.as_str(),
+                &item.title,
+            )
+            .await;
+            (StatusCode::OK, Json(success(item_to_response(item))))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_response(triage_internal(
@@ -331,7 +365,16 @@ pub(crate) async fn acknowledge_triage_item(
     let queue = make_queue(state.store.clone());
 
     match queue.acknowledge(id).await {
-        Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
+        Ok(item) => {
+            emit_status_change(
+                &triage_router(&state),
+                item.id,
+                item.status.as_str(),
+                &item.title,
+            )
+            .await;
+            (StatusCode::OK, Json(success(item_to_response(item))))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_response(triage_internal(
@@ -351,7 +394,16 @@ pub(crate) async fn resolve_triage_item(
     let queue = make_queue(state.store.clone());
 
     match queue.resolve(id).await {
-        Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
+        Ok(item) => {
+            emit_status_change(
+                &triage_router(&state),
+                item.id,
+                item.status.as_str(),
+                &item.title,
+            )
+            .await;
+            (StatusCode::OK, Json(success(item_to_response(item))))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_response(triage_internal(
@@ -371,7 +423,16 @@ pub(crate) async fn dismiss_triage_item(
     let queue = make_queue(state.store.clone());
 
     match queue.dismiss(id).await {
-        Ok(item) => (StatusCode::OK, Json(success(item_to_response(item)))),
+        Ok(item) => {
+            emit_status_change(
+                &triage_router(&state),
+                item.id,
+                item.status.as_str(),
+                &item.title,
+            )
+            .await;
+            (StatusCode::OK, Json(success(item_to_response(item))))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_response(triage_internal(
@@ -398,5 +459,72 @@ pub(crate) async fn get_triage_bands(
                 e,
             ))),
         ),
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apex_triage::router_integration::{AlertDispatcher, TriageAlertRequest};
+
+    #[derive(Clone, Default)]
+    struct RecordingDispatcher {
+        status_changes: Arc<std::sync::Mutex<Vec<(Uuid, String, String)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AlertDispatcher for RecordingDispatcher {
+        async fn dispatch_triage_alert(&self, _request: TriageAlertRequest<'_>) -> Vec<Uuid> {
+            Vec::new()
+        }
+
+        async fn notify_queue_update(&self, _stats_json: &str) {}
+
+        async fn notify_status_change(&self, queue_item_id: Uuid, new_status: &str, title: &str) {
+            self.status_changes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((queue_item_id, new_status.to_string(), title.to_string()));
+        }
+    }
+
+    /// Regression: every REST status mutation must call the notification
+    /// helper. Before wiring, none of the four handlers notified anything.
+    #[test]
+    fn every_status_mutation_handler_notifies_the_dispatcher() {
+        let source = include_str!("triage.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        // One definition plus the override/acknowledge/resolve/dismiss calls.
+        let calls = production.matches("emit_status_change(").count();
+        assert_eq!(
+            calls, 5,
+            "override/acknowledge/resolve/dismiss must each notify the dispatcher"
+        );
+    }
+
+    /// Regression: the REST mutation path must invoke the dispatcher for a
+    /// successful status change. Before wiring, no notification was emitted.
+    #[tokio::test]
+    async fn mutation_status_change_reaches_dispatcher() {
+        let dispatcher = RecordingDispatcher::default();
+        let recorded = dispatcher.status_changes.clone();
+        let integration = RouterIntegration::new(Box::new(dispatcher));
+
+        let item_id = Uuid::new_v4();
+        emit_status_change(&integration, item_id, "acknowledged", "Suspicious shipment").await;
+
+        assert_eq!(
+            recorded
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            vec![(
+                item_id,
+                "acknowledged".to_string(),
+                "Suspicious shipment".to_string()
+            )]
+        );
     }
 }

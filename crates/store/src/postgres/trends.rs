@@ -55,6 +55,26 @@ pub struct TrendSummary {
     pub data_points: usize,
 }
 
+/// One entity's value in the trends page entity breakdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityMetricTrendRow {
+    pub entity_type: String,
+    pub entity_id: String,
+    /// Additive metrics: the entity's sum over the range. Snapshot metrics:
+    /// the entity's latest measured value inside the range.
+    pub value: i64,
+}
+
+/// Snapshot ("gauge") metrics whose rollup rows store a stock value measured
+/// at the bucket date — the latest measurement is the truth; summing buckets
+/// would fabricate compounding growth. Every other metric is additive.
+pub fn is_snapshot_metric(metric_name: &str) -> bool {
+    matches!(
+        metric_name,
+        "companies_tracked" | "persons_tracked" | "active_recipes" | "unacknowledged_warnings"
+    )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Bucket type helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -497,6 +517,10 @@ impl PgStore {
     /// `current_period_start` and `previous_period_start` define the start dates
     /// of the two periods being compared. `period_duration_days` defines the length
     /// of each period.
+    ///
+    /// Additive metrics sum their buckets; snapshot metrics (see
+    /// [`is_snapshot_metric`]) take the latest measured value inside each
+    /// period, so a gauge comparison never fabricates a compounded sum.
     #[tracing::instrument(skip(self))]
     pub async fn get_trend_comparison(
         &self,
@@ -510,44 +534,24 @@ impl PgStore {
         let previous_end =
             query.previous_period_start + chrono::Duration::days(query.period_duration_days);
 
-        // Fetch current period data
-        let current_rows = sqlx::query_as::<_, (i64,)>(
-            r#"SELECT COALESCE(SUM(metric_value), 0)::BIGINT
-               FROM trend_rollups
-               WHERE metric_name = $1
-                 AND bucket_date >= $2
-                 AND bucket_date < $3
-                 AND ($4::VARCHAR IS NULL OR entity_type IS NOT DISTINCT FROM $4)
-                 AND ($5::VARCHAR IS NULL OR entity_id IS NOT DISTINCT FROM $5)"#,
-        )
-        .bind(&query.metric_name)
-        .bind(query.current_period_start)
-        .bind(current_end)
-        .bind(entity_type.as_deref())
-        .bind(entity_id.as_deref())
-        .fetch_one(&self.pool)
-        .await?;
-
-        // Fetch previous period data
-        let previous_rows = sqlx::query_as::<_, (i64,)>(
-            r#"SELECT COALESCE(SUM(metric_value), 0)::BIGINT
-               FROM trend_rollups
-               WHERE metric_name = $1
-                 AND bucket_date >= $2
-                 AND bucket_date < $3
-                 AND ($4::VARCHAR IS NULL OR entity_type IS NOT DISTINCT FROM $4)
-                 AND ($5::VARCHAR IS NULL OR entity_id IS NOT DISTINCT FROM $5)"#,
-        )
-        .bind(&query.metric_name)
-        .bind(query.previous_period_start)
-        .bind(previous_end)
-        .bind(entity_type.as_deref())
-        .bind(entity_id.as_deref())
-        .fetch_one(&self.pool)
-        .await?;
-
-        let current_total = current_rows.0;
-        let previous_total = previous_rows.0;
+        let current_total = self
+            .trend_period_total(
+                &query.metric_name,
+                query.current_period_start,
+                current_end,
+                entity_type.as_deref(),
+                entity_id.as_deref(),
+            )
+            .await?;
+        let previous_total = self
+            .trend_period_total(
+                &query.metric_name,
+                query.previous_period_start,
+                previous_end,
+                entity_type.as_deref(),
+                entity_id.as_deref(),
+            )
+            .await?;
 
         let (absolute_change, percent_change, direction) = if previous_total == 0 {
             if current_total > 0 {
@@ -580,6 +584,142 @@ impl PgStore {
             percent_change,
             direction,
         })
+    }
+
+    /// Total (additive) or latest measured value (snapshot) for one metric in
+    /// `[start, end)`, optionally narrowed to one entity.
+    async fn trend_period_total(
+        &self,
+        metric_name: &str,
+        start: NaiveDate,
+        end: NaiveDate,
+        entity_type: Option<&str>,
+        entity_id: Option<&str>,
+    ) -> anyhow::Result<i64> {
+        if is_snapshot_metric(metric_name) {
+            // Gauge: the newest row inside the period is the measured value;
+            // `ROW_NUMBER` ranks by bucket date so multi-bucket-type ranges
+            // still answer with the latest measurement, never a sum.
+            let row: (i64,) = sqlx::query_as(
+                r#"SELECT COALESCE((
+                       SELECT metric_value
+                       FROM (
+                           SELECT metric_value,
+                                  ROW_NUMBER() OVER (
+                                      ORDER BY bucket_date DESC, updated_at DESC
+                                  ) AS rn
+                           FROM trend_rollups
+                           WHERE metric_name = $1
+                             AND bucket_date >= $2
+                             AND bucket_date < $3
+                             AND ($4::VARCHAR IS NULL OR entity_type IS NOT DISTINCT FROM $4)
+                             AND ($5::VARCHAR IS NULL OR entity_id IS NOT DISTINCT FROM $5)
+                       ) ranked
+                       WHERE rn = 1
+                   ), 0)::BIGINT"#,
+            )
+            .bind(metric_name)
+            .bind(start)
+            .bind(end)
+            .bind(entity_type)
+            .bind(entity_id)
+            .fetch_one(&self.pool)
+            .await?;
+            return Ok(row.0);
+        }
+
+        let row: (i64,) = sqlx::query_as(
+            r#"SELECT COALESCE(SUM(metric_value), 0)::BIGINT
+               FROM trend_rollups
+               WHERE metric_name = $1
+                 AND bucket_date >= $2
+                 AND bucket_date < $3
+                 AND ($4::VARCHAR IS NULL OR entity_type IS NOT DISTINCT FROM $4)
+                 AND ($5::VARCHAR IS NULL OR entity_id IS NOT DISTINCT FROM $5)"#,
+        )
+        .bind(metric_name)
+        .bind(start)
+        .bind(end)
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// Top entities for a metric over a date range. Additive metrics sum their
+    /// buckets per entity; snapshot metrics take each entity's latest measured
+    /// value inside the range.
+    pub async fn get_entity_metric_breakdown(
+        &self,
+        metric_name: &str,
+        bucket_type: &str,
+        from_date: NaiveDate,
+        to_date: NaiveDate,
+        limit: i64,
+    ) -> anyhow::Result<Vec<EntityMetricTrendRow>> {
+        let limit = limit.clamp(1, 100);
+        let rows: Vec<(String, String, i64)> = if is_snapshot_metric(metric_name) {
+            sqlx::query_as(
+                r#"SELECT entity_type, entity_id, value
+                   FROM (
+                       SELECT DISTINCT ON (entity_type, entity_id)
+                              entity_type,
+                              entity_id,
+                              metric_value AS value
+                       FROM trend_rollups
+                       WHERE bucket_type = $1
+                         AND metric_name = $2
+                         AND entity_type IS NOT NULL
+                         AND entity_id IS NOT NULL
+                         AND bucket_date >= $3
+                         AND bucket_date <= $4
+                       ORDER BY entity_type, entity_id, bucket_date DESC, updated_at DESC
+                   ) latest
+                   ORDER BY value DESC, entity_type ASC, entity_id ASC
+                   LIMIT $5"#,
+            )
+            .bind(bucket_type)
+            .bind(metric_name)
+            .bind(from_date)
+            .bind(to_date)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                r#"SELECT
+                       COALESCE(entity_type, 'unknown'),
+                       COALESCE(entity_id, 'unknown'),
+                       SUM(metric_value)::BIGINT AS total
+                   FROM trend_rollups
+                   WHERE bucket_type = $1
+                     AND metric_name = $2
+                     AND entity_type IS NOT NULL
+                     AND entity_id IS NOT NULL
+                     AND bucket_date >= $3
+                     AND bucket_date <= $4
+                   GROUP BY entity_type, entity_id
+                   ORDER BY total DESC
+                   LIMIT $5"#,
+            )
+            .bind(bucket_type)
+            .bind(metric_name)
+            .bind(from_date)
+            .bind(to_date)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|(entity_type, entity_id, value)| EntityMetricTrendRow {
+                entity_type,
+                entity_id,
+                value,
+            })
+            .collect())
     }
 
     /// Run a full trend aggregation job — aggregates all pending buckets
@@ -734,12 +874,47 @@ impl PgStore {
     /// range with more rows than the query limit reported a truncated total.
     /// The aggregate below has no `LIMIT` and returns the real total, average,
     /// min/max and the full data-point count.
+    ///
+    /// Snapshot metrics (see [`is_snapshot_metric`]) fold every period to its
+    /// latest measurement before aggregating, so the summary describes the
+    /// same gauge series as the comparison cards instead of summing stale
+    /// snapshots. Additive metrics keep the plain aggregate.
     pub async fn get_trend_summary(&self, query: &TrendQuery) -> anyhow::Result<TrendSummary> {
         let entity_type = normalize_optional_text(query.entity_type.as_deref());
         let entity_id = normalize_optional_text(query.entity_id.as_deref());
 
-        let (data_points, total, min, max, average): (i64, i64, i64, i64, f64) = sqlx::query_as(
-            r#"SELECT
+        let (data_points, total, min, max, average): (i64, i64, i64, i64, f64) =
+            if is_snapshot_metric(&query.metric_name) {
+                sqlx::query_as(
+                    r#"SELECT
+                           COUNT(*)::bigint                                     AS data_points,
+                           COALESCE(SUM(latest.metric_value), 0)::bigint        AS total,
+                           COALESCE(MIN(latest.metric_value), 0)::bigint        AS min_value,
+                           COALESCE(MAX(latest.metric_value), 0)::bigint        AS max_value,
+                           COALESCE(AVG(latest.metric_value), 0.0)::double precision AS average
+                       FROM (
+                           SELECT DISTINCT ON (bucket_date) metric_value
+                           FROM trend_rollups
+                           WHERE bucket_type = $1
+                             AND metric_name = $2
+                             AND ($3::DATE IS NULL OR bucket_date >= $3)
+                             AND ($4::DATE IS NULL OR bucket_date <= $4)
+                             AND ($5::VARCHAR IS NULL OR entity_type IS NOT DISTINCT FROM $5)
+                             AND ($6::VARCHAR IS NULL OR entity_id IS NOT DISTINCT FROM $6)
+                           ORDER BY bucket_date, updated_at DESC, id DESC
+                       ) latest"#,
+                )
+                .bind(&query.bucket_type)
+                .bind(&query.metric_name)
+                .bind(query.from_date)
+                .bind(query.to_date)
+                .bind(entity_type)
+                .bind(entity_id)
+                .fetch_one(&self.pool)
+                .await?
+            } else {
+                sqlx::query_as(
+                    r#"SELECT
                        COUNT(*)::bigint                                 AS data_points,
                        COALESCE(SUM(metric_value), 0)::bigint           AS total,
                        COALESCE(MIN(metric_value), 0)::bigint           AS min_value,
@@ -752,15 +927,16 @@ impl PgStore {
                      AND ($4::DATE IS NULL OR bucket_date <= $4)
                      AND ($5::VARCHAR IS NULL OR entity_type IS NOT DISTINCT FROM $5)
                      AND ($6::VARCHAR IS NULL OR entity_id IS NOT DISTINCT FROM $6)"#,
-        )
-        .bind(&query.bucket_type)
-        .bind(&query.metric_name)
-        .bind(query.from_date)
-        .bind(query.to_date)
-        .bind(entity_type)
-        .bind(entity_id)
-        .fetch_one(&self.pool)
-        .await?;
+                )
+                .bind(&query.bucket_type)
+                .bind(&query.metric_name)
+                .bind(query.from_date)
+                .bind(query.to_date)
+                .bind(entity_type)
+                .bind(entity_id)
+                .fetch_one(&self.pool)
+                .await?
+            };
 
         Ok(TrendSummary {
             total,
@@ -1304,5 +1480,23 @@ mod tests {
         assert_eq!(start.weekday(), Weekday::Mon);
         assert!(start <= date);
         assert_eq!((date - start).num_days(), 3);
+    }
+
+    #[test]
+    fn snapshot_metrics_are_classified_and_additive_metrics_are_not() {
+        for gauge in [
+            "companies_tracked",
+            "persons_tracked",
+            "active_recipes",
+            "unacknowledged_warnings",
+        ] {
+            assert!(is_snapshot_metric(gauge), "{gauge} must be a gauge");
+        }
+        for additive in ["warnings", "new_warnings", "insights", "observations"] {
+            assert!(
+                !is_snapshot_metric(additive),
+                "{additive} must stay additive"
+            );
+        }
     }
 }

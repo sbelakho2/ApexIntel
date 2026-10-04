@@ -63,6 +63,7 @@ pub mod paths {
     pub const INSIGHT_DETAIL: &str = "/api/insights/:id";
     pub const INSIGHT_LINEAGE: &str = "/api/insights/:id/lineage";
     pub const INSIGHT_ANALYZE: &str = "/api/insights/:id/analyze";
+    pub const INSIGHT_ANALYZE_LATEST: &str = "/api/insights/:id/analyze/latest";
     pub const INSIGHT_BOOKMARK: &str = "/api/insights/:id/bookmark";
     pub const INSIGHT_FEEDBACK: &str = "/api/insights/:id/feedback";
     pub const INSIGHTS_EXPORT: &str = "/api/insights/export";
@@ -330,6 +331,13 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             description: "Trigger AI analysis of an insight",
             auth_required: true,
             min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::INSIGHT_ANALYZE_LATEST,
+            description: "Get the latest durable insight analysis run status and result",
+            auth_required: true,
+            min_role: "viewer",
         },
         EndpointDef {
             method: HttpMethod::Post,
@@ -1079,7 +1087,25 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 106);
+        assert_eq!(eps.len(), 107);
+    }
+
+    #[test]
+    fn insight_analyze_latest_is_catalogued_and_documented() {
+        let eps = all_endpoints();
+        let endpoint = eps
+            .iter()
+            .find(|e| e.path == paths::INSIGHT_ANALYZE_LATEST)
+            .expect("the durable insight-analysis poll route must be catalogued");
+        assert_eq!(endpoint.method, HttpMethod::Get);
+        assert!(endpoint.auth_required);
+        assert_eq!(endpoint.min_role, "viewer");
+
+        let spec = openapi_spec();
+        assert!(
+            spec["paths"][paths::INSIGHT_ANALYZE_LATEST]["get"].is_object(),
+            "the catalogued route must appear in the OpenAPI document"
+        );
     }
 
     #[test]

@@ -144,7 +144,7 @@ static DOMAIN_SYNONYMS: &[(&str, &[&str])] = &[
 ///
 /// 1. **Synonym substitution** – replace known domain terms with variants.
 /// 2. **Opening verb rotation** – vary the first action verb (e.g. "detected" ↔ "observed").
-pub fn diversify_title(title: &str, recipe_code: &str, entity_id: &str) -> String {
+pub(crate) fn diversify_title(title: &str, recipe_code: &str, entity_id: &str) -> String {
     let seed = variation_seed(recipe_code, entity_id);
     let mut rng = SeededRng::new(seed);
 
@@ -221,7 +221,7 @@ static ACTION_VERBS: &[&[&str]] = &[
 ///
 /// 1. **Verb rotation** – replace action verbs with domain-appropriate synonyms.
 /// 2. **Phrase rephrasing** – for common multi-word action patterns.
-pub fn diversify_action(action: &str, recipe_code: &str, entity_id: &str) -> String {
+pub(crate) fn diversify_action(action: &str, recipe_code: &str, entity_id: &str) -> String {
     let seed = variation_seed(recipe_code, entity_id);
     let mut rng = SeededRng::new(seed);
 

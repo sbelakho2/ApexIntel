@@ -119,7 +119,7 @@
           <td class="px-4 py-3 text-rams-muted">{{ w.company_name }}</td>
           <td class="px-4 py-3">{% call m::region_badge(w.region) %}</td>
           <td class="px-4 py-3 text-right font-bold tabular-nums">{% if let Some(pct) = w.confidence_pct %}{{ pct }}%{% else %}—{% endif %}</td>
-          <td class="px-4 py-3 tabular-nums text-rams-muted">{{ w.created_at }}</td>
+          <td class="px-3 py-3 tabular-nums text-rams-muted">{{ w.created_date }}</td>
           <td class="px-4 py-3">{% if w.acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>{% else %}<span class="text-[10px] font-bold uppercase apex-text-warning">Active</span>{% endif %}</td>
         </tr>
         {% endfor %}

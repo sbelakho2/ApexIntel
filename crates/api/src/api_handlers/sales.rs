@@ -17,7 +17,7 @@ use uuid::Uuid;
 // ─── Contact methods ────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub struct ContactMethodItem {
+pub(crate) struct ContactMethodItem {
     pub id: String,
     pub contact_type: String,
     pub value: String,
@@ -80,7 +80,7 @@ pub(crate) async fn list_person_contacts(
 // ─── Engagement events ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct RecordEngagementRequest {
+pub(crate) struct RecordEngagementRequest {
     pub channel: String,
     pub direction: Option<String>,
     pub outcome: String,
@@ -91,7 +91,7 @@ pub struct RecordEngagementRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct EngagementEventItem {
+pub(crate) struct EngagementEventItem {
     pub id: String,
     pub channel: String,
     pub direction: String,
@@ -102,7 +102,7 @@ pub struct EngagementEventItem {
 }
 
 #[derive(Debug, Serialize)]
-pub struct EngagementSummary {
+pub(crate) struct EngagementSummary {
     pub person_id: String,
     pub total_contacts: i64,
     pub responses: i64,
@@ -265,7 +265,7 @@ pub(crate) async fn list_person_engagement(
 // ─── Buying center ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub struct BuyingCenterView {
+pub(crate) struct BuyingCenterView {
     pub id: String,
     pub name: String,
     pub status: String,
@@ -274,7 +274,7 @@ pub struct BuyingCenterView {
 }
 
 #[derive(Debug, Serialize)]
-pub struct BuyingCenterMemberView {
+pub(crate) struct BuyingCenterMemberView {
     pub id: String,
     pub person_id: String,
     pub role: String,
@@ -357,7 +357,7 @@ pub(crate) async fn list_company_buying_center(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AddBuyingMemberRequest {
+pub(crate) struct AddBuyingMemberRequest {
     pub person_id: String,
     pub role: String,
     pub influence_score: Option<f64>,
