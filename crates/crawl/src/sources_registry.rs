@@ -626,6 +626,13 @@ impl Source {
         self
     }
 
+    /// Force the headless-browser fetch strategy: the endpoint is a JS
+    /// application whose server-rendered HTML carries no readable content.
+    fn browser(mut self) -> Self {
+        self.fetch_strategy = Some(FetchStrategy::Browser);
+        self
+    }
+
     fn interval(mut self, minutes: u32) -> Self {
         self.min_interval_minutes = minutes;
         self
@@ -1367,11 +1374,14 @@ fn default_sources() -> Vec<Source> {
         Source::new(
             "uspto_patents",
             "USPTO Patent Full-Text Search",
-            "https://patentcenter.uspto.gov/retrieval/public/v1/applications/",
+            // Public search UI (JS application); the bare retrieval API
+            // endpoint returns no page content for the parser contract.
+            "https://ppubs.uspto.gov/pubwebapp/",
             Region::NorthAmerica,
             Category::Patents,
             1,
         )
+        .browser()
         .interval(120),
     );
     sources.push(
@@ -2591,35 +2601,44 @@ fn default_sources() -> Vec<Source> {
         Source::new(
             "epo_patents",
             "EPO — European Patent Office",
-            "https://worldwide.espacenet.com",
+            // Search-results page (not the JS shell homepage) so the rendered
+            // DOM carries readable patent results for the parser contract.
+            "https://worldwide.espacenet.com/patent/search?q=electronics",
             Region::Europe,
             Category::Patents,
             1,
         )
+        .browser()
         .interval(240),
     );
     sources.push(
         Source::new(
             "wipo_patents",
             "WIPO PatentScope",
-            "https://patentscope.wipo.int",
+            // PatentScope is a JSF application: only a rendered page carries
+            // result content.
+            "https://patentscope.wipo.int/search/en/result.jsf?query=electronics",
             Region::Global,
             Category::Patents,
             1,
         )
+        .browser()
         .interval(240),
     );
     sources.push(
         Source::new(
             "google_patents",
             "Google Patents",
-            "https://patents.google.com",
+            // Rendered results page; the public /xhr/query JSON endpoint is a
+            // candidate adapter but the browser path needs no extra parser.
+            "https://patents.google.com/?q=electronics",
             Region::Global,
             Category::Patents,
             2,
         )
+        .browser()
         .interval(120)
-        .notes("Use search API"),
+        .notes("Rendered via the shared headless browser"),
     );
 
     // ── Sanctions & Compliance ────────────────────────────────────
@@ -4310,6 +4329,38 @@ mod scheduler_tests {
             Some(&success_row),
             now + Duration::hours(2)
         ));
+    }
+
+    #[test]
+    fn patents_sources_use_real_endpoints_and_the_browser_strategy() {
+        let patents: Vec<Source> = default_sources()
+            .into_iter()
+            .filter(|source| source.category == Category::Patents)
+            .collect();
+        assert!(!patents.is_empty(), "patents family must have sources");
+        // Every patents source that can run on this deployment is a JS
+        // application: it must be browser-strategy with a result/search page,
+        // never a homepage shell or a parameterless API endpoint.
+        for source in &patents {
+            if source.needs_proxy {
+                // CNIPA needs a proxy pool that this deployment does not have;
+                // its strategy is irrelevant while the prerequisite is unmet.
+                continue;
+            }
+            assert_eq!(
+                source.strategy(),
+                FetchStrategy::Browser,
+                "{} must render via the browser",
+                source.slug
+            );
+            assert!(
+                !source.url.ends_with(".com") && !source.url.ends_with(".int"),
+                "{} must point at a results page, not a homepage: {}",
+                source.slug,
+                source.url
+            );
+        }
+        assert!(patents.iter().any(|source| source.slug == "google_patents"));
     }
 
     #[test]

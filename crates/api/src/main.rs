@@ -909,14 +909,17 @@ fn start_status_heartbeat(state: AppState) {
         loop {
             ticker.tick().await;
 
-            // NATS is optional under `core`, so skip the live connect probe there and
-            // only measure it when the profile requires NATS.
+            // NATS is optional under `core`, but when a URL IS configured the
+            // deployment actually depends on it (SSE alerts connect to it), so
+            // health must measure it instead of reporting "not configured"
+            // while the consumer is live. Only an unset URL stays unprobed.
             let nats_url = state.config.app.nats_url.as_str();
-            let nats_probe = if state.profile.requires_capability("nats") {
-                Some(nats_url)
-            } else {
-                None
-            };
+            let nats_probe =
+                if state.profile.requires_capability("nats") || !nats_url.trim().is_empty() {
+                    Some(nats_url)
+                } else {
+                    None
+                };
             let capabilities = probe_capabilities(&probe_context(&state, nats_probe, None)).await;
             apex_api::system_status::StatusStrip::publish(capabilities.status_strip());
             // The same measured report powers the server-rendered capability

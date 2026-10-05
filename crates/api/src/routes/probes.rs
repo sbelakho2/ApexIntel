@@ -640,17 +640,29 @@ pub async fn probe_browser_renderer(
                 report.marker, report.elapsed_ms
             ),
         ),
-        Ok(Err(error)) => CapabilityStatus::new(
-            "degraded",
-            format!("browser render self-test failed: {error}"),
-        ),
-        Err(_) => CapabilityStatus::new(
-            "degraded",
-            format!(
-                "browser render self-test timed out after {}s",
-                policy.browser_probe_timeout_secs.max(1)
-            ),
-        ),
+        Ok(Err(error)) => {
+            // Diagnostics for operators: the public health message is
+            // sanitized, so the concrete failure has to be logged here or a
+            // degraded browser capability is unexplainable.
+            tracing::warn!(%error, "browser render self-test failed");
+            CapabilityStatus::new(
+                "degraded",
+                format!("browser render self-test failed: {error}"),
+            )
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_secs = policy.browser_probe_timeout_secs.max(1),
+                "browser render self-test timed out"
+            );
+            CapabilityStatus::new(
+                "degraded",
+                format!(
+                    "browser render self-test timed out after {}s",
+                    policy.browser_probe_timeout_secs.max(1)
+                ),
+            )
+        }
     };
     store_probe("browser_renderer", &status);
     status
