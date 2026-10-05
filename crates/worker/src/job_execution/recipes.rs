@@ -985,6 +985,10 @@ pub(super) async fn run_recipe_fire(
 ) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
+    // Batching budget is measured from process start of this run, not from the
+    // emission loop: ranking/evidence loading over a large candidate set can
+    // consume most of the scheduler's timeout before the loop is reached.
+    let fire_started = std::time::Instant::now();
     let now = Utc::now();
     let mut source_reliability_scores = HashMap::new();
     let mut feature_persistence_failures: u64 = 0;
@@ -3163,6 +3167,16 @@ pub(super) async fn run_recipe_fire(
         });
     }
 
+    // Bound the run before the expensive per-entity evidence/context/name
+    // loading: the highest-ranked candidates run first and the rest are
+    // re-evaluated next run (only emitted pairs are cross-run deduped).
+    let candidates_before_cap = candidates.len();
+    let max_candidates = crate::config::recipe_fire_max_candidates();
+    if candidates.len() > max_candidates {
+        candidates.truncate(max_candidates);
+    }
+    let deferred_by_cap = candidates_before_cap - candidates.len();
+
     let company_names: HashMap<String, (String, Option<String>, Option<String>)> = match store
         .get_company_names_by_ids(&all_entity_uuids)
         .await
@@ -4142,19 +4156,8 @@ pub(super) async fn run_recipe_fire(
 
     let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
 
-    // Bounded execution (deploy finding): a full fire over the post-restart
-    // candidate set exceeded the 1800s job timeout. Run the highest-ranked
-    // candidates within a candidate cap and a wall-clock budget; deferred
-    // candidates are re-evaluated next run (only emitted pairs are deduped),
-    // so the backlog drains in batches instead of timing out.
-    let candidates_before_cap = candidates.len();
-    let max_candidates = crate::config::recipe_fire_max_candidates();
-    if candidates.len() > max_candidates {
-        candidates.truncate(max_candidates);
-    }
-    let deferred_by_cap = candidates_before_cap - candidates.len();
-    let fire_deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(crate::config::recipe_fire_budget_secs());
+    let fire_deadline =
+        fire_started + std::time::Duration::from_secs(crate::config::recipe_fire_budget_secs());
     let mut deferred_by_budget: u64 = 0;
 
     for (idx, c) in candidates.iter().enumerate() {
