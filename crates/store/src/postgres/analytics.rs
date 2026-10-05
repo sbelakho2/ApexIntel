@@ -192,6 +192,7 @@ impl PgStore {
             Some(since) => Ok(
                 sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
                     r#"SELECT id, entity_id, feature_vector, alert_level,
+                          predicted_at, expected_by,
                           actual_outcome_within_30d, resolved_at, metadata
                    FROM stats_alert_calibration_events
                    WHERE actual_outcome_within_30d IS NOT NULL
@@ -208,6 +209,7 @@ impl PgStore {
             None => Ok(
                 sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
                     r#"SELECT id, entity_id, feature_vector, alert_level,
+                          predicted_at, expected_by,
                           actual_outcome_within_30d, resolved_at, metadata
                    FROM stats_alert_calibration_events
                    WHERE actual_outcome_within_30d IS NOT NULL

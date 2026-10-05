@@ -1063,6 +1063,43 @@ async fn company_list_region_tier_filters_and_pagination_run_in_sql() {
     }
 }
 
+/// Calibration samples must decode: the record includes `predicted_at` and
+/// `expected_by`, and a production incident showed the query selecting only
+/// some of the struct's columns ("no column found for name: predicted_at") —
+/// zero-row tests cannot catch that, so this test seeds a resolved row.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn resolved_calibration_samples_decode_every_struct_field() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("CAL");
+
+    sqlx::query(
+        "INSERT INTO stats_alert_calibration_events (
+             id, entity_id, feature_vector, alert_level, predicted_at, expected_by,
+             actual_outcome_within_30d, resolved_at, metadata
+         ) VALUES (
+             gen_random_uuid(), gen_random_uuid(), '{}'::jsonb, $1, now() - interval '35 days',
+             now() - interval '5 days', TRUE, now() - interval '4 days', '{\"k\":1}'::jsonb
+         )",
+    )
+    .bind(format!("{p}_level"))
+    .execute(&pool)
+    .await
+    .expect("insert calibration event");
+
+    let samples = store
+        .list_resolved_stats_alert_calibration_samples(None, 100)
+        .await
+        .expect("resolved samples decode without missing-column errors");
+    assert!(
+        samples
+            .iter()
+            .any(|row| row.alert_level == format!("{p}_level")),
+        "the seeded resolved sample must be returned"
+    );
+}
+
 /// Embedding source text must be NULL-safe: production had 496
 /// `failed to fetch person source text` errors because `COALESCE(narrative,
 /// full_name)` is NULL for rows lacking both, and decoding NULL into `String`
