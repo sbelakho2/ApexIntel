@@ -1112,6 +1112,61 @@ async fn insert_insight_race_on_dedup_index_is_idempotent() {
     );
 }
 
+/// Source-outage detection must only consider sources the scheduler is
+/// still fetching: a legacy/decommissioned source id with old observations
+/// has no runtime-state row and must never be reported as "silent", while a
+/// live source with a recent fetch attempt and no recent observations is a
+/// genuine outage candidate.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn silent_sources_exclude_unmonitored_ids_and_keep_live_outages() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("SILENT");
+
+    let legacy = format!("{p}_legacy_source");
+    let live = format!("{p}_live_source");
+
+    for (source, attempts_row) in [(&legacy, false), (&live, true)] {
+        for i in 0..12 {
+            sqlx::query(
+                "INSERT INTO observations (id, observation_type, value, provenance, ts_utc)
+                 VALUES (gen_random_uuid(), 'news', '{}'::jsonb,
+                         jsonb_build_object('source_id', $1::text), now() - interval '10 days')",
+            )
+            .bind(source)
+            .execute(&pool)
+            .await
+            .expect("insert observation");
+            let _ = i;
+        }
+        if attempts_row {
+            sqlx::query(
+                "INSERT INTO source_runtime_state (source_slug, last_attempt_at, next_due_at, consecutive_failures)
+                 VALUES ($1, now(), now() + interval '1 hour', 0)",
+            )
+            .bind(source)
+            .execute(&pool)
+            .await
+            .expect("insert runtime state");
+        }
+    }
+
+    let silent = store
+        .list_silent_observation_sources(30, 10, 3)
+        .await
+        .expect("silence query");
+    let ids: Vec<&str> = silent.iter().map(|row| row.source_id.as_str()).collect();
+    assert!(
+        ids.contains(&live.as_str()),
+        "a live source with stale observations must be reported: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&legacy.as_str()),
+        "an unmonitored legacy source id must not be reported as silent: {ids:?}"
+    );
+}
+
 /// Calibration samples must decode: the record includes `predicted_at` and
 /// `expected_by`, and a production incident showed the query selecting only
 /// some of the struct's columns ("no column found for name: predicted_at") —

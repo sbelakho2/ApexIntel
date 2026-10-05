@@ -2082,6 +2082,7 @@ SOCIAL_MEDIA_SOURCES = [
     {"url": "https://t.me/s/nuclearwar_news",          "platform": "telegram", "topic": "nuclear",     "tier": "T3"},
     {"url": "https://t.me/s/geopoliticsworld",         "platform": "telegram", "topic": "geopolitics", "tier": "T3"},
     {"url": "https://t.me/s/conflict_intel",           "platform": "telegram", "topic": "conflict",    "tier": "T3"},
+    {"url": "https://t.me/s/IntelSlavaZ",            "platform": "telegram", "topic": "conflict",    "tier": "T3"},
 
     # ─── Industry Forums & Specialist Communities ─────────────────────────────
     # T2 credibility — professional community, domain experts

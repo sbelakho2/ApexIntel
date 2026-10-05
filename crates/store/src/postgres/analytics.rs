@@ -182,6 +182,48 @@ impl PgStore {
         Ok(result.rows_affected())
     }
 
+    /// Sources that stopped producing observations although the crawl
+    /// scheduler still fetches them.
+    ///
+    /// The `EXISTS` guard against `source_runtime_state` is what makes this an
+    /// outage signal instead of noise: decommissioned or renamed source ids
+    /// (e.g. legacy `telegram_<url>` ids from before the daemon-list
+    /// migration) have no runtime row and can never be "silent" — nothing is
+    /// fetching them, so warning about them is wrong. A source whose runtime
+    /// row shows a recent fetch attempt but no observations for
+    /// `silent_days` is a genuine outage.
+    pub async fn list_silent_observation_sources(
+        &self,
+        lookback_days: i32,
+        min_observations: i64,
+        silent_days: i32,
+    ) -> Result<Vec<SilentSourceRow>> {
+        let rows = sqlx::query_as::<_, SilentSourceRow>(
+            r#"SELECT
+                   COALESCE(o.provenance->>'source_id', o.provenance->>'source', 'unknown') AS source_id,
+                   MAX(o.ts_utc) AS last_obs,
+                   COUNT(*)::bigint AS obs_count
+               FROM observations o
+               WHERE o.ts_utc >= NOW() - make_interval(days => $1)
+                 AND (o.provenance->>'source_id' IS NOT NULL OR o.provenance->>'source' IS NOT NULL)
+                 AND EXISTS (
+                     SELECT 1
+                     FROM source_runtime_state s
+                     WHERE s.source_slug = COALESCE(o.provenance->>'source_id', o.provenance->>'source')
+                       AND s.last_attempt_at >= NOW() - INTERVAL '2 days'
+                 )
+               GROUP BY 1
+               HAVING MAX(o.ts_utc) < NOW() - make_interval(days => $3)
+                  AND COUNT(*)::bigint > $2"#,
+        )
+        .bind(lookback_days)
+        .bind(min_observations)
+        .bind(silent_days)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn list_resolved_stats_alert_calibration_samples(
         &self,
         since: Option<DateTime<Utc>>,

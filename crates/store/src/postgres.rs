@@ -1852,6 +1852,15 @@ pub struct ResolvedStatsAlertCalibrationSampleRecord {
     pub metadata: serde_json::Value,
 }
 
+/// A data source whose observations stopped arriving while the scheduler is
+/// still fetching it (an actual outage, not a decommissioned source id).
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct SilentSourceRow {
+    pub source_id: String,
+    pub last_obs: Option<DateTime<Utc>>,
+    pub obs_count: i64,
+}
+
 /// Source reliability aggregate record (computed).
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct SourceReliabilityAggregateRecord {

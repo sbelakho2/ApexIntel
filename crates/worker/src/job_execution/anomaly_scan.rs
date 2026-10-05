@@ -247,43 +247,28 @@ pub(super) async fn run_anomaly_scan(
     }
 
     // ── 4. Source outage detection ─────────────────────────────────────────
-    #[derive(sqlx::FromRow)]
-    struct SourceCount {
-        source_id: String,
-        last_obs: Option<chrono::DateTime<Utc>>,
-        obs_count_30d: i64,
-    }
-
-    let source_counts: Vec<SourceCount> = match sqlx::query_as::<_, SourceCount>(
-        r#"SELECT
-               COALESCE(provenance->>'source_id', provenance->>'source', 'unknown') as source_id,
-               MAX(ts_utc) as last_obs,
-               COUNT(*)::bigint as obs_count_30d
-           FROM observations
-           WHERE ts_utc >= NOW() - INTERVAL '30 days'
-             AND (provenance->>'source_id' IS NOT NULL OR provenance->>'source' IS NOT NULL)
-           GROUP BY 1
-           HAVING MAX(ts_utc) < NOW() - INTERVAL '3 days'"#,
-    )
-    .fetch_all(&store.pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            // Source-outage detection must not silently degrade into "no
-            // outages": a failed query is a failed job, not a clean scan.
-            run.fail(&format!(
-                "anomaly_scan: failed to load source activity for outage detection: {e}"
-            ));
-            return run;
-        }
-    };
+    // Only sources the scheduler is still fetching can be "silent": legacy or
+    // decommissioned source ids (e.g. `telegram_<url>` rows from before the
+    // daemon-list migration) have no runtime-state row and are excluded by
+    // the store query — warning about them was noise, not an outage.
+    let source_counts: Vec<apex_store::postgres::SilentSourceRow> =
+        match store.list_silent_observation_sources(30, 10, 3).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                // Source-outage detection must not silently degrade into "no
+                // outages": a failed query is a failed job, not a clean scan.
+                run.fail(&format!(
+                    "anomaly_scan: failed to load source activity for outage detection: {e}"
+                ));
+                return run;
+            }
+        };
 
     for sc in &source_counts {
         let Some(last_obs) = sc.last_obs else {
             continue;
         };
-        if sc.obs_count_30d <= 10 {
+        if sc.obs_count <= 10 {
             continue;
         }
         let days_silent = (Utc::now() - last_obs).num_days();
@@ -297,7 +282,7 @@ pub(super) async fn run_anomaly_scan(
                      It previously generated {} observations in the last 30 days. \
                      This may indicate a source outage, feed disruption, or blocking. \
                      Verify source connectivity and restore data flow.",
-                sc.source_id, days_silent, sc.obs_count_30d
+                sc.source_id, days_silent, sc.obs_count
             );
 
             match ingress
