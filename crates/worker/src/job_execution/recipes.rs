@@ -4142,7 +4142,31 @@ pub(super) async fn run_recipe_fire(
 
     let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
 
+    // Bounded execution (deploy finding): a full fire over the post-restart
+    // candidate set exceeded the 1800s job timeout. Run the highest-ranked
+    // candidates within a candidate cap and a wall-clock budget; deferred
+    // candidates are re-evaluated next run (only emitted pairs are deduped),
+    // so the backlog drains in batches instead of timing out.
+    let candidates_before_cap = candidates.len();
+    let max_candidates = crate::config::recipe_fire_max_candidates();
+    if candidates.len() > max_candidates {
+        candidates.truncate(max_candidates);
+    }
+    let deferred_by_cap = candidates_before_cap - candidates.len();
+    let fire_deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(crate::config::recipe_fire_budget_secs());
+    let mut deferred_by_budget: u64 = 0;
+
     for (idx, c) in candidates.iter().enumerate() {
+        if std::time::Instant::now() >= fire_deadline {
+            deferred_by_budget = (candidates.len() - idx) as u64;
+            tracing::warn!(
+                deferred = deferred_by_budget,
+                processed = idx,
+                "recipe_fire: wall-clock budget reached; deferring remaining candidates to the next run"
+            );
+            break;
+        }
         if !deduped_idxs.contains(&idx) {
             skipped_dedup += 1;
             continue;
@@ -5328,7 +5352,7 @@ pub(super) async fn run_recipe_fire(
     );
 
     let summary = format!(
-        "recipe_fire: {} candidate(s), inserted {} insight(s), {} insight persistence failure(s), {} feature persistence failure(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run); feature inputs loaded {}/{}",
+        "recipe_fire: {} candidate(s), inserted {} insight(s), {} insight persistence failure(s), {} feature persistence failure(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run; deferred {} by cap, {} by budget); feature inputs loaded {}/{}",
         total_candidates,
         insights_inserted,
         insight_insert_failures,
@@ -5338,9 +5362,17 @@ pub(super) async fn run_recipe_fire(
         skipped_low_conf,
         skipped_dedup,
         skipped_cross_run,
+        deferred_by_cap,
+        deferred_by_budget,
         feature_report.inputs_loaded(),
         feature_report.inputs_loaded() + feature_report.inputs_failed(),
     );
+    if deferred_by_cap > 0 || deferred_by_budget > 0 {
+        context_degraded.push(format!(
+            "{} candidate(s) deferred by cap and {} by budget",
+            deferred_by_cap, deferred_by_budget
+        ));
+    }
     // Per-entity context sections that could not be loaded (P1-13) also make
     // this run degraded: the LLM saw less context than the recipe expects.
     #[cfg(feature = "llm")]

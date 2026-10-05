@@ -339,44 +339,50 @@ impl PgStore {
     ) -> Result<Option<String>> {
         match entity_type {
             "company" => {
-                let row: Option<(String,)> = sqlx::query_as(
+                // `Option<String>`: when every fallback is NULL the entity has
+                // no source text and must be skipped, not fail the fetch.
+                let row: Option<(Option<String>,)> = sqlx::query_as(
                     "SELECT COALESCE(narrative, name) FROM companies WHERE id = $1::uuid",
                 )
                 .bind(entity_id)
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to fetch company source text")?;
-                Ok(row.map(|r| r.0))
+                Ok(row.and_then(|r| r.0))
             }
             "person" => {
-                let row: Option<(String,)> = sqlx::query_as(
-                    "SELECT COALESCE(narrative, full_name) FROM persons WHERE id = $1::uuid",
+                // Persons can have NULL narrative AND full_name (the 496
+                // production embedding errors): fall back to `name` and treat
+                // an all-NULL row as "no source text" instead of a decode
+                // error.
+                let row: Option<(Option<String>,)> = sqlx::query_as(
+                    "SELECT COALESCE(narrative, full_name, name) FROM persons WHERE id = $1::uuid",
                 )
                 .bind(entity_id)
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to fetch person source text")?;
-                Ok(row.map(|r| r.0))
+                Ok(row.and_then(|r| r.0))
             }
             "insight" => {
-                let row: Option<(String,)> = sqlx::query_as(
+                let row: Option<(Option<String>,)> = sqlx::query_as(
                     "SELECT COALESCE(description, title) FROM insights WHERE id = $1::uuid",
                 )
                 .bind(entity_id)
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to fetch insight source text")?;
-                Ok(row.map(|r| r.0))
+                Ok(row.and_then(|r| r.0))
             }
             "warning" => {
-                let row: Option<(String,)> = sqlx::query_as(
+                let row: Option<(Option<String>,)> = sqlx::query_as(
                     "SELECT COALESCE(description, title) FROM warnings WHERE id = $1::uuid",
                 )
                 .bind(entity_id)
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to fetch warning source text")?;
-                Ok(row.map(|r| r.0))
+                Ok(row.and_then(|r| r.0))
             }
             "observation" => {
                 // Observation text lives in the `value` JSONB column under the

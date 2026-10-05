@@ -1063,6 +1063,42 @@ async fn company_list_region_tier_filters_and_pagination_run_in_sql() {
     }
 }
 
+/// Embedding source text must be NULL-safe: production had 496
+/// `failed to fetch person source text` errors because `COALESCE(narrative,
+/// full_name)` is NULL for rows lacking both, and decoding NULL into `String`
+/// errors. The lookup falls back to `name` and returns `None` only when every
+/// candidate column is NULL.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn person_source_text_is_null_safe_and_falls_back_to_name() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("ESRC");
+
+    // A normal person: `name` is populated, narrative/full_name are not.
+    let person = Person::new(format!("{p} Person"), RoleFamily::Procurement);
+    store.insert_person(&person).await.expect("insert person");
+    let text = store
+        .entity_source_text("person", &person.id.to_string())
+        .await
+        .expect("source text lookup must not error on NULL narrative/full_name")
+        .expect("name fallback yields source text");
+    assert!(text.contains(&p), "expected the person name, got {text:?}");
+
+    // Explicitly NULL out every candidate column: the lookup returns None
+    // (skip), never a decode error.
+    sqlx::query("UPDATE persons SET narrative = NULL, full_name = NULL, name = '' WHERE id = $1")
+        .bind(person.id)
+        .execute(&pool)
+        .await
+        .expect("null out person text");
+    let empty = store
+        .entity_source_text("person", &person.id.to_string())
+        .await
+        .expect("empty source text must not error");
+    assert_eq!(empty.as_deref(), Some(""));
+}
+
 /// #133: the detail page's warning/insight totals and description are real
 /// store reads — a COUNT(*) beyond the 50-row display cap and
 /// `companies.narrative`, never the capped list length or the legal name.

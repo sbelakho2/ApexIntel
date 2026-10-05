@@ -58,6 +58,33 @@ pub(crate) static DEDUP_TITLE_THRESHOLD: LazyLock<f64> =
 pub(crate) static DEDUP_SUMMARY_THRESHOLD: LazyLock<f64> =
     LazyLock::new(|| parse_f64_env_clamped("DEDUP_SUMMARY_THRESHOLD", 0.60, 0.0, 1.0));
 
+/// Per-run candidate cap for `recipe_fire`.
+///
+/// A full evaluation over tens of thousands of candidates exceeded the
+/// scheduler's per-run timeout (observed 1800s timeouts, last clean run ~10h).
+/// The highest-ranked candidates run first; deferred ones are evaluated again
+/// next run (only emitted pairs are cross-run deduped), so batching drains the
+/// backlog without losing candidates.
+/// Override with `APEX_RECIPE_FIRE_MAX_CANDIDATES` env var.
+pub(crate) static RECIPE_FIRE_MAX_CANDIDATES: LazyLock<usize> = LazyLock::new(|| {
+    parse_env_with_warning("APEX_RECIPE_FIRE_MAX_CANDIDATES", 1500usize).clamp(1, 50_000)
+});
+
+/// Wall-clock budget for one `recipe_fire` run, kept under the job timeout so
+/// the run finishes with a deferral report instead of being killed mid-work.
+/// Override with `APEX_RECIPE_FIRE_BUDGET_SECS` env var.
+pub(crate) static RECIPE_FIRE_BUDGET_SECS: LazyLock<u64> = LazyLock::new(|| {
+    parse_env_with_warning("APEX_RECIPE_FIRE_BUDGET_SECS", 1440u64).clamp(60, 3600)
+});
+
+pub(crate) fn recipe_fire_max_candidates() -> usize {
+    *RECIPE_FIRE_MAX_CANDIDATES
+}
+
+pub(crate) fn recipe_fire_budget_secs() -> u64 {
+    *RECIPE_FIRE_BUDGET_SECS
+}
+
 /// Freshness half-life in days for exponential decay.
 /// Evidence older than this number of days has half the freshness weight.
 /// Override with `FRESHNESS_HALFLIFE_DAYS` env var.
@@ -267,6 +294,17 @@ mod tests {
         // With no env var, default should be returned and clamped
         let val = parse_f64_env_clamped("__NONEXISTENT_F64__", 0.5, 0.0, 1.0);
         assert!((val - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn recipe_fire_bounds_are_sane() {
+        assert!(*RECIPE_FIRE_MAX_CANDIDATES >= 1);
+        assert!(*RECIPE_FIRE_MAX_CANDIDATES <= 50_000);
+        assert!(*RECIPE_FIRE_BUDGET_SECS >= 60);
+        assert!(
+            *RECIPE_FIRE_BUDGET_SECS <= 3600,
+            "budget must stay within the scheduler timeout envelope"
+        );
     }
 
     #[test]
