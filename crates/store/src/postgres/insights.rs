@@ -142,6 +142,13 @@ impl PgStore {
                       evidence_urls, entity_ids, tags, metadata, created_at, updated_at)
                    SELECT $1, $2, md5($2), $3, $4, $5, $6, $7, $8, $9, COALESCE($11, '{}'::jsonb), now(), now()
                    WHERE NOT EXISTS (SELECT 1 FROM updated)
+                   -- Production race: two concurrent synthesis paths can both
+                   -- miss `existing` and hit `idx_insights_dedup`
+                   -- (title_hash, COALESCE(entity_ids, ...)). Treat the loser
+                   -- as an idempotent refresh instead of failing the run with
+                   -- a duplicate-key error.
+                   ON CONFLICT (title_hash, (COALESCE(entity_ids, ARRAY[]::uuid[])))
+                   DO UPDATE SET updated_at = now()
                    RETURNING id
                )
                SELECT id FROM updated

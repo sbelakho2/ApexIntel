@@ -1063,6 +1063,55 @@ async fn company_list_region_tier_filters_and_pagination_run_in_sql() {
     }
 }
 
+/// insert_insight must survive a race on `idx_insights_dedup`: when the CTE's
+/// existing-row probe misses (different type/region) but the insert collides
+/// on (title_hash, entity_ids), the ON CONFLICT path refreshes and returns the
+/// existing row instead of failing the run with a duplicate-key error.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn insert_insight_race_on_dedup_index_is_idempotent() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("IDEDUP");
+    let entity = Uuid::new_v4();
+    let title = format!("{p} race title");
+
+    // Seed a row the CTE cannot match (different insight_type/region) but
+    // which still owns the (title_hash, entity_ids) index key.
+    let seeded: (Uuid,) = sqlx::query_as(
+        "INSERT INTO insights (id, title, title_hash, summary, insight_type, region, confidence,
+                               entity_ids, metadata, created_at, updated_at)
+         VALUES (gen_random_uuid(), $1, md5($1), 'seeded summary', 'seeded_type', 'seeded_region',
+                 0.5, ARRAY[$2]::uuid[], '{}'::jsonb, now(), now())
+         RETURNING id",
+    )
+    .bind(&title)
+    .bind(entity)
+    .fetch_one(&pool)
+    .await
+    .expect("seed conflicting insight");
+
+    let returned = store
+        .insert_insight(
+            &title,
+            "racing summary",
+            Some("other_type"),
+            Some("other_region"),
+            Some(0.9),
+            None,
+            Some(vec![entity]),
+            None,
+            None,
+        )
+        .await
+        .expect("dedup race must be an idempotent refresh, not an error");
+
+    assert_eq!(
+        returned, seeded.0,
+        "the insert must return the row that owns the dedup key"
+    );
+}
+
 /// Calibration samples must decode: the record includes `predicted_at` and
 /// `expected_by`, and a production incident showed the query selecting only
 /// some of the struct's columns ("no column found for name: predicted_at") —
