@@ -19,6 +19,7 @@ mod sales;
 mod security;
 mod social_scan;
 mod starzcrm;
+mod supplier_pricing;
 mod template_variation;
 mod tender_scan;
 mod threat_intel;
@@ -168,6 +169,9 @@ pub(crate) async fn execute_job_with_payload(
         }
         JobKind::RecipeFire => recipes::run_recipe_fire(kind, store, &ctx.ingress).await,
         JobKind::PoiDiscovery => poi::run_poi_discovery(store).await,
+        JobKind::SupplierPricingRefresh => {
+            supplier_pricing::execute_supplier_pricing_refresh(store).await
+        }
         JobKind::UpdateEmailDigest => weekly::run_update_email_digest(store).await,
         JobKind::StarzCrmSync => starzcrm::run_starzcrm_sync(store).await,
         JobKind::EmbeddingReindex => {

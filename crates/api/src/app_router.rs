@@ -82,6 +82,9 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/logout", post(apex_api::web::auth::logout))
         // ─── PWA: Service worker (served without auth) ─────────────────
         .route("/sw.js", get(sw_js))
+        // Browsers request /favicon.ico implicitly; serving it here keeps
+        // every page free of a failed resource load.
+        .route("/favicon.ico", get(apex_api::routes::assets::favicon))
         // `/login` reads the user's persisted session-length preference from
         // the store to sign the session cookie lifetime (`exp` + `Max-Age`),
         // and evaluates/records login attempts against the durable throttle

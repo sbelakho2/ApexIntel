@@ -27,9 +27,9 @@
     </div>
     {% if can_write %}
     <div>
-      <details class="inline-block">
+      <details class="apex-menu">
         <summary class="apex-btn apex-btn-primary cursor-pointer">Add Entry</summary>
-        <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
+        <div class="apex-popover apex-popover-anchored">
           <form action="/supplier-risk" method="post" class="space-y-2">
             <input type="text" name="supplier_id" placeholder="Supplier ID" required class="apex-input">
             <label class="sr-only" for="supplier-risk-category">Risk category</label>

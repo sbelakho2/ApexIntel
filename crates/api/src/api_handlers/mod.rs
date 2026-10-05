@@ -10,7 +10,6 @@ pub mod dossiers;
 pub mod entities;
 pub mod exports;
 pub mod graph;
-pub mod html_mutations;
 pub mod icp;
 pub mod insights;
 pub mod llm;

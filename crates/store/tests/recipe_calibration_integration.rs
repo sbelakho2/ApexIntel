@@ -379,6 +379,8 @@ async fn canonical_recipe_writer_persists_columns_and_author() {
             &thresholds,
             "Narrative {{entity}}",
             &playbook,
+            "medium",
+            "",
             "user-42",
         )
         .await
@@ -453,6 +455,8 @@ async fn canonical_recipe_writer_persists_columns_and_author() {
             &thresholds,
             "Narrative v2",
             &playbook,
+            "high",
+            "Re-saved recipe",
             "user-43",
         )
         .await

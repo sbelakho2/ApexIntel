@@ -254,6 +254,11 @@ pub struct BattlecardDetailQuery {
     pub notice: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct EditBattlecardQuery {
+    pub notice: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct NewBattlecardQuery {
     pub competitor_id: Option<String>,
@@ -987,6 +992,7 @@ async fn render_edit_editor(
 pub async fn edit_battlecard_page(
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
+    Query(query): Query<EditBattlecardQuery>,
     Extension(session): Extension<WebSession>,
 ) -> Response {
     if !session.can_write() {
@@ -1002,13 +1008,22 @@ pub async fn edit_battlecard_page(
         Err(response) => return *response,
     };
     let values = EditEditorValues::from_row(&row);
+    // An optimistic-concurrency conflict redirects back here (the save is an
+    // HTMX post with `hx-swap="none"`, so it cannot render the stale-editor
+    // page itself). Surface the conflict once, then let the fresh version
+    // marker make the retry safe.
+    let conflict_notice = (query.notice.as_deref() == Some("conflict")).then(|| {
+        "This battlecard changed after you opened the editor (for example it was regenerated). \
+         The latest version is shown below — re-apply your edits and save again."
+            .to_string()
+    });
     render_edit_editor(
         &store,
         &session,
         warning_count,
         &row,
         values,
-        None,
+        conflict_notice,
         StatusCode::OK,
     )
     .await
@@ -1137,37 +1152,15 @@ pub async fn update_battlecard(
             super::errors::not_found_with_context(&session.username, &path, warning_count)
         }
         Ok(BattlecardWriteOutcome::Conflict) => {
-            // Show the latest stored content (with a fresh version marker)
-            // so the user can re-apply their edits deliberately.
-            let latest = match store.get_battlecard(row.id).await {
-                Ok(Some(latest)) => latest,
-                Ok(None) => {
-                    return super::errors::not_found_with_context(
-                        &session.username,
-                        &path,
-                        warning_count,
-                    )
-                }
-                Err(error) => {
-                    tracing::error!("get_battlecard {} failed (web): {error:#}", row.id);
-                    return internal_error(&session, warning_count, "Failed to load battlecard");
-                }
-            };
-            let values = EditEditorValues::from_row(&latest);
-            render_edit_editor(
-                &store,
-                &session,
-                warning_count,
-                &latest,
-                values,
-                Some(
-                    "This battlecard changed after you opened the editor (for example it was regenerated). \
-                     The latest version is shown below — re-apply your edits and save again."
-                        .to_string(),
-                ),
-                StatusCode::CONFLICT,
+            // The form posts over HTMX with `hx-swap="none"`, so a raw
+            // 409 page would never reach the user. Redirect to the editor
+            // (fresh version marker) with a one-shot conflict notice; the
+            // GET renders the latest stored content so the user can
+            // deliberately re-apply their edits.
+            super::redirect_or_hx_redirect(
+                &headers,
+                &format!("/battlecards/{}/edit?notice=conflict", row.id),
             )
-            .await
         }
         Err(error) => {
             tracing::error!(
@@ -1475,6 +1468,7 @@ mod tests {
         let response = edit_battlecard_page(
             Extension(unreachable_store()),
             Path(Uuid::new_v4().to_string()),
+            Query(EditBattlecardQuery { notice: None }),
             Extension(viewer),
         )
         .await;

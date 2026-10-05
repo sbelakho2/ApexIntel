@@ -1,0 +1,30 @@
+{# ── Global insight-bookmark control ───────────────────────────────────────
+   The ONLY definition of the bookmark control. Page templates include it with
+   `insight_bookmark_id` / `insight_bookmark_active` / `insight_bookmark_variant`
+   locals; the toggle endpoint renders it through `BookmarkButtonFragment`
+   against this same file. Do not inline another copy: a scanner
+   (`scripts/ci/check_ui_components.sh`) fails if a template or handler
+   hard-codes `hx-post=".../bookmark"` outside this component.
+   Variants: "icon" (list cards) and "text" (detail header).
+#}
+{% if insight_bookmark_variant == "icon" %}
+<button hx-post="/insights/{{ insight_bookmark_id }}/bookmark?variant=icon"
+        hx-target="this" hx-swap="outerHTML"
+        data-bookmark-control
+        class="apex-btn-ghost shrink-0 p-1.5 {% if insight_bookmark_active %}apex-text-warning{% else %}text-rams-muted{% endif %}"
+        title="{% if insight_bookmark_active %}Remove bookmark{% else %}Bookmark{% endif %}">
+  <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="{% if insight_bookmark_active %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+</button>
+{% else %}
+{# `#bookmark-status` is the component's stable slot for the text variant;
+   scripts and tests address the control through it. #}
+<span id="bookmark-status" class="contents">
+  <button hx-post="/insights/{{ insight_bookmark_id }}/bookmark"
+          hx-target="this" hx-swap="outerHTML"
+          data-bookmark-control
+          class="apex-btn apex-btn-secondary"
+          title="{% if insight_bookmark_active %}Remove bookmark{% else %}Bookmark{% endif %}">
+    {% if insight_bookmark_active %}Unbookmark{% else %}Bookmark{% endif %}
+  </button>
+</span>
+{% endif %}

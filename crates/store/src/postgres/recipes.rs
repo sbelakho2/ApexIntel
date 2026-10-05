@@ -583,6 +583,8 @@ impl PgStore {
         thresholds: &serde_json::Value,
         narrative_template: &str,
         action_playbook: &serde_json::Value,
+        severity: &str,
+        description: &str,
         created_by: &str,
     ) -> Result<()> {
         sqlx::query(
@@ -604,9 +606,11 @@ impl PgStore {
                        'transforms', $7::jsonb,
                        'thresholds', $8::jsonb,
                        'narrative_template', $9::text,
-                       'action_playbook', $10::jsonb
+                       'action_playbook', $10::jsonb,
+                       'severity', $11::text,
+                       'description', $12::text
                    ),
-                   $11, now(), now()
+                   $13, now(), now()
                )
                ON CONFLICT (code) DO UPDATE SET
                    name = EXCLUDED.name,
@@ -632,6 +636,8 @@ impl PgStore {
         .bind(thresholds)
         .bind(narrative_template)
         .bind(action_playbook)
+        .bind(severity)
+        .bind(description)
         .bind(created_by)
         .execute(&self.pool)
         .await?;

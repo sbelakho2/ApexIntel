@@ -335,6 +335,12 @@ test.describe('server UI — journey contracts (DB state)', () => {
     await page.fill('input[name="name"]', JOURNEY.recipeName);
     await page.selectOption('select[name="severity"]', 'high');
     await page.fill('textarea[name="description"]', 'Journey-created recipe.');
+    // The engine cannot evaluate a recipe without a signal; the documented
+    // contract is "fill at least one", so the journey supplies a real one.
+    await page.locator('input[name="signal_observation"]').first().fill('NewsArticle');
+    await page.locator('input[name="signal_field"]').first().fill('count');
+    await page.locator('input[name="signal_threshold"]').first().fill('3');
+    await page.locator('input[name="signal_window_days"]').first().fill('30');
     await page.getByRole('button', { name: 'Create Recipe' }).click();
     await page.waitForURL(/\/recipes\?created=1/, { timeout: 15_000 });
 

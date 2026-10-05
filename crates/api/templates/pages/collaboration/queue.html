@@ -26,13 +26,13 @@
       </div>
     </div>
     <div>
-      <details class="inline-block">
+      <details class="apex-menu">
         <summary class="apex-btn apex-btn-primary cursor-pointer">Add Item</summary>
-        <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
+        <div class="apex-popover apex-popover-anchored">
           <form action="/queue" method="post" class="space-y-2">
             <input type="text" name="item_title" placeholder="Title" required class="apex-input">
             <input type="text" name="item_id" placeholder="Entity or item ID" class="apex-input">
-            <select name="item_type" required class="apex-input">
+            <select name="item_type" aria-label="Item type" required class="apex-input">
               <option value="insight">Insight</option>
               <option value="warning">Warning</option>
               <option value="company">Company</option>
@@ -40,7 +40,7 @@
               <option value="task">Task</option>
               <option value="review">Review</option>
             </select>
-            <input type="number" name="priority" min="1" max="10" value="5" class="apex-input">
+            <input type="number" name="priority" aria-label="Priority (1-10)" min="1" max="10" value="5" class="apex-input">
             <textarea name="notes" placeholder="Optional notes" rows="2" class="apex-input"></textarea>
             <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Add to Queue</button>
           </form>

@@ -16,7 +16,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Alert Thresholds", "bell", "Configure per-entity and global alert severity thresholds.", "") %}
+{% call m::page_header("Alert Thresholds", "bell", "Configure per-entity and global alert severity thresholds.", "", "", "", "", "") %}
 
 {% if let Some(message) = save_success %}
 <div class="apex-alert apex-alert-success mb-4 text-xs font-semibold">{{ message }}</div>
@@ -37,7 +37,7 @@
     <div class="divide-y divide-rams-line">
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Minimum Severity</span>
-        <select id="global-min-severity" class="h-7 w-40 rounded border border-rams-line bg-rams-chassis px-2 text-xs"{% if !can_admin %} disabled{% endif %}>
+        <select id="global-min-severity" aria-label="Minimum severity" class="h-7 w-40 rounded border border-rams-line bg-rams-chassis px-2 text-xs"{% if !can_admin %} disabled{% endif %}>
           <option value="info"{% if global_min_severity == "info" %} selected{% endif %}>Info</option>
           <option value="low"{% if global_min_severity == "low" %} selected{% endif %}>Low</option>
           <option value="medium"{% if global_min_severity == "medium" %} selected{% endif %}>Medium</option>
@@ -47,11 +47,11 @@
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Cooldown (minutes)</span>
-        <input type="number" id="global-cooldown" value="{{ global_cooldown }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="10080"{% if !can_admin %} disabled{% endif %} />
+        <input type="number" id="global-cooldown" aria-label="Cooldown (minutes)" value="{{ global_cooldown }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="10080"{% if !can_admin %} disabled{% endif %} />
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Max Daily Alerts</span>
-        <input type="number" id="global-max-daily" value="{{ global_max_daily }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="1000"{% if !can_admin %} disabled{% endif %} />
+        <input type="number" id="global-max-daily" aria-label="Max daily alerts" value="{{ global_max_daily }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="1000"{% if !can_admin %} disabled{% endif %} />
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Enabled Channels</span>

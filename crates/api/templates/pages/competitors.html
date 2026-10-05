@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Competitors", "target", "Tracked competitors with threat scores, overlap, and battlecard links.", "") %}
+{% call m::page_header("Competitors", "target", "Tracked competitors with threat scores, overlap, and battlecard links.", "", "", "", "", "") %}
 <div id="competitors-list-zone"
      hx-get="/competitors?page=1{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}"
      hx-trigger="load once, refreshCompetitors from:body">

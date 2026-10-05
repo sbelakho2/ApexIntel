@@ -6,12 +6,15 @@ pub const MINIO_BUCKET: &str = "MINIO_BUCKET";
 pub const MINIO_ACCESS_KEY: &str = "MINIO_ACCESS_KEY";
 pub const MINIO_SECRET_KEY: &str = "MINIO_SECRET_KEY";
 
-pub const GOOGLE_API_KEY: &str = "GOOGLE_API_KEY";
-pub const GOOGLE_SEARCH_ENGINE_ID: &str = "GOOGLE_SEARCH_ENGINE_ID";
-pub const NEXAR_CLIENT_ID: &str = "NEXAR_CLIENT_ID";
-pub const NEXAR_CLIENT_SECRET: &str = "NEXAR_CLIENT_SECRET";
-pub const MOUSER_API_KEY: &str = "MOUSER_API_KEY";
-pub const DIGIKEY_CLIENT_ID: &str = "DIGIKEY_CLIENT_ID";
+/// Supplier pricing crawl (r.jina.ai reader): optional API key and base URL.
+pub const JINA_API_KEY: &str = "JINA_API_KEY";
+pub const JINA_BASE_URL: &str = "JINA_BASE_URL";
+/// Maximum part numbers per SupplierPricingRefresh run.
+pub const APEX_SUPPLIER_PRICING_MAX_PARTS: &str = "APEX_SUPPLIER_PRICING_MAX_PARTS";
+/// Fixed CNY→USD rate for cross-currency supplier price comparison.
+pub const APEX_FX_CNY_USD: &str = "APEX_FX_CNY_USD";
+/// Optional on-disk reader cache path for the supplier pricing pipeline.
+pub const APEX_SUPPLIER_PRICING_CACHE: &str = "APEX_SUPPLIER_PRICING_CACHE";
 
 pub const LLM_BASE_URL: &str = "LLM_BASE_URL";
 pub const LLM_API_KEY: &str = "LLM_API_KEY";

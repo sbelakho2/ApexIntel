@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Memos", "file", "Generated intelligence briefings and analyst memos.", "") %}
+{% call m::page_header("Memos", "file", "Generated intelligence briefings and analyst memos.", "", "", "", "", "") %}
 {# #149: the list is rendered server-side on first load (the previous
    `hx-trigger="load once"` fetched the same rows a second time). The zone
    still refreshes on demand via the `refreshMemos` event. #}

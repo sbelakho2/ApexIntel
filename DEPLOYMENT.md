@@ -428,12 +428,14 @@ HEADLESS_BROWSER_BIN=/usr/bin/chromium
 # rate limiting; the browser fleet is limited to 1 process / 2 contexts.
 
 # ─── Optional integrations ───────────────────────────────────────────────────
-# GOOGLE_API_KEY=
-# GOOGLE_SEARCH_ENGINE_ID=
-# NEXAR_CLIENT_ID=
-# NEXAR_CLIENT_SECRET=
-# MOUSER_API_KEY=
-# DIGIKEY_CLIENT_ID=
+# Supplier pricing is crawled through the r.jina.ai reader from Alibaba, 1688,
+# LCSC (marketplaces) with a Baidu discovery fallback.
+# JINA_API_KEY=
+# JINA_BASE_URL=https://r.jina.ai
+# APEX_SUPPLIER_PRICING_MAX_PARTS=10
+# APEX_FX_CNY_USD=0.1398
+# APEX_SUPPLIER_PRICING_CACHE=/var/lib/apexintel/supplier_pricing_cache.json
+
 # SMTP_URL=
 ```
 

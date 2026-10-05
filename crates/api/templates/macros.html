@@ -6,7 +6,11 @@
 
 {# `actions` is rendered unescaped: pass only template-literal markup, never
    request or database data. #}
-{% macro page_header(title, icon_name, subtitle, actions) %}
+{# Global page header. `actions` holds arbitrary safe HTML for special
+   controls; `export_*` and `secondary_*` are the structured slots every
+   catalogue export and secondary navigation link must use, so list pages
+   stay consistent instead of hand-rolling anchors per page. #}
+{% macro page_header(title, icon_name, subtitle, actions, export_href, export_label, secondary_href, secondary_label) %}
 <div class="apex-card page-header px-4 py-3.5 mb-5 flex items-center justify-between gap-4">
   <div class="page-header-main flex items-center gap-3">
     <div class="shrink-0 rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-foreground">
@@ -17,8 +21,21 @@
       {% if !subtitle.is_empty() %}<p class="mt-0.5 text-[13px] font-medium tracking-normal text-rams-muted">{{ subtitle }}</p>{% endif %}
     </div>
   </div>
-  {% if !actions.is_empty() %}<div class="page-header-actions">{{ actions|safe }}</div>{% endif %}
+  {% if !actions.is_empty() || !export_href.is_empty() || !secondary_href.is_empty() %}
+  <div class="page-header-actions">
+    {{ actions|safe }}
+    {% if !export_href.is_empty() %}{% call action_link(export_href, export_label, "secondary") %}{% endif %}
+    {% if !secondary_href.is_empty() %}{% call action_link(secondary_href, secondary_label, "secondary") %}{% endif %}
+  </div>
+  {% endif %}
 </div>
+{% endmacro %}
+
+{# Global action link used by page headers. Every list page whose export
+   endpoint exists in the route catalogue must surface it through this macro,
+   so page actions stay visually and structurally consistent. #}
+{% macro action_link(href, label, style) %}
+<a href="{{ href }}" class="apex-btn {% if style == "primary" %}apex-btn-primary{% else %}apex-btn-secondary{% endif %}">{{ label }}</a>
 {% endmacro %}
 
 {% macro metric_card(label, value, rail_class) %}

@@ -440,15 +440,15 @@ pub fn system_config_sections() -> Vec<SystemConfigSection> {
             "Integrations",
             "Third-party data providers. Absent keys disable the matching collector.",
             vec![
-                secret_item("Google Custom Search", "GOOGLE_API_KEY"),
                 secret_item("GitHub", "GITHUB_TOKEN"),
                 secret_item("Have I Been Pwned", "HIBP_API_KEY"),
                 secret_item("Clearbit", "CLEARBIT_API_KEY"),
                 secret_item("Apollo", "APOLLO_API_KEY"),
                 secret_item("FRED", "FRED_API_KEY"),
-                secret_item("Mouser", "MOUSER_API_KEY"),
-                value_item("Nexar client ID", "NEXAR_CLIENT_ID", None),
-                value_item("Digi-Key client ID", "DIGIKEY_CLIENT_ID", None),
+                // Supplier pricing is crawled through r.jina.ai
+                // (JINA_API_KEY) from Alibaba, 1688, LCSC and Baidu; the
+                // retired Google/Nexar/Mouser/Digi-Key credentials had no
+                // runtime consumer and were removed.
                 value_item("StarzCRM bridge", "STARZCRM_ENABLED", Some("false")),
             ],
         ),

@@ -33,10 +33,14 @@ pub struct ShortageSignal {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ShortageSource {
-    Nexar,
-    Mouser,
-    DigiKey,
-    OctopartApi,
+    /// Marketplace pricing intelligence crawled via the supplier pricing
+    /// pipeline (r.jina.ai reader). These are the only supported pricing
+    /// sources; retired aggregators (Nexar, Mouser, DigiKey, Octopart) were
+    /// removed because their credentials had no runtime consumer.
+    Alibaba,
+    OneSixEightEight,
+    Lcsc,
+    Baidu,
     IndustryReport,
     Manual,
 }
@@ -277,7 +281,7 @@ mod tests {
         ShortageSignal {
             part_number: part.into(),
             component_family: family.into(),
-            source: ShortageSource::Nexar,
+            source: ShortageSource::Lcsc,
             severity: severity.into(),
             lead_time_increase_weeks: Some(8),
             price_increase_pct: Some(25.0),

@@ -7,8 +7,7 @@
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
 const { seedDatabase, login } = require('./helpers/server-ui-fixtures.cjs');
-
-const ROUTES = ['/', '/warnings', '/companies'];
+const { ROUTES } = require('./helpers/server-ui-routes.cjs');
 
 test.beforeAll(async () => {
   await seedDatabase();

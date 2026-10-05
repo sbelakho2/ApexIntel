@@ -37,6 +37,7 @@ pub mod source_health;
 pub mod source_scoring;
 pub mod sources;
 pub mod sources_registry;
+pub mod supplier_pricing;
 pub mod tor_client;
 pub mod trade_shows;
 

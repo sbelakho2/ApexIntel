@@ -33,12 +33,11 @@
     </div>
     <div class="flex items-center gap-2">
       <a href="/insights/{{ id }}?briefing=1" class="apex-btn apex-btn-primary">Briefing</a>
-      <button hx-post="/insights/{{ id }}/bookmark"
-              hx-target="this"
-              hx-swap="outerHTML"
-              class="apex-btn apex-btn-secondary">
-        {% if bookmarked %}Unbookmark{% else %}Bookmark{% endif %}
-      </button>
+      {# Global component: one definition for every bookmark control. #}
+      {% let insight_bookmark_id = id.as_str() %}
+      {% let insight_bookmark_active = bookmarked %}
+      {% let insight_bookmark_variant = "text" %}
+      {% include "components/bookmark_button.html" %}
       <button hx-post="/insights/{{ id }}/analyze"
               hx-target="#analysis-panel"
               hx-swap="outerHTML"
@@ -52,8 +51,6 @@
          download>Export PDF</a>
     </div>
   </div>
-  <div id="bookmark-status"></div>
-
   <div class="apex-module">
     <div class="apex-module-body">
       {% if !summary.is_empty() && summary != body %}

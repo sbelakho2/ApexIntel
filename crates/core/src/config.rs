@@ -44,20 +44,6 @@ pub struct AppConfig {
     /// MinIO bucket.  Default: `apexintel`.
     pub minio_bucket: String,
 
-    // ── API keys (all optional) ──────────────────────────────────
-    /// Google Custom Search API key.  Optional.
-    pub google_api_key: Option<SecretString>,
-    /// Google Custom Search Engine ID.  Optional.
-    pub google_search_engine_id: Option<String>,
-    /// Nexar OAuth client ID.  Optional.
-    pub nexar_client_id: Option<String>,
-    /// Nexar OAuth client secret.  Optional.
-    pub nexar_client_secret: Option<SecretString>,
-    /// Mouser API key.  Optional.
-    pub mouser_api_key: Option<SecretString>,
-    /// Digi-Key client ID.  Optional.
-    pub digikey_client_id: Option<String>,
-
     // ── LLM ─────────────────────────────────────────────────────
     /// Base URL for the local/remote LLM endpoint.  Optional (disables LLM if absent).
     pub llm_base_url: Option<String>,
@@ -110,13 +96,6 @@ impl AppConfig {
             minio_url: env_or(env::MINIO_URL, "http://127.0.0.1:9000"),
             minio_bucket: env_or(env::MINIO_BUCKET, "apexintel"),
 
-            google_api_key: opt_secret_env(env::GOOGLE_API_KEY),
-            google_search_engine_id: opt_env(env::GOOGLE_SEARCH_ENGINE_ID),
-            nexar_client_id: opt_env(env::NEXAR_CLIENT_ID),
-            nexar_client_secret: opt_secret_env(env::NEXAR_CLIENT_SECRET),
-            mouser_api_key: opt_secret_env(env::MOUSER_API_KEY),
-            digikey_client_id: opt_env(env::DIGIKEY_CLIENT_ID),
-
             llm_base_url: opt_env(env::LLM_BASE_URL),
             llm_api_key: opt_secret_env(env::LLM_API_KEY),
             llm_model: env_or(env::LLM_MODEL, "Qwen3-30B-A3B-Q4_K_M"),
@@ -163,24 +142,6 @@ impl AppConfig {
 
     pub fn redis_url_value(&self) -> &str {
         self.redis_url.expose_secret()
-    }
-
-    pub fn google_api_key_value(&self) -> Option<&str> {
-        self.google_api_key
-            .as_ref()
-            .map(|value| value.expose_secret())
-    }
-
-    pub fn nexar_client_secret_value(&self) -> Option<&str> {
-        self.nexar_client_secret
-            .as_ref()
-            .map(|value| value.expose_secret())
-    }
-
-    pub fn mouser_api_key_value(&self) -> Option<&str> {
-        self.mouser_api_key
-            .as_ref()
-            .map(|value| value.expose_secret())
     }
 
     pub fn llm_api_key_value(&self) -> Option<String> {

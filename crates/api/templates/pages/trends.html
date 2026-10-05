@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Trends", "bar-chart-3", "Long-term trend analysis across all metrics", "") %}
+{% call m::page_header("Trends", "bar-chart-3", "Long-term trend analysis across all metrics", "", "", "", "", "") %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>

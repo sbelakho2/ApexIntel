@@ -223,6 +223,11 @@ pub enum JobKind {
     RecipeFire,
     /// POI discovery — network-expansion from existing seed POIs to find new contacts.
     PoiDiscovery,
+    /// Supplier pricing refresh — crawls component pricing for the default BOM
+    /// mapping's critical components through the r.jina.ai reader (Alibaba,
+    /// 1688, LCSC with Baidu discovery fallback). Trigger-only: marketplace
+    /// crawling costs reader quota, so it never runs on a default schedule.
+    SupplierPricingRefresh,
     /// StarzCRM sync — read-only MySQL pull from collocated StarzCRM database.
     StarzCrmSync,
     /// Embedding reindex — generates vector embeddings for entities without them.
@@ -321,6 +326,7 @@ impl JobKind {
             Self::SelfImprovementCycle => "self_improvement_cycle",
             Self::RecipeFire => "recipe_fire",
             Self::PoiDiscovery => "poi_discovery",
+            Self::SupplierPricingRefresh => "supplier_pricing_refresh",
             Self::StarzCrmSync => "starzcrm_sync",
             Self::EmbeddingReindex => "embedding_reindex",
             Self::ObservationIndex => "observation_index",
@@ -371,6 +377,7 @@ impl JobKind {
             "self_improvement_cycle" => Self::SelfImprovementCycle,
             "recipe_fire" => Self::RecipeFire,
             "poi_discovery" => Self::PoiDiscovery,
+            "supplier_pricing_refresh" => Self::SupplierPricingRefresh,
             "starzcrm_sync" => Self::StarzCrmSync,
             "embedding_reindex" => Self::EmbeddingReindex,
             "observation_index" => Self::ObservationIndex,
@@ -1525,6 +1532,8 @@ pub fn default_scheduler_with_overrides(o: SchedulerOverrides) -> Scheduler {
     s.register(
         JobDef::new(JobKind::InsightAnalysis, Schedule::Manual).with_timeout(1800), // 30 min — one model call plus evidence loads
     );
+    // Trigger-only: crawling marketplaces through the reader costs quota.
+    s.register(JobDef::new(JobKind::SupplierPricingRefresh, Schedule::Manual).with_timeout(1800));
 
     // ── Threat Intelligence Refresh ─────────────────────────────────────
 
@@ -2223,6 +2232,7 @@ mod tests {
             "buying_center_derivation",
             "person_mention_materialization",
             "notification_delivery",
+            "supplier_pricing_refresh",
         ];
 
         assert_eq!(s.jobs.len(), expected_jobs.len());

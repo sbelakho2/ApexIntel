@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Companies", "folder", "Tracked companies with risk scores, dossiers, and coverage.", "") %}
+{% call m::page_header("Companies", "folder", "Tracked companies with risk scores, dossiers, and coverage.", "", "/api/companies/export", "Export CSV", "", "") %}
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Companies Tracked", total.to_string(), "metric-rail-steel") %}

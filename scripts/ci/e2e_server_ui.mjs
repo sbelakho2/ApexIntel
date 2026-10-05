@@ -22,19 +22,11 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { SEED, seedDatabase } = require('../../e2e/helpers/server-ui-fixtures.cjs');
+const { ROUTES, VIEWPORTS } = require('../../e2e/helpers/server-ui-routes.cjs');
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:9095';
 const USER = process.env.ADMIN_USER || 'admin';
 const PASS = process.env.ADMIN_PASS || 'adminpassword';
-
-const ROUTES = [
-  '/', '/warnings', '/insights', '/companies', '/persons', '/buying-centers',
-  '/competitors',
-  '/battlecards', '/search', '/graph', '/triage', '/workspaces', '/queue',
-  '/activity', '/supplier-risk', '/pipeline', '/evidence', '/team-assignments',
-  '/executive', '/trends', '/security', '/admin', '/memos', '/notifications',
-  '/settings', '/settings/alerts',
-];
 
 // Audit #15: primary navigation is organised by analyst workflow, not by
 // database table. Settings lives in the user menu.
@@ -45,11 +37,6 @@ const WORKFLOW_NAV_GROUPS = [
   'Investigations',
   'Sales Intelligence',
   'Automations',
-];
-
-const VIEWPORTS = [
-  { name: 'mobile', width: 390, height: 844 },
-  { name: 'desktop', width: 1280, height: 900 },
 ];
 
 // P0 #34: exactly five mobile bottom-bar items, in order.

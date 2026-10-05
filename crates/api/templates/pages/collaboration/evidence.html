@@ -26,13 +26,13 @@
       </div>
     </div>
     <div>
-      <details class="inline-block">
+      <details class="apex-menu">
         <summary class="apex-btn apex-btn-primary cursor-pointer">Add Evidence</summary>
-        <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
+        <div class="apex-popover apex-popover-anchored">
           <form action="/evidence" method="post" class="space-y-2">
             <input type="text" name="entity_type" placeholder="Entity type (company, person)" required class="apex-input">
             <input type="text" name="entity_id" placeholder="Entity ID" required class="apex-input">
-            <select name="evidence_type" required class="apex-input">
+            <select name="evidence_type" aria-label="Evidence type" required class="apex-input">
               <option value="news">News</option>
               <option value="social">Social Media</option>
               <option value="regulatory">Regulatory Filing</option>
@@ -45,7 +45,7 @@
             <input type="url" name="source_url" placeholder="Source URL" required class="apex-input">
             <input type="text" name="source_domain" placeholder="Source domain" class="apex-input">
             <input type="text" name="source_name" placeholder="Source name" class="apex-input">
-            <input type="number" name="reliability_score" min="0" max="100" step="0.1" value="50" class="apex-input">
+            <input type="number" name="reliability_score" aria-label="Reliability score" min="0" max="100" step="0.1" value="50" class="apex-input">
             <textarea name="excerpt" placeholder="Excerpt" rows="2" class="apex-input"></textarea>
             <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Add Evidence</button>
           </form>

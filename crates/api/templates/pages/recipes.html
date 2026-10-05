@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Recipes", "zap", "Signal detection recipes and their performance metrics.", "<a href=\"/recipes/new\" class=\"apex-btn apex-btn-secondary\">New Recipe</a>") %}
+{% call m::page_header("Recipes", "zap", "Signal detection recipes and their performance metrics.", "<a href=\"/recipes/new\" class=\"apex-btn apex-btn-secondary\">New Recipe</a>", "", "", "", "") %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>

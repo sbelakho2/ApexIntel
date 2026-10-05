@@ -16,7 +16,13 @@
     for (var index = 0; index < cookies.length; index += 1) {
       var cookie = cookies[index].trim();
       if (cookie.indexOf(prefix) === 0) {
-        return decodeURIComponent(cookie.slice(prefix.length));
+        try {
+          return decodeURIComponent(cookie.slice(prefix.length));
+        } catch (error) {
+          // A malformed cookie value must never take down the whole page's
+          // scripts; fall back to the raw value.
+          return cookie.slice(prefix.length);
+        }
       }
     }
     return '';
@@ -155,11 +161,32 @@
     refreshWarningBadgeFromServer();
   });
 
+  // Global a11y rule: a scroll container must be keyboard-reachable, or its
+  // hidden content is unreachable without a pointer (axe
+  // `scrollable-region-focusable`). Applied to every scrollable region,
+  // including those injected by HTMX swaps.
+  function initScrollableRegions(root) {
+    var scope = root || document;
+    var selector = '.overflow-x-auto, .overflow-y-auto, [data-scrollable]';
+    scope.querySelectorAll(selector).forEach(function (node) {
+      if (!node.hasAttribute('tabindex')) {
+        node.setAttribute('tabindex', '0');
+      }
+    });
+    if (scope.matches && scope.matches(selector) && !scope.hasAttribute('tabindex')) {
+      scope.setAttribute('tabindex', '0');
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     applyCsrfToForms(document);
     updateOnlineStatus();
     initDenseTableKeyboardNav();
     initDestructiveConfirms();
+    initScrollableRegions(document);
+    document.body.addEventListener('htmx:afterSwap', function (event) {
+      initScrollableRegions(event.target);
+    });
     // Pause the refresh while the tab is hidden; a background tab has no
     // visible badge to keep current.
     window.setInterval(function () {

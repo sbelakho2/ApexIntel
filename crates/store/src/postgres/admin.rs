@@ -29,6 +29,9 @@ pub fn is_valid_manual_trigger_kind(kind: &str) -> bool {
             // default schedule as a duplicate of the nightly pass, so the
             // manual trigger endpoint is its only on-demand entry point.
             | "hypothesis_generation"
+            // Supplier pricing refresh: trigger-only marketplace crawl through
+            // the r.jina.ai reader (reader quota is consumed per run).
+            | "supplier_pricing_refresh"
     )
 }
 
@@ -449,6 +452,7 @@ mod tests {
             "run_nightly_pipeline",
             "run_weekly_pipeline",
             "hypothesis_generation",
+            "supplier_pricing_refresh",
         ] {
             assert!(
                 is_valid_manual_trigger_kind(kind),

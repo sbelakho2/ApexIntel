@@ -26,16 +26,16 @@
       </div>
     </div>
     <div>
-      <details class="inline-block">
+      <details class="apex-menu">
         <summary class="apex-btn apex-btn-primary cursor-pointer">New Assignment</summary>
-        <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
+        <div class="apex-popover apex-popover-anchored">
           <form action="/team-assignments" method="post" class="space-y-2">
             <input type="text" name="team_id" placeholder="Team ID" required class="apex-input">
             <input type="text" name="team_name" placeholder="Team name" required class="apex-input">
             <input type="text" name="entity_type" placeholder="Entity type (company, person)" required class="apex-input">
             <input type="text" name="entity_id" placeholder="Entity ID" required class="apex-input">
             <input type="text" name="assigned_to" placeholder="Assign to (user ID)" required class="apex-input">
-            <select name="role" required class="apex-input">
+            <select name="role" aria-label="Role" required class="apex-input">
               <option value="lead">Lead</option>
               <option value="analyst">Analyst</option>
               <option value="reviewer">Reviewer</option>

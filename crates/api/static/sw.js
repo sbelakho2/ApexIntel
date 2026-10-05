@@ -11,22 +11,14 @@
  *   - everything else is not intercepted and never cached.
  */
 
-const STATIC_CACHE = 'apexintel-static-v2';
+const STATIC_CACHE = 'apexintel-static-v3';
 
-/* ─── Assets to pre-cache on install ─────────────────────────────────── */
-const PRECACHE_URLS = [
-  '/static/css/tailwind.css',
-  '/static/js/htmx.min.js',
-  '/static/js/app.js',
-  '/static/js/sse-client.js',
-  '/static/manifest.json'
-];
-
-/* ─── Install: pre-cache static assets ───────────────────────────────── */
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(STATIC_CACHE).then((cache) => cache.addAll(PRECACHE_URLS))
-  );
+/* ─── Install ────────────────────────────────────────────────────────── */
+// No install-time pre-cache: the shell requests versioned `?v=` asset URLs,
+// so pre-caching the unversioned paths would pin stale bytes after a deploy.
+// /static/* is still served cache-first on demand, and the activate handler
+// drops every cache whose name is not the current one.
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 

@@ -17,7 +17,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Graph", "share", "Relationship map with pan, zoom, search, and node inspection.", "") %}
+{% call m::page_header("Graph", "share", "Relationship map with pan, zoom, search, and node inspection.", "", "", "", "", "") %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-error-state" role="alert" data-degraded="true">

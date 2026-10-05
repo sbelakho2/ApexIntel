@@ -9,6 +9,7 @@ use serde_json::{json, Map, Value};
 
 pub mod admin;
 pub mod alert_subscriptions;
+pub mod assets;
 pub mod battlecards;
 pub mod capabilities;
 pub mod collaboration;

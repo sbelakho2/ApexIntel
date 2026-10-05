@@ -22,9 +22,9 @@
 {% block content %}
 <div class="max-w-4xl">
 {% if is_new %}
-{% call m::page_header("New Battlecard", "layers", "Create a draft battlecard for one of your companies against a competitor.", "") %}
+{% call m::page_header("New Battlecard", "layers", "Create a draft battlecard for one of your companies against a competitor.", "", "", "", "", "") %}
 {% else %}
-{% call m::page_header("Edit Battlecard", "layers", "Update the title, lifecycle status and section content.", "") %}
+{% call m::page_header("Edit Battlecard", "layers", "Update the title, lifecycle status and section content.", "", "", "", "", "") %}
 {% endif %}
 
 {% if let Some(notice) = error_notice %}

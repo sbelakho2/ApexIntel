@@ -15,9 +15,9 @@
 
 {% block content %}
 {% if can_write %}
-{% call m::page_header("Battlecards", "layers", "Competitive intelligence battlecards — structured analysis of competitor positioning, feature gaps, and win/loss trends.", "<a href=\"/battlecards/new\" class=\"apex-btn apex-btn-secondary\" data-battlecard-new>New Battlecard</a>") %}
+{% call m::page_header("Battlecards", "layers", "Competitive intelligence battlecards — structured analysis of competitor positioning, feature gaps, and win/loss trends.", "<a href=\"/battlecards/new\" class=\"apex-btn apex-btn-secondary\" data-battlecard-new>New Battlecard</a>", "", "", "", "") %}
 {% else %}
-{% call m::page_header("Battlecards", "layers", "Competitive intelligence battlecards — structured analysis of competitor positioning, feature gaps, and win/loss trends.", "") %}
+{% call m::page_header("Battlecards", "layers", "Competitive intelligence battlecards — structured analysis of competitor positioning, feature gaps, and win/loss trends.", "", "", "", "", "") %}
 {% endif %}
 
 {% if let Some(message) = notice %}

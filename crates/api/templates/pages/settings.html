@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Settings", "settings", "Personal preferences, notifications, and account security.", "") %}
+{% call m::page_header("Settings", "settings", "Personal preferences, notifications, and account security.", "", "", "", "", "") %}
 <nav aria-label="Settings sections" class="mb-5 flex flex-wrap gap-2 no-print">
   <a href="#personal-prefs" class="apex-chip apex-chip-idle">Preferences</a>
   <a href="#notification-prefs" class="apex-chip apex-chip-idle">Notifications</a>
@@ -114,14 +114,14 @@
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
           <span class="text-sm font-semibold">Frequency</span>
-          <select name="notification_frequency" class="apex-select h-11 w-40">
+          <select name="notification_frequency" aria-label="Notification frequency" class="apex-select h-11 w-40">
             <option value="Daily" {% if notification_frequency == "Daily" %}selected{% endif %}>Daily</option>
             <option value="Weekly" {% if notification_frequency == "Weekly" %}selected{% endif %}>Weekly</option>
           </select>
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
           <span class="text-sm font-semibold">Send time (CET)</span>
-          <input type="time" name="email_digest_time_cet" value="{{ email_digest_time_cet }}" class="apex-select h-11 w-32" />
+          <input type="time" name="email_digest_time_cet" aria-label="Send time (CET)" value="{{ email_digest_time_cet }}" class="apex-select h-11 w-32" />
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
           <span class="text-sm font-semibold">Desktop alerts</span>
@@ -129,7 +129,7 @@
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
           <span class="text-sm font-semibold">Weekly digest day</span>
-          <select name="email_digest_weekday" class="apex-select h-11 w-32">
+          <select name="email_digest_weekday" aria-label="Weekly digest day" class="apex-select h-11 w-32">
             <option value="Mon" {% if email_digest_weekday == "Mon" %}selected{% endif %}>Mon</option>
             <option value="Tue" {% if email_digest_weekday == "Tue" %}selected{% endif %}>Tue</option>
             <option value="Wed" {% if email_digest_weekday == "Wed" %}selected{% endif %}>Wed</option>
@@ -157,7 +157,7 @@
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
           <span class="text-sm font-semibold">Minimum alert severity</span>
-          <select name="minimum_severity" class="apex-select h-11 w-32">
+          <select name="minimum_severity" aria-label="Minimum alert severity" class="apex-select h-11 w-32">
             <option value="high" {% if minimum_severity == "high" %}selected{% endif %}>high</option>
             <option value="medium" {% if minimum_severity == "medium" %}selected{% endif %}>medium</option>
           </select>

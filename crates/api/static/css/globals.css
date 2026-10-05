@@ -948,7 +948,10 @@
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
-    color: var(--rams-muted);
+    /* Chart labels sit over bars, gridlines and the frame; the muted token
+       failed WCAG AA contrast on several columns, so labels use the
+       foreground token that passes on every chart background. */
+    color: var(--rams-foreground);
     white-space: nowrap;
     letter-spacing: 0.04em;
   }
@@ -1145,13 +1148,15 @@
     }
 
     .apex-chart-frame-dense .apex-viz-column:not(:nth-child(3n + 1)) .apex-viz-label {
-      opacity: 0.35;
+      /* Hidden, not dimmed: a 35%-opacity label is unreadable and fails
+         contrast; density is expressed by visibility (full-opacity labels). */
+      visibility: hidden;
     }
   }
 
   @media (max-width: 420px) {
     .apex-viz-column:nth-child(even) .apex-viz-label {
-      opacity: 0.55;
+      visibility: hidden;
     }
 
     /* Crawl activity (24 cols): show only every 6th label on phone (0h, 6h, 12h, 18h) */
@@ -1490,6 +1495,22 @@
   .apex-popover {
     @apply rounded-rams-md border border-rams-line bg-rams-module p-3 text-rams-foreground;
     box-shadow: 0 10px 24px rgb(0 0 0 / 0.22);
+  }
+  /* Anchored dropdown: the trigger lives in an `.apex-menu` wrapper; the
+     panel is right-aligned to it and clamped to the viewport so a row action
+     near the right edge can never open off-screen. One definition for every
+     Add/Edit popover. */
+  .apex-menu {
+    position: relative;
+    display: inline-block;
+  }
+  .apex-popover-anchored {
+    position: absolute;
+    right: 0;
+    z-index: 30;
+    margin-top: 0.5rem;
+    width: 20rem;
+    max-width: calc(100vw - 2rem);
   }
   .apex-popover-title {
     @apply mb-2 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted;

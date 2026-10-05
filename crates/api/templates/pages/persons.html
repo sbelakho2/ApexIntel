@@ -15,9 +15,9 @@
 
 {% block content %}
 {% if buying_center_mode %}
-{% call m::page_header("Buying Centres", "users", "Sales intelligence view: the people who decide, buy, and gatekeep at each account.", "") %}
+{% call m::page_header("Buying Centres", "users", "Sales intelligence view: the people who decide, buy, and gatekeep at each account.", "", "", "", "", "") %}
 {% else %}
-{% call m::page_header("People", "users", "Persons of interest with roles, affiliations, and priority.", "") %}
+{% call m::page_header("People", "users", "Persons of interest with roles, affiliations, and priority.", "", "/api/persons/export", "Export CSV", "", "") %}
 {% endif %}
 
 {% if let Some(notice) = degraded_notice %}

@@ -117,3 +117,6 @@ release-evidence/
 
 # Local UI audit screenshots
 mobile-*.png
+
+# adversarial UI scan artifacts
+artifacts/

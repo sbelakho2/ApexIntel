@@ -16,7 +16,7 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Compare Battlecards", "layers", "Side-by-side comparison of battlecard sections across competitors.", "") %}
+{% call m::page_header("Compare Battlecards", "layers", "Side-by-side comparison of battlecard sections across competitors.", "", "", "", "", "") %}
 
 {% if let Some(notice) = error_notice %}
 <div class="apex-card border border-rams-red/40 p-4 mb-6 text-sm font-semibold text-rams-red" role="alert" data-battlecard-error>

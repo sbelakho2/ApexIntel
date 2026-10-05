@@ -140,6 +140,32 @@ pub fn normalize_login_name(username: &str) -> String {
 /// Rejects malformed roles, empty identifiers/hashes, duplicate ids and
 /// duplicate login names (case-insensitive). An ambiguous or malformed
 /// `WEB_USERS_JSON` must not bootstrap credentials or authenticate.
+/// True when `hash` is a credential format the verifier can actually accept.
+///
+/// A malformed hash (typically `$argon2id$…` mangled by shell/dotenv expansion)
+/// would seed an account that can never authenticate, so it is rejected at
+/// load time rather than disclosed only at the first failed login.
+fn validate_password_hash(hash: &str) -> Result<(), String> {
+    let hash = hash.trim();
+    if hash.starts_with("$argon2id$") {
+        use argon2::password_hash::PasswordHash;
+        return PasswordHash::new(hash)
+            .map(|_| ())
+            .map_err(|error| format!("password_hash is not a valid Argon2id PHC string: {error}"));
+    }
+    if hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        // Structurally valid legacy digest: loading is allowed so one legacy
+        // account cannot disable every other account. Authentication still
+        // rejects it unless ALLOW_LEGACY_PASSWORD_HASHES is set (see
+        // verify_password), which is where the audit requirement lives.
+        return Ok(());
+    }
+    Err(
+        "password_hash must be an Argon2id PHC string or a 64-character SHA-256 hex digest"
+            .to_string(),
+    )
+}
+
 pub fn validate_web_users(users: &[WebUser]) -> Result<(), String> {
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut names: HashMap<String, usize> = HashMap::new();
@@ -158,6 +184,12 @@ pub fn validate_web_users(users: &[WebUser]) -> Result<(), String> {
                 user.username
             ));
         }
+        // A hash that is not a well-formed PHC string (typically a shell-mangled
+        // value where `$argon2id$...` was expanded) would seed a credential
+        // that can never authenticate. Reject it at load time instead of
+        // silently locking the account out.
+        validate_password_hash(&user.password_hash)
+            .map_err(|error| format!("entry {index} ('{}'): {error}", user.username))?;
         user.api_role().map_err(|error| error.to_string())?;
 
         if let Some(previous) = ids.insert(id.clone(), index) {
@@ -208,6 +240,13 @@ pub fn load_web_users() -> Vec<WebUser> {
     let username = std::env::var("APEX_ADMIN_USERNAME").unwrap_or_default();
     let password_hash = std::env::var("APEX_ADMIN_PASSWORD_HASH").unwrap_or_default();
     if username.is_empty() || password_hash.is_empty() {
+        return Vec::new();
+    }
+    if let Err(error) = validate_password_hash(&password_hash) {
+        tracing::error!(
+            %error,
+            "APEX_ADMIN_PASSWORD_HASH rejected; no admin web user loaded from the environment"
+        );
         return Vec::new();
     }
     vec![WebUser {
@@ -809,13 +848,35 @@ mod tests {
         assert!(!verify_password_hash("pw", &"z".repeat(64)));
     }
 
+    /// A real Argon2id hash; cheap enough to compute once per test process and
+    /// required now that bootstrap rejects malformed credential material.
+    fn valid_hash() -> String {
+        static HASH: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| hash_password("test-password").expect("hash password"));
+        HASH.clone()
+    }
+
     fn web_user(username: &str, role: &str) -> WebUser {
         WebUser {
             id: String::new(),
             username: username.to_string(),
-            password_hash: "hash".to_string(),
+            password_hash: valid_hash(),
             role: role.to_string(),
         }
+    }
+
+    #[test]
+    fn malformed_password_hashes_are_rejected_at_bootstrap() {
+        // A shell-mangled `$argon2id$...` value must not seed a credential no
+        // login can ever satisfy.
+        let malformed = WebUser {
+            id: String::new(),
+            username: "alice".to_string(),
+            password_hash: "=19=19456,t=2,p=1+IXfXXJoWM".to_string(),
+            role: "admin".to_string(),
+        };
+        let error = validate_web_users(&[malformed]).expect_err("malformed hash must be rejected");
+        assert!(error.contains("Argon2id"), "unexpected error: {error}");
     }
 
     #[test]
@@ -893,7 +954,7 @@ mod tests {
         // A padded configured name is accepted but bootstrapped trimmed, so
         // the stored name always matches the normalized lookup.
         let padded = serde_json::json!([
-            {"id": "u1", "username": " alice ", "password_hash": "h1", "role": "admin"},
+            {"id": "u1", "username": " alice ", "password_hash": valid_hash(), "role": "admin"},
         ]);
         std::env::set_var("WEB_USERS_JSON", padded.to_string());
         let seeds = bootstrap_seeds();

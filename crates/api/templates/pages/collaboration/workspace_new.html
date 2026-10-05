@@ -17,7 +17,7 @@
 
 {% block content %}
 <div class="max-w-2xl">
-  {% call m::page_header("New Workspace", "folder", "Open an investigation workspace to collaborate with your team.", "") %}
+  {% call m::page_header("New Workspace", "folder", "Open an investigation workspace to collaborate with your team.", "", "", "", "", "") %}
 
   {% if let Some(notice) = error_notice %}
   <div class="apex-card border border-rams-red/40 p-4 mb-4 text-sm font-semibold text-rams-red" role="alert" data-workspace-error>

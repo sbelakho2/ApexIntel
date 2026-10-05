@@ -375,10 +375,14 @@ steps:
       - 'curl -sf -H "Authorization: Bearer ci-features-check-key-0123456789abcdef" http://127.0.0.1:9095/api/features | grep -q "\"llm_enabled\":true"'
       # Deployment provenance route must answer with the running service identity.
       - curl -sf http://127.0.0.1:9095/api/version | grep -q '"service":"apex-api"'
+      - bash scripts/ci/check_ui_components.sh
       - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs
       # Every registered GET route (web + API) with seeded ids: no 5xx, no
       # 404 for a seeded detail page, no server-side ERROR log lines.
       - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword SWEEP_ADMIN_KEY=ci-sweep-admin-key-0123456789abcdef0123 SERVER_LOG=/tmp/apex-api.log node scripts/ci/e2e_route_sweep.mjs
+      # Adversarial pixel/a11y/resource scan across every navigation route at
+      # mobile/tablet/desktop; screenshots land in artifacts/dogfood.
+      - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/scan_server_ui.mjs
 
   # JOURNEY CONTRACTS — Playwright specs that drive the real UI and then assert
   # the PostgreSQL rows the actions must have produced (not just rendered

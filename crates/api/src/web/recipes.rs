@@ -3,6 +3,7 @@
 //! Covers: recipe list with run stats and status indicators,
 //! recipe creation form.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use askama::Template;
@@ -157,6 +158,8 @@ pub struct RecipeNewPage {
     /// `(category, selected)` pairs, so the template never compares an
     /// `&&str` loop item against the owned form value.
     pub categories: Vec<(&'static str, bool)>,
+    /// `(severity, selected)` pairs for the same reason.
+    pub severities: Vec<(&'static str, bool)>,
 }
 
 /// Sort the recipe list by the requested field/direction (#148). Unknown
@@ -524,6 +527,7 @@ pub async fn new_recipe(
         form: RecipeFormValues::default(),
         form_error: None,
         categories: category_options(&RecipeFormValues::default().category),
+        severities: severity_options(&RecipeFormValues::default().severity),
     };
 
     let _ = is_htmx_request(&headers);
@@ -581,12 +585,19 @@ pub const RECIPE_CATEGORIES: [&str; 7] = [
     "geopolitical_analysis",
 ];
 
+/// Analyst-facing severity the narrative template may reference via
+/// `{{severity}}`. Stored in the recipe definition; the runtime alert severity
+/// still comes from the evaluated thresholds.
+pub const RECIPE_SEVERITIES: [&str; 4] = ["low", "medium", "high", "critical"];
+
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct RecipeCreateForm {
     pub name: String,
     pub category: Option<String>,
     pub join_type: Option<String>,
     pub outcome: Option<String>,
+    pub severity: Option<String>,
+    pub description: Option<String>,
     pub narrative_template: Option<String>,
     pub signals_json: Option<String>,
     pub transforms_json: Option<String>,
@@ -618,6 +629,70 @@ pub struct RecipeCreateForm {
     pub threshold_value: Vec<String>,
     #[serde(default)]
     pub action_row: Vec<String>,
+}
+
+impl RecipeCreateForm {
+    /// Parse the recipe builder's `application/x-www-form-urlencoded` body.
+    ///
+    /// The builder posts one repeated key per row column
+    /// (`signal_observation=…&signal_observation=…`), which
+    /// `serde_urlencoded` cannot deserialize into a `Vec`: it fails with
+    /// "invalid type: string, expected a sequence", so every structured
+    /// submission used to be rejected with a bare 422. Grouping the pairs
+    /// here preserves row order and repeats the way the HTML form defines
+    /// them, while single-valued fields take their last occurrence.
+    fn from_urlencoded(body: &[u8]) -> Self {
+        const ROW_KEYS: [&str; 12] = [
+            "signal_observation",
+            "signal_field",
+            "signal_operator",
+            "signal_threshold",
+            "signal_window_days",
+            "transform_kind",
+            "transform_field",
+            "transform_window_days",
+            "threshold_metric",
+            "threshold_operator",
+            "threshold_value",
+            "action_row",
+        ];
+        let mut rows: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut singles: HashMap<String, String> = HashMap::new();
+        for (key, value) in url::form_urlencoded::parse(body) {
+            if let Some(row_key) = ROW_KEYS.iter().find(|row_key| **row_key == key.as_ref()) {
+                rows.entry(row_key).or_default().push(value.into_owned());
+            } else {
+                singles.insert(key.into_owned(), value.into_owned());
+            }
+        }
+        let mut take = |key: &str| singles.remove(key);
+        let mut take_row = |key: &'static str| rows.remove(key).unwrap_or_default();
+        RecipeCreateForm {
+            name: take("name").unwrap_or_default(),
+            category: take("category"),
+            join_type: take("join_type"),
+            outcome: take("outcome"),
+            severity: take("severity"),
+            description: take("description"),
+            narrative_template: take("narrative_template"),
+            signals_json: take("signals_json"),
+            transforms_json: take("transforms_json"),
+            thresholds_json: take("thresholds_json"),
+            actions_json: take("actions_json"),
+            signal_observation: take_row("signal_observation"),
+            signal_field: take_row("signal_field"),
+            signal_operator: take_row("signal_operator"),
+            signal_threshold: take_row("signal_threshold"),
+            signal_window_days: take_row("signal_window_days"),
+            transform_kind: take_row("transform_kind"),
+            transform_field: take_row("transform_field"),
+            transform_window_days: take_row("transform_window_days"),
+            threshold_metric: take_row("threshold_metric"),
+            threshold_operator: take_row("threshold_operator"),
+            threshold_value: take_row("threshold_value"),
+            action_row: take_row("action_row"),
+        }
+    }
 }
 
 fn row(rows: &[String], index: usize) -> Option<&str> {
@@ -786,6 +861,8 @@ pub struct RecipeFormValues {
     pub category: String,
     pub join_type: String,
     pub outcome: String,
+    pub severity: String,
+    pub description: String,
     pub narrative_template: String,
     pub signals_json: String,
     pub transforms_json: String,
@@ -804,7 +881,12 @@ impl Default for RecipeFormValues {
             category: RECIPE_CATEGORIES[0].to_string(),
             join_type: String::new(),
             outcome: String::new(),
-            narrative_template: String::new(),
+            severity: RECIPE_SEVERITIES[1].to_string(),
+            description: String::new(),
+            // Scaffold the two required narrative fields so a first recipe is
+            // creatable without the user inventing boilerplate; both remain
+            // editable and are validated exactly as before.
+            narrative_template: "{{entity_name}}: {{summary}}".to_string(),
             signals_json: String::new(),
             transforms_json: String::new(),
             thresholds_json: String::new(),
@@ -812,7 +894,13 @@ impl Default for RecipeFormValues {
             signal_rows: vec![SignalRowValues::default(); SIGNAL_ROW_COUNT],
             transform_rows: vec![TransformRowValues::default(); TRANSFORM_ROW_COUNT],
             threshold_rows: vec![ThresholdRowValues::default(); THRESHOLD_ROW_COUNT],
-            action_rows: vec![String::new(); ACTION_ROW_COUNT],
+            action_rows: {
+                let mut rows = vec![String::new(); ACTION_ROW_COUNT];
+                if let Some(first) = rows.first_mut() {
+                    *first = "Review the matched signals and decide whether to engage.".to_string();
+                }
+                rows
+            },
         }
     }
 }
@@ -892,6 +980,12 @@ impl RecipeFormValues {
                 .unwrap_or(defaults.category),
             join_type: form.join_type.clone().unwrap_or_default(),
             outcome: form.outcome.clone().unwrap_or_default(),
+            severity: form
+                .severity
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(defaults.severity),
+            description: form.description.clone().unwrap_or_default(),
             narrative_template: form.narrative_template.clone().unwrap_or_default(),
             signals_json: form.signals_json.clone().unwrap_or_default(),
             transforms_json: form.transforms_json.clone().unwrap_or_default(),
@@ -913,6 +1007,8 @@ pub struct ValidatedRecipeDefinition {
     pub category: String,
     pub join_type: Option<String>,
     pub outcome: Option<String>,
+    pub severity: String,
+    pub description: String,
     pub narrative_template: String,
     pub signals: Vec<SignalSpec>,
     pub signals_json: serde_json::Value,
@@ -1246,11 +1342,32 @@ pub fn validate_recipe_definition(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
 
+    let severity = form
+        .severity
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(RECIPE_SEVERITIES[1]);
+    if !RECIPE_SEVERITIES.contains(&severity) {
+        return Err(format!(
+            "severity '{severity}' is not supported (expected one of: {})",
+            RECIPE_SEVERITIES.join(", ")
+        ));
+    }
+    let description = form
+        .description
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+
     Ok(ValidatedRecipeDefinition {
         name,
         category,
         join_type,
         outcome,
+        severity: severity.to_string(),
+        description,
         narrative_template,
         signals,
         signals_json,
@@ -1266,6 +1383,13 @@ fn category_options(selected: &str) -> Vec<(&'static str, bool)> {
     RECIPE_CATEGORIES
         .iter()
         .map(|category| (*category, *category == selected))
+        .collect()
+}
+
+fn severity_options(selected: &str) -> Vec<(&'static str, bool)> {
+    RECIPE_SEVERITIES
+        .iter()
+        .map(|severity| (*severity, *severity == selected))
         .collect()
 }
 
@@ -1287,6 +1411,7 @@ async fn render_recipe_new_error(
         theme: context.theme,
         degraded_notice,
         categories: category_options(&values.category),
+        severities: severity_options(&values.severity),
         form: values,
         form_error: Some(error),
     };
@@ -1298,9 +1423,9 @@ async fn render_recipe_new_error(
 pub async fn create_recipe_form(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
-    axum::Form(form): axum::Form<RecipeCreateForm>,
+    axum::extract::RawForm(body): axum::extract::RawForm,
 ) -> axum::response::Response {
-    let mut form = form;
+    let mut form = RecipeCreateForm::from_urlencoded(&body);
     materialize_builder_rows(&mut form);
     let submitted_values = RecipeFormValues::from_submitted(&form);
 
@@ -1341,6 +1466,8 @@ pub async fn create_recipe_form(
             &definition.thresholds_json,
             &definition.narrative_template,
             &definition.action_playbook_json,
+            &definition.severity,
+            &definition.description,
             session.user_id.as_str(),
         )
         .await
@@ -1382,6 +1509,30 @@ mod tests {
             actions_json: Some(r#"["Review the patent filings before outreach."]"#.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn repeated_row_keys_deserialize_into_ordered_row_vectors() {
+        // The structured builder posts one repeated key per row column;
+        // serde_urlencoded rejects that shape, so the handler parses pairs.
+        let body = "name=Patent+surge&category=competitor_market&severity=high\
+                    &signal_observation=NewsArticle&signal_observation=JobPost\
+                    &signal_field=count&signal_field=count\
+                    &signal_operator=above&signal_operator=increase\
+                    &signal_threshold=3&signal_threshold=&signal_window_days=30\
+                    &signal_window_days=14&action_row=Review";
+        let form = RecipeCreateForm::from_urlencoded(body.as_bytes());
+        assert_eq!(form.name, "Patent surge");
+        assert_eq!(form.severity.as_deref(), Some("high"));
+        assert_eq!(form.signal_observation, vec!["NewsArticle", "JobPost"]);
+        assert_eq!(form.signal_operator, vec!["above", "increase"]);
+        assert_eq!(form.signal_threshold, vec!["3", ""]);
+        assert_eq!(form.signal_window_days, vec!["30", "14"]);
+        assert_eq!(form.action_row, vec!["Review"]);
+
+        // Duplicate single-valued keys keep the last value (browser order).
+        let form = RecipeCreateForm::from_urlencoded(b"name=First&name=Second");
+        assert_eq!(form.name, "Second");
     }
 
     #[test]

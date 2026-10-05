@@ -190,7 +190,12 @@ checks = [
 ]
 
 for relative in tracked("crates/api/src/web", "crates/api/src/api_handlers"):
-    raw = (root / relative).read_text(encoding="utf-8", errors="replace")
+    path = root / relative
+    if not path.exists():
+        # Deleted-but-still-tracked files (e.g. superseded handlers removed
+        # during an audit) are not part of the checked surface.
+        continue
+    raw = path.read_text(encoding="utf-8", errors="replace")
     masked = mask_comments(blank_test_modules(raw))
     original_lines = raw.splitlines()
     for name, pattern in checks:

@@ -9,6 +9,7 @@ use askama::Template;
 use axum::{
     extract::Form,
     extract::Path,
+    extract::Query,
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
     Extension,
@@ -1411,6 +1412,7 @@ pub async fn bookmark_insight_html(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
+    Query(toggle): Query<BookmarkToggleQuery>,
 ) -> impl IntoResponse {
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
@@ -1467,20 +1469,49 @@ pub async fn bookmark_insight_html(
     // address is the session user who just clicked, and a notification must
     // never be addressed to the actor for their own action.
 
-    // #139: return the same button, toggled, so `hx-target="this"` +
-    // `hx-swap="outerHTML"` replaces the clicked control in place. The
-    // returned markup must carry its own hx-target (inherited attributes do
-    // not survive an outerHTML swap).
-    Html(render_bookmark_button(&id, bookmarked)).into_response()
+    // Global component: the response renders the same
+    // `components/bookmark_button.html` file that every page includes, so the
+    // toggled control can never drift from the initial one. The requesting
+    // surface passes its variant so an icon stays an icon.
+    let variant = if toggle.variant.as_deref() == Some("icon") {
+        "icon"
+    } else {
+        "text"
+    };
+    Html(render_bookmark_button(&id, bookmarked, variant)).into_response()
 }
 
-/// The bookmark control as it is rendered both by the detail page and by the
-/// toggle response, so one click always yields the opposite action in place.
-pub fn render_bookmark_button(id: &str, bookmarked: bool) -> String {
-    let label = if bookmarked { "Unbookmark" } else { "Bookmark" };
-    format!(
-        r#"<button hx-post="/insights/{id}/bookmark" hx-target="this" hx-swap="outerHTML" class="apex-btn apex-btn-primary">{label}</button>"#
-    )
+/// Query for the bookmark toggle. `variant=icon` is set by list cards; the
+/// detail header omits it and receives the text variant.
+#[derive(Debug, Default, Deserialize)]
+pub struct BookmarkToggleQuery {
+    pub variant: Option<String>,
+}
+
+/// Askama view of the shared bookmark component. Rendering the toggle
+/// response through this struct is what keeps the endpoint and the templates
+/// on one definition.
+#[derive(askama::Template)]
+#[template(path = "components/bookmark_button.html")]
+struct BookmarkButtonFragment {
+    insight_bookmark_id: String,
+    insight_bookmark_active: bool,
+    insight_bookmark_variant: &'static str,
+}
+
+/// The bookmark control as it is rendered both by pages and by the toggle
+/// response, so one click always yields the opposite action in place.
+pub fn render_bookmark_button(id: &str, bookmarked: bool, variant: &'static str) -> String {
+    BookmarkButtonFragment {
+        insight_bookmark_id: id.to_string(),
+        insight_bookmark_active: bookmarked,
+        insight_bookmark_variant: variant,
+    }
+    .render()
+    .unwrap_or_else(|error| {
+        tracing::error!(%error, "bookmark component render failed");
+        String::new()
+    })
 }
 
 /// POST /insights/:id/analyze — enqueue a durable analysis run (#169) and
@@ -1952,15 +1983,28 @@ mod tests {
 
     #[test]
     fn bookmark_button_replaces_itself_with_the_toggled_action() {
-        let add = render_bookmark_button("abc", false);
+        let add = render_bookmark_button("abc", false, "text");
         assert!(add.contains(r#"hx-target="this""#));
         assert!(add.contains(r#"hx-swap="outerHTML""#));
-        assert!(add.contains(">Bookmark<"), "{add}");
+        assert!(add.contains("Bookmark"), "{add}");
+        assert!(!add.contains("Unbookmark"), "{add}");
         assert!(!add.contains("Processing"));
 
-        let remove = render_bookmark_button("abc", true);
-        assert!(remove.contains(">Unbookmark<"), "{remove}");
+        let remove = render_bookmark_button("abc", true, "text");
+        assert!(remove.contains("Unbookmark"), "{remove}");
         assert!(remove.contains("/insights/abc/bookmark"));
+        // The text variant keeps its stable status slot after the swap.
+        assert!(remove.contains(r#"id="bookmark-status""#), "{remove}");
+        assert!(remove.contains(r#"title="Remove bookmark""#), "{remove}");
+
+        // List surfaces get the icon variant back, tagged with the variant so
+        // repeated toggles stay icons. The visible label is an icon, so the
+        // accessible name comes from the title.
+        let icon = render_bookmark_button("abc", true, "icon");
+        assert!(icon.contains("data-bookmark-control"), "{icon}");
+        assert!(icon.contains("variant=icon"), "{icon}");
+        assert!(icon.contains("Remove bookmark"), "{icon}");
+        assert!(!icon.contains("Unbookmark"), "{icon}");
     }
 
     #[test]
@@ -2114,8 +2158,10 @@ mod tests {
     #[test]
     fn insight_actions_never_write_a_self_addressed_notification() {
         let source = include_str!("insights.rs");
-        let bookmark_category = ["insight", "bookmark"].join("_");
-        let note_title = ["Insight", "note", "added"].join(" ");
+        // Match the notification *literals*, not identifiers: the shared
+        // bookmark component legitimately names its variables insight_bookmark_*.
+        let bookmark_category = format!("\"{}\"", ["insight", "bookmark"].join("_"));
+        let note_title = format!("\"{}\"", ["Insight", "note", "added"].join(" "));
         assert!(
             !source.contains(&bookmark_category),
             "the bookmark toggle must not write a self-addressed notification"

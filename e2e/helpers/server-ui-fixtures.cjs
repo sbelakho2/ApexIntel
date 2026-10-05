@@ -552,11 +552,26 @@ async function login(page) {
   const user = process.env.ADMIN_USER || 'admin';
   const pass = process.env.ADMIN_PASS || 'adminpassword';
 
-  await page.goto(`${baseURL}/login`, { waitUntil: 'domcontentloaded' });
-  await page.getByLabel(/^username$/i).fill(user);
-  await page.getByLabel(/^password$/i).fill(pass);
-  await page.getByRole('button', { name: /sign in/i }).click();
-  await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 15_000 });
+  // Bursts of spec logins can hit the API rate limiter; a 429 renders as a
+  // JSON body instead of the form. Retry the whole flow a bounded number of
+  // times so a transient limiter response cannot fail an unrelated assertion.
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await page.goto(`${baseURL}/login`, { waitUntil: 'domcontentloaded' });
+    try {
+      await page.getByLabel(/^username$/i).fill(user, { timeout: 10_000 });
+      await page.getByLabel(/^password$/i).fill(pass);
+      await page.getByRole('button', { name: /sign in/i }).click();
+      await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 15_000 });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) {
+        await page.waitForTimeout(1_500);
+      }
+    }
+  }
+  throw lastError;
 }
 
 module.exports = { SEED, seedDatabase, login, databaseUrl };

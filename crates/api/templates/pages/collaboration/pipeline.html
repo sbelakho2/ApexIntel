@@ -27,28 +27,28 @@
     </div>
     {% if can_write %}
     <div>
-      <details class="inline-block">
+      <details class="apex-menu">
         <summary class="apex-btn apex-btn-primary cursor-pointer">New Opportunity</summary>
-        <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
+        <div class="apex-popover apex-popover-anchored">
           <form action="/pipeline" method="post" class="space-y-2">
             <input type="text" name="title" placeholder="Opportunity title" required class="apex-input">
             <label class="sr-only" for="pipeline-stage">Stage</label>
-            <select id="pipeline-stage" name="stage" required class="apex-input">
+            <select id="pipeline-stage" name="stage" aria-label="Pipeline stage" required class="apex-input">
               {% for (value, label) in stage_options %}
               <option value="{{ value }}">{{ label }}</option>
               {% endfor %}
             </select>
-            <input type="number" name="value_estimate" step="0.01" placeholder="Estimated value" class="apex-input">
+            <input type="number" name="value_estimate" aria-label="Estimated value" step="0.01" placeholder="Estimated value" class="apex-input">
             <label class="sr-only" for="pipeline-probability">Probability (%)</label>
             <input id="pipeline-probability" type="number" name="probability" min="0" max="100" step="1" value="50" required placeholder="Probability %" class="apex-input">
             <label class="sr-only" for="pipeline-owner">Owner</label>
-            <select id="pipeline-owner" name="owner_id" class="apex-input">
+            <select id="pipeline-owner" name="owner_id" aria-label="Owner" class="apex-input">
               <option value="">Unassigned</option>
               {% for (id, label) in owner_options %}
               <option value="{{ id }}">{{ label }}</option>
               {% endfor %}
             </select>
-            <input type="date" name="expected_close" class="apex-input">
+            <input type="date" name="expected_close" aria-label="Expected close date" class="apex-input">
             <textarea name="notes" placeholder="Notes" rows="2" class="apex-input"></textarea>
             <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Create</button>
           </form>
