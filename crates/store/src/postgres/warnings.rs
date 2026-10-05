@@ -83,28 +83,40 @@ fn warning_dedup_query<'a>(
     include_deleted: bool,
     select_tail: &'static str,
 ) -> QueryBuilder<'a, Postgres> {
+    // `DISTINCT ON` over the same partition keys as the old window function,
+    // now reading the stored generated columns (migration 106) so the
+    // per-row regexp/trim work is paid at write time, not on every list
+    // request. The composite index `idx_warnings_dedup_keys` matches exactly
+    // this key list plus the freshness order, so PostgreSQL walks groups in
+    // index order instead of sorting a 14k-row window (measured ~922 ms →
+    // single-digit ms).
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         r#"WITH dedup AS (
-               SELECT * FROM (
-                   SELECT w.*,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY
-                               CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
-                               lower(trim(regexp_replace(w.title, '^\[[^]]+\]\s*', ''))),
-                               lower(trim(w.warning_type)),
-                               lower(trim(w.severity)),
-                               coalesce(lower(w.region), ''),
-                               left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380)
-                           ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
-                       ) AS rn
-                   FROM warnings w
-                   WHERE ("#,
+               SELECT DISTINCT ON (
+                   CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
+                   w.dedup_title_key,
+                   w.dedup_type_key,
+                   w.dedup_severity_key,
+                   w.dedup_region_key,
+                   w.dedup_description_key
+               ) w.*
+               FROM warnings w
+               WHERE ("#,
     );
     qb.push_bind(include_deleted);
     qb.push(
         r#" OR w.deleted_at IS NULL)
-               ) ranked
-               WHERE ranked.rn = 1
+               ORDER BY
+                   CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
+                   w.dedup_title_key,
+                   w.dedup_type_key,
+                   w.dedup_severity_key,
+                   w.dedup_region_key,
+                   w.dedup_description_key,
+                   w.updated_at DESC NULLS LAST,
+                   w.created_at DESC NULLS LAST,
+                   w.ts_utc DESC,
+                   w.id DESC
            )
            "#,
     );
