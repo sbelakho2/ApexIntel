@@ -349,14 +349,14 @@ impl PgStore {
             filters.bookmarked_by.as_deref()
         {
             let mut q = QueryBuilder::new(
-                "SELECT COUNT(DISTINCT CONCAT_WS('|', LOWER(TRIM(i.title)), LOWER(COALESCE(i.insight_type, '')), LOWER(COALESCE(i.region, '')))) FROM insights i
+                "SELECT COUNT(DISTINCT LOWER(TRIM(i.title)) || '|' || LOWER(COALESCE(i.insight_type, '')) || '|' || LOWER(COALESCE(i.region, ''))) FROM insights i
                  INNER JOIN insight_bookmarks bk ON bk.insight_id = i.id AND bk.user_id = ",
             );
             q.push_bind(bookmarked_by.to_string());
             q
         } else {
             QueryBuilder::new(
-                "SELECT COUNT(DISTINCT CONCAT_WS('|', LOWER(TRIM(title)), LOWER(COALESCE(insight_type, '')), LOWER(COALESCE(region, '')))) FROM insights",
+                "SELECT COUNT(DISTINCT LOWER(TRIM(title)) || '|' || LOWER(COALESCE(insight_type, '')) || '|' || LOWER(COALESCE(region, ''))) FROM insights",
             )
         };
         let col_prefix = if filters.bookmarked_by.is_some() {

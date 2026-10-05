@@ -315,7 +315,10 @@ impl PgStore {
                existing AS (
                    SELECT persons.id
                    FROM persons, identity_lock
-                   WHERE lower(regexp_replace(trim(persons.name), '\s+', ' ', 'g')) = $2
+                   -- Migration 107: the normalized name is a stored generated
+                   -- column with a btree index, so identity matching is an
+                   -- index probe instead of a per-call regexp scan.
+                   WHERE persons.name_normalized = $2
                      AND persons.primary_org_id IS NOT DISTINCT FROM $6
                    ORDER BY persons.created_at ASC NULLS LAST, persons.id ASC
                    LIMIT 1

@@ -535,7 +535,8 @@ pub(super) async fn run_person_mention_materialization(
             // Dedup against existing persons by normalized name + org.
             let name_key = normalize_name_key(&clean);
             let exists: bool = match sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM persons WHERE lower(regexp_replace(name, '\\s+', ' ', 'g')) = lower($1))",
+                // Migration 107: normalized name is a stored indexed column.
+                "SELECT EXISTS(SELECT 1 FROM persons WHERE name_normalized = lower(trim($1)))",
             )
             .bind(&name_key)
             .fetch_one(&store.pool)
