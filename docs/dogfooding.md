@@ -54,6 +54,45 @@ unreachable set with errors.
 - robots-denied fetches are identifiable as robots errors,
 - registry invariant tests (floors, enabled-only, supplement coverage).
 
+## 3. Whole-repo coverage manifest (jobs + subsystems)
+
+`crates/worker/src/dogfood.rs` registers **every worker job** (all 44
+`JobKind` variants) and **every subsystem** with how each is dogfooded:
+
+- `Live` — scheduled; the audit asserts the latest terminal run is within the
+  job's own cadence (`max_age_hours`), its status is not `failed`, the failure
+  streak is below the circuit policy, and the circuit is closed.
+- `Manual` — trigger-only (insight analysis, supplier pricing); asserted for
+  failure streaks/circuit, execution proven by the trigger path's tests.
+- `SubStep` — runs inside a parent job (hypothesis generation under pattern
+  mining); asserted through the parent.
+- `IdleOk` — legitimately idle when unconfigured or when queues are empty
+  (StarzCRM sync, empty triage); skips are healthy.
+- `Ci` — enforced by CI gates (browser suites, static guards).
+
+Enforcement so the manifest cannot drift:
+- `scheduler.rs::dogfood_coverage_tests::all_job_kinds_match_the_dogfood_manifest`
+  asserts `ALL_JOB_KINDS` round-trips and that the manifest covers exactly the
+  enum's job set in both directions (a new job without a manifest row fails CI);
+- the manifest's own tests assert unique names, non-empty checks, and a
+  cadence for every Live job;
+- `source_pipeline_dogfood --db` executes the live matrix on production.
+
+This layer exists because the analytical and source dogfoods together still
+missed whole subsystems: the 2026-10-06 audit found a KEV fetch circuit at 40
+consecutive failures, a dark-web scan degraded forever for "no monitored
+entities", a sanctions job hitting its 30-minute timeout as the portfolio
+grew, and a crawl cycle wrongly reporting `failed` for upstream source state.
+
+### Subsystems registered (23)
+Source acquisition, source health detection, crawl scheduling, feed
+parsing/ingest, dark web/Tor, sanctions screening, analytical pipeline,
+insight generation, insight surfaces (retraction filtering), warning
+lifecycle, recipes, learning/calibration, triage/feedback, search, API routes,
+web UI, notifications/outbox, jobs/scheduler, store/schema,
+observability, model portability, exports/artifacts, config/env contract —
+see `SUBSYSTEMS` for the executable check behind each.
+
 ## Running
 
 ```bash

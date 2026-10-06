@@ -187,6 +187,18 @@ pub struct SanctionsScreener {
     threshold: f64,
     /// When this screener was last refreshed.
     pub last_refreshed: DateTime<Utc>,
+    /// Lazy two-character token buckets: entry indices grouped by the
+    /// 2-char prefixes of their name tokens. `screen_entity` only examines
+    /// entries sharing a bucket with the query, which turns the former
+    /// O(entities × list) full scans (30-minute timeout) into a small
+    /// candidate set while preserving the token-gated matcher semantics
+    /// (Jaro-Winkler >= 0.90 requires a shared 2-char prefix in practice;
+    /// 1-char tokens bucket by their full token).
+    token_buckets: std::sync::OnceLock<std::collections::HashMap<String, Vec<usize>>>,
+    /// Lazy identifier index: uppercase identifier value -> entry indices.
+    /// Identifier matches are name-independent, so they need their own
+    /// candidate path through the token-bucket pruning.
+    identifier_buckets: std::sync::OnceLock<std::collections::HashMap<String, Vec<usize>>>,
 }
 
 impl SanctionsScreener {
@@ -196,6 +208,8 @@ impl SanctionsScreener {
             entries: Vec::new(),
             threshold: 0.92,
             last_refreshed: Utc::now(),
+            token_buckets: std::sync::OnceLock::new(),
+            identifier_buckets: std::sync::OnceLock::new(),
         }
     }
 
@@ -554,6 +568,80 @@ impl SanctionsScreener {
 
     // ── Screening ─────────────────────────────────────────────────────────────
 
+    /// Entry indices whose names share a 2-char token bucket with any query
+    /// token. Recall-safe for the token-gated matcher: a Jaro-Winkler token
+    /// match >= 0.90 shares the first two characters except for very short
+    /// tokens, which bucket by their full text.
+    fn candidate_entry_indices(&self, query_tokens: &[String]) -> Vec<usize> {
+        let buckets = self.token_buckets.get_or_init(|| {
+            let mut map: std::collections::HashMap<String, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (index, entry) in self.entries.iter().enumerate() {
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for name in &entry.searchable_names {
+                    for token in normalize_name_tokens(name) {
+                        let key: String = if token.chars().count() <= 2 {
+                            token
+                        } else {
+                            token.chars().take(2).collect()
+                        };
+                        if seen.insert(key.clone()) {
+                            map.entry(key).or_default().push(index);
+                        }
+                    }
+                }
+            }
+            map
+        });
+
+        let mut indices: Vec<usize> = Vec::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for token in query_tokens {
+            let key: String = if token.chars().count() <= 2 {
+                token.clone()
+            } else {
+                token.chars().take(2).collect()
+            };
+            if let Some(entries) = buckets.get(&key) {
+                for index in entries {
+                    if seen.insert(*index) {
+                        indices.push(*index);
+                    }
+                }
+            }
+        }
+        indices
+    }
+
+    /// Entry indices matching any supplied identifier value (name-independent).
+    fn identifier_entry_indices(&self, identifiers: &[(String, String)]) -> Vec<usize> {
+        if identifiers.is_empty() {
+            return Vec::new();
+        }
+        let buckets = self.identifier_buckets.get_or_init(|| {
+            let mut map: std::collections::HashMap<String, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (index, entry) in self.entries.iter().enumerate() {
+                for (_id_type, value, _country) in &entry.identifiers {
+                    map.entry(value.to_uppercase()).or_default().push(index);
+                }
+            }
+            map
+        });
+        let mut indices: Vec<usize> = Vec::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (_query_type, value) in identifiers {
+            if let Some(entries) = buckets.get(&value.to_uppercase()) {
+                for index in entries {
+                    if seen.insert(*index) {
+                        indices.push(*index);
+                    }
+                }
+            }
+        }
+        indices
+    }
+
     /// Screen an entity name (and optional identifiers) against all loaded sanctions lists.
     ///
     /// `name` — the entity name to screen (person or organisation).
@@ -566,10 +654,16 @@ impl SanctionsScreener {
         identifiers: &[(String, String)],
     ) -> Vec<SanctionsMatch> {
         let query_lower = name.to_lowercase();
+        let query_tokens = normalize_name_tokens(name);
+        let mut candidate_indices = self.candidate_entry_indices(&query_tokens);
+        candidate_indices.extend(self.identifier_entry_indices(identifiers));
+        candidate_indices.sort_unstable();
+        candidate_indices.dedup();
 
         let mut matches: Vec<SanctionsMatch> = Vec::new();
 
-        for entry in &self.entries {
+        for &entry_index in &candidate_indices {
+            let entry = &self.entries[entry_index];
             // Check identifier exact matches first (highest confidence)
             let mut id_matches: Vec<IdentifierMatch> = Vec::new();
             for (_q_type, q_value) in identifiers {

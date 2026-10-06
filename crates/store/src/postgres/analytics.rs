@@ -1302,6 +1302,26 @@ impl PgStore {
     }
 }
 
+impl PgStore {
+    /// Company ids to monitor for dark-web exposure when no explicit
+    /// monitoring rules are configured: the tracked portfolio, newest
+    /// activity first. A permanently empty rule set used to degrade the
+    /// dark-web scan forever (2026-10-06); monitoring the tracked portfolio
+    /// is the correct default — env rules extend/override it.
+    pub async fn list_dark_web_target_company_ids(&self, limit: i64) -> Result<Vec<Uuid>> {
+        let rows = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT id FROM companies
+               WHERE domain IS NOT NULL AND domain <> ''
+               ORDER BY updated_at DESC NULLS LAST
+               LIMIT $1"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::saturating_count_to_u64;

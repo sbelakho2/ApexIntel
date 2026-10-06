@@ -568,15 +568,24 @@ pub(super) async fn run_self_improvement_cycle(
         source_run.items_processed + cross_run.items_processed + outcome_run.items_processed;
     // Degraded stages count as failures here: a stage that ran with failed
     // inputs or explicitly missing features must not roll up as success.
-    let base_failed = [&source_run, &cross_run, &outcome_run]
-        .iter()
-        .filter(|r| {
-            matches!(
-                r.status,
-                JobStatus::Failed { .. } | JobStatus::Degraded { .. }
-            )
-        })
-        .count();
+    // The failing component names travel into the run notes so one glance
+    // identifies the broken stage (2026-10-06: "1 sub-jobs/components failed"
+    // forced a manual dig through history).
+    let mut failed_component_names: Vec<String> = [
+        ("source_scoring", &source_run),
+        ("cross_domain_mining", &cross_run),
+        ("outcome_tracking", &outcome_run),
+    ]
+    .iter()
+    .filter(|(_, run)| {
+        matches!(
+            run.status,
+            JobStatus::Failed { .. } | JobStatus::Degraded { .. }
+        )
+    })
+    .map(|(name, _)| (*name).to_string())
+    .collect();
+    let base_failed = failed_component_names.len();
 
     #[cfg(feature = "llm")]
     let (mut total, mut failed, mut partial_learning_failures) = {
@@ -641,14 +650,18 @@ pub(super) async fn run_self_improvement_cycle(
                 // persistence step, or a partial learning stage, degrades it:
                 // the cycle produced values, but they are not fully recorded.
                 if outcome.has_terminal_learning_failure() {
+                    let stages: Vec<&str> = stage_failures
+                        .iter()
+                        .map(|failure| failure.stage.as_str())
+                        .collect();
                     tracing::error!(
-                        stages = ?stage_failures
-                            .iter()
-                            .map(|failure| failure.stage.as_str())
-                            .collect::<Vec<_>>(),
+                        stages = ?stages,
                         "self_improvement_cycle: llm learning stages failed"
                     );
                     failed += 1;
+                    for stage in stages {
+                        failed_component_names.push(format!("llm:{stage}"));
+                    }
                 } else if !stage_failures.is_empty() || outcome.persistence_degraded() {
                     tracing::warn!(
                         stages = ?stage_failures
@@ -663,6 +676,7 @@ pub(super) async fn run_self_improvement_cycle(
             Err(e) => {
                 tracing::error!(error = %e, "self_improvement_cycle: llm continuous improvement failed");
                 failed += 1;
+                failed_component_names.push("llm_continuous_improvement".to_string());
             }
         }
         (total, failed, partial_learning_failures)
@@ -694,12 +708,14 @@ pub(super) async fn run_self_improvement_cycle(
         Err(error) => {
             tracing::error!(%error, "self_improvement_cycle: analytical quality review failed");
             failed += 1;
+            failed_component_names.push("analytical_quality_review".to_string());
         }
     }
 
     if failed > 0 {
+        let failed_components = failed_component_names.join(", ");
         run.fail(&format!(
-            "self_improvement_cycle: {failed} sub-jobs/components failed"
+            "self_improvement_cycle: {failed} sub-jobs/components failed: [{failed_components}]"
         ));
     } else if partial_learning_failures {
         run.degrade(

@@ -1841,7 +1841,13 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             tracing::warn!(%error, "crawl_cycle: failed to record crawl health warning");
         }
 
-        run.fail(&format!(
+        // Upstream source failures are *state*, not job death: the cycle
+        // attempted, ingested, and tracked every source. Mark the run
+        // degraded (the operational warning above carries the alert); only
+        // infrastructure failures (store writes, client build) fail the job.
+        // Incident 2026-10-06: a 26%-success batch of dead legacy sources
+        // marked the whole job failed and tripped liveness/scheduler policy.
+        run.degrade(ingested, &format!(
             "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} due_sources_remaining={} total_coverage_debt={:.2} scheduler_state_write_failures={} failed_sources=[{}] browser_unavailable_sources=[{}]",
             sources_due,
             sources_attempted,

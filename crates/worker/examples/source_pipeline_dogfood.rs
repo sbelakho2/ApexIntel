@@ -583,6 +583,98 @@ fn truncate(text: &str, max: usize) -> String {
     text.chars().take(max).collect::<String>() + "…"
 }
 
+// ── 3d. Job liveness matrix (--db) ──────────────────────────────────────────
+
+/// Whole-repo job coverage: every registered job is asserted against its own
+/// persisted state (`worker_job_state`) and run history
+/// (`worker_job_history`). This is what caught the 40-failure KEV circuit, the
+/// forever-degraded dark-web scan, and the sanctions timeout (2026-10-06).
+async fn job_liveness(harness: &mut Harness, pool: &sqlx::PgPool) {
+    use apex_worker::dogfood::{DogfoodMode, JOBS, SUBSYSTEMS};
+
+    println!("[job liveness]");
+    let now = chrono::Utc::now();
+    let mut live_checked = 0usize;
+    let mut idle_ok = 0usize;
+    let mut manual = 0usize;
+    let mut substep = 0usize;
+
+    for job in JOBS {
+        // Failure-streak and circuit checks apply to every mode.
+        let state = sqlx::query(
+            "SELECT consecutive_failures, circuit_open FROM worker_job_state WHERE job_kind = $1",
+        )
+        .bind(job.name)
+        .fetch_optional(pool)
+        .await
+        .expect("load worker job state");
+        if let Some(row) = state {
+            let failures: i32 = row.get("consecutive_failures");
+            let circuit_open: bool = row.get("circuit_open");
+            harness.check(
+                failures < 3,
+                format!(
+                    "{}: failure streak below circuit policy ({failures})",
+                    job.name
+                ),
+            );
+            harness.check(!circuit_open, format!("{}: circuit closed", job.name));
+        }
+
+        match job.mode {
+            DogfoodMode::Live => {
+                live_checked += 1;
+                let max_age_hours = job.max_age_hours.unwrap_or(48) as i64;
+                let latest = sqlx::query(
+                    "SELECT status, started_at FROM worker_job_history
+                     WHERE job_kind = $1 ORDER BY started_at DESC LIMIT 1",
+                )
+                .bind(job.name)
+                .fetch_optional(pool)
+                .await
+                .expect("load worker job history");
+                match latest {
+                    None => harness.fail(format!("{}: no run history at all", job.name)),
+                    Some(row) => {
+                        let status: String = row.get("status");
+                        let started: chrono::DateTime<chrono::Utc> = row.get("started_at");
+                        let age_hours = (now - started).num_hours();
+                        harness.check(
+                            age_hours <= max_age_hours,
+                            format!(
+                                "{}: latest run {}h ago (<= {max_age_hours}h)",
+                                job.name, age_hours
+                            ),
+                        );
+                        harness.check(
+                            status != "failed",
+                            format!("{}: latest status '{status}'", job.name),
+                        );
+                    }
+                }
+            }
+            DogfoodMode::IdleOk => idle_ok += 1,
+            DogfoodMode::Manual => manual += 1,
+            DogfoodMode::SubStep => substep += 1,
+            DogfoodMode::Ci => {}
+        }
+    }
+
+    println!(
+        "  note coverage: {live_checked} live-asserted, {idle_ok} idle-ok, {manual} manual, {substep} sub-step; {} jobs registered; {} subsystems registered",
+        JOBS.len(),
+        SUBSYSTEMS.len()
+    );
+    harness.check(
+        live_checked >= 35,
+        format!("live-asserted job count {live_checked} >= 35"),
+    );
+    harness.check(
+        SUBSYSTEMS.len() >= 20,
+        format!("subsystem coverage {} >= 20", SUBSYSTEMS.len()),
+    );
+}
+
 // ── 4. Live endpoint sampling (--live) ──────────────────────────────────────
 
 async fn live_endpoint_sample(harness: &mut Harness, sample: usize, ua_suspects: &[String]) {
@@ -757,6 +849,7 @@ async fn main() {
         detection_crosscheck(&mut harness, &pool, policy_since).await;
         insight_quality(&mut harness, &pool).await;
         warning_hygiene(&mut harness, &pool, policy_since).await;
+        job_liveness(&mut harness, &pool).await;
     } else {
         println!("[runtime-state honesty] skipped (pass --db <DATABASE_URL>)");
         println!("[detection cross-check] skipped (pass --db <DATABASE_URL>)");

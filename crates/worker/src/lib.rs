@@ -15,6 +15,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod activity_logger;
+pub mod dogfood;
 pub mod embedding_indexer;
 pub mod healthcheck;
 pub mod holiday_calendar;

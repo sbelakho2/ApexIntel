@@ -975,31 +975,46 @@ pub(super) async fn run_kev_catalog_fetch(kind: &JobKind, store: &Arc<PgStore>) 
     run.start();
     let url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
 
-    // CISA blocks the production host's IP and the proxy provider blocks HTTP
-    // CONNECT to .gov, so the KEV fetch goes through the same paid SOCKS5 proxy
-    // the rest of the crawler uses — via the shared reqwest stack, not an
-    // external `curl` binary whose absence silently disabled the job.
+    // CISA rejects this host's IP over clearnet (HTTP 403, verified
+    // 2026-10-06) and the paid proxy provider blocks .gov CONNECT, which left
+    // the job in a 40-failure circuit for weeks. Tor is running on the same
+    // host and answers the catalog with HTTP 200 (verified: 1.77 MB payload),
+    // so Tor is the KEV transport. `TOR_ENABLED=false` opts back to direct
+    // fetching for deployments with clearnet access.
     let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+    let tor_enabled = std::env::var("TOR_ENABLED")
+        .ok()
+        .map(|value| apex_core::env::parse_truthy_flag(&value))
+        .unwrap_or(true);
     let mut proxy = None;
-    if let Some(proxy_url) = crate::build_paid_proxy_url_from_env() {
-        let host = proxy_url
-            .replacen("http://", "", 1)
-            .replacen("https://", "", 1);
-        let socks_url = format!("socks5h://{host}");
+    if tor_enabled {
+        let socks_url = std::env::var("TOR_SOCKS_PROXY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                if value.starts_with("socks5://") {
+                    value.replacen("socks5://", "socks5h://", 1)
+                } else if value.starts_with("socks5h://") {
+                    value
+                } else {
+                    format!("socks5h://{value}")
+                }
+            })
+            .unwrap_or_else(|| "socks5h://127.0.0.1:9050".to_string());
         match reqwest::Proxy::all(&socks_url) {
             Ok(configured) => {
-                tracing::info!("kev_catalog_fetch: fetching via SOCKS5 proxy");
+                tracing::info!(proxy = %socks_url, "kev_catalog_fetch: fetching via Tor SOCKS5h");
                 proxy = Some(configured);
             }
             Err(error) => {
                 run.fail(&format!(
-                    "kev_catalog_fetch: invalid proxy configuration {proxy_url:?}: {error}"
+                    "kev_catalog_fetch: invalid Tor proxy configuration {socks_url:?}: {error}"
                 ));
                 return run;
             }
         }
     } else {
-        tracing::info!("kev_catalog_fetch: fetching directly (no proxy configured)");
+        tracing::info!("kev_catalog_fetch: TOR_ENABLED=false; fetching directly");
     }
     let client =
         match apex_crawl::http::external_client_with(apex_crawl::http::ExternalClientOptions {
@@ -1249,11 +1264,23 @@ impl LookalikeEvidence {
     }
 
     /// Only evidence-backed candidates above the warning threshold generate a
-    /// warning. A registered-but-parked domain never does.
+    /// warning. A registered-but-parked domain never does, and — noise audit
+    /// 2026-10-06 — neither does a dictionary-word lookalike that merely
+    /// resolves: 98 warnings/day were "active infrastructure" on domains such
+    /// as benh.com and ebro.de that exist legitimately. A warning now
+    /// requires actual impersonation evidence: the domain presents the brand,
+    /// or carries the full impersonation stack (mail + certificate) at high
+    /// confidence. Infrastructure-only candidates still land as typosquat
+    /// observations for the record.
     pub(super) fn should_warn(&self) -> bool {
-        self.confidence() >= 0.60
-            && self.active_infrastructure_count() >= 2
-            && self.severity() != "low"
+        if self.confidence() < 0.60
+            || self.active_infrastructure_count() < 2
+            || self.severity() == "low"
+        {
+            return false;
+        }
+        self.brand_content_match
+            || (self.mx_present && self.ct_certificate_present && self.confidence() >= 0.80)
     }
 }
 

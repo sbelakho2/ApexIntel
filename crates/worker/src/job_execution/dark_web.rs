@@ -503,7 +503,30 @@ pub(super) async fn run_dark_web_scan(
     // are deduplicated first so each company costs one query regardless of
     // how many rules reference it.
     let configured_rules = rules.as_deref().unwrap_or(&[]);
-    let rule_entity_ids = unique_rule_entity_ids(configured_rules);
+    let mut rule_entity_ids = unique_rule_entity_ids(configured_rules);
+    // Correct default when env rules are absent: monitor the tracked
+    // portfolio. `DARKWEB_MONITORING_RULES` extends/overrides this; without
+    // the portfolio default the job degraded forever with "no monitored
+    // entities" (2026-10-06 incident).
+    let mut portfolio_targets = 0usize;
+    if rule_entity_ids.is_empty() {
+        match store.list_dark_web_target_company_ids(200).await {
+            Ok(ids) => {
+                portfolio_targets = ids.len();
+                tracing::info!(
+                    targets = portfolio_targets,
+                    "dark_web_scan: no env rules; monitoring the tracked portfolio"
+                );
+                rule_entity_ids = ids;
+            }
+            Err(error) => {
+                run.fail(&format!(
+                    "dark_web_scan: failed to load portfolio monitoring targets: {error}"
+                ));
+                return run;
+            }
+        }
+    }
     let referenced = rule_entity_ids.len();
     let mut resolved = 0usize;
     let mut missing = 0usize;
@@ -539,7 +562,7 @@ pub(super) async fn run_dark_web_scan(
     // green zero-post run.
     if !resolution_guard(
         &mut run,
-        configured_rules.len(),
+        configured_rules.len().max(portfolio_targets.min(1)),
         referenced,
         resolved,
         missing,

@@ -186,6 +186,56 @@ impl IsoWeekday {
 // Job identity & status
 // ────────────────────────────────────────────
 
+/// Every named job variant (excludes `Custom`). Kept in sync with the enum by
+/// the round-trip test and with the whole-repo dogfood manifest by
+/// `all_job_kinds_match_the_dogfood_manifest`.
+pub const ALL_JOB_KINDS: &[JobKind] = &[
+    JobKind::CrawlCycle,
+    JobKind::PatternMining,
+    JobKind::HypothesisGeneration,
+    JobKind::PoiRefresh,
+    JobKind::PromotionBoard,
+    JobKind::RecipeDeprecation,
+    JobKind::StrategyMemo,
+    JobKind::FeatureDriftCheck,
+    JobKind::SourceScoring,
+    JobKind::CrossDomainMining,
+    JobKind::OutcomeTracking,
+    JobKind::BreachScan,
+    JobKind::SanctionsScreen,
+    JobKind::SlaEnforcement,
+    JobKind::DnsPostureScan,
+    JobKind::KevCatalogFetch,
+    JobKind::LookalikeDomainScan,
+    JobKind::UpdateEmailDigest,
+    JobKind::SelfImprovementCycle,
+    JobKind::RecipeFire,
+    JobKind::PoiDiscovery,
+    JobKind::SupplierPricingRefresh,
+    JobKind::StarzCrmSync,
+    JobKind::EmbeddingReindex,
+    JobKind::ObservationIndex,
+    JobKind::DarkWebScan,
+    JobKind::TriageProcessing,
+    JobKind::TrendAggregation,
+    JobKind::InsightGeneration,
+    JobKind::InsightAnalysis,
+    JobKind::ThreatIntelRefresh,
+    JobKind::PsychProfileCompute,
+    JobKind::PoiRoleReclassify,
+    JobKind::OsintEnrichment,
+    JobKind::AdversarialAnalysis,
+    JobKind::AnomalyScan,
+    JobKind::SocialScan,
+    JobKind::TenderScan,
+    JobKind::ContactEnrichment,
+    JobKind::IcpScoring,
+    JobKind::EngagementRefresh,
+    JobKind::BuyingCenterDerivation,
+    JobKind::PersonMentionMaterialization,
+    JobKind::NotificationDelivery,
+];
+
 /// The kind of pipeline this job belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum JobKind {
@@ -1398,7 +1448,11 @@ pub fn default_scheduler_with_overrides(o: SchedulerOverrides) -> Scheduler {
 
     // Sanctions screen: daily at 01:30 UTC — fuzzy-match all tracked entities against sanctions lists.
     s.register(
+        // The token-bucket index keeps a normal run in the minutes; two hours is
+        // headroom for very large entity sets (incident 2026-10-06: a full scan
+        // hit the 1800s scheduler timeout as the tracked-company set grew).
         JobDef::new(JobKind::SanctionsScreen, daily(1, 30))
+            .with_timeout(7200)
             .with_jitter(120)
             .with_timeout(*JOB_TIMEOUT_SECS),
     );
@@ -1681,6 +1735,51 @@ pub fn default_scheduler_with_overrides(o: SchedulerOverrides) -> Scheduler {
 // ────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────
+
+#[cfg(test)]
+mod dogfood_coverage_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// Every named job variant round-trips through its string form, and the
+    /// whole-repo dogfood manifest covers exactly the same set. A new job
+    /// variant that skips the manifest, or a manifest row renamed without the
+    /// enum, fails here.
+    #[test]
+    fn all_job_kinds_match_the_dogfood_manifest() {
+        use std::collections::HashSet;
+
+        let enum_names: HashSet<&str> = ALL_JOB_KINDS.iter().map(|kind| kind.as_str()).collect();
+        assert_eq!(
+            enum_names.len(),
+            ALL_JOB_KINDS.len(),
+            "ALL_JOB_KINDS contains duplicate entries"
+        );
+        for kind in ALL_JOB_KINDS {
+            let parsed = JobKind::from_str(kind.as_str());
+            assert_eq!(
+                parsed.as_str(),
+                kind.as_str(),
+                "round-trip failed for {}",
+                kind.as_str()
+            );
+        }
+
+        let manifest_names: HashSet<&str> =
+            crate::dogfood::JOBS.iter().map(|job| job.name).collect();
+        let missing: Vec<&str> = enum_names.difference(&manifest_names).copied().collect();
+        let extra: Vec<&str> = manifest_names.difference(&enum_names).copied().collect();
+        assert!(
+            missing.is_empty(),
+            "jobs missing from the dogfood manifest: {missing:?}"
+        );
+        assert!(
+            extra.is_empty(),
+            "manifest rows without a job variant: {extra:?}"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
