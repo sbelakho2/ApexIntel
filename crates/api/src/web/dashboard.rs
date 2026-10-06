@@ -596,7 +596,8 @@ pub async fn dashboard(
             r#"SELECT
                  (SELECT COUNT(*)::bigint FROM insights
                    WHERE created_at >= $1 AND COALESCE(confidence, 0) >= 0.7
-                     AND COALESCE(insight_type, '') NOT LIKE 'llm_%') AS new_signals,
+                     AND COALESCE(insight_type, '') NOT LIKE 'llm_%'
+                     AND COALESCE(metadata->>'retracted','false') <> 'true') AS new_signals,
                  (SELECT COUNT(DISTINCT entity_id)::bigint FROM observations
                    WHERE ts_utc >= $1 AND entity_id IS NOT NULL
                      AND entity_type = 'company') AS companies_changed,
@@ -696,6 +697,7 @@ pub async fn dashboard(
                WHERE created_at >= $1
                  AND COALESCE(confidence, 0) >= 0.7
                  AND COALESCE(insight_type, '') NOT LIKE 'llm_%'
+                 AND COALESCE(metadata->>'retracted','false') <> 'true'
                ORDER BY confidence DESC NULLS LAST, created_at DESC
                LIMIT 4"#,
         )
@@ -857,6 +859,7 @@ pub async fn dashboard(
                JOIN companies c ON c.id = i.entity_ids[1]
                WHERE i.created_at >= $1
                  AND COALESCE(i.confidence, 0) >= 0.6
+                 AND COALESCE(i.metadata->>'retracted','false') <> 'true'
                  AND COALESCE(i.insight_type, '') NOT LIKE 'llm_%'
                ORDER BY i.confidence DESC NULLS LAST, i.created_at DESC
                LIMIT 4"#,

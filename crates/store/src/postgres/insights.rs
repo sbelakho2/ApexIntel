@@ -256,13 +256,15 @@ impl PgStore {
                  INNER JOIN insight_bookmarks bk ON bk.insight_id = i.id AND bk.user_id = ",
             );
             q.push_bind(bookmarked_by.to_string());
+            q.push(" WHERE COALESCE(i.metadata->>'retracted','false') <> 'true'");
             q
         } else {
             QueryBuilder::new(
                 "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
                         insight_type, region, confidence,
                         evidence_urls, entity_ids, tags, metadata, created_at, updated_at
-                 FROM insights",
+                 FROM insights
+                 WHERE COALESCE(metadata->>'retracted','false') <> 'true'",
             )
         };
         let col_prefix = if filters.bookmarked_by.is_some() {
@@ -271,7 +273,9 @@ impl PgStore {
             ""
         };
 
-        let mut has_where = false;
+        // Retracted products never surface: the predicate above already
+        // established the WHERE clause in both branches.
+        let mut has_where = true;
         if !filters.regions.is_empty() {
             qb.push(if has_where { " AND " } else { " WHERE " });
             qb.push(col_prefix)

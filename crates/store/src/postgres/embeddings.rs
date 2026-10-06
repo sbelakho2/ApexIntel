@@ -282,6 +282,7 @@ impl PgStore {
                         ON e.entity_type = 'insight'
                         AND e.entity_id = i.id::text
                     WHERE e.id IS NULL
+                      AND COALESCE(i.metadata->>'retracted','false') <> 'true'
                     LIMIT $1
                     "#,
                 )
@@ -366,7 +367,9 @@ impl PgStore {
             }
             "insight" => {
                 let row: Option<(Option<String>,)> = sqlx::query_as(
-                    "SELECT COALESCE(description, title) FROM insights WHERE id = $1::uuid",
+                    "SELECT COALESCE(description, title) FROM insights
+                     WHERE id = $1::uuid
+                       AND COALESCE(metadata->>'retracted','false') <> 'true'",
                 )
                 .bind(entity_id)
                 .fetch_optional(&self.pool)

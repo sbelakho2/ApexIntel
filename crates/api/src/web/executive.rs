@@ -462,12 +462,14 @@ pub async fn executive_dashboard(
                 FROM insights i
                 CROSS JOIN LATERAL unnest(COALESCE(i.tags, ARRAY[]::text[])) AS tag
                 WHERE i.created_at >= $1
+                  AND COALESCE(i.metadata->>'retracted','false') <> 'true'
                 UNION ALL
                 SELECT i.insight_type AS topic, i.created_at
                 FROM insights i
                 WHERE i.created_at >= $1
                   AND i.insight_type IS NOT NULL
                   AND i.insight_type NOT LIKE 'llm_%'
+                  AND COALESCE(i.metadata->>'retracted','false') <> 'true'
             ),
             filtered AS (
                 SELECT topic, created_at

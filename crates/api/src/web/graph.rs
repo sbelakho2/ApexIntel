@@ -215,6 +215,7 @@ pub async fn graph_page(
                    SELECT unnest(entity_ids), COALESCE(updated_at, created_at)
                    FROM insights
                    WHERE entity_ids && $1::uuid[]
+                     AND COALESCE(metadata->>'retracted','false') <> 'true'
                ) activity
                WHERE e = ANY($1::uuid[])
                GROUP BY e"#,

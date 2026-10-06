@@ -431,6 +431,7 @@ async fn insight_quality(harness: &mut Harness, pool: &sqlx::PgPool) {
     let rows = sqlx::query(
         "SELECT title, summary FROM insights
          WHERE created_at > now() - interval '7 days'
+           AND COALESCE(metadata->>'retracted','false') <> 'true'
          ORDER BY created_at DESC LIMIT 25",
     )
     .fetch_all(pool)
