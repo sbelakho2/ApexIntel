@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{BooleanQuery, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::*;
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 use uuid::Uuid;
@@ -279,14 +279,123 @@ impl SearchIndex {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<SearchResult>, u64)> {
-        let searcher = self.reader.searcher();
         let query_parser =
             QueryParser::for_index(&self.index, vec![self.title_field, self.body_field]);
         let query = query_parser.parse_query(query_str)?;
-        let total_hits = searcher.search(&query, &Count)? as u64;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).and_offset(offset))?;
+        self.execute_query(query, limit, offset)
+    }
 
-        let mut results = Vec::new();
+    /// Search filtered by entity_type.
+    pub fn search_entity_type(
+        &self,
+        query_str: &str,
+        entity_type: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        Ok(self
+            .search_entity_type_with_total(query_str, entity_type, limit, 0)?
+            .0)
+    }
+
+    pub fn search_entity_type_with_total(
+        &self,
+        query_str: &str,
+        entity_type: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<SearchResult>, u64)> {
+        let query_parser =
+            QueryParser::for_index(&self.index, vec![self.title_field, self.body_field]);
+        let text_query = query_parser.parse_query(query_str)?;
+        // Use BooleanQuery to combine text query with entity_type filter safely
+        let type_term = Term::from_field_text(self.entity_type_field, entity_type);
+        let type_query = TermQuery::new(type_term, IndexRecordOption::Basic);
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, text_query),
+            (Occur::Must, Box::new(type_query)),
+        ]);
+        self.execute_query(Box::new(query), limit, offset)
+    }
+
+    /// Count-only: text query constrained to one entity type. Used for the
+    /// search page facet probes, which must not pay for TopDocs collection.
+    pub fn count_entity_type(&self, query_str: &str, entity_type: &str) -> Result<u64> {
+        let query_parser =
+            QueryParser::for_index(&self.index, vec![self.title_field, self.body_field]);
+        let text_query = query_parser.parse_query(query_str)?;
+        let type_term = Term::from_field_text(self.entity_type_field, entity_type);
+        let type_query = TermQuery::new(type_term, IndexRecordOption::Basic);
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, text_query),
+            (Occur::Must, Box::new(type_query)),
+        ]);
+        let searcher = self.reader.searcher();
+        Ok(searcher.search(&query, &Count)? as u64)
+    }
+
+    /// Ranked search: the text match set is unchanged, but documents whose
+    /// `entity_type` appears in `entity_boosts` receive an additional score.
+    /// This is entity-aware ranking for mixed corpora (a search page where a
+    /// company hit should outrank a raw observation hit for the same text).
+    pub fn search_ranked(
+        &self,
+        query_str: &str,
+        entity_boosts: &[(String, f64)],
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<SearchResult>, u64)> {
+        let query = self.compose_ranked_query(query_str, entity_boosts)?;
+        self.execute_query(query, limit, offset)
+    }
+
+    /// Count-only variant of [`Self::search_ranked`]: identical match set
+    /// (boosts only reorder existing matches, they never add documents).
+    pub fn count_ranked(&self, query_str: &str, entity_boosts: &[(String, f64)]) -> Result<u64> {
+        let query = self.compose_ranked_query(query_str, entity_boosts)?;
+        let searcher = self.reader.searcher();
+        Ok(searcher.search(&*query, &Count)? as u64)
+    }
+
+    fn compose_ranked_query(
+        &self,
+        query_str: &str,
+        entity_boosts: &[(String, f64)],
+    ) -> Result<Box<dyn Query>> {
+        let query_parser =
+            QueryParser::for_index(&self.index, vec![self.title_field, self.body_field]);
+        let text_query = query_parser.parse_query(query_str)?;
+        if entity_boosts.is_empty() {
+            return Ok(text_query);
+        }
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, text_query)];
+        for (entity_type, boost) in entity_boosts {
+            if *boost <= 0.0 || entity_type.is_empty() {
+                continue;
+            }
+            let term = Term::from_field_text(self.entity_type_field, entity_type);
+            let term_query = TermQuery::new(term, IndexRecordOption::Basic);
+            clauses.push((
+                Occur::Should,
+                Box::new(BoostQuery::new(Box::new(term_query), *boost as f32)),
+            ));
+        }
+        Ok(Box::new(BooleanQuery::new(clauses)))
+    }
+
+    /// Single execution path for every search: count, top-docs page, document
+    /// extraction. Keeping it in one place keeps every caller's semantics
+    /// (pagination, totals, scoring, snippets) identical.
+    fn execute_query(
+        &self,
+        query: Box<dyn Query>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<SearchResult>, u64)> {
+        let searcher = self.reader.searcher();
+        let total_hits = searcher.search(&*query, &Count)? as u64;
+        let top_docs = searcher.search(&*query, &TopDocs::with_limit(limit).and_offset(offset))?;
+
+        let mut results = Vec::with_capacity(top_docs.len());
         for (score, doc_address) in top_docs {
             let doc: TantivyDocument = searcher.doc(doc_address)?;
 
@@ -336,101 +445,6 @@ impl SearchIndex {
                 id,
                 entity_type,
                 entity_id,
-                title,
-                snippet,
-                url,
-                region,
-                score,
-                timestamp,
-            });
-        }
-
-        Ok((results, total_hits))
-    }
-
-    /// Search filtered by entity_type.
-    pub fn search_entity_type(
-        &self,
-        query_str: &str,
-        entity_type: &str,
-        limit: usize,
-    ) -> Result<Vec<SearchResult>> {
-        Ok(self
-            .search_entity_type_with_total(query_str, entity_type, limit, 0)?
-            .0)
-    }
-
-    pub fn search_entity_type_with_total(
-        &self,
-        query_str: &str,
-        entity_type: &str,
-        limit: usize,
-        offset: usize,
-    ) -> Result<(Vec<SearchResult>, u64)> {
-        let searcher = self.reader.searcher();
-        let query_parser =
-            QueryParser::for_index(&self.index, vec![self.title_field, self.body_field]);
-        let text_query = query_parser.parse_query(query_str)?;
-        // Use BooleanQuery to combine text query with entity_type filter safely
-        let type_term = Term::from_field_text(self.entity_type_field, entity_type);
-        let type_query = TermQuery::new(type_term, IndexRecordOption::Basic);
-        let query = BooleanQuery::new(vec![
-            (tantivy::query::Occur::Must, text_query),
-            (tantivy::query::Occur::Must, Box::new(type_query)),
-        ]);
-        let total_hits = searcher.search(&query, &Count)? as u64;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).and_offset(offset))?;
-
-        let mut results = Vec::new();
-        for (score, doc_address) in top_docs {
-            let doc: TantivyDocument = searcher.doc(doc_address)?;
-
-            let id = doc
-                .get_first(self.id_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let et = doc
-                .get_first(self.entity_type_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let eid = doc
-                .get_first(self.entity_id_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let title = doc
-                .get_first(self.title_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let body = doc
-                .get_first(self.body_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let url = doc
-                .get_first(self.url_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let region = doc
-                .get_first(self.region_field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let timestamp = doc
-                .get_first(self.timestamp_field)
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-
-            let snippet = truncate_snippet(&body, 200);
-
-            results.push(SearchResult {
-                id,
-                entity_type: et,
-                entity_id: eid,
                 title,
                 snippet,
                 url,
@@ -741,5 +755,85 @@ mod tests {
         // Limit results
         let results = idx.search("electronics", 5).unwrap();
         assert_eq!(results.len(), 5);
+    }
+    #[test]
+    fn ranked_search_boosts_entity_type_without_changing_the_match_set() {
+        let idx = create_test_index();
+        let mut writer = idx.writer(15_000_000).unwrap();
+
+        // Same text in three entity types; the company and person documents
+        // are older, the observation is newest. Boosting must lift the
+        // company hit above an identical-score observation hit, and boosting
+        // must never change how many documents match.
+        for (entity_type, title, ts) in [
+            ("company", "Samsung SDI battery plant", 1_600_000_000i64),
+            ("person", "Samsung SDI account lead", 1_610_000_000),
+            (
+                "observation",
+                "Samsung SDI battery supply note",
+                1_700_000_000,
+            ),
+        ] {
+            idx.index_document(
+                &writer,
+                &Uuid::new_v4().to_string(),
+                entity_type,
+                &Uuid::new_v4().to_string(),
+                title,
+                "Samsung SDI battery supply chain update",
+                "https://example.test/doc",
+                "KR",
+                &["battery".into()],
+                ts,
+            )
+            .unwrap();
+        }
+        writer.commit().unwrap();
+        idx.reload().unwrap();
+
+        let (plain, plain_total) = idx.search_with_total("Samsung battery", 10, 0).unwrap();
+        let boosts = vec![("company".to_string(), 4.0), ("person".to_string(), 2.0)];
+        let (ranked, ranked_total) = idx
+            .search_ranked("Samsung battery", &boosts, 10, 0)
+            .unwrap();
+
+        assert_eq!(
+            plain_total, ranked_total,
+            "boosting must not change the match set"
+        );
+        assert_eq!(plain.len(), ranked.len());
+        assert_eq!(
+            ranked[0].entity_type,
+            "company",
+            "the boosted company hit must rank first: {:?}",
+            ranked.iter().map(|r| &r.entity_type).collect::<Vec<_>>()
+        );
+        assert!(idx.count_ranked("Samsung battery", &boosts).unwrap() == ranked_total);
+    }
+
+    #[test]
+    fn ranked_search_without_boosts_matches_plain_search() {
+        let idx = create_test_index();
+        let mut writer = idx.writer(15_000_000).unwrap();
+        idx.index_document(
+            &writer,
+            &Uuid::new_v4().to_string(),
+            "company",
+            &Uuid::new_v4().to_string(),
+            "Globex Tunisia",
+            "Globex runs PCB assembly",
+            "https://globex.test",
+            "TN",
+            &[],
+            1_700_000_000,
+        )
+        .unwrap();
+        writer.commit().unwrap();
+        idx.reload().unwrap();
+
+        let (plain, _) = idx.search_with_total("globex", 10, 0).unwrap();
+        let (ranked, _) = idx.search_ranked("globex", &[], 10, 0).unwrap();
+        assert_eq!(plain.len(), ranked.len());
+        assert_eq!(plain[0].entity_id, ranked[0].entity_id);
     }
 }

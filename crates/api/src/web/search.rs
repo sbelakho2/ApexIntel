@@ -17,6 +17,10 @@ use uuid::Uuid;
 
 use super::{is_htmx_request, safe_href, PageContext};
 use crate::middleware::session::WebSession;
+use crate::search_runtime::{
+    build_enhanced_search_query, dedupe_and_rank, entity_boosts, highlight_snippet_html,
+    query_tokens, search_runtime, FACET_ENTITY_TYPES,
+};
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::autocomplete::AutocompleteIndex;
 use apex_store::postgres::{PgStore, WarningListFilters};
@@ -198,32 +202,48 @@ pub async fn search_page(
     let (results, total, facets) = if query_str.trim().is_empty() {
         (vec![], 0i64, build_empty_facets(&active_type))
     } else {
-        // B303: sanitize before handing to the Tantivy query parser — raw
-        // `field:value`, `+`, and `^` operators made /search behave
-        // differently from /api/search and could silently error out.
-        let sanitized = crate::routes::semantic_search::sanitize_query(&query_str);
-        if sanitized.is_empty() {
+        // Sanitization + enhancement happen inside the shared builder, so
+        // /search and /api/search rank identically (B303: they used to
+        // diverge because the page skipped the enhanced query).
+        let enhanced = build_enhanced_search_query(&query_str);
+        if enhanced.trim().is_empty() {
             (vec![], 0i64, build_empty_facets(&active_type))
         } else {
             let offset = ((page - 1) * per_page) as usize;
             let limit = per_page as usize;
 
+            let runtime = search_runtime();
             let search_state = DataState::from_result(
                 if active_type == "all" {
-                    search_index.search_with_total(&sanitized, limit, offset)
+                    runtime
+                        .search_ranked(
+                            search_index.clone(),
+                            enhanced.clone(),
+                            entity_boosts(),
+                            limit,
+                            offset,
+                        )
+                        .await
                 } else {
-                    search_index.search_entity_type_with_total(
-                        &sanitized,
-                        &active_type,
-                        limit,
-                        offset,
-                    )
+                    runtime
+                        .search_entity_type_ranked(
+                            search_index.clone(),
+                            enhanced.clone(),
+                            active_type.clone(),
+                            limit,
+                            offset,
+                        )
+                        .await
                 },
                 "search index query failed (web search page)",
                 |(items, _)| items.is_empty(),
             );
             DegradedNotice::capture(&search_state, &mut degraded_notice);
             let (items, total_hits) = search_state.into_loaded_or((vec![], 0));
+
+            // Rank: collapse duplicate entities, nudge fresh documents up.
+            let items = dedupe_and_rank(items, chrono::Utc::now().timestamp());
+            let tokens = query_tokens(&query_str);
 
             let mapped: Vec<SearchResultItem> = items
                 .iter()
@@ -238,39 +258,42 @@ pub async fn search_page(
                         id: sr.entity_id.clone(),
                         title: sr.title.clone(),
                         subtitle: sr.region.clone(),
-                        snippet: sr.snippet.clone(),
+                        // HTML-escaped + <mark> highlighted; rendered |safe.
+                        snippet: highlight_snippet_html(&sr.snippet, &tokens),
                         score: sr.score as f64,
                         url: safe_href(&url),
                     }
                 })
                 .collect();
 
-            // B302: real facet counts. One count-only probe per entity type —
-            // the previous `build_empty_facets` rendered `(0)` next to every
-            // facet even when results existed.
-            let all_total_state = DataState::from_result(
-                search_index.search_with_total(&sanitized, 1, 0),
-                "search index total probe failed (web search page)",
-                |_| false,
-            );
-            DegradedNotice::capture(&all_total_state, &mut degraded_notice);
-            let all_total = all_total_state
-                .map(|(_, total)| total as i64)
-                .into_loaded_or(total_hits as i64);
-            let facet_counts: Vec<(&str, i64)> = ["company", "person", "warning", "insight"]
-                .into_iter()
-                .map(|t| {
+            // Facet counts: cached, count-only probes. They are skipped
+            // entirely when the query matches nothing (all zero anyway).
+            let facet_counts: Vec<(&str, i64)> = if total_hits == 0 {
+                FACET_ENTITY_TYPES.iter().map(|t| (*t, 0)).collect()
+            } else {
+                let mut counts = Vec::with_capacity(FACET_ENTITY_TYPES.len());
+                for facet_type in FACET_ENTITY_TYPES {
                     let count_state = DataState::from_result(
-                        search_index.search_entity_type_with_total(&sanitized, t, 1, 0),
+                        runtime
+                            .cached_count_for_type(
+                                search_index.clone(),
+                                enhanced.clone(),
+                                facet_type.to_string(),
+                            )
+                            .await,
                         "search index facet probe failed (web search page)",
                         |_| false,
                     );
                     DegradedNotice::capture(&count_state, &mut degraded_notice);
-                    let count = count_state.map(|(_, total)| total as i64).into_loaded_or(0);
-                    (t, count)
-                })
-                .collect();
+                    let count = count_state.map(|c| c as i64).into_loaded_or(0);
+                    counts.push((facet_type, count));
+                }
+                counts
+            };
 
+            // The overall total comes from the main search itself; the old
+            // separate "all total" probe was a duplicate index pass.
+            let all_total = total_hits as i64;
             let facets = build_facets(&active_type, all_total, &facet_counts);
 
             (mapped, total_hits as i64, facets)

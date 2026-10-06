@@ -1,31 +1,7 @@
 use crate::*;
-
-fn build_enhanced_search_query(raw_query: &str) -> String {
-    let sanitized = apex_api::routes::semantic_search::sanitize_query(raw_query);
-    let terms = apex_api::routes::semantic_search::extract_terms(&sanitized);
-    if terms.is_empty() {
-        return sanitized;
-    }
-
-    let exact_phrase = format!("\"{}\"^4", sanitized);
-    let title_terms = terms
-        .iter()
-        .map(|term| format!("title:{term}^3 tags:{term}^2 body:{term}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let fuzzy_terms = terms
-        .iter()
-        .filter(|term| term.len() >= 4)
-        .map(|term| format!("title:{term}~1^1.5 body:{term}~1 tags:{term}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if fuzzy_terms.is_empty() {
-        format!("({exact_phrase}) OR ({title_terms})")
-    } else {
-        format!("({exact_phrase}) OR ({title_terms}) OR ({fuzzy_terms})")
-    }
-}
+use apex_api::search_runtime::{
+    build_enhanced_search_query, dedupe_and_rank, entity_boosts, search_runtime,
+};
 
 fn result_matches_filters(
     result: &apex_store::tantivy_index::SearchResult,
@@ -133,32 +109,38 @@ pub(crate) async fn search(
         full_query = append_timestamp_range(&full_query, from, to);
     }
 
-    let (results, total_hits) =
-        match state
-            .search_index
-            .search_with_total(&full_query, limit, offset)
-        {
-            Ok(value) => value,
-            Err(err) => {
-                let err_msg = err.to_string();
-                let is_parse_err = err_msg.contains("invalid query")
-                    || err_msg.contains("Syntax Error")
-                    || err_msg.contains("expected");
-                if is_parse_err {
-                    let api_err = ApiError::bad_request("Invalid search query syntax");
-                    return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
-                }
-                tracing::error!(request_id = %request_id, "search failed: {err:#}");
-                let api_err = ApiError::internal("Search service error");
-                return (
-                    StatusCode::from_u16(api_err.http_status())
-                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                    Json(error_response(api_err)),
-                );
+    let (results, total_hits) = match search_runtime()
+        .search_ranked(
+            state.search_index.clone(),
+            full_query.clone(),
+            entity_boosts(),
+            limit,
+            offset,
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            let err_msg = err.to_string();
+            let is_parse_err = err_msg.contains("invalid query")
+                || err_msg.contains("Syntax Error")
+                || err_msg.contains("expected");
+            if is_parse_err {
+                let api_err = ApiError::bad_request("Invalid search query syntax");
+                return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
             }
-        };
+            tracing::error!(request_id = %request_id, "search failed: {err:#}");
+            let api_err = ApiError::internal("Search service error");
+            return (
+                StatusCode::from_u16(api_err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
 
     let tokens = tokenize_query(&query);
+    let results = dedupe_and_rank(results, Utc::now().timestamp());
     let mut hits: Vec<SearchHit> = results
         .into_iter()
         .map(|result| SearchHit {
@@ -383,7 +365,7 @@ pub(crate) async fn suggest(
         .unwrap_or_else(|e| e.into_inner())
         .suggest(&query, limit);
 
-    let items: Vec<SuggestItem> = suggestions
+    let mut items: Vec<SuggestItem> = suggestions
         .into_iter()
         .map(|s| SuggestItem {
             text: s.text,
@@ -393,6 +375,41 @@ pub(crate) async fn suggest(
             subtext: s.subtext,
         })
         .collect();
+
+    // Fallback intelligence: when the prefix trie is thin (typos, mid-word
+    // matches, fresh entities), complete from the ranked full-text index so
+    // suggestions stay useful instead of going empty.
+    if items.len() < 3 {
+        let mut seen: std::collections::HashSet<uuid::Uuid> =
+            items.iter().map(|item| item.id).collect();
+        if let Ok((hits, _)) = search_runtime()
+            .search_ranked(
+                state.search_index.clone(),
+                build_enhanced_search_query(&query),
+                entity_boosts(),
+                8,
+                0,
+            )
+            .await
+        {
+            for hit in hits {
+                let Ok(id) = uuid::Uuid::parse_str(&hit.entity_id) else {
+                    continue;
+                };
+                if !seen.insert(id) {
+                    continue;
+                }
+                items.push(SuggestItem {
+                    text: hit.title,
+                    entity_type: hit.entity_type,
+                    id,
+                    score: f64::from(hit.score),
+                    subtext: (!hit.region.is_empty()).then_some(hit.region),
+                });
+            }
+        }
+        items.truncate(limit as usize);
+    }
 
     let response = SuggestResponse { suggestions: items };
 
@@ -407,7 +424,7 @@ pub(crate) async fn suggest(
 
 #[cfg(test)]
 mod semantic_search_tests {
-    use super::build_enhanced_search_query;
+    use apex_api::search_runtime::build_enhanced_search_query;
 
     #[test]
     fn enhanced_search_query_includes_phrase_and_fuzzy_clauses() {

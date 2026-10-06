@@ -441,7 +441,10 @@ aside[aria-label="Main navigation"] > div:first-child p:last-child,
 .sidebar-item.active svg { opacity: 1; }
 
 /* ── 3.2 Top command strip ───────────────────────────────────────────────── */
-header.sticky {
+/* The command strip scrolls with content (no sticky positioning): a
+   position:sticky bar used to cover page content everywhere. Do not
+   reintroduce sticky here — only table header cells may use position:sticky. */
+header {
   background: var(--rams-chassis) !important;
   border-bottom: 1px solid var(--rams-line) !important;
 }
@@ -710,4 +713,12 @@ select, textarea {
   font-size: 11px;
   color: var(--rams-muted);
   margin: 0;
+}
+
+/* Search result highlighting (search_runtime emits <mark> spans). */
+mark {
+  background: rgba(255, 190, 0, 0.38);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 1px;
 }

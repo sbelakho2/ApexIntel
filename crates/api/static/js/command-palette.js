@@ -130,11 +130,12 @@
     return payload;
   }
 
-  function fetchJson(url) {
-    return fetch(url, {
-      headers: { Accept: "application/json" },
-      credentials: "same-origin",
-    }).then(function (response) {
+  function fetchJson(url, options) {
+    var init = Object.assign(
+      { headers: { Accept: "application/json" }, credentials: "same-origin" },
+      options || {}
+    );
+    return fetch(url, init).then(function (response) {
       return response.json().catch(function () {
         return null;
       }).then(function (payload) {
@@ -324,13 +325,34 @@
     state.results = mergeResults([local]);
     render();
 
+    // Remote fetches are debounced (180ms, trailing) and superseded requests
+    // are aborted: previously every keystroke fired a suggest + a full search
+    // request, which saturated the API's search execution. Local (in-memory)
+    // results still render instantly above.
+    if (state.remoteTimer) clearTimeout(state.remoteTimer);
+    if (state.abortController) {
+      try { state.abortController.abort(); } catch (error) { /* already settled */ }
+      state.abortController = null;
+    }
+    if (String(query).trim().length < 2) {
+      state.loading = false;
+      updateStatus();
+      return;
+    }
+    state.remoteTimer = setTimeout(function () { fetchRemote(query, token); }, 180);
+  }
+
+  function fetchRemote(query, token) {
     state.loading = true;
     updateStatus();
     var encoder = typeof query === "string" ? encodeURIComponent(query) : "";
+    state.abortController = new AbortController();
+    var signal = state.abortController.signal;
+    var options = { signal: signal };
 
     Promise.all([
-      fetchJson("/api/search/suggest?q=" + encoder + "&limit=8").catch(function () { return null; }),
-      fetchJson("/api/search?q=" + encoder + "&per_page=12").catch(function () { return null; }),
+      fetchJson("/api/search/suggest?q=" + encoder + "&limit=8", options).catch(function () { return null; }),
+      fetchJson("/api/search?q=" + encoder + "&per_page=12", options).catch(function () { return null; }),
       loadEntityIndex(),
     ]).then(function (responses) {
       if (token !== state.token) return;

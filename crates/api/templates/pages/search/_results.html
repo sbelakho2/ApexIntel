@@ -22,7 +22,8 @@
     </div>
     <p class="mt-1 text-[11px] text-rams-muted">{{ r.subtitle }}</p>
     {% if !r.snippet.is_empty() %}
-    <p class="mt-1 text-[11px]">{{ r.snippet }}</p>
+    {# snippet is HTML-escaped with <mark> highlights by search_runtime #}
+    <p class="mt-1 text-[11px]">{{ r.snippet|safe }}</p>
     {% endif %}
   </a>
   {% endfor %}

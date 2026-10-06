@@ -21,6 +21,7 @@ pub mod provenance;
 pub mod rate_limit;
 pub mod responses;
 pub mod routes;
+pub mod search_runtime;
 pub mod sse;
 pub mod system_status;
 pub mod validation;

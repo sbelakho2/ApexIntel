@@ -182,7 +182,10 @@
       </aside>
 
       <main id="main-content" class="flex-1 min-w-0 pb-24 md:pb-10 lg:pb-8" tabindex="-1">
-        <header class="sticky top-0 z-20 bg-rams-chassis border-b border-rams-line">
+        {# The command bar scrolls with the page: a sticky bar overlapped content
+   on every screen (reported 2026-10-06). Only table header cells keep
+   position:sticky where they aid reading. #}
+        <header class="bg-rams-chassis border-b border-rams-line">
           <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <!-- Mobile header: hamburger only -->
             <div class="flex min-h-12 items-center justify-end gap-2 border-b border-rams-line py-2 lg:hidden">
