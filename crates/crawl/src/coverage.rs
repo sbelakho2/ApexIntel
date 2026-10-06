@@ -1137,6 +1137,7 @@ mod tests {
             &DeploymentCapabilities {
                 browser: true,
                 proxy: true,
+                tor: true,
                 credentialed_api_adapters: Default::default(),
             },
             now,
@@ -1521,6 +1522,7 @@ mod tests {
             &DeploymentCapabilities {
                 browser: true,
                 proxy: true,
+                tor: true,
                 credentialed_api_adapters: Default::default(),
             },
             now,

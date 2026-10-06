@@ -44,7 +44,66 @@ const MONITORED_SUBREDDITS: &[&str] = &[
 ];
 
 /// Telegram channels for open-source intelligence (public, no auth needed).
-const MONITORED_TELEGRAM_CHANNELS: &[&str] = &["IntelSlavaZ", "ryaborig", "livemap", "nexaborig"];
+///
+/// This is the default set, kept in sync with the legacy crawl daemon's
+/// Telegram list plus the originally monitored channels.  IntelSlavaZ is a
+/// first-class entry: it must never be dropped from monitoring again.
+/// `APEX_TELEGRAM_CHANNELS` (comma-separated) overrides the list without a
+/// recompile; the override *adds to* the defaults when it starts with `+`.
+const MONITORED_TELEGRAM_CHANNELS: &[&str] = &[
+    "IntelSlavaZ",
+    "ryaborig",
+    "livemap",
+    "nexaborig",
+    "inaborodin",
+    "osaborodin",
+    "militarytechonly",
+    "defense_news_channel",
+    "opencrisusintel",
+    "liveuamap",
+    "belaborodin",
+    "sanctionstracker",
+    "nuclearwar_news",
+    "geopoliticsworld",
+    "conflict_intel",
+];
+
+/// Environment variable that extends or replaces the default Telegram
+/// channel list (`+a,b,c` appends to the defaults; a bare list replaces).
+const TELEGRAM_CHANNELS_ENV: &str = "APEX_TELEGRAM_CHANNELS";
+
+/// Resolve the Telegram channels to monitor: defaults plus any env override.
+/// Channels are lower-cased, deduplicated and validated (t.me handle shape)
+/// so a bad override can never silently shrink or poison the list.
+fn monitored_telegram_channels() -> Vec<String> {
+    let mut channels: Vec<String> = Vec::new();
+    let raw = std::env::var(TELEGRAM_CHANNELS_ENV).ok();
+    let extends = raw
+        .as_deref()
+        .map(|value| value.trim_start().starts_with('+'))
+        .unwrap_or(false);
+    if extends || raw.is_none() {
+        channels.extend(
+            MONITORED_TELEGRAM_CHANNELS
+                .iter()
+                .map(|channel| channel.to_lowercase()),
+        );
+    }
+    if let Some(value) = raw.as_deref() {
+        let value = value.trim_start_matches('+');
+        channels.extend(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| entry.trim_start_matches('@').to_lowercase())
+                .filter(|entry| entry.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')),
+        );
+    }
+    channels.sort();
+    channels.dedup();
+    channels
+}
 
 /// Search queries for Hacker News (company names are added dynamically).
 const HN_SEARCH_TERMS: &[&str] = &[
@@ -338,7 +397,7 @@ async fn ingest_telegram(
 
     let mut acc = PlatformAccumulator::default();
 
-    for channel in MONITORED_TELEGRAM_CHANNELS {
+    for channel in monitored_telegram_channels() {
         let url = format!("https://t.me/s/{channel}");
         let context = format!("telegram {channel}");
         if let Some(html) = acc.record_fetch(fetch_text(&client, &url, &context).await) {
@@ -701,5 +760,26 @@ mod tests {
             post_entity_targets("unrelated content without names", &matcher),
             vec![None]
         );
+    }
+
+    #[test]
+    fn telegram_channel_list_never_excludes_intelslava() {
+        let channels = {
+            // Guard against an ambient override influencing the assertion.
+            std::env::remove_var(TELEGRAM_CHANNELS_ENV);
+            monitored_telegram_channels()
+        };
+        assert!(
+            channels.iter().any(|c| c == "intelslavaz"),
+            "IntelSlavaZ must always be in the monitored set: {channels:?}"
+        );
+        assert!(
+            channels.len() >= MONITORED_TELEGRAM_CHANNELS.len(),
+            "default list must be at least as wide as the constant"
+        );
+        let mut sorted = channels.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(channels, sorted, "channel list must be deduplicated");
     }
 }

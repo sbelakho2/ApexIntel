@@ -109,17 +109,17 @@
       {% if item.status.as_str() == "pending" || item.status.as_str() == "triaged" %}
         <form method="post" action="/triage/{{ item.id }}/acknowledge"
               hx-post="/triage/{{ item.id }}/acknowledge" hx-swap="none"
-              data-confirm="Acknowledge this triage item?" style="display:inline">
+              data-confirm="Acknowledge this triage item?" class="inline">
           <button type="submit" class="apex-btn-primary px-4 py-2 text-xs">Acknowledge</button>
         </form>
       {% endif %}
       {% if item.status.as_str() != "resolved" && item.status.as_str() != "dismissed" %}
         <form method="post" action="/triage/{{ item.id }}/resolve"
               hx-post="/triage/{{ item.id }}/resolve" hx-swap="none"
-              data-confirm="Resolve this triage item?" style="display:inline">
+              data-confirm="Resolve this triage item?" class="inline">
           <button type="submit" class="apex-btn-secondary px-4 py-2 text-xs">Resolve</button>
         </form>
-        <form method="post" action="/triage/{{ item.id }}/dismiss" style="display:inline"
+        <form method="post" action="/triage/{{ item.id }}/dismiss" class="inline"
               hx-post="/triage/{{ item.id }}/dismiss" hx-swap="none"
               onsubmit="return confirm('Dismiss this triage item?')">
           <button type="submit" class="apex-btn-ghost px-4 py-2 text-xs text-rams-muted">Dismiss</button>

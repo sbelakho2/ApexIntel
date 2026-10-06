@@ -15,8 +15,8 @@ use apex_crawl::proxy::ProxyRotator;
 use apex_crawl::rate_limit::RateLimitManager;
 use apex_crawl::rss::{parse_feed_with_base, FeedItem};
 use apex_crawl::sources::{
-    crawl_source_budget_from_env, dispatch_source_fetch, scheduler_backlog, select_due_sources,
-    FetchDispatch, Source, FORCED_SOURCE_SLUGS,
+    crawl_source_budget_from_env, dispatch_source_fetch, is_onion_endpoint, scheduler_backlog,
+    select_due_sources, FetchDispatch, Source, FORCED_SOURCE_SLUGS,
 };
 #[cfg(feature = "llm")]
 use apex_insights::company_discovery::{normalize_company_name, CompanyCandidate, DiscoverySource};
@@ -370,6 +370,32 @@ async fn fetch_source(
                 source_index,
                 result: Err(FailedSource {
                     message: error.to_string(),
+                    http_status: None,
+                    kind: SourceFailureKind::Fetch,
+                }),
+            },
+        };
+    }
+
+    // ── Dark-web onion sources ────────────────────────────────────────────────
+    // `.onion` endpoints resolve only inside Tor; route them through the
+    // SOCKS5h client. `fetch_onion_text` refuses any non-onion host, so this
+    // branch can never act as a proxy bypass for clearnet URLs.
+    if is_onion_endpoint(endpoint) {
+        let started = std::time::Instant::now();
+        return match apex_crawl::tor_client::fetch_onion_text(endpoint).await {
+            Ok((body, status)) => SourceFetchOutcome {
+                source_index,
+                result: Ok(FetchedSource {
+                    body,
+                    http_status: i32::from(status),
+                    latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+                }),
+            },
+            Err(error) => SourceFetchOutcome {
+                source_index,
+                result: Err(FailedSource {
+                    message: format!("onion fetch via Tor failed: {error:#}"),
                     http_status: None,
                     kind: SourceFailureKind::Fetch,
                 }),
@@ -1930,6 +1956,8 @@ enum MiningPipeline {
     /// Streams were mined and persisted; hypotheses generated and staged.
     Completed {
         candidates_found: u64,
+        candidates_validated: u64,
+        rejected_by_controls: u64,
         outcome: HypothesisStageOutcome,
     },
 }
@@ -2056,18 +2084,55 @@ async fn run_mining_pipeline(
         "pattern_mining: candidate mining complete"
     );
 
-    // 3. Persist mined candidates for audit + analytics counters.
-    let rows: Vec<apex_store::postgres::MinedPatternCandidate> =
-        candidates.iter().map(mined_candidate_row).collect();
+    // 2b. Constant-testing gates: shuffle-based negative controls plus a
+    // walk-forward backtest. A candidate that fails either gate is persisted
+    // for audit with `passed_gates = false` and is never staged for
+    // hypothesis generation; a candidate whose streams cannot be validated is
+    // kept for human review but never auto-staged either (it flows only when
+    // the controls are computable and pass).
+    let (validated_candidates, rejected_by_controls) =
+        validate_mined_candidates(&candidates, &streams, &miner_config);
+    tracing::info!(
+        validated = validated_candidates.len(),
+        rejected = rejected_by_controls,
+        "pattern_mining: negative-control + backtest validation complete"
+    );
+
+    // 3. Persist mined candidates for audit + analytics counters. Rejected
+    // candidates are still persisted: the audit trail must show *why* they
+    // were excluded from staging, not silently drop them.
+    let validated_keys: HashSet<(String, Vec<String>, i32)> = validated_candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.outcome.clone(),
+                candidate.signals.clone(),
+                candidate.best_lag_days,
+            )
+        })
+        .collect();
+    let rows: Vec<apex_store::postgres::MinedPatternCandidate> = candidates
+        .iter()
+        .map(|candidate| {
+            let passed = validated_keys.contains(&(
+                candidate.outcome.clone(),
+                candidate.signals.clone(),
+                candidate.best_lag_days,
+            ));
+            mined_candidate_row(candidate, passed)
+        })
+        .collect();
     match store.insert_pattern_candidates(&rows).await {
         Ok(n) => tracing::info!(persisted = n, "pattern_mining: persisted candidates"),
         Err(e) => tracing::warn!(error = %e, "pattern_mining: candidate persistence failed"),
     }
 
-    // 4. LLM-backed hypothesis generation + staging.
-    let outcome = generate_and_stage_hypotheses(store, &candidates, mode).await;
+    // 4. LLM-backed hypothesis generation + staging, driven by the validated
+    // candidate set only.
+    let outcome = generate_and_stage_hypotheses(store, &validated_candidates, mode).await;
     tracing::info!(
         candidates = candidates.len(),
+        validated = validated_candidates.len(),
         generated = outcome.generated,
         staged = outcome.staged,
         failed = outcome.failed,
@@ -2076,8 +2141,71 @@ async fn run_mining_pipeline(
 
     MiningPipeline::Completed {
         candidates_found: candidates.len() as u64,
+        candidates_validated: validated_candidates.len() as u64,
+        rejected_by_controls: rejected_by_controls as u64,
         outcome,
     }
+}
+
+/// Run the shuffle-based negative controls and the walk-forward backtest for
+/// every mined candidate, returning the validated subset plus the rejection
+/// count. Pure in the sense that it mutates nothing: the caller decides what
+/// to persist and what to stage.
+#[cfg(feature = "llm")]
+fn validate_mined_candidates(
+    candidates: &[apex_learning::miner::PatternCandidate],
+    streams: &HashMap<String, Vec<apex_learning::miner::EventRecord>>,
+    miner_config: &apex_learning::miner::MinerConfig,
+) -> (Vec<apex_learning::miner::PatternCandidate>, usize) {
+    use apex_learning::backtest::{backtest_candidates, BacktestConfig};
+    use apex_learning::negative_control::{passes_negative_controls, NegativeControlConfig};
+
+    let negative_control_config = NegativeControlConfig::default();
+    let backtest_config = BacktestConfig::default();
+
+    let mut validated = Vec::new();
+    let mut rejected = 0usize;
+    for candidate in candidates {
+        let outcomes = streams.get(&candidate.outcome);
+        let signals = candidate
+            .signals
+            .first()
+            .and_then(|signal| streams.get(signal));
+        let (Some(outcomes), Some(signals)) = (outcomes, signals) else {
+            // Streams not computable: conservatively keep for human review
+            // (staging is review-only and never auto-fires).
+            tracing::debug!(
+                outcome = %candidate.outcome,
+                signals = ?candidate.signals,
+                "pattern_mining: candidate validation streams unavailable; kept for review only"
+            );
+            validated.push(candidate.clone());
+            continue;
+        };
+        let controls_pass =
+            passes_negative_controls(candidate, outcomes, signals, &negative_control_config);
+        let backtest_pass = !backtest_candidates(
+            std::slice::from_ref(candidate),
+            outcomes,
+            signals,
+            &backtest_config,
+            miner_config,
+        )
+        .is_empty();
+        if controls_pass && backtest_pass {
+            validated.push(candidate.clone());
+        } else {
+            rejected += 1;
+            tracing::info!(
+                outcome = %candidate.outcome,
+                signals = ?candidate.signals,
+                controls_pass,
+                backtest_pass,
+                "pattern_mining: candidate rejected by validation gates"
+            );
+        }
+    }
+    (validated, rejected)
 }
 
 /// Scheduled pattern-mining entry point: runs the real mining pipeline and
@@ -2105,13 +2233,15 @@ async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRu
         }
         MiningPipeline::Completed {
             candidates_found,
+            candidates_validated,
+            rejected_by_controls: _,
             outcome,
         } => {
             finalize_mining_run(
                 &mut run,
                 &MiningStageResult {
                     candidates_found,
-                    candidates_passed_gates: candidates_found,
+                    candidates_passed_gates: candidates_validated,
                     hypotheses_generated: outcome.generated,
                     recipes_staged: outcome.staged,
                     errors: outcome.errors,
@@ -2152,6 +2282,8 @@ pub(super) async fn run_hypothesis_generation(kind: &JobKind, store: &Arc<PgStor
             }
             MiningPipeline::Completed {
                 candidates_found: _,
+                candidates_validated: _,
+                rejected_by_controls: _,
                 outcome,
             } => {
                 let stage_result = hypothesis_stage_result(&outcome);
@@ -2297,10 +2429,14 @@ fn mine_pattern_candidates(
     candidates
 }
 
-/// Build a persistable audit row for a mined candidate.
+/// Build a persistable audit row for a mined candidate. `passed_gates`
+/// records whether the candidate survived the negative-control + backtest
+/// validation layer; rejected candidates are still persisted so the audit
+/// trail explains why they were excluded from staging.
 #[cfg(feature = "llm")]
 fn mined_candidate_row(
     candidate: &apex_learning::miner::PatternCandidate,
+    passed_gates: bool,
 ) -> apex_store::postgres::MinedPatternCandidate {
     let (a, b, c, d) = candidate.contingency;
     apex_store::postgres::MinedPatternCandidate {
@@ -2317,7 +2453,7 @@ fn mined_candidate_row(
             candidate.stability,
             a + b + c + d,
         ),
-        passed_gates: true,
+        passed_gates,
         confidence: candidate.stability.clamp(0.0, 1.0),
     }
 }
@@ -2649,7 +2785,7 @@ mod pattern_mining_tests {
 
     #[test]
     fn mined_candidate_row_maps_fields() {
-        let row = mined_candidate_row(&sample_candidate());
+        let row = mined_candidate_row(&sample_candidate(), true);
         assert_eq!(row.recipe_code, "mined_RfQPosted");
         assert_eq!(row.entity_type, "RfQPosted");
         assert!(row.passed_gates);

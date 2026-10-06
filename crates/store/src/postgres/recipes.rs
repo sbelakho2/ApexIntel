@@ -724,6 +724,44 @@ impl PgStore {
         .await?;
         Ok(rows)
     }
+
+    /// Weekly snapshots for the promotion eval gate: per recipe, the most
+    /// recent weeks of measured review telemetry (`precision_score`,
+    /// `false_positive_rate`, review counts) ordered newest first so the
+    /// caller can compare this week against the previous week.
+    ///
+    /// Only *measured* rows exist; a recipe with no reviewed warnings simply
+    /// has no snapshot for that week, and the gate must treat that as
+    /// unverifiable rather than as a zero measurement.
+    pub async fn list_recipe_weekly_snapshots(
+        &self,
+        recipe_codes: &[String],
+        weeks: i32,
+    ) -> Result<Vec<RecipeWeeklySnapshot>> {
+        if recipe_codes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, RecipeWeeklySnapshot>(
+            r#"
+            SELECT recipe_code,
+                   week_start,
+                   precision_score,
+                   false_positive_rate,
+                   warnings_generated,
+                   reviewed_warnings,
+                   false_positive_warnings
+            FROM recipe_weekly_metrics
+            WHERE recipe_code = ANY($1)
+              AND week_start >= (DATE_TRUNC('week', now()) - make_interval(weeks => $2))::DATE
+            ORDER BY recipe_code, week_start DESC
+            "#,
+        )
+        .bind(recipe_codes)
+        .bind(weeks)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
 }
 
 /// A recipe row for the runtime execution engine.
@@ -766,6 +804,19 @@ pub struct RecipeMonthlyPerformance {
     pub fpr_pct: Option<f64>,
     pub warnings_generated: i64,
     pub reviewed_warnings: i64,
+}
+
+/// One week of measured review telemetry for one recipe — the input rows of
+/// the promotion eval gate.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct RecipeWeeklySnapshot {
+    pub recipe_code: String,
+    pub week_start: NaiveDate,
+    pub precision_score: f64,
+    pub false_positive_rate: f64,
+    pub warnings_generated: i64,
+    pub reviewed_warnings: i64,
+    pub false_positive_warnings: i64,
 }
 
 #[cfg(test)]

@@ -21,9 +21,10 @@ pub use crate::sources_registry::{Category, Region, Source};
 // Re-export helper functions used by worker
 pub use crate::sources_registry::{
     all_sources, capability_for_disposition, crawl_source_budget_from_env, dispatch_source_fetch,
-    due_sources_remaining, effective_capability, filter_by_tier, is_source_due, scheduler_backlog,
-    select_due_sources, source_coverage_summary, ApiAdapter, DeploymentCapabilities, FetchDispatch,
-    FetchDispatchError, FetchStrategy, SchedulerBacklog, SourceCapability, SourceCoverageSummary,
-    SourceRuntimeStateProvider, SourceScheduleCandidate, SourceSelection,
-    CREDENTIALED_API_ADAPTERS_ENV, DEFAULT_CRAWL_SOURCE_BUDGET, FORCED_SOURCE_SLUGS,
+    due_sources_remaining, effective_capability, filter_by_tier, is_onion_endpoint,
+    is_onion_source, is_source_due, scheduler_backlog, select_due_sources, source_coverage_summary,
+    ApiAdapter, DeploymentCapabilities, FetchDispatch, FetchDispatchError, FetchStrategy,
+    SchedulerBacklog, SourceCapability, SourceCoverageSummary, SourceRuntimeStateProvider,
+    SourceScheduleCandidate, SourceSelection, CREDENTIALED_API_ADAPTERS_ENV,
+    DEFAULT_CRAWL_SOURCE_BUDGET, FORCED_SOURCE_SLUGS, SOURCE_SUPPLEMENT_PATH_ENV,
 };

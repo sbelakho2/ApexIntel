@@ -1435,7 +1435,9 @@ mod tests {
         let html = page.render().expect("dashboard renders");
 
         assert!(!html.contains("incident inc-test123"));
-        assert!(html.contains("No recent warnings"));
+        // The compact Overview keeps two feeds (activity + top insights);
+        // recent warnings are one click away on /warnings.
+        assert!(html.contains("No activity yet"));
         assert!(html.contains("No recent insights"));
     }
 
@@ -1521,17 +1523,9 @@ mod tests {
     }
 
     #[test]
-    fn vanity_counts_render_below_actionable_sections() {
+    fn dashboard_orders_actions_before_health_and_has_no_vanity_rows() {
         let mut page = degraded_page("unused");
         page.degraded_notice = None;
-        page.stats = vec![StatCard {
-            label: "Active Warnings".into(),
-            value: "42".into(),
-            icon: "alert-triangle".into(),
-            accent_class: "metric-rail-orange".into(),
-            delta: None,
-            direction: "flat".into(),
-        }];
         let html = page.render().expect("dashboard renders");
         // Section titles are matched case-insensitively: their casing is
         // presentation and may change without reordering the page.
@@ -1549,11 +1543,14 @@ mod tests {
         let health = lower
             .find("what is stale or broken")
             .expect("health section");
-        let vanity = lower.find("portfolio overview").expect("vanity divider");
 
         assert!(changes < priority);
         assert!(priority < opportunities);
         assert!(opportunities < health);
-        assert!(health < vanity);
+        // The 2026-10 compact redesign removed the secondary vanity KPI rows
+        // and duplicate feeds: one decision surface, no indicator overload.
+        assert!(!lower.contains("portfolio overview"));
+        assert!(!lower.contains("companies tracked"));
+        assert!(!lower.contains("persons tracked"));
     }
 }

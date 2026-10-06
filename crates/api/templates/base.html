@@ -15,12 +15,6 @@
 
   <!-- Fonts -->
   <link rel="preload" href="/static/fonts/InterVariable.woff2?v=20260311-ui-fix-1" as="font" type="font/woff2" crossorigin>
-  <style>
-    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable.woff2?v=20260311-ui-fix-1') format('woff2-variations'); font-weight: 100 900; font-display: swap; }
-    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable-Italic.woff2?v=20260311-ui-fix-1') format('woff2-variations'); font-weight: 100 900; font-style: italic; font-display: swap; }
-    @font-face { font-family: 'JetBrainsMono'; src: url('/static/fonts/JetBrainsMono-Variable.ttf?v=20260311-ui-fix-1') format('truetype-variations'); font-weight: 100 800; font-display: swap; }
-    :root { --font-apex: 'ApexIntel', ui-sans-serif, system-ui, sans-serif; --font-mono: 'JetBrainsMono', ui-monospace, monospace; }
-  </style>
   <script>
     (() => {
       const storageKey = 'apex-theme';
@@ -102,291 +96,13 @@
   </script>
 
   <!-- CSS (compiled via Tailwind standalone CLI from globals.css) -->
-  <link rel="stylesheet" href="/static/css/tailwind.css?v=20261004-dogfood-css-2">
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=20261005-sensei-1">
+  <link rel="stylesheet" href="/static/css/sensei-rams.css?v=3.7.0">
+  <link rel="stylesheet" href="/static/css/apex-rams.css?v=20261005-sensei-1">
   <script src="/static/js/htmx.min.js?v=20260312-runtime-sweep-2" defer></script>
   <script src="/static/js/app.js?v=20261004-dogfood-1" defer></script>
   <script src="/static/js/sse-client.js?v=20260827-b2" defer></script>
   <script src="/static/js/command-palette.js?v=20260924-command-palette-1" defer></script>
-  <style>
-    /* Viewers/Service roles: hide write controls. The route guards remain the
-       enforcement (a forged post still gets 403); this removes buttons that
-       could only fail. Self-service paths stay visible. */
-    body.apex-readonly form[method="post"]:not([action^="/settings"]):not([action^="/notifications"]):not([action^="/search/saved-searches"]):not([action="/logout"]),
-    body.apex-readonly [hx-post]:not([hx-post^="/settings"]):not([hx-post^="/notifications"]):not([hx-post^="/search/saved-searches"]) {
-      display: none !important;
-    }
-
-    /* ── Mobile Navigation Drawer — slide transition, structural shadow only ── */
-    #mobile-nav {
-      transform: translateX(-100%);
-      transition: transform var(--rams-normal, 200ms) var(--rams-ease, cubic-bezier(0.2, 0, 0, 1)),
-                  box-shadow var(--rams-normal, 200ms) var(--rams-ease, cubic-bezier(0.2, 0, 0, 1));
-    }
-    #mobile-nav.is-open {
-      transform: translateX(0);
-      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.35);
-    }
-
-    #mobile-nav-overlay {
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity var(--rams-fast, 120ms) ease;
-    }
-    #mobile-nav-overlay.is-open {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    /* ── Theme Toggle Button — consumes Rams tokens ─────────────────────────── */
-    .apex-theme-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      border: 1px solid var(--rams-line);
-      background: var(--rams-panel);
-      border-radius: 2px;
-      padding: 0.45rem 0.7rem;
-      color: var(--rams-foreground);
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      white-space: nowrap;
-    }
-    .apex-theme-toggle:hover {
-      border-color: var(--rams-line-strong);
-    }
-    .apex-theme-toggle-state {
-      color: var(--rams-muted);
-      font-size: 10px;
-      font-weight: 600;
-    }
-
-    /* ── Mobile Tab Bar — safe area inset ─────────────────────────────────────── */
-    .apex-mobile-tabbar {
-      padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
-    }
-
-    /* ── Primary nav: grouped sections (desktop sidebar + mobile drawer) ─────── */
-    .apex-nav-group-label {
-      padding: 0.85rem 0.75rem 0.3rem;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--rams-muted);
-    }
-    .apex-nav-group:first-of-type .apex-nav-group-label {
-      padding-top: 0.35rem;
-    }
-
-    /* ── User menu (details/summary dropdown) ────────────────────────────────── */
-    .apex-user-menu {
-      position: relative;
-    }
-    .apex-user-menu > summary {
-      list-style: none;
-      cursor: pointer;
-      min-height: 44px;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      border: 1px solid var(--rams-line);
-      background: var(--rams-panel);
-      border-radius: 2px;
-      padding: 0.4rem 0.6rem;
-      color: var(--rams-foreground);
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.01em;
-    }
-    .apex-user-menu > summary::-webkit-details-marker {
-      display: none;
-    }
-    .apex-user-menu > summary:hover {
-      border-color: var(--rams-line-strong);
-    }
-    .apex-user-menu > summary span {
-      display: inline-block;
-      max-width: 8rem;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .apex-user-menu-panel {
-      position: absolute;
-      right: 0;
-      top: calc(100% + 0.4rem);
-      z-index: 60;
-      min-width: 12rem;
-      border: 1px solid var(--rams-line);
-      background: var(--rams-module);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-      padding: 0.3rem;
-    }
-    .apex-user-menu-panel a,
-    .apex-user-menu-panel button {
-      display: flex;
-      align-items: center;
-      width: 100%;
-      min-height: 44px;
-      padding: 0.5rem 0.7rem;
-      border: 0;
-      background: transparent;
-      color: var(--rams-foreground);
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.01em;
-      text-align: left;
-      cursor: pointer;
-    }
-    .apex-user-menu-panel a:hover,
-    .apex-user-menu-panel button:hover {
-      background: var(--rams-panel);
-    }
-    .apex-user-menu-panel .apex-user-menu-divider {
-      height: 1px;
-      margin: 0.25rem 0.4rem;
-      background: var(--rams-line);
-    }
-
-    /* ── Top command bar search ──────────────────────────────────────────────── */
-    .apex-command-search {
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      min-width: 0;
-      flex: 1 1 auto;
-      border: 1px solid var(--rams-line);
-      background: var(--rams-chassis);
-      padding: 0.15rem 0.15rem 0.15rem 0.6rem;
-    }
-    .apex-command-search input {
-      flex: 1 1 auto;
-      min-width: 0;
-      height: 40px;
-      border: 0;
-      background: transparent;
-      color: var(--rams-foreground);
-      font-size: 12px;
-    }
-    .apex-command-search input:focus {
-      outline: none;
-    }
-    .apex-command-search button {
-      flex: 0 0 auto;
-      min-height: 40px;
-      padding: 0 0.75rem;
-      border: 1px solid var(--rams-line);
-      background: var(--rams-panel);
-      color: var(--rams-foreground);
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-    }
-    @media (pointer: coarse) {
-      .apex-command-search button,
-      .apex-command-search input {
-        min-height: 44px;
-      }
-    }
-
-    /* ── Mobile bottom bar: 5 fixed items, structural active state ───────────── */
-    .apex-mobile-tab {
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 2px;
-      min-height: 48px;
-      padding: 0.4rem 0.25rem;
-      border: 1px solid transparent;
-      border-radius: 2px;
-      color: var(--rams-muted);
-      text-decoration: none;
-    }
-    .apex-mobile-tab[aria-current] {
-      background: var(--rams-panel);
-      border-color: var(--rams-line);
-      color: var(--rams-foreground);
-    }
-    .apex-mobile-tab-label {
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-    .apex-tab-indicator {
-      position: absolute;
-      top: 0;
-      left: 50%;
-      transform: translateX(-50%);
-      width: calc(100% - 1.25rem);
-      height: 3px;
-      background: var(--rams-orange);
-      opacity: 0;
-    }
-    .apex-mobile-tab[aria-current] .apex-tab-indicator {
-      opacity: 1;
-    }
-
-    /* ── Compact table layout (personal preference) ──────────────────────────── */
-    html[data-table-layout="compact"] .apex-table th,
-    html[data-table-layout="compact"] .apex-table td,
-    html[data-table-layout="compact"] .data-table th,
-    html[data-table-layout="compact"] .data-table td {
-      padding-top: 0.25rem;
-      padding-bottom: 0.25rem;
-    }
-
-    /* ── Chart Scroll Containers ──────────────────────────────────────────────── */
-    .apex-chart-scroll {
-      width: 100%;
-      overflow-x: auto;
-      overflow-y: hidden;
-      -webkit-overflow-scrolling: touch;
-      padding-bottom: 0.25rem;
-      scrollbar-width: thin;
-    }
-    .apex-chart-scroll-inner {
-      min-width: 32rem;
-    }
-    .apex-chart-scroll-inner-wide {
-      min-width: 38rem;
-    }
-
-    @media (max-width: 640px) {
-      .apex-chart-scroll-inner {
-        min-width: 28rem;
-      }
-      .apex-chart-scroll-inner-wide {
-        min-width: 32rem;
-      }
-    }
-    @media (max-width: 420px) {
-      .apex-chart-scroll-inner {
-        min-width: 24rem;
-      }
-      .apex-chart-scroll-inner-wide {
-        min-width: 28rem;
-      }
-    }
-
-    @media (max-width: 420px) {
-      .apex-theme-toggle {
-        gap: 0.3rem;
-        padding: 0.45rem 0.55rem;
-      }
-      .apex-theme-toggle [data-theme-toggle-text] {
-        max-width: 4.8rem;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-    }
-  </style>
   {% block head %}{% endblock %}
 </head>
 <body data-sse class="{% if !can_write %}apex-readonly{% endif %}">
@@ -965,15 +681,19 @@
 <p class="apex-nav-group-label">{{ label }}</p>
 {% endmacro %}
 
-{# Primary information architecture (audit #15): navigation is organised by
-   analyst workflow, not by database table. Six workflow groups, rendered the
-   same in the desktop sidebar and the mobile drawer:
+{# Primary information architecture: navigation is organised by analyst
+   workflow, not by database table. Six workflow groups, rendered the same in
+   the desktop sidebar and the mobile drawer:
      Command Center  — what needs attention now
      Entities        — the dossiers behind the signals
      Signals         — warning/insight/trend/security views over one signal model
-     Investigations  — workspaces, evidence, graph-as-tool
-     Sales Intelligence — buying centres, pipeline, battlecards
-     Automations     — recipes, sources, jobs (admin-only where the source needs it)
+     Investigations  — workspaces, graph-as-tool, memos
+     Sales Intelligence — pipeline, battlecards
+     Automations     — recipes, sources, jobs, admin panel
+   Consolidated 2026-10: secondary screens (Queue, Supplier Risk, Evidence,
+   Team Assignments, Buying Centres) remain routable and linked contextually
+   from the screens that own them, but no longer occupy sidebar space —
+   fewer, denser screens beat a menu of everything.
    Settings lives in the user menu, Search in the permanent top command bar.
    Every route referenced here is registered in `app_router.rs` (no 404s). #}
 {% macro primary_nav() %}
@@ -984,7 +704,6 @@
   {# Triage shows no warning badge: the badge belongs to /warnings and
      showing the warnings count on Triage made the two indistinguishable. #}
   {% call nav_item("/triage", "Triage", "list") %}
-  {% call nav_item("/queue", "Queue", "clock") %}
   {% call nav_item("/activity", "Activity", "history") %}
 </div>
 <div class="apex-nav-group">
@@ -999,19 +718,15 @@
   {% call nav_item("/insights", "Insights", "eye") %}
   {% call nav_item("/trends", "Trends", "trending-up") %}
   {% call nav_item("/security", "Security", "shield") %}
-  {% call nav_item("/supplier-risk", "Supplier Risk", "map-pin") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Investigations") %}
   {% call nav_item("/workspaces", "Workspaces", "layers") %}
-  {% call nav_item("/evidence", "Evidence", "file-text") %}
   {% call nav_item("/graph", "Graph", "share") %}
   {% call nav_item("/memos", "Memos", "file") %}
-  {% call nav_item("/team-assignments", "Team Assignments", "check-circle-2") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Sales Intelligence") %}
-  {% call nav_item("/buying-centers", "Buying Centres", "boxes") %}
   {% call nav_item("/pipeline", "Pipeline", "arrow-up-down") %}
   {% call nav_item("/battlecards", "Battlecards", "zap") %}
 </div>
@@ -1021,14 +736,9 @@
   {% if can_admin %}
   {% call nav_item("/admin#source-coverage", "Sources", "database") %}
   {% call nav_item("/admin#workflow-runs", "Jobs", "cpu") %}
+  {% call nav_item("/admin", "Admin Panel", "server") %}
   {% endif %}
 </div>
-{% if can_admin %}
-<div class="apex-nav-group">
-  {% call nav_group("Admin") %}
-  {% call nav_item("/admin", "Admin Panel", "server") %}
-</div>
-{% endif %}
 {% endmacro %}
 
 {% macro nav_item(href, label, icon_name) %}

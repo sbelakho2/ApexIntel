@@ -355,17 +355,67 @@ fn build_tor_client() -> Result<reqwest::Client> {
         tracing::warn!("Tor client TLS verification DISABLED via APEX_TOR_DANGEROUS_INSECURE_TLS");
     }
 
+    // Tor SOCKS5 endpoint; `TOR_SOCKS_PROXY` overrides the default daemon
+    // address. Always a `socks5h://` URL so `.onion` names resolve inside Tor.
+    let proxy_url = std::env::var("TOR_SOCKS_PROXY")
+        .map(|raw| {
+            if raw.starts_with("socks5://") && !raw.starts_with("socks5h://") {
+                format!("socks5h://{}", &raw["socks5://".len()..])
+            } else {
+                raw
+            }
+        })
+        .unwrap_or_else(|_| "socks5h://127.0.0.1:9050".to_string());
+
     crate::http::external_client_with(crate::http::ExternalClientOptions {
         timeout: Duration::from_secs(90),
         user_agent: Some(
             "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0".to_string(),
         ),
-        proxy: Some(reqwest::Proxy::all("socks5h://127.0.0.1:9050")?),
+        proxy: Some(reqwest::Proxy::all(&proxy_url)?),
         connect_timeout: Some(Duration::from_secs(30)),
         danger_accept_invalid_certs: disable_tls,
         ..crate::http::ExternalClientOptions::default()
     })
     .context("build tor reqwest client")
+}
+
+/// Fetch a single `.onion` endpoint through the Tor SOCKS5h proxy.
+///
+/// This is the crawl-cycle entry point for dark-web registry sources.  It is
+/// also the transport guard: only hosts ending in `.onion` may traverse Tor —
+/// any other host is refused before a request is built, so the Tor path can
+/// never become a general-purpose proxy bypass.
+pub async fn fetch_onion_text(url: &str) -> Result<(String, u16)> {
+    let parsed = url::Url::parse(url).context("onion endpoint URL parse")?;
+    let host = parsed.host_str().unwrap_or("").to_string();
+    if !host.ends_with(".onion") {
+        anyhow::bail!("refusing Tor fetch for non-onion host {host:?}");
+    }
+    let client = build_tor_client().context("build Tor client")?;
+    let started = std::time::Instant::now();
+    let resp = client
+        .get(url)
+        .timeout(Duration::from_secs(90))
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0",
+        )
+        .send()
+        .await
+        .context("tor GET failed")?;
+    let status = resp.status().as_u16();
+    let body = crate::http::read_capped(resp, crate::http::MAX_EXTERNAL_BODY_BYTES)
+        .await
+        .context("tor response body")?;
+    debug!(
+        url,
+        status,
+        bytes = body.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+        "tor_client: onion fetch complete"
+    );
+    Ok((body, status))
 }
 
 /// Parse the PwnDB HTML response and extract `BreachRecord` entries.

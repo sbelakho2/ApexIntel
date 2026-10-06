@@ -280,12 +280,98 @@ pub(super) async fn run_cross_domain_mining(kind: &JobKind, store: &Arc<PgStore>
                 "cross_domain_mining: synergistic combination"
             );
         }
+
+        // Constant-learning: persist every discovered combination as a
+        // correlation row so the weekly recipe-deepening pass (and the audit
+        // trail) can consume them instead of the discovery being logged and
+        // dropped. Persistence failure degrades the run — a discovery that
+        // cannot be recorded must not be reported as a clean success.
+        let correlation_rows: Vec<apex_store::postgres::InsightCorrelationInput> = combinations
+            .iter()
+            .map(|combo| apex_store::postgres::InsightCorrelationInput {
+                correlation_kind: "signal_combination".to_string(),
+                signal_domain_a: combo.type_a.clone(),
+                signal_domain_b: combo.type_b.clone(),
+                entity_a: None,
+                entity_b: None,
+                strength: combo.synergy_factor.clamp(0.0, 100.0),
+                p_value: None,
+                lag_days: Some(combo.best_lag_days),
+                evidence_count: combo.stability.round() as i64,
+            })
+            .collect();
+        let persisted = match store.upsert_insight_correlations(&correlation_rows).await {
+            Ok(persisted) => persisted,
+            Err(e) => {
+                run.fail(&format!(
+                    "cross_domain_mining: failed to persist discovered correlations: {e}"
+                ));
+                return run;
+            }
+        };
+
+        // Constant-improving: deepen the strongest correlations into staged
+        // deep-insight recipe candidates for human review. Staging is a
+        // review/metadata store — firing is driven by the lifecycle, so
+        // nothing here auto-injects into the live insight stream.
+        let mut staged_codes: Vec<String> = Vec::new();
+        let mut staged_ids: Vec<uuid::Uuid> = Vec::new();
+        match store.list_top_insight_correlations("discovered", 5).await {
+            Ok(top) => {
+                for correlation in top {
+                    let code = correlation_recipe_code(&correlation);
+                    let definition = correlation_recipe_definition(
+                        &code,
+                        &correlation.signal_domain_a,
+                        &correlation.signal_domain_b,
+                        correlation.strength,
+                        correlation.lag_days,
+                    );
+                    match store
+                        .upsert_recipe_definition(&code, &code, "staging", &definition)
+                        .await
+                    {
+                        Ok(()) => {
+                            staged_codes.push(code);
+                            staged_ids.push(correlation.id);
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                correlation = %correlation.id,
+                                "cross_domain_mining: failed to stage correlation recipe"
+                            );
+                        }
+                    }
+                }
+                if !staged_ids.is_empty() {
+                    if let Err(error) = store
+                        .mark_correlations_staged(&staged_ids, &staged_codes)
+                        .await
+                    {
+                        tracing::warn!(
+                            %error,
+                            "cross_domain_mining: failed to mark correlations staged"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "cross_domain_mining: failed to load top correlations for deepening"
+                );
+            }
+        }
+
         run.succeed(
             combinations.len() as u64,
             &format!(
-                "cross_domain_mining: {} events → {} synergistic combinations",
+                "cross_domain_mining: {} events → {} synergistic combinations ({} correlation rows upserted, {} deep-insight recipes staged)",
                 all_events.len(),
-                combinations.len()
+                combinations.len(),
+                persisted,
+                staged_codes.len(),
             ),
         );
     }
@@ -295,6 +381,64 @@ pub(super) async fn run_cross_domain_mining(kind: &JobKind, store: &Arc<PgStore>
         run.skip("cross_domain_mining: requires the `llm` feature (apex-learning/experimental)");
     }
     run
+}
+
+/// Stable `corr_<a>_<b>` code for a correlation-derived deep-insight recipe.
+/// Deterministic so repeated mining of the same pair never creates duplicates.
+#[cfg(feature = "llm")]
+fn correlation_recipe_code(correlation: &apex_store::postgres::InsightCorrelationRow) -> String {
+    let slug = |value: &str| {
+        value
+            .to_lowercase()
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>()
+    };
+    format!(
+        "corr_{}_{}",
+        slug(&correlation.signal_domain_a),
+        slug(&correlation.signal_domain_b)
+    )
+}
+
+/// Definition blob for a correlation-derived deep-insight recipe candidate.
+/// Uses the engine's canonical YAML shape so the staged recipe is
+/// human-reviewable and promotable exactly like a seed recipe.
+#[cfg(feature = "llm")]
+fn correlation_recipe_definition(
+    code: &str,
+    signal_a: &str,
+    signal_b: &str,
+    strength: f64,
+    lag_days: Option<i32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": code,
+        "name": code,
+        "category": "correlation_deep",
+        "join": ["Entity"],
+        "outcome": signal_b,
+        "signals": [signal_a],
+        "transforms": [{ "type": "CountWindow", "days": lag_days.unwrap_or(7).max(1) }],
+        "test": { "type": "CrossCorrelation" },
+        "thresholds": {
+            "min_effect": (strength / 10.0).clamp(1.2, 3.0),
+            "max_p_value": 0.01,
+            "min_stability": 0.5,
+            "max_false_alarm_rate": 0.02,
+        },
+        "narrative_template": format!(
+            "Correlated signals: {signal_a} precedes {signal_b} (lag {}d, strength {strength:.2}). \
+             Deep-insight candidate mined from the weekly correlation pass — review and promote once analyst-verified.",
+            lag_days.unwrap_or(7)
+        ),
+        "action_playbook": [
+            "Verify the temporal correlation on recent entity timelines before promotion.",
+            "Corroborate with at least two independent sources per entity.",
+            "Promote only after the promotion-board eval gate passes on measured telemetry.",
+        ],
+        "applicability": { "geos": [], "industries": [], "notes": "correlation-mined" },
+    })
 }
 
 pub(super) async fn run_outcome_tracking(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
@@ -435,7 +579,7 @@ pub(super) async fn run_self_improvement_cycle(
         .count();
 
     #[cfg(feature = "llm")]
-    let (total, failed, partial_learning_failures) = {
+    let (mut total, mut failed, mut partial_learning_failures) = {
         let mut total = base_total;
         let mut failed = base_failed;
         let mut partial_learning_failures = false;
@@ -527,6 +671,32 @@ pub(super) async fn run_self_improvement_cycle(
     #[cfg(not(feature = "llm"))]
     let (total, failed, partial_learning_failures) = (base_total, base_failed, false);
 
+    // Analytical excellence review (weekly): snapshot the measured quality
+    // ledger, detect regression against the previous week, resolve due
+    // predictions against analyst-verified outcomes, and refit each
+    // registered model's calibration curve from its own resolved outcomes.
+    #[cfg(feature = "llm")]
+    match review_analytical_quality(store).await {
+        Ok(outcome) => {
+            total += outcome.samples.max(0) as u64;
+            if outcome.regression {
+                partial_learning_failures = true;
+            }
+            tracing::info!(
+                samples = outcome.samples,
+                resolved_predictions = outcome.resolved,
+                expired_predictions = outcome.expired,
+                refit_models = outcome.refit_models,
+                regression = outcome.regression,
+                "self_improvement_cycle: analytical quality review completed"
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "self_improvement_cycle: analytical quality review failed");
+            failed += 1;
+        }
+    }
+
     if failed > 0 {
         run.fail(&format!(
             "self_improvement_cycle: {failed} sub-jobs/components failed"
@@ -545,4 +715,229 @@ pub(super) async fn run_self_improvement_cycle(
         );
     }
     run
+}
+
+#[cfg(feature = "llm")]
+struct AnalyticalQualityReviewOutcome {
+    samples: i64,
+    regression: bool,
+    resolved: u64,
+    expired: u64,
+    refit_models: usize,
+}
+
+/// Weekly analytical-quality review: snapshot the ledger, detect regression
+/// against the previous snapshot, resolve due predictions against
+/// analyst-verified warning outcomes, and refit per-model calibration curves.
+#[cfg(feature = "llm")]
+async fn review_analytical_quality(
+    store: &Arc<PgStore>,
+) -> anyhow::Result<AnalyticalQualityReviewOutcome> {
+    use apex_insights::analytical::calibration::{CalibrationCurve, CalibrationPair};
+    use chrono::{Datelike, Duration, Utc};
+
+    let now = Utc::now();
+    let week_start = now.date_naive()
+        - Duration::days(i64::from(now.date_naive().weekday().num_days_from_monday()));
+    let aggregate = store
+        .aggregate_analytical_quality(now - Duration::days(7))
+        .await?;
+
+    // Regression gate: the measured quality must not silently decay.
+    let previous = store
+        .previous_analytical_quality_snapshot(week_start)
+        .await?;
+    let mut regressions: Vec<String> = Vec::new();
+    if let Some((_, prev_snapshot)) = previous.as_ref() {
+        let prev_depth = prev_snapshot.get("mean_depth").and_then(|v| v.as_f64());
+        let prev_factuality = prev_snapshot
+            .get("mean_factuality")
+            .and_then(|v| v.as_f64());
+        if let (Some(prev), Some(current)) = (prev_depth, aggregate.mean_depth) {
+            if prev - current > 0.05 {
+                regressions.push(format!("mean_depth {prev:.3} → {current:.3}"));
+            }
+        }
+        if let (Some(prev), Some(current)) = (prev_factuality, aggregate.mean_factuality) {
+            if prev - current > 0.05 {
+                regressions.push(format!("mean_factuality {prev:.3} → {current:.3}"));
+            }
+        }
+    }
+    let regression = !regressions.is_empty();
+    let snapshot = serde_json::json!({
+        "mean_depth": aggregate.mean_depth,
+        "median_depth": aggregate.median_depth,
+        "mean_factuality": aggregate.mean_factuality,
+        "mean_warrant": aggregate.mean_warrant,
+        "published": aggregate.published,
+        "revised": aggregate.revised,
+        "rejected": aggregate.rejected,
+        "hard_violations": aggregate.hard_violations,
+        "regressions": regressions,
+    });
+    store
+        .upsert_analytical_quality_snapshot(week_start, aggregate.samples, &snapshot)
+        .await?;
+    let audit_event = if regression {
+        "analytical_quality_regression"
+    } else {
+        "analytical_quality_snapshot"
+    };
+    if let Err(error) = store
+        .record_audit_event("worker", audit_event, &snapshot)
+        .await
+    {
+        tracing::warn!(%error, "analytical_quality: failed to record snapshot audit event");
+    }
+    if regression {
+        tracing::warn!(
+            regressions = ?regressions,
+            "analytical_quality: measured quality regressed versus the previous snapshot"
+        );
+    }
+
+    // Resolve due predictions against analyst-verified outcomes only.
+    let due = store.list_due_insight_predictions(now, 500).await?;
+    let mut resolved = 0u64;
+    let mut expired = 0u64;
+    for prediction in due {
+        let (Some(entity_id), Some(recipe_code)) =
+            (prediction.entity_id, prediction.recipe_code.as_deref())
+        else {
+            store.expire_insight_prediction(prediction.id, now).await?;
+            expired += 1;
+            continue;
+        };
+        let (true_positives, false_positives) = store
+            .reviewed_warning_outcomes_for_entity(
+                entity_id,
+                recipe_code,
+                prediction.created_at,
+                now,
+            )
+            .await?;
+        if true_positives == 0 && false_positives == 0 {
+            // No analyst verdict within the horizon: unresolvable, excluded
+            // from calibration rather than guessed.
+            store.expire_insight_prediction(prediction.id, now).await?;
+            expired += 1;
+        } else {
+            store
+                .resolve_insight_prediction(prediction.id, true_positives >= false_positives, now)
+                .await?;
+            resolved += 1;
+        }
+    }
+
+    // Retention: raw per-product reviews age out; the weekly snapshots above
+    // keep the trend permanently. Default 365 days, floor 30 (the store
+    // function refuses lower).
+    let retention_days = std::env::var("APEX_QUALITY_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(365)
+        .max(30);
+    match store.prune_analytical_quality_scores(retention_days).await {
+        Ok(deleted) => tracing::info!(
+            retention_days,
+            deleted,
+            "analytical_quality: retention prune complete"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "analytical_quality: retention prune failed"
+        ),
+    }
+
+    // Refit each registered model's calibration curve from its own resolved
+    // predictions (model-portability: swapping models never inherits another
+    // model's calibration).
+    let models = store.list_llm_models().await?;
+    let mut refit_models = 0usize;
+    for model in &models {
+        let rows = store
+            .list_calibration_pairs_for_model(&model.id, now - Duration::days(365), 5000)
+            .await?;
+        let pairs: Vec<CalibrationPair> = rows
+            .into_iter()
+            .map(|(stated, outcome)| CalibrationPair { stated, outcome })
+            .collect();
+        if let Some(curve) = CalibrationCurve::fit(&pairs, 10) {
+            match serde_json::to_value(&curve) {
+                Ok(value) => {
+                    if let Err(error) = store.update_model_calibration(&model.id, &value).await {
+                        tracing::warn!(
+                            model_id = %model.id,
+                            %error,
+                            "analytical_quality: failed to persist calibration curve"
+                        );
+                    } else {
+                        refit_models += 1;
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    model_id = %model.id,
+                    %error,
+                    "analytical_quality: failed to serialize calibration curve"
+                ),
+            }
+        }
+    }
+
+    Ok(AnalyticalQualityReviewOutcome {
+        samples: aggregate.samples,
+        regression,
+        resolved,
+        expired,
+        refit_models,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn correlation_recipe_code_is_stable_and_safe() {
+        let row = apex_store::postgres::InsightCorrelationRow {
+            id: uuid::Uuid::nil(),
+            correlation_kind: "signal_combination".to_string(),
+            signal_domain_a: "WebChange.conflict_escalation".to_string(),
+            signal_domain_b: "CostImpact".to_string(),
+            entity_a: None,
+            entity_b: None,
+            strength: 2.5,
+            p_value: None,
+            lag_days: Some(14),
+            evidence_count: 3,
+            status: "discovered".to_string(),
+            derived_recipe_codes: vec![],
+            first_seen_at: Utc::now(),
+            last_seen_at: Utc::now(),
+        };
+        let code = correlation_recipe_code(&row);
+        assert_eq!(code, "corr_webchange_conflict_escalation_costimpact");
+        assert!(code.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn correlation_recipe_definition_is_engine_shaped() {
+        let definition =
+            correlation_recipe_definition("corr_a_b", "SignalA", "SignalB", 2.5, Some(14));
+        assert_eq!(definition["id"], "corr_a_b");
+        assert_eq!(definition["category"], "correlation_deep");
+        assert_eq!(definition["test"]["type"], "CrossCorrelation");
+        assert_eq!(definition["signals"][0], "SignalA");
+        assert_eq!(definition["outcome"], "SignalB");
+        assert!(definition["thresholds"]["min_effect"].as_f64().unwrap() >= 1.2);
+        assert!(definition["narrative_template"]
+            .as_str()
+            .unwrap()
+            .contains("SignalA precedes SignalB"));
+    }
 }

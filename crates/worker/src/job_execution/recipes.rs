@@ -1018,6 +1018,14 @@ pub(super) async fn run_recipe_fire(
         InferenceLlmClient::new(base_url, api_key, config)
     };
 
+    // Model provenance + per-model calibration curve (model-portability: a
+    // swapped model carries its own measured calibration; until the weekly
+    // refit has data for it, raw confidence is used).
+    #[cfg(feature = "llm")]
+    let synthesis_model_id = insight_llm_client.default_config.model.clone();
+    #[cfg(feature = "llm")]
+    let model_calibration_curve = load_model_calibration(store, &synthesis_model_id).await;
+
     // PostgreSQL is the source of truth for runtime firing (audit P0): the
     // YAML seed file only bootstraps the recipes table, and the engine loads
     // the lifecycle-managed DB set. This is what makes deprecation,
@@ -4774,7 +4782,80 @@ pub(super) async fn run_recipe_fire(
         let insight_gate_passed =
             passes_shared_insight_quality_gate(&title, &summary, Some(c.category.as_str()));
         #[cfg(feature = "llm")]
-        let insight_gate_passed = true;
+        let pre_review_confidence = stored_confidence;
+        #[cfg(feature = "llm")]
+        let editorial_review = {
+            // The editorial board: depth assessment, atomic-claim
+            // verification, argumentation warrants and measured calibration
+            // run at the publication boundary. A Reject verdict blocks the
+            // insight (the warning still emits); Revise publishes with the
+            // recalibrated confidence and the editorial:revise tag.
+            let review = build_editorial_review(EditorialReviewRequest {
+                recipe_code: &c.recipe_code,
+                category: c.category.as_str(),
+                entity_id: &c.entity_id,
+                headline: &title,
+                narrative: &summary,
+                recommendations: &warning_action,
+                evidence_signals: &warning_evidence_signals,
+                stated_confidence: stored_confidence,
+                distinct_source_count: c.distinct_source_count,
+                calibration: model_calibration_curve.as_ref(),
+            });
+            // The cheap regex QC engine still runs: its coherence and
+            // hallucination floors are additional hard gates on top of the
+            // board.
+            let qc = apex_llm::quality_control::QualityControlEngine::with_default_config();
+            let checks = qc.run_checks(&format!("{title}\n{summary}"));
+            let coherence_ok = checks.coherence.score >= 0.7;
+            let hallucination_ok = checks.hallucination.risk_score <= 0.3;
+            let primary_registry = matches!(
+                c.category.as_str(),
+                "sanctions" | "government_registry" | "legal_regulatory"
+            );
+            let evidence_floor = primary_registry || c.distinct_source_count >= 2;
+            let verdict = if !coherence_ok || !hallucination_ok || !evidence_floor {
+                tracing::warn!(
+                    recipe = %c.recipe_code,
+                    coherence = checks.coherence.score,
+                    hallucination_risk = checks.hallucination.risk_score,
+                    distinct_sources = c.distinct_source_count,
+                    "recipe_fire: publication quality gate rejected insight"
+                );
+                crate::observability::WORKER_METRICS.record_insight_fallback();
+                false
+            } else {
+                review.verdict != apex_insights::analytical::editorial::EditorialVerdict::Reject
+            };
+            if !verdict {
+                tracing::warn!(
+                    recipe = %c.recipe_code,
+                    verdict = ?review.verdict,
+                    reasons = ?review.reasons,
+                    "recipe_fire: editorial board rejected insight"
+                );
+                crate::observability::WORKER_METRICS.record_insight_rejected();
+            } else {
+                stored_confidence = review.final_confidence;
+                tags.push(format!(
+                    "editorial:{}",
+                    match review.verdict {
+                        apex_insights::analytical::editorial::EditorialVerdict::Publish =>
+                            "published",
+                        apex_insights::analytical::editorial::EditorialVerdict::Revise => "revise",
+                        apex_insights::analytical::editorial::EditorialVerdict::Reject =>
+                            "rejected",
+                    }
+                ));
+                tags.push(format!("depth:{}", review.depth.tier.as_str()));
+            }
+            Some((review, verdict))
+        };
+        #[cfg(feature = "llm")]
+        let insight_gate_passed = editorial_review
+            .as_ref()
+            .map(|(_, verdict)| *verdict)
+            .unwrap_or(false);
 
         let region_param = if entity_region.is_empty() {
             None
@@ -4826,6 +4907,19 @@ pub(super) async fn run_recipe_fire(
                     #[cfg(feature = "llm")]
                     {
                         insight_inserted = true;
+                        if let Some((review, verdict)) = editorial_review.as_ref() {
+                            persist_analytical_quality_score(
+                                store,
+                                review,
+                                *verdict,
+                                &synthesis_model_id,
+                                Some(insight_id),
+                                entity_uuid,
+                                &c.recipe_code,
+                                pre_review_confidence,
+                            )
+                            .await;
+                        }
                     }
                     // Log insight generation to activity feed (fire-and-forget)
                     if !entity_label.is_empty() {
@@ -4872,6 +4966,22 @@ pub(super) async fn run_recipe_fire(
                 title = %title,
                 "recipe_fire: shared insight quality gate rejected summary"
             );
+            // Rejected products still enter the quality ledger (no insight
+            // id): the reject rate and its reasons are measured, not silent.
+            #[cfg(feature = "llm")]
+            if let Some((review, verdict)) = editorial_review.as_ref() {
+                persist_analytical_quality_score(
+                    store,
+                    review,
+                    *verdict,
+                    &synthesis_model_id,
+                    None,
+                    entity_uuid,
+                    &c.recipe_code,
+                    pre_review_confidence,
+                )
+                .await;
+            }
         }
 
         #[cfg(feature = "llm")]
@@ -5065,7 +5175,37 @@ pub(super) async fn run_recipe_fire(
                     )
                     .await
                 {
-                    Ok(_) => predictive_count += 1,
+                    Ok(insight_id) => {
+                        predictive_count += 1;
+                        // Calibration ledger: every predictive insight becomes
+                        // a resolvable forecast scored by Brier once the
+                        // weekly review resolves it against analyst-verified
+                        // outcomes for this entity+pattern.
+                        let window_days = i64::from(prediction.prediction_window_days.max(1));
+                        let resolve_by = Utc::now() + chrono::Duration::days(window_days);
+                        if let Err(error) = store
+                            .insert_insight_prediction(
+                                &apex_store::postgres::NewInsightPrediction {
+                                    insight_id: Some(insight_id),
+                                    entity_id: Some(*entity_uuid),
+                                    recipe_code: Some(pattern.id.clone()),
+                                    statement: format!(
+                                        "{} within {} days",
+                                        prediction.predicted_outcome, window_days
+                                    ),
+                                    probability: prediction.probability,
+                                    resolve_by,
+                                },
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                %error,
+                                entity_id = %entity_uuid,
+                                "recipe_fire: failed to record predictive insight in calibration ledger"
+                            );
+                        }
+                    }
                     Err(error) => {
                         insight_insert_failures += 1;
                         tracing::error!(
@@ -5419,6 +5559,257 @@ pub(super) async fn run_recipe_fire(
         run.succeed(insights_inserted, &summary);
     }
     run
+}
+
+/// Build review-only evidence records from LLM evidence signals. Ids are
+/// deterministic (v5) from recipe + URL so repeated reviews are stable and
+/// never collide with real storage ids (these records are not persisted).
+#[cfg(feature = "llm")]
+fn evidence_records_from_signals(
+    recipe_code: &str,
+    category: &str,
+    signals: &[crate::prompts::EvidenceSignal],
+) -> Vec<apex_insights::analytical::EvidenceRecord> {
+    signals
+        .iter()
+        .map(|signal| {
+            let url = (!signal.source_url.trim().is_empty()).then(|| signal.source_url.clone());
+            let id_material = format!(
+                "{recipe_code}|{category}|{}|{}",
+                signal.source_url, signal.title
+            );
+            apex_insights::analytical::EvidenceRecord {
+                evidence_id: Uuid::new_v5(&Uuid::NAMESPACE_URL, id_material.as_bytes()),
+                title: signal.title.clone(),
+                text: format!(
+                    "{} {}",
+                    signal.description,
+                    signal.extracted_facts.join("; ")
+                ),
+                source_name: if signal.source_url.trim().is_empty() {
+                    signal.signal_type.clone()
+                } else {
+                    signal.source_url.clone()
+                },
+                source_url: url,
+                signal_type: signal.signal_type.clone(),
+                observed_at: None,
+                reliability: (0.4 + 0.6 * f64::from(signal.relevance_score)).clamp(0.0, 1.0),
+            }
+        })
+        .collect()
+}
+
+/// Coordinated-placement detection over the product's evidence signals →
+/// red-team attacks for the editorial board (wires the adversarial engine
+/// into the production review path).
+#[cfg(feature = "llm")]
+fn build_external_attacks(
+    recipe_code: &str,
+    evidence: &[apex_insights::analytical::EvidenceRecord],
+) -> Vec<apex_insights::analytical::argumentation::ExternalAttack> {
+    use apex_insights::adversarial::{detect_coordinated_placement, AdversarialSignal};
+
+    let now = Utc::now();
+    let signals: Vec<AdversarialSignal> = evidence
+        .iter()
+        .enumerate()
+        .map(|(index, record)| AdversarialSignal {
+            signal_id: format!("{recipe_code}-ev{index}"),
+            entity_id: "review".to_string(),
+            source_id: record.source_family(),
+            source_type: record.signal_type.clone(),
+            observed_at: record.observed_at.unwrap_or(now),
+            text: record.searchable_text(),
+        })
+        .collect();
+    detect_coordinated_placement(&signals, 72, 3, 0.6)
+        .into_iter()
+        .map(
+            |alert| apex_insights::analytical::argumentation::ExternalAttack {
+                claim_index: None,
+                strength: alert.mean_token_jaccard.clamp(0.0, 1.0),
+                rationale: format!(
+                "coordinated placement: {} near-identical sources within 72h (mean jaccard {:.2})",
+                alert.distinct_source_count, alert.mean_token_jaccard
+            ),
+            },
+        )
+        .collect()
+}
+
+/// Inputs for the editorial review of one generated product.
+#[cfg(feature = "llm")]
+pub(crate) struct EditorialReviewRequest<'a> {
+    pub(crate) recipe_code: &'a str,
+    pub(crate) category: &'a str,
+    pub(crate) entity_id: &'a str,
+    pub(crate) headline: &'a str,
+    pub(crate) narrative: &'a str,
+    pub(crate) recommendations: &'a str,
+    pub(crate) evidence_signals: &'a [crate::prompts::EvidenceSignal],
+    pub(crate) stated_confidence: f64,
+    pub(crate) distinct_source_count: usize,
+    pub(crate) calibration: Option<&'a apex_insights::analytical::calibration::CalibrationCurve>,
+}
+
+/// Run the analytical-excellence editorial board over one generated product.
+///
+/// Evidence records use deterministic synthetic ids (review-only): claims
+/// extracted here feed the review, not the persisted claims table, so no
+/// fabricated evidence ids ever reach storage.
+#[cfg(feature = "llm")]
+pub(crate) fn build_editorial_review(
+    request: EditorialReviewRequest<'_>,
+) -> apex_insights::analytical::editorial::EditorialReview {
+    use apex_insights::analytical::editorial::{review, EditorialConfig, EditorialInputs};
+    use apex_insights::claims::extract_claims;
+
+    let evidence = evidence_records_from_signals(
+        request.recipe_code,
+        request.category,
+        request.evidence_signals,
+    );
+    let refs: Vec<apex_insights::claims::ClaimEvidenceRef> = evidence
+        .iter()
+        .map(|record| {
+            apex_insights::claims::ClaimEvidenceRef::new(
+                record.evidence_id,
+                record.source_url.clone(),
+            )
+        })
+        .collect();
+    let claims = extract_claims(
+        request.narrative,
+        request.recommendations,
+        &refs,
+        request.stated_confidence,
+        None,
+    );
+    let external_attacks = build_external_attacks(request.recipe_code, &evidence);
+
+    let inputs = EditorialInputs {
+        headline: request.headline,
+        narrative: request.narrative,
+        recommendations: request.recommendations,
+        claims: &claims,
+        evidence: &evidence,
+        stated_confidence: request.stated_confidence,
+        // Alternative-hypothesis count is carried by ACH-aware generators;
+        // recipe-fire products do not attach ACH lines yet.
+        alternative_hypotheses: 0,
+        external_attacks: &external_attacks,
+        calibration: request.calibration,
+        as_of: Utc::now(),
+    };
+    let _ = request.distinct_source_count;
+    let _ = request.entity_id;
+    review(&inputs, &EditorialConfig::default())
+}
+
+/// Load the calibrated confidence curve for a model from the registry.
+/// Missing or malformed calibration degrades to raw confidence (reviewed
+/// confidence is then evidence-capped, never silently inflated).
+#[cfg(feature = "llm")]
+pub(crate) async fn load_model_calibration(
+    store: &Arc<PgStore>,
+    model_id: &str,
+) -> Option<apex_insights::analytical::calibration::CalibrationCurve> {
+    match store.get_model_calibration(model_id).await {
+        Ok(Some(value)) => match serde_json::from_value(value) {
+            Ok(curve) => Some(curve),
+            Err(error) => {
+                tracing::warn!(
+                    model_id,
+                    %error,
+                    "recipe_fire: stored calibration curve is malformed; using raw confidence"
+                );
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(error) => {
+            tracing::warn!(
+                model_id,
+                %error,
+                "recipe_fire: failed to load model calibration; using raw confidence"
+            );
+            None
+        }
+    }
+}
+
+/// Persist one editorial verdict into the analytical-quality ledger.
+#[cfg(feature = "llm")]
+#[allow(clippy::too_many_arguments)] // Flat audit payload; a wrapper struct at the single call boundary adds no clarity.
+pub(crate) async fn persist_analytical_quality_score(
+    store: &Arc<PgStore>,
+    review: &apex_insights::analytical::editorial::EditorialReview,
+    publishable: bool,
+    model_id: &str,
+    insight_id: Option<Uuid>,
+    entity_id: Option<Uuid>,
+    recipe_code: &str,
+    stated_confidence: f64,
+) {
+    use apex_insights::analytical::editorial::EditorialVerdict;
+    use apex_store::postgres::NewAnalyticalQualityScore;
+
+    let verdict = match review.verdict {
+        EditorialVerdict::Publish => "publish",
+        EditorialVerdict::Revise => "revise",
+        EditorialVerdict::Reject => "reject",
+    };
+    let independence = review
+        .depth
+        .components
+        .iter()
+        .find(|component| component.name == "source_independence")
+        .map(|component| component.score)
+        .unwrap_or(0.0);
+    let score = NewAnalyticalQualityScore {
+        insight_id,
+        entity_id,
+        recipe_code: Some(recipe_code.to_string()),
+        model_id: Some(model_id.to_string()),
+        prompt_version: None,
+        depth_index: review.depth.index,
+        depth_tier: review.depth.tier.as_str().to_string(),
+        depth_components: serde_json::to_value(&review.depth.components)
+            .unwrap_or(serde_json::Value::Null),
+        factuality_score: review.verification.factuality_score,
+        warrant_overall: review.warrants.overall,
+        warrant_weakest: review
+            .warrants
+            .per_claim
+            .iter()
+            .map(|entry| entry.warrant)
+            .fold(1.0_f64, f64::min),
+        source_independence: independence,
+        evidence_cap: review.evidence_cap,
+        stated_confidence,
+        final_confidence: review.final_confidence,
+        hard_violations: review.verification.hard_violations.len() as i64,
+        soft_flags: serde_json::to_value(&review.verification.soft_flags)
+            .unwrap_or(serde_json::Value::Null),
+        verdict: verdict.to_string(),
+        reasons: review.reasons.clone(),
+    };
+    if let Err(error) = store.insert_analytical_quality_score(&score).await {
+        tracing::warn!(
+            recipe = %recipe_code,
+            verdict,
+            %error,
+            "recipe_fire: failed to persist analytical quality score"
+        );
+    } else if !publishable {
+        tracing::info!(
+            recipe = %recipe_code,
+            verdict,
+            reasons = ?review.reasons,
+            "recipe_fire: analytical quality ledger recorded rejected product"
+        );
+    }
 }
 
 #[cfg(test)]

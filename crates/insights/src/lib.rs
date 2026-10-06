@@ -46,6 +46,10 @@ pub mod weekly_pipeline;
 pub mod adversarial;
 pub mod psychological;
 
+// Analytical excellence layer: depth scoring, atomic-claim verification,
+// argumentation warrants, calibration, and the editorial publication board.
+pub mod analytical;
+
 // Phase 4.4: Psychological profiling subsystem (canonical compute + persistence).
 pub mod psych_compute;
 pub mod psych_store;

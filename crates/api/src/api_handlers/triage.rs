@@ -359,7 +359,7 @@ pub(crate) async fn override_triage_score(
 /// POST /api/triage/:id/acknowledge — mark a triage item as acknowledged.
 pub(crate) async fn acknowledge_triage_item(
     State(state): State<AppState>,
-    Extension(_auth_ctx): Extension<ApiAuthContext>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let queue = make_queue(state.store.clone());
@@ -373,6 +373,10 @@ pub(crate) async fn acknowledge_triage_item(
                 &item.title,
             )
             .await;
+            // Constant-learning: a triage acknowledgement is an analyst
+            // "viewed" signal for the source insight and must feed the
+            // feedback loop recipe performance reads.
+            record_triage_feedback(&state, &item, "viewed", &auth_ctx.user_id).await;
             (StatusCode::OK, Json(success(item_to_response(item))))
         }
         Err(e) => (
@@ -388,7 +392,7 @@ pub(crate) async fn acknowledge_triage_item(
 /// POST /api/triage/:id/resolve — mark a triage item as resolved.
 pub(crate) async fn resolve_triage_item(
     State(state): State<AppState>,
-    Extension(_auth_ctx): Extension<ApiAuthContext>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let queue = make_queue(state.store.clone());
@@ -402,6 +406,9 @@ pub(crate) async fn resolve_triage_item(
                 &item.title,
             )
             .await;
+            // A resolve is an analyst "actioned" signal (the insight was
+            // acted upon) — positive training evidence for the recipe loop.
+            record_triage_feedback(&state, &item, "actioned", &auth_ctx.user_id).await;
             (StatusCode::OK, Json(success(item_to_response(item))))
         }
         Err(e) => (
@@ -417,7 +424,7 @@ pub(crate) async fn resolve_triage_item(
 /// POST /api/triage/:id/dismiss — mark a triage item as dismissed.
 pub(crate) async fn dismiss_triage_item(
     State(state): State<AppState>,
-    Extension(_auth_ctx): Extension<ApiAuthContext>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let queue = make_queue(state.store.clone());
@@ -431,6 +438,9 @@ pub(crate) async fn dismiss_triage_item(
                 &item.title,
             )
             .await;
+            // A dismiss is an analyst "false positive" signal — the most
+            // valuable training evidence the recipe loop has.
+            record_triage_feedback(&state, &item, "false_positive", &auth_ctx.user_id).await;
             (StatusCode::OK, Json(success(item_to_response(item))))
         }
         Err(e) => (
@@ -440,6 +450,42 @@ pub(crate) async fn dismiss_triage_item(
                 e,
             ))),
         ),
+    }
+}
+
+/// Persist the analyst signal of a triage status change into the insight
+/// feedback loop so recipe performance tracking, fatigue detection and
+/// threshold calibration see it. Non-insight items (warnings/alerts already
+/// tracked through their own review paths) and unparseable source ids are
+/// skipped; persistence is best-effort *after* the primary mutation so a
+/// feedback write can never roll back the analyst's action.
+async fn record_triage_feedback(
+    state: &AppState,
+    item: &apex_core::triage::TriageQueueItem,
+    feedback_type: &str,
+    user_id: &apex_core::identity::UserId,
+) {
+    if item.item_type != TriageItemType::Insight {
+        return;
+    }
+    let Ok(insight_id) = Uuid::parse_str(&item.source_id) else {
+        return;
+    };
+    if let Err(error) = state
+        .store
+        .record_insight_feedback(
+            insight_id,
+            user_id,
+            feedback_type,
+            Some(&format!("triage:{}", item.status.as_str())),
+        )
+        .await
+    {
+        tracing::warn!(
+            insight_id = %insight_id,
+            %error,
+            "triage: failed to record feedback event for triage action"
+        );
     }
 }
 

@@ -238,6 +238,13 @@ mod app_users;
 pub use app_users::{AppUserRecord, AppUserSeed};
 mod collaboration;
 mod companies;
+mod correlations;
+pub use correlations::{InsightCorrelationInput, InsightCorrelationRow};
+mod analytical_quality;
+pub use analytical_quality::{
+    AnalyticalQualityAggregate, AnalyticalQualityRow, InsightPredictionRow, LlmModelRegistryRow,
+    NewAnalyticalQualityScore, NewInsightPrediction,
+};
 mod entity_review;
 mod event_outbox;
 pub use entity_review::EntityReviewRow;
@@ -283,7 +290,7 @@ mod preferences;
 mod readiness;
 mod revoked_sessions;
 pub use readiness::{AlertEngineStateRecord, AlertEngineStateRow};
-pub use recipes::{RecipeEngineRow, RecipeMonthlyPerformance};
+pub use recipes::{RecipeEngineRow, RecipeMonthlyPerformance, RecipeWeeklySnapshot};
 mod recipes;
 mod sales;
 mod security;

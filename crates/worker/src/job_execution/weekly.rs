@@ -104,7 +104,14 @@ pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) 
     // kept firing. Apply the decision to the recipes table, and only treat the
     // run as successful when every decision was either applied or already
     // satisfied by the database.
-    let actions = recipe_lifecycle_actions(kind, &report);
+    let mut actions = recipe_lifecycle_actions(kind, &report);
+    // Constant-testing layer: a promotion is applied only when the measured
+    // review telemetry passes the eval gate (significant improvement over the
+    // previous week, no critical regression, explicit analyst truth). The gate
+    // fails closed: on any telemetry error the promotion is withheld.
+    if calibration_eligible(kind) {
+        actions = gate_promotions_with_eval(store, &actions).await;
+    }
     let applied = match apply_recipe_lifecycle(store, &ctx.activity_logger, &actions).await {
         Ok(applied) => applied,
         Err(error) => {
@@ -132,6 +139,184 @@ pub(super) enum RecipeLifecycleOp {
 pub(super) struct RecipeLifecycleAction {
     pub(super) recipe_code: String,
     pub(super) op: RecipeLifecycleOp,
+}
+
+/// Filter the promotion actions through the measured-telemetry eval gate.
+///
+/// Each promotion candidate must show a statistically significant improvement
+/// in measured precision / false-positive rate over the previous week on real
+/// analyst-reviewed warnings, with no critical regression.  The gate fails
+/// closed: telemetry errors, missing snapshots, and unmeasured critical
+/// metrics withhold the promotion and are recorded as audit events so the
+/// decision is reproducible.
+async fn gate_promotions_with_eval(
+    store: &Arc<PgStore>,
+    actions: &[RecipeLifecycleAction],
+) -> Vec<RecipeLifecycleAction> {
+    use apex_learning::evaluation::{
+        evaluate_weekly_promotion, AnalystSignalClass, EvaluationRun, FrozenEvalSetRef,
+        LearningMetric, MetricObservation, PromotionDecision, PromotionGateConfig,
+    };
+
+    let promote_codes: Vec<String> = actions
+        .iter()
+        .filter(|action| action.op == RecipeLifecycleOp::Promote)
+        .map(|action| action.recipe_code.clone())
+        .collect();
+    if promote_codes.is_empty() {
+        return actions.to_vec();
+    }
+
+    let snapshots = match store.list_recipe_weekly_snapshots(&promote_codes, 2).await {
+        Ok(snapshots) => snapshots,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "weekly_pipeline: promotion eval gate telemetry failed; withholding all promotions (fail closed)"
+            );
+            for code in &promote_codes {
+                record_gate_rejection(store, code, "eval_telemetry_unavailable").await;
+            }
+            return actions
+                .iter()
+                .filter(|action| action.op == RecipeLifecycleOp::Deprecate)
+                .cloned()
+                .collect();
+        }
+    };
+
+    let mut by_recipe: std::collections::HashMap<
+        &str,
+        Vec<&apex_store::postgres::RecipeWeeklySnapshot>,
+    > = std::collections::HashMap::new();
+    for snapshot in &snapshots {
+        by_recipe
+            .entry(snapshot.recipe_code.as_str())
+            .or_default()
+            .push(snapshot);
+    }
+
+    let config = PromotionGateConfig {
+        // Aligned with the promotion board's own policy (#160: >= 10 reviewed
+        // warnings before promoting or deprecating); stricter than the
+        // library default of 30 only in this caller.
+        min_sample_size: 10,
+        ..PromotionGateConfig::default()
+    };
+
+    let measured = [LearningMetric::Precision, LearningMetric::FalsePositiveRate];
+
+    let mut kept: Vec<RecipeLifecycleAction> = Vec::new();
+    for action in actions {
+        if action.op == RecipeLifecycleOp::Deprecate {
+            kept.push(action.clone());
+            continue;
+        }
+        let Some(weeks) = by_recipe.get(action.recipe_code.as_str()) else {
+            tracing::warn!(
+                recipe_code = %action.recipe_code,
+                "weekly_pipeline: promotion withheld — no measured weekly telemetry (fail closed)"
+            );
+            record_gate_rejection(store, &action.recipe_code, "no_measured_telemetry").await;
+            continue;
+        };
+        let (Some(candidate_week), Some(baseline_week)) = (weeks.first(), weeks.get(1)) else {
+            tracing::warn!(
+                recipe_code = %action.recipe_code,
+                weeks = weeks.len(),
+                "weekly_pipeline: promotion withheld — needs two measured weeks (fail closed)"
+            );
+            record_gate_rejection(store, &action.recipe_code, "insufficient_weeks").await;
+            continue;
+        };
+
+        let run = |week: &apex_store::postgres::RecipeWeeklySnapshot, label: &str| {
+            let reviewed = week.reviewed_warnings.max(0) as u64;
+            EvaluationRun {
+                run_id: format!("{}-{}", action.recipe_code, label),
+                eval_set: FrozenEvalSetRef {
+                    id: "weekly_promotion_board_reviews".to_string(),
+                    name: "weekly_promotion_board_reviews".to_string(),
+                    version: 1,
+                    example_count: reviewed,
+                    examples_digest: String::new(),
+                },
+                eval_set_digest: String::new(),
+                candidate: apex_learning::evaluation::CandidateRef {
+                    kind: apex_learning::evaluation::CandidateKind::Recipe,
+                    reference: action.recipe_code.clone(),
+                    version: Some(week.week_start.to_string()),
+                },
+                candidate_artifact_hash: week.week_start.to_string(),
+                baseline_artifact_hash: None,
+                baseline_artifact_version: None,
+                metrics_version: 1,
+                observations: vec![
+                    MetricObservation {
+                        metric: LearningMetric::Precision,
+                        value: week.precision_score.clamp(0.0, 1.0),
+                        sample_size: reviewed,
+                        signal_class: AnalystSignalClass::PositiveConfirmation,
+                        is_training_truth: true,
+                        is_critical: false,
+                    },
+                    MetricObservation {
+                        metric: LearningMetric::FalsePositiveRate,
+                        value: week.false_positive_rate.clamp(0.0, 1.0),
+                        sample_size: reviewed,
+                        signal_class: AnalystSignalClass::PositiveConfirmation,
+                        is_training_truth: true,
+                        is_critical: true,
+                    },
+                ],
+            }
+        };
+
+        let decision = evaluate_weekly_promotion(
+            &run(candidate_week, "candidate"),
+            &run(baseline_week, "baseline"),
+            &config,
+            &measured,
+        );
+        match decision {
+            PromotionDecision::Promote { .. } => {
+                tracing::info!(
+                    recipe_code = %action.recipe_code,
+                    "weekly_pipeline: promotion eval gate passed"
+                );
+                kept.push(action.clone());
+            }
+            PromotionDecision::Reject(rejection) => {
+                tracing::warn!(
+                    recipe_code = %action.recipe_code,
+                    ?rejection,
+                    "weekly_pipeline: promotion withheld by eval gate"
+                );
+                record_gate_rejection(store, &action.recipe_code, &format!("{rejection:?}")).await;
+            }
+        }
+    }
+    kept
+}
+
+async fn record_gate_rejection(store: &Arc<PgStore>, recipe_code: &str, reason: &str) {
+    if let Err(error) = store
+        .record_audit_event(
+            "worker",
+            "recipe_promotion_gate_rejected",
+            &serde_json::json!({
+                "recipe_code": recipe_code,
+                "reason": reason,
+            }),
+        )
+        .await
+    {
+        tracing::warn!(
+            recipe_code,
+            %error,
+            "weekly_pipeline: failed to record promotion-gate audit event"
+        );
+    }
 }
 
 /// Pure decision helper: map a weekly report + job kind to the transitions the

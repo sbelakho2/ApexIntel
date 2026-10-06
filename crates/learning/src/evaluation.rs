@@ -369,6 +369,11 @@ pub enum PromotionRejection {
     NoSignificantImprovement {
         evaluated_metrics: usize,
     },
+    /// A critical metric was not measured at all: an unmeasured critical
+    /// metric can never regress observably, so the candidate is unverifiable.
+    MissingCriticalMeasurement {
+        metric: LearningMetric,
+    },
 }
 
 /// Outcome of the promotion gate.
@@ -585,6 +590,200 @@ pub fn evaluate_promotion(
     PromotionDecision::Promote {
         improvements,
         evaluated_metrics,
+    }
+}
+
+/// Shared metric loop of the promotion gates: for every gating metric in
+/// `metrics` verify the analyst-signal class, training-truth opt-in, and
+/// sample floor, then accumulate significant improvements while rejecting
+/// critical or significant regressions.
+fn gate_measured_metrics(
+    candidate: &EvaluationRun,
+    baseline: &EvaluationRun,
+    config: &PromotionGateConfig,
+    metrics: &[LearningMetric],
+) -> Result<Vec<MetricDelta>, PromotionRejection> {
+    let mut improvements: Vec<MetricDelta> = Vec::new();
+    let mut evaluated_metrics = 0usize;
+
+    for metric in metrics.iter().copied() {
+        let Some(baseline_obs) = baseline.observation(metric) else {
+            return Err(PromotionRejection::MissingMetric { metric });
+        };
+        let Some(candidate_obs) = candidate.observation(metric) else {
+            return Err(PromotionRejection::MissingMetric { metric });
+        };
+
+        let required_class = metric.required_signal_class();
+        if baseline_obs.signal_class != required_class
+            || candidate_obs.signal_class != required_class
+        {
+            return Err(PromotionRejection::NonTruthEvidence {
+                metric,
+                signal_class: if candidate_obs.signal_class != required_class {
+                    candidate_obs.signal_class
+                } else {
+                    baseline_obs.signal_class
+                },
+            });
+        }
+        for observation in [baseline_obs, candidate_obs] {
+            if observation.is_training_truth && !observation.signal_class.may_be_training_truth() {
+                return Err(PromotionRejection::NonTruthEvidence {
+                    metric,
+                    signal_class: observation.signal_class,
+                });
+            }
+        }
+        if !metric.gates_promotion() {
+            continue;
+        }
+        if !baseline_obs.is_truth_evidence() || !candidate_obs.is_truth_evidence() {
+            return Err(PromotionRejection::NonTruthEvidence {
+                metric,
+                signal_class: if !candidate_obs.is_truth_evidence() {
+                    candidate_obs.signal_class
+                } else {
+                    baseline_obs.signal_class
+                },
+            });
+        }
+        if candidate_obs.sample_size < config.min_sample_size
+            || baseline_obs.sample_size < config.min_sample_size
+        {
+            return Err(PromotionRejection::InsufficientSamples {
+                metric,
+                baseline_samples: baseline_obs.sample_size,
+                candidate_samples: candidate_obs.sample_size,
+                required: config.min_sample_size,
+            });
+        }
+
+        evaluated_metrics += 1;
+        let delta = build_delta(metric, baseline_obs, candidate_obs, config.significance_z);
+        if metric.is_critical() && delta.improvement < -config.max_critical_regression {
+            return Err(PromotionRejection::CriticalRegression { delta });
+        }
+        if !metric.is_critical() && is_significant_regression(metric, &delta, config.significance_z)
+        {
+            return Err(PromotionRejection::SignificantRegression { delta });
+        }
+        if delta.significant && delta.improvement >= config.min_absolute_improvement {
+            improvements.push(delta);
+        }
+    }
+
+    if improvements.is_empty() {
+        return Err(PromotionRejection::NoSignificantImprovement { evaluated_metrics });
+    }
+    Ok(improvements)
+}
+
+/// Promotion gate over a *partially measured* metric set.
+///
+/// Production telemetry does not always fill all nine
+/// [`LearningMetric`]s — e.g. the weekly promotion board measures precision
+/// and false-positive rate from reviewed warnings but has no duplicate-rate
+/// or entity-linking telemetry.  This variant applies the exact same rules as
+/// [`evaluate_promotion`] restricted to the metrics the caller actually
+/// measured, with one extra safety rule: **every critical metric must be
+/// measured** (`false_positive_rate`, `grounding_failure_rate`).  A candidate
+/// whose critical metrics are unknown can never be shown to not regress, so
+/// it is rejected as unverifiable rather than promoted on incomplete
+/// evidence.
+pub fn evaluate_promotion_over_measured(
+    candidate: &EvaluationRun,
+    baseline: &EvaluationRun,
+    config: &PromotionGateConfig,
+    measured: &[LearningMetric],
+) -> PromotionDecision {
+    if candidate.eval_set != baseline.eval_set {
+        return PromotionDecision::Reject(PromotionRejection::EvaluationSetMismatch {
+            baseline_set: format!("{}@v{}", baseline.eval_set.id, baseline.eval_set.version),
+            candidate_set: format!("{}@v{}", candidate.eval_set.id, candidate.eval_set.version),
+        });
+    }
+    for run in [candidate, baseline] {
+        if !run.eval_set.is_verifiable() {
+            return PromotionDecision::Reject(PromotionRejection::UnverifiableEvalSet {
+                run_id: run.run_id.clone(),
+                eval_set_id: run.eval_set.id.clone(),
+                example_count: run.eval_set.example_count,
+                digest: run.eval_set.examples_digest.clone(),
+            });
+        }
+        if run.eval_set_digest != run.eval_set.examples_digest {
+            return PromotionDecision::Reject(PromotionRejection::FrozenSetDigestMismatch {
+                run_id: run.run_id.clone(),
+                run_digest: run.eval_set_digest.clone(),
+                frozen_digest: run.eval_set.examples_digest.clone(),
+            });
+        }
+    }
+    finalize_measured_decision(candidate, baseline, config, measured, true)
+}
+
+/// Temporal comparison variant of the promotion gate for the weekly
+/// promotion board.
+///
+/// Unlike [`evaluate_promotion`] and [`evaluate_promotion_over_measured`],
+/// the two runs are measured on *different analyst-labeled review samples*
+/// (last week's reviewed warnings vs this week's), so no frozen-set identity
+/// is required: the invariant being enforced is temporal — this week's
+/// measured quality must be a significant, non-regressing improvement over
+/// last week's.  All per-metric rules (analyst-signal class, explicit
+/// training-truth opt-in, sample floor, critical-metric protection) are
+/// identical.  Critical metrics **that the caller measured** may never
+/// regress; the caller's `measured` set declares the board's telemetry scope
+/// (precision + false-positive rate from reviewed warnings) — critical
+/// metrics outside that scope are enforced by their own pipelines (grounding
+/// failures by the insight publication gate and the self-improvement cycle).
+pub fn evaluate_weekly_promotion(
+    candidate: &EvaluationRun,
+    baseline: &EvaluationRun,
+    config: &PromotionGateConfig,
+    measured: &[LearningMetric],
+) -> PromotionDecision {
+    finalize_measured_decision(candidate, baseline, config, measured, false)
+}
+
+fn finalize_measured_decision(
+    candidate: &EvaluationRun,
+    baseline: &EvaluationRun,
+    config: &PromotionGateConfig,
+    measured: &[LearningMetric],
+    require_all_critical_measured: bool,
+) -> PromotionDecision {
+    let mut unique: Vec<LearningMetric> = Vec::new();
+    for metric in measured {
+        if !unique.contains(metric) {
+            unique.push(*metric);
+        }
+    }
+    if !unique.iter().any(|metric| metric.gates_promotion()) {
+        return PromotionDecision::Reject(PromotionRejection::NoSignificantImprovement {
+            evaluated_metrics: 0,
+        });
+    }
+    if require_all_critical_measured {
+        for critical in [
+            LearningMetric::FalsePositiveRate,
+            LearningMetric::GroundingFailureRate,
+        ] {
+            if !unique.contains(&critical) {
+                return PromotionDecision::Reject(PromotionRejection::MissingCriticalMeasurement {
+                    metric: critical,
+                });
+            }
+        }
+    }
+
+    match gate_measured_metrics(candidate, baseline, config, &unique) {
+        Ok(improvements) => PromotionDecision::Promote {
+            evaluated_metrics: improvements.len(),
+            improvements,
+        },
+        Err(rejection) => PromotionDecision::Reject(rejection),
     }
 }
 
@@ -1070,6 +1269,108 @@ mod tests {
         ];
         for (metric, name) in LearningMetric::ALL.iter().zip(expected) {
             assert_eq!(metric.as_str(), name);
+        }
+    }
+
+    fn weekly_observations(precision: f64, fpr: f64, n: u64) -> Vec<MetricObservation> {
+        vec![
+            positive(LearningMetric::Precision, precision, n, false),
+            positive(LearningMetric::FalsePositiveRate, fpr, n, true),
+        ]
+    }
+
+    #[test]
+    fn weekly_gate_promotes_significant_improvement() {
+        let baseline = run(
+            "w-base",
+            "recipe_x",
+            1,
+            weekly_observations(0.60, 0.20, 200),
+        );
+        let candidate = run(
+            "w-cand",
+            "recipe_x",
+            1,
+            weekly_observations(0.75, 0.10, 200),
+        );
+        let measured = [LearningMetric::Precision, LearningMetric::FalsePositiveRate];
+        let decision = evaluate_weekly_promotion(
+            &candidate,
+            &baseline,
+            &PromotionGateConfig::default(),
+            &measured,
+        );
+        assert!(matches!(decision, PromotionDecision::Promote { .. }));
+    }
+
+    #[test]
+    fn weekly_gate_rejects_unmeasured_critical_metric() {
+        let baseline = run(
+            "w-base2",
+            "recipe_y",
+            1,
+            weekly_observations(0.60, 0.20, 200),
+        );
+        let candidate = run(
+            "w-cand2",
+            "recipe_y",
+            1,
+            weekly_observations(0.90, 0.02, 200),
+        );
+        let measured = [LearningMetric::Precision];
+        // The frozen-set variant requires every critical metric measured; the
+        // weekly variant trusts the caller's measured scope (FPR is measured
+        // by the board in production).  Assert the strict contract here.
+        let decision = evaluate_promotion_over_measured(
+            &candidate,
+            &baseline,
+            &PromotionGateConfig::default(),
+            &measured,
+        );
+        match decision {
+            PromotionDecision::Reject(PromotionRejection::MissingCriticalMeasurement {
+                metric,
+            }) => assert_eq!(metric, LearningMetric::FalsePositiveRate),
+            other => panic!("expected missing-critical-measurement rejection, got {other:?}"),
+        }
+        // ... while the weekly variant promotes on the same evidence set when
+        // both metrics are measured.
+        let both = [LearningMetric::Precision, LearningMetric::FalsePositiveRate];
+        let weekly = evaluate_weekly_promotion(
+            &candidate,
+            &baseline,
+            &PromotionGateConfig::default(),
+            &both,
+        );
+        assert!(matches!(weekly, PromotionDecision::Promote { .. }));
+    }
+
+    #[test]
+    fn weekly_gate_rejects_critical_regression() {
+        let baseline = run(
+            "w-base3",
+            "recipe_z",
+            1,
+            weekly_observations(0.80, 0.05, 200),
+        );
+        let candidate = run(
+            "w-cand3",
+            "recipe_z",
+            1,
+            weekly_observations(0.85, 0.30, 200),
+        );
+        let measured = [LearningMetric::Precision, LearningMetric::FalsePositiveRate];
+        let decision = evaluate_weekly_promotion(
+            &candidate,
+            &baseline,
+            &PromotionGateConfig::default(),
+            &measured,
+        );
+        match decision {
+            PromotionDecision::Reject(PromotionRejection::CriticalRegression { delta }) => {
+                assert_eq!(delta.metric, LearningMetric::FalsePositiveRate);
+            }
+            other => panic!("expected critical-regression rejection, got {other:?}"),
         }
     }
 }

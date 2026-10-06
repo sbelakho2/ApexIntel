@@ -1,0 +1,6572 @@
+/**
+ * Sensei-Rams Industrial Functionalist Design System
+ * Version 3.7.0 - October 2026
+ * 
+ * Philosophy: "Less, but better" (Weniger, aber besser) — Dieter Rams
+ * Paradigm: High-Precision Industrial Functionalism
+ * 
+ * This is NOT a modern SaaS look. This is a digital control station
+ * for manufacturing operations - closer to an aircraft cockpit than
+ * a social media feed.
+ */
+
+/* ============================================
+   1. CSS CUSTOM PROPERTIES (Design Tokens)
+   ============================================ */
+
+:root {
+    color-scheme: light dark;
+
+    /* Core Warm-Grey Scale (Braun-derived) */
+    --rams-chassis: #F2F2F2;
+    --rams-module: #E6E6E6;
+    --rams-panel: #D9D9D9;
+    --rams-line: #CCCCCC;
+    --rams-muted: #6F6F6F;
+    --rams-foreground: #1A1A1A;
+    
+    /* Extended Grey Scale (for auth pages and dark backgrounds) */
+    --rams-grey-100: #F2F2F2;
+    --rams-grey-200: #E6E6E6;
+    --rams-grey-300: #D9D9D9;
+    --rams-grey-400: #7A7A7A;
+    --rams-grey-500: #666666;
+    --rams-grey-600: #404040;
+    --rams-grey-700: #2D2D2D;
+    --rams-grey-800: #252525;
+    --rams-grey-900: #1A1A1A;
+    
+    /* Functional Accents (Semantic ONLY - never decorative) */
+    --rams-orange: #FFBE00;    /* Primary action, active state, current position */
+    --rams-green: #2D8C3C;     /* Success, operational, healthy, complete */
+    --rams-red: #D62D2D;       /* Error, critical, stop, danger */
+    --rams-steel: #4A90E2;     /* Information, links */
+    --rams-success: var(--rams-green); /* Alias: success semantic (see green) */
+    
+    /* User-customizable accent (defaults to orange) */
+    --rams-accent: var(--rams-orange);
+
+    /* Cross-module aliases used by legacy/embedded templates */
+    --rams-primary: var(--rams-accent);
+    --rams-primary-dark: #E6AB00;
+    --rams-orange-dark: var(--rams-primary-dark);
+    --rams-primary-bg: var(--rams-warning-bg);
+    --rams-surface: var(--rams-module);
+    --rams-surface-alt: var(--rams-panel);
+    --rams-surface-hover: var(--rams-panel);
+    --rams-bg-tertiary: var(--rams-panel);
+    --rams-border: var(--rams-line);
+    --rams-text-muted: var(--rams-muted);
+    --rams-bg-alt: var(--rams-panel);
+    --rams-bg-panel: var(--rams-panel);
+    
+    /* Chart/Data Visualization Colors (non-semantic, for differentiation) */
+    --rams-chart-purple: #8B5CF6;      /* Violet for charts */
+    --rams-chart-teal: #14B8A6;        /* Teal for charts */
+    --rams-chart-pink: #EC4899;        /* Pink for charts */
+    --rams-chart-indigo: #6366F1;      /* Indigo for charts */
+    --rams-chart-emerald: #22C55E;     /* Emerald green for charts */
+    --rams-chart-amber: #F59E0B;       /* Amber for charts */
+    --rams-chart-cyan: #06B6D4;        /* Cyan for charts */
+    --rams-chart-lime: #84CC16;        /* Lime for charts */
+    
+    /* Typography Scale (4px grid) - with rams- prefix aliases */
+    --text-3xs: 8px;
+    --text-2xs: 10px;
+    --text-xs: 12px;
+    --text-sm: 14px;
+    --text-base: 16px;
+    --text-lg: 18px;
+    --text-xl: 20px;
+    --text-2xl: 24px;
+    --text-3xl: 32px;
+    --text-4xl: 40px;
+    --text-5xl: 48px;
+    --text-6xl: 64px; /* 4rem for large display text */
+    
+    /* Typography aliases with rams- prefix for template consistency */
+    --rams-text-3xs: var(--text-3xs);
+    --rams-text-2xs: var(--text-2xs);
+    --rams-text-xs: var(--text-xs);
+    --rams-text-sm: var(--text-sm);
+    --rams-text-base: var(--text-base);
+    --rams-text-lg: var(--text-lg);
+    --rams-text-xl: var(--text-xl);
+    --rams-text-2xl: var(--text-2xl);
+    --rams-text-3xl: var(--text-3xl);
+    --rams-text-4xl: var(--text-4xl);
+    --rams-text-5xl: var(--text-5xl);
+    --rams-text-6xl: var(--text-6xl);
+    
+    /* Line Heights (4px grid) */
+    --leading-3xs: 12px;
+    --leading-2xs: 14px;
+    --leading-xs: 16px;
+    --leading-sm: 20px;
+    --leading-base: 24px;
+    --leading-lg: 28px;
+    --leading-xl: 28px;
+    --leading-2xl: 32px;
+    --leading-3xl: 40px;
+    --leading-4xl: 48px;
+    --leading-5xl: 56px;
+    --leading-6xl: 72px;
+    
+    /* Spacing Scale (4px base unit) */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-12: 48px;
+    --space-16: 64px;
+    
+    /* Spacing aliases with rams- prefix for template consistency */
+    --rams-space-1: var(--space-1);
+    --rams-space-2: var(--space-2);
+    --rams-space-3: var(--space-3);
+    --rams-space-4: var(--space-4);
+    --rams-space-6: var(--space-6);
+    --rams-space-8: var(--space-8);
+    --rams-space-12: var(--space-12);
+    --rams-space-16: var(--space-16);
+    
+    /* Border Radius (Industrial - SHARP) */
+    --radius-none: 0px;
+    --radius-sm: 2px;
+    --radius-md: 4px;
+    --radius-lg: 8px;  /* Maximum allowed */
+    
+    /* Shadows (Inset ONLY - no drop shadows).
+       --rams-bevel is the theme-aware top-edge highlight: pronounced in
+       light, a whisper in dark (a hardcoded white bevel glares on #1B1B1B). */
+    --rams-bevel: rgba(255,255,255,0.5);
+    --shadow-inset: inset 1px 1px 0 var(--rams-bevel), inset -1px -1px 0 rgba(0,0,0,0.05);
+    --shadow-pressed: inset 0 2px 4px rgba(0,0,0,0.1);
+    --shadow-focus: 0 0 0 2px rgba(255,190,0,0.3);
+    --shadow-card: 0 1px 2px rgba(26,26,26,0.06), 0 2px 8px rgba(26,26,26,0.04);
+    
+    /* Transition Durations */
+    --duration-instant: 50ms;
+    --duration-fast: 100ms;
+    --duration-normal: 150ms;
+    --duration-slow: 200ms;
+    
+    /* Layout */
+    --sidebar-width: 240px;
+    --status-bar-height: 0px;
+    --bezel-width: 8px;
+    
+    /* Semantic Background Colors (for alerts, badges, highlights) */
+    --rams-info-bg: rgba(74, 144, 226, 0.1);      /* Steel at 10% opacity */
+    --rams-success-bg: rgba(45, 140, 60, 0.1);    /* Green at 10% opacity */
+    --rams-warning-bg: rgba(255, 190, 0, 0.1);    /* Orange at 10% opacity */
+    --rams-warning-text: #8A5A00;
+    --rams-danger-bg: rgba(214, 45, 45, 0.1);     /* Red at 10% opacity */
+    
+    /* Overlay & Backdrop */
+    --rams-overlay: rgba(0, 0, 0, 0.5);           /* Modal/dropdown backdrop */
+    --rams-overlay-light: rgba(0, 0, 0, 0.3);     /* Lighter overlay variant */
+    
+    /* Font Families */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+}
+
+/* Dark Mode */
+.dark, [data-theme="dark"] {
+    color-scheme: dark;
+    --rams-chassis: #121212;
+    --rams-module: #1B1B1B;
+    --rams-panel: #242424;
+    --rams-line: #4D4D4D;
+    --rams-muted: #B3B3B3;
+    --rams-foreground: #F5F5F5;
+    --rams-success: var(--rams-green);
+
+    /* Dark bevel/shadows: elevation by deeper black, never white glare */
+    --rams-bevel: rgba(255,255,255,0.06);
+    --shadow-inset: inset 1px 1px 0 var(--rams-bevel), inset -1px -1px 0 rgba(0,0,0,0.4);
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.45), 0 2px 8px rgba(0,0,0,0.32);
+
+    /* Dark-mode supportive greys and semantic backgrounds */
+    --rams-grey-100: #1A1A1A;
+    --rams-grey-200: #202020;
+    --rams-grey-300: #262626;
+    --rams-grey-400: #9C9C9C;
+    --rams-grey-500: #B0B0B0;
+    --rams-grey-600: #C2C2C2;
+    --rams-grey-700: #D4D4D4;
+    --rams-grey-800: #E6E6E6;
+    --rams-grey-900: #F2F2F2;
+
+    --rams-info-bg: rgba(74, 144, 226, 0.2);
+    --rams-success-bg: rgba(45, 140, 60, 0.2);
+    --rams-warning-bg: rgba(255, 190, 0, 0.18);
+    --rams-warning-text: #FFBE00;
+    --rams-danger-bg: rgba(214, 45, 45, 0.2);
+    --rams-primary-dark: #D49F00;
+}
+
+/* ============================================
+   1.1 DENSITY SYSTEM (Comfortable vs Compact)
+   ============================================ */
+
+/* Default / Comfortable Density */
+.density-comfortable {
+    --density-spacing: 1;
+    --density-py: 0.5rem;
+    --density-px: 1rem;
+    --density-gap: 1rem;
+}
+
+/* Compact Density - tighter spacing */
+.density-compact {
+    --density-spacing: 0.75;
+    --density-py: 0.25rem;
+    --density-px: 0.5rem;
+    --density-gap: 0.5rem;
+}
+
+/* Apply density to common elements */
+.density-compact .rams-btn {
+    padding: 0.25rem 0.75rem;
+    font-size: var(--text-xs);
+}
+
+.density-compact .rams-card {
+    padding: 0.75rem;
+}
+
+.density-compact .rams-sidebar__nav-link {
+    padding: 0.5rem 0.75rem;
+}
+
+.density-compact .rams-table th,
+.density-compact .rams-table td {
+    padding: 0.5rem 0.75rem;
+}
+
+/* ============================================
+   1.2 REDUCED MOTION
+   ============================================ */
+
+.reduce-motion,
+.reduce-motion * {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+}
+
+/* Also respect system preference */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* ============================================
+   2. BASE RESET & TYPOGRAPHY
+   ============================================ */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+}
+
+/* Cross-page layout stability: pages differ in height, so the vertical
+   scrollbar appearing/vanishing between navigations shifted the whole
+   layout sideways (the field-reported click jitter). A stable gutter
+   reserves the space on every page. */
+html {
+    scrollbar-gutter: stable;
+    overflow-y: scroll; /* fallback where scrollbar-gutter is unsupported */
+}
+
+body {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    color: var(--rams-foreground);
+    background-color: var(--rams-chassis);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "kern" 1, "liga" 1;
+    min-height: 100vh;
+}
+
+/* Tabular figures for data */
+[data-numeric], .tabular-nums, .rams-metric {
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* ============================================
+   3. INDUSTRIAL BEZEL FRAME
+   ============================================ */
+
+.rams-bezel {
+    position: fixed;
+    inset: 0;
+    border: var(--bezel-width) solid var(--rams-chassis);
+    pointer-events: none;
+    z-index: 100;
+}
+
+/* Status bar removed */
+
+/* ============================================
+   5. RACK SIDEBAR
+   ============================================ */
+
+.rams-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: var(--status-bar-height);
+    width: var(--sidebar-width);
+    background: var(--rams-module);
+    border-right: 1px solid var(--rams-line);
+    display: flex;
+    flex-direction: column;
+    z-index: 50;
+    overflow-y: auto;
+    padding-top: var(--bezel-width);
+}
+
+.rams-sidebar__header {
+    min-height: 72px;
+    border-bottom: 1px solid var(--rams-line);
+    display: flex;
+    align-items: center;
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-3);
+}
+
+/* Chosen wordmark lockup (design 04 — mono plate). Mark+wordmark live in
+   one asset; sized by height so the ratio is fixed by the artwork. */
+.rams-lockup {
+    display: block;
+    width: auto;
+    height: 44px;
+    object-fit: contain;
+}
+
+.rams-sidebar__brand {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+}
+
+.rams-sidebar__brand .rams-lockup {
+    height: 40px;
+}
+
+.rams-auth-logo__lockup {
+    height: 52px;
+    margin: 0 auto;
+}
+
+.rams-sidebar__logo {
+    width: 32px;
+    height: 32px;
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: var(--text-sm);
+}
+
+.rams-logo-image {
+    width: 100%;
+    height: 100%;
+    object-fit: contain; /* the brand mark must never be distorted */
+    border-radius: var(--radius-sm);
+    display: block;
+}
+
+.rams-sidebar__title {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: var(--text-sm);
+    letter-spacing: -0.01em;
+}
+
+.rams-sidebar__subtitle {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    color: var(--rams-muted);
+}
+
+.rams-sidebar__nav {
+    flex: 1;
+    padding: var(--space-2);
+}
+
+.rams-sidebar__nav-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.rams-sidebar__nav-item {
+    display: block;
+}
+
+/* Nav items that carry a quick-add (+) button: lay out the link and the
+   add button on a single row so the button sits at the trailing edge. */
+.rams-sidebar__nav-item--with-add {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1, 4px);
+    padding-right: var(--space-2, 8px);
+}
+.rams-sidebar__nav-item--with-add > .rams-sidebar__nav-link {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+/* The quick-add button itself: small, muted, reveals on row hover. */
+.rams-sidebar__nav-item--with-add > .sidebar-quick-add {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border-radius: var(--radius-sm, 4px);
+    color: var(--rams-muted);
+    background: transparent;
+    text-decoration: none;
+    opacity: 0;
+    transition: opacity var(--duration-fast, 0.15s);
+}
+.rams-sidebar__nav-item--with-add:hover > .sidebar-quick-add,
+.rams-sidebar__nav-item--with-add > .sidebar-quick-add:focus {
+    opacity: 1;
+    color: var(--rams-accent, var(--rams-orange));
+}
+.rams-sidebar__nav-item--with-add > .sidebar-quick-add:hover {
+    background: var(--rams-panel);
+}
+/* Force the inner SVG to the button's size, never its intrinsic default. */
+.rams-sidebar__nav-item--with-add > .sidebar-quick-add svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+
+/* Collapsible nav groups */
+.rams-sidebar__nav-group { margin-bottom: 2px; }
+.rams-sidebar__group-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px;
+    color: var(--rams-muted);
+    cursor: pointer;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    user-select: none;
+    transition: color 0.15s ease;
+    background: none;
+    border: none;
+    width: 100%;
+    text-align: start;
+    font-family: inherit;
+}
+.rams-sidebar__group-header:focus-visible { outline: 2px solid var(--rams-accent); outline-offset: -2px; }
+.rams-sidebar__group-header:hover { color: var(--rams-foreground); }
+.rams-sidebar__group-chevron {
+    width: 12px;
+    height: 12px;
+    margin-inline-end: 8px;
+    transition: transform 0.2s ease;
+    opacity: 0.7;
+}
+.rams-sidebar__nav-group.is-open .rams-sidebar__group-chevron { transform: rotate(90deg); }
+.rams-sidebar__nav-list--nested {
+    display: none;
+    padding-left: 0;
+    margin: 0;
+    list-style: none;
+    background: rgba(0, 0, 0, 0.06);
+}
+.rams-sidebar__nav-group.is-open .rams-sidebar__nav-list--nested { display: block; }
+.rams-sidebar__nav-list--nested .rams-sidebar__nav-link {
+    padding-left: 32px;
+    font-size: 0.85rem;
+    color: var(--rams-muted);
+}
+.rams-sidebar__nav-list--nested .rams-sidebar__nav-link:hover {
+    color: var(--rams-foreground);
+}
+.dark .rams-sidebar__group-header,
+[data-theme="dark"] .rams-sidebar__group-header { color: var(--rams-muted); }
+.dark .rams-sidebar__group-header:hover,
+[data-theme="dark"] .rams-sidebar__group-header:hover { color: var(--rams-foreground); }
+.dark .rams-sidebar__nav-list--nested,
+[data-theme="dark"] .rams-sidebar__nav-list--nested { background: rgba(0, 0, 0, 0.15); }
+.dark .rams-sidebar__nav-list--nested .rams-sidebar__nav-link,
+[data-theme="dark"] .rams-sidebar__nav-list--nested .rams-sidebar__nav-link { color: var(--rams-muted); }
+.dark .rams-sidebar__nav-list--nested .rams-sidebar__nav-link:hover,
+[data-theme="dark"] .rams-sidebar__nav-list--nested .rams-sidebar__nav-link:hover { color: var(--rams-foreground); }
+
+/* Active station must be unmistakable on dark: lift the slab two steps
+ * above the module grey and pin the text to full foreground. */
+.dark .rams-sidebar__nav-link--active,
+[data-theme="dark"] .rams-sidebar__nav-link--active {
+    background: #2E2E2E;
+    color: var(--rams-foreground);
+    border-color: var(--rams-line);
+}
+
+/* Utility for Page Layout */
+.rams-page {
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: var(--space-6, 24px);
+}
+
+/* System Status Line — quiet machine metadata, not a panel. Healthy state
+ * whispers in muted mono; degraded earns the only warm accent in the row.
+ * No border, no fill: the page header below stays the visual owner. */
+.rams-status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: 0 var(--space-1);
+    margin-bottom: var(--space-4);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.rams-status-bar__signal {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--rams-muted);
+}
+
+.rams-status-bar__signal--ok .rams-status-bar__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--rams-green);
+    opacity: 0.75;
+    box-shadow: none;
+}
+
+.rams-status-bar__signal--degraded {
+    color: var(--rams-warning-text, var(--rams-orange));
+    font-weight: 600;
+}
+
+.rams-status-bar__signal--degraded .rams-status-bar__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--rams-orange);
+    animation: rams-status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes rams-status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+.rams-status-bar__dot {
+    flex-shrink: 0;
+}
+
+.rams-status-bar__meta {
+    color: var(--rams-muted);
+    opacity: 0.65;
+}
+
+.rams-sidebar__nav-link {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    color: var(--rams-muted);
+    text-decoration: none;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    transition: all var(--duration-fast);
+}
+
+.rams-sidebar__nav-link:hover {
+    border-color: var(--rams-line);
+    background: var(--rams-panel);
+    color: var(--rams-foreground);
+}
+
+.dark .rams-sidebar__nav-link,
+[data-theme="dark"] .rams-sidebar__nav-link { color: var(--rams-muted); }
+.dark .rams-sidebar__nav-link:hover,
+[data-theme="dark"] .rams-sidebar__nav-link:hover { color: var(--rams-foreground); }
+
+.rams-sidebar__nav-link--active {
+    border-color: var(--rams-line);
+    background: var(--rams-panel);
+    color: var(--rams-foreground);
+    box-shadow: inset 3px 0 0 0 var(--rams-orange);
+}
+
+.rams-sidebar__nav-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--rams-muted);
+    opacity: 0.3;
+    transition: all var(--duration-fast);
+}
+
+.rams-sidebar__nav-link--active .rams-sidebar__nav-indicator {
+    background: var(--rams-orange);
+    opacity: 1;
+    box-shadow: 0 0 8px rgba(255, 190, 0, 0.5);
+}
+
+.rams-sidebar__nav-icon {
+    width: 16px;
+    height: 16px;
+    opacity: 0.7;
+}
+
+.rams-sidebar__nav-link--active .rams-sidebar__nav-icon {
+    opacity: 1;
+}
+
+.rams-sidebar__nav-badge {
+    margin-left: auto;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    background: var(--rams-orange);
+    color: #000;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Labels truncate instead of wrapping or overspilling the sidebar column;
+   the badge never shrinks, the label absorbs the constraint. Full text
+   stays available via the title attribute on the span. */
+.rams-sidebar__nav-link > span:not(.rams-sidebar__nav-badge) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rams-sidebar__footer {
+    padding: var(--space-4);
+    border-top: 1px solid var(--rams-line);
+}
+
+.rams-sidebar__status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.rams-sidebar__status-text {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    color: var(--rams-green);
+}
+
+.rams-mobile-header {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    background: var(--rams-module);
+    border-bottom: 1px solid var(--rams-line);
+    z-index: 70;
+    padding: 0 var(--space-4);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.rams-mobile-header__toggle {
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--rams-line);
+    background: var(--rams-panel);
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    cursor: pointer;
+}
+
+.rams-mobile-header__toggle-bar {
+    display: block;
+    width: 16px;
+    height: 2px;
+    background: var(--rams-foreground);
+    opacity: 0.8;
+}
+
+.rams-mobile-header__brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+.rams-mobile-header__logo {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    object-fit: contain; /* the brand mark must never be distorted */
+}
+
+.rams-mobile-header__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rams-sidebar__overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--rams-overlay);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-normal);
+    z-index: 60;
+}
+
+/* ============================================
+   6. MAIN CONTENT AREA
+   ============================================ */
+
+.rams-main {
+    margin-left: var(--sidebar-width);
+    padding: var(--space-8);
+    padding-bottom: calc(var(--status-bar-height) + var(--space-8));
+    min-height: 100vh;
+}
+
+.rams-main--full {
+    margin-left: 0;
+}
+
+@media (max-width: 1024px) {
+    .rams-bezel {
+        display: none;
+    }
+
+    .rams-mobile-header {
+        display: flex;
+    }
+
+    .rams-sidebar {
+        width: min(320px, 85vw);
+        transform: translateX(-100%);
+        transition: transform var(--duration-normal);
+        z-index: 80;
+        padding-top: 0;
+    }
+
+    .rams-main {
+        margin-left: 0;
+        padding: var(--space-4);
+        padding-top: calc(56px + var(--space-4));
+    }
+
+    .rams-main.rams-main--full {
+        padding-top: var(--space-8);
+    }
+
+    body.is-sidebar-open {
+        overflow: hidden;
+    }
+
+    body.is-sidebar-open .rams-sidebar {
+        transform: translateX(0);
+    }
+
+    body.is-sidebar-open .rams-sidebar__overlay {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+/* ============================================
+   7. MODULE (NOT CARD)
+   ============================================ */
+
+.rams-module {
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    position: relative;
+}
+
+.rams-module--inset {
+    background: var(--rams-panel);
+    box-shadow: var(--shadow-inset);
+}
+
+.rams-module--filters {
+    margin-bottom: var(--space-6);
+    background: var(--rams-panel);
+    border-left: 4px solid var(--rams-orange);
+}
+
+.rams-module--hoverable {
+    transition: all 0.15s ease;
+    cursor: pointer;
+}
+
+.rams-module--hoverable:hover {
+    border-color: var(--rams-muted);
+    /* Stable-machinery hover: boundary + surface respond, the module
+       does not float (style guide: card hover lift → avoid). */
+}
+
+.rams-module--hoverable--selected {
+    border-color: var(--rams-green);
+    box-shadow: 0 0 0 1px var(--rams-green) inset, 0 4px 12px rgba(0,0,0,0.08);
+}
+
+.rams-module--hoverable--selected:hover {
+    border-color: var(--rams-green);
+}
+
+.rams-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.rams-module__header {
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--rams-line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--rams-panel);
+    border-top-left-radius: var(--radius-sm);
+    border-top-right-radius: var(--radius-sm);
+}
+
+.rams-module__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+    overflow-wrap: anywhere;
+}
+
+.rams-module__content {
+    padding: var(--space-4);
+}
+
+.rams-module--compact .rams-module__content {
+    padding: var(--space-2) var(--space-3);
+}
+
+.rams-module__content--flush {
+    padding: 0;
+}
+
+.rams-module__footer {
+    padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--rams-line);
+    background: var(--rams-panel);
+}
+
+/* ============================================
+   8. INDUSTRIAL BUTTONS
+   ============================================ */
+
+.rams-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    height: 40px;
+    padding: 0 var(--space-4);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    /* Fixed height + overflow:hidden must never clip a second line:
+       labels stay on one line and the button grows horizontally. */
+    white-space: nowrap;
+    /* Normal case for action labels (round-8 UI-18): "Save report", not
+       "SAVE REPORT" — uppercase stays reserved for status/metadata. Opt
+       back in per-element with .rams-uppercase where genuinely wanted. */
+    letter-spacing: 0.01em;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--rams-line);
+    background: var(--rams-module);
+    color: var(--rams-foreground);
+    cursor: pointer;
+    transition: all var(--duration-instant);
+    text-decoration: none;
+    box-shadow: inset 1px 1px 0 var(--rams-bevel), 0 1px 2px rgba(0,0,0,0.05);
+    position: relative;
+    overflow: hidden;
+}
+
+.rams-btn:hover {
+    background: var(--rams-panel);
+    border-color: var(--rams-muted);
+    box-shadow: inset 1px 1px 0 var(--rams-bevel), 0 2px 4px rgba(0,0,0,0.08);
+}
+
+.rams-btn:active {
+    transform: translateY(1px);
+    box-shadow: var(--shadow-pressed);
+}
+
+.rams-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--rams-orange), inset 0 1px 1px rgba(0,0,0,0.1);
+}
+
+.rams-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    box-shadow: none;
+    transform: none;
+}
+
+/* Action clusters (desktop). Previously these classes were only defined
+   inside the ≤768px media query, so on desktop they rendered as plain
+   blocks with no flex row alignment. The mobile MQ stacks them. */
+.rams-actions,
+.rams-actions--sm,
+.rams-form__actions,
+.rams-page-header__actions,
+.rams-page__actions,
+.rams-page-actions,
+.rams-module__header-actions,
+.rams-module__header__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+/* Inside table cells the cluster stays on one row; buttons keep their
+   natural width so labels never fold per character. */
+.rams-table .rams-actions {
+    display: inline-flex;
+    flex-wrap: nowrap;
+}
+
+.rams-table .rams-actions .rams-btn {
+    width: auto;
+}
+
+.rams-btn--primary {
+    background: var(--rams-orange);
+    border-color: color-mix(in srgb, var(--rams-orange) 85%, #000);
+    color: #000;
+    box-shadow: inset 1px 1px 0 var(--rams-bevel), 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.rams-btn--primary:hover {
+    background: color-mix(in srgb, var(--rams-orange) 90%, white);
+    box-shadow: inset 1px 1px 0 var(--rams-bevel), 0 2px 4px rgba(0,0,0,0.15);
+}
+
+.rams-btn--danger {
+    background: var(--rams-red);
+    border-color: #B02525;
+    color: #fff;
+    box-shadow: inset 1px 1px 0 var(--rams-bevel), 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.rams-btn--danger:hover {
+    filter: brightness(1.1);
+    background: var(--rams-red);
+}
+
+.rams-btn--success {
+    background: var(--rams-green);
+    border-color: #247332;
+    color: #fff;
+    box-shadow: inset 1px 1px 0 var(--rams-bevel), 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.rams-btn--success:hover {
+    filter: brightness(1.1);
+    background: var(--rams-green);
+}
+
+.rams-btn--indigo {
+    background: var(--rams-chart-indigo);
+    border-color: color-mix(in srgb, var(--rams-chart-indigo) 85%, #000);
+    color: var(--rams-chassis);
+}
+
+.rams-btn--indigo:hover {
+    filter: brightness(1.05);
+    background: var(--rams-chart-indigo);
+}
+
+.rams-btn--ghost {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+.rams-btn--ghost.rams-btn--accent {
+    color: var(--rams-orange);
+}
+
+.rams-btn--ghost.rams-btn--accent:hover {
+    color: var(--rams-orange);
+    border-color: var(--rams-orange);
+    background: var(--rams-warning-bg);
+}
+
+.rams-btn--accent-outline {
+    border-color: var(--rams-orange);
+    color: var(--rams-orange);
+}
+
+.rams-btn--accent-outline:hover {
+    border-color: var(--rams-orange);
+    color: var(--rams-orange);
+    background: var(--rams-warning-bg);
+}
+
+.rams-btn--ghost.rams-btn--danger {
+    color: var(--rams-red);
+}
+
+.rams-btn--ghost:hover {
+    background: var(--rams-panel);
+    border-color: var(--rams-line);
+    box-shadow: inset 1px 1px 0 var(--rams-bevel);
+}
+
+.rams-btn--ghost.rams-btn--danger:hover {
+    background: var(--rams-red);
+    border-color: var(--rams-red);
+    color: #fff;
+}
+
+.rams-btn--sm {
+    height: 32px;
+    padding: 0 var(--space-3);
+    font-size: var(--text-xs);
+}
+
+.rams-btn--lg {
+    height: 48px;
+    padding: 0 var(--space-6);
+    font-size: var(--text-base);
+}
+
+.rams-btn--full {
+    width: 100%;
+    display: block;
+    text-align: center;
+}
+
+.rams-btn-group {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+}
+
+.rams-btn__icon {
+    width: 16px;
+    height: 16px;
+    overflow: hidden;
+}
+
+.rams-btn__icon--end {
+    width: 12px;
+    height: 12px;
+    margin-left: var(--space-1);
+}
+
+.rams-btn svg {
+    overflow: hidden;
+}
+
+/* Icon Size Utilities (for SVGs and icon elements) */
+.rams-icon {
+    width: 16px;
+    height: 16px;
+    display: inline-block;
+    vertical-align: middle;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+/* Stroke-icon fallback: an SVG that declares neither fill nor stroke is an
+ * unfinished Feather/Heroicons copy — without this it default-fills black
+ * into a blob. :not() keeps explicit attributes authoritative (CSS would
+ * otherwise override presentation attributes). */
+.rams-icon:not([fill]):not([stroke]),
+.rams-btn__icon:not([fill]):not([stroke]),
+.rams-empty-state__icon:not([fill]):not([stroke]) {
+    fill: none;
+    stroke: currentColor;
+}
+
+.rams-icon--xs {
+    width: 12px;
+    height: 12px;
+}
+
+.rams-icon--sm {
+    width: 16px;
+    height: 16px;
+}
+
+.rams-icon--md {
+    width: 20px;
+    height: 20px;
+}
+
+.rams-icon--lg {
+    width: 24px;
+    height: 24px;
+}
+
+.rams-icon--xl {
+    width: 32px;
+    height: 32px;
+}
+
+.rams-icon--2xl {
+    width: 40px;
+    height: 40px;
+}
+
+/* ============================================
+   8b. DROPDOWN MENUS
+   ============================================ */
+
+.rams-dropdown-container {
+    position: relative;
+    display: inline-block;
+}
+
+.rams-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    min-width: 220px;
+    margin-top: var(--space-1);
+    background: var(--rams-chassis);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    box-shadow: none;
+    z-index: 100;
+    animation: rams-dropdown-enter 0.15s ease-out;
+}
+
+.rams-dropdown.rams-hidden {
+    display: none;
+}
+
+@keyframes rams-dropdown-enter {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.rams-dropdown__content {
+    padding: var(--space-2) 0;
+}
+
+.rams-dropdown__header {
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+    border-bottom: 1px solid var(--rams-border);
+    margin: 0 0 var(--space-1) 0;
+}
+
+.rams-dropdown__item {
+    display: block;
+    padding: var(--space-2) var(--space-3);
+    color: var(--rams-foreground);
+    text-decoration: none;
+    font-size: var(--text-sm);
+    transition: background-color 0.15s ease;
+}
+
+.rams-dropdown__item:hover {
+    background: var(--rams-panel);
+}
+
+.rams-dropdown__divider {
+    height: 1px;
+    background: var(--rams-border);
+    margin: var(--space-2) 0;
+}
+
+/* ============================================
+   9. FORM CONTROLS
+   ============================================ */
+
+.rams-form-group {
+    margin-bottom: var(--space-4);
+}
+
+.rams-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+    margin-bottom: var(--space-1);
+}
+
+.rams-input {
+    width: 100%;
+    height: 40px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    transition: border-color var(--duration-fast);
+}
+
+.rams-input::placeholder {
+    color: var(--rams-muted);
+    opacity: 0.6;
+}
+
+.rams-input:focus {
+    outline: none;
+    border-color: var(--rams-orange);
+    box-shadow: var(--shadow-focus);
+}
+
+.rams-input--error {
+    border-color: var(--rams-red);
+}
+
+.rams-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.rams-textarea {
+    width: 100%;
+    min-height: 120px;
+    padding: var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    resize: vertical;
+}
+
+.rams-textarea:focus {
+    outline: none;
+    border-color: var(--rams-orange);
+    box-shadow: var(--shadow-focus);
+}
+
+.rams-select {
+    width: 100%;
+    height: 40px;
+    padding: 0 var(--space-8) 0 var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23999999' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 8px center;
+    background-repeat: no-repeat;
+    background-size: 20px;
+    cursor: pointer;
+}
+
+.rams-select:focus {
+    outline: none;
+    border-color: var(--rams-orange);
+    box-shadow: var(--shadow-focus);
+}
+
+.rams-checkbox {
+    width: 20px;
+    height: 20px;
+    appearance: none;
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    position: relative;
+}
+
+.rams-checkbox:checked {
+    background: var(--rams-orange);
+    border-color: var(--rams-orange);
+}
+
+.rams-checkbox:checked::after {
+    content: '✓';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 12px;
+    color: #000;
+    font-weight: 700;
+}
+
+.rams-checkbox:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--rams-orange);
+}
+
+.rams-error-text {
+    font-size: var(--text-xs);
+    color: var(--rams-red);
+    margin-top: var(--space-1);
+}
+
+/* ============================================
+   10. DATA TABLE (Industrial)
+   ============================================ */
+
+.rams-table-container {
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    overflow: auto;
+}
+
+.rams-table-wrapper {
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    overflow: auto;
+}
+
+.rams-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+}
+
+.rams-table th {
+    background: var(--rams-panel);
+    padding: var(--space-3) var(--space-4);
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+    border-bottom: 1px solid var(--rams-line);
+    /* Metadata labels never wrap mid-word; on phones the table scrolls
+       horizontally in its container instead (sweep finding: 'Created By'
+       wrapped over two lines). */
+    white-space: nowrap;
+}
+
+.rams-table td {
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--rams-line);
+    color: var(--rams-foreground);
+}
+
+.rams-table tr:last-child td {
+    border-bottom: none;
+}
+
+/* Charts must live INSIDE their panel padding, never clipped by the
+   module border (sweep finding: bar baselines and axis labels cut on
+   command-center / rfq-analytics / reports). */
+.rams-module__content canvas,
+.rams-module__content .chart-container,
+.rams-module__content .chartjs-render-monitor {
+    max-width: 100%;
+}
+
+.rams-module__content canvas {
+    display: block;
+}
+
+/* Flush tables sit edge-to-edge by design; give the LAST row breathing
+   room so content never kisses the module border. */
+.rams-module__content--flush .rams-table tbody tr:last-child td {
+    padding-bottom: var(--space-3);
+}
+
+.rams-table tbody tr {
+    transition: background var(--duration-fast);
+}
+
+.rams-table tbody tr:hover {
+    background: var(--rams-panel);
+}
+
+.rams-table--mono td {
+    font-family: var(--font-mono);
+}
+
+.rams-table--compact th,
+.rams-table--compact td {
+    padding: var(--space-2) var(--space-3);
+}
+
+/* ============================================
+   11. ANDON STATUS INDICATORS
+   ============================================ */
+
+.rams-andon {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.rams-andon__light {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    transition: all var(--duration-fast);
+}
+
+.rams-andon__light--green {
+    background: var(--rams-green);
+    box-shadow: 0 0 8px rgba(45, 140, 60, 0.5);
+}
+
+.rams-andon__light--yellow {
+    background: var(--rams-orange);
+    box-shadow: 0 0 8px rgba(255, 190, 0, 0.5);
+}
+
+.rams-andon__light--red {
+    background: var(--rams-red);
+    box-shadow: 0 0 8px rgba(214, 45, 45, 0.5);
+}
+
+.rams-andon__light--off {
+    background: var(--rams-muted);
+    opacity: 0.2;
+    box-shadow: none;
+}
+
+.rams-andon--success .rams-andon__light { background: var(--rams-green); box-shadow: 0 0 8px rgba(45, 140, 60, 0.5); }
+.rams-andon--warning .rams-andon__light { background: var(--rams-orange); box-shadow: 0 0 8px rgba(255, 190, 0, 0.5); }
+.rams-andon--info .rams-andon__light { background: var(--rams-steel); box-shadow: 0 0 8px rgba(74, 144, 226, 0.5); }
+.rams-andon--error .rams-andon__light { background: var(--rams-red); box-shadow: 0 0 8px rgba(214, 45, 45, 0.5); }
+
+.rams-andon__text {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    font-weight: 700;
+}
+
+.rams-andon__text--green { color: var(--rams-green); }
+.rams-andon__text--yellow { color: var(--rams-orange); }
+.rams-andon__text--red { color: var(--rams-red); }
+.rams-andon__text--muted { color: var(--rams-muted); }
+
+/* Andon Stack (vertical lights) */
+.rams-andon-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+}
+
+/* ============================================
+   12. DYMO LABELS
+   ============================================ */
+
+.rams-dymo {
+    display: inline-block;
+    padding: 2px var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: #000;
+    color: #fff;
+    transform: rotate(-0.5deg);
+    user-select: none;
+}
+
+.rams-dymo--warning {
+    background: var(--rams-orange);
+    color: #000;
+}
+
+.rams-dymo--critical {
+    background: var(--rams-red);
+    color: #fff;
+}
+
+.rams-dymo--success {
+    background: var(--rams-green);
+    color: #fff;
+}
+
+/* ============================================
+   13. METRIC DISPLAY
+   ============================================ */
+
+.rams-metric {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+/* KPI cards equalize inside their grid row (sweep finding: ragged card
+ * heights on abm-dashboard / command-center / compliance-overview). The
+ * module stretches; the metric centers optically so equal frames read as
+ * one instrument row, not cards of chance. */
+.rams-grid > .rams-module,
+.rams-metrics-grid > .rams-module {
+    display: flex;
+    flex-direction: column;
+}
+
+.rams-grid > .rams-module > .rams-module__content,
+.rams-metrics-grid > .rams-module > .rams-module__content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.rams-metric {
+    margin: auto 0;
+}
+
+.rams-metric__label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+}
+
+.rams-metric__value {
+    font-family: var(--font-mono);
+    font-size: var(--text-3xl);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--rams-foreground);
+    overflow-wrap: anywhere;
+}
+
+.rams-metric__unit {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    text-transform: uppercase;
+    color: var(--rams-muted);
+    margin-left: var(--space-2);
+}
+
+.rams-metric__trend {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    font-weight: 500;
+}
+
+.rams-metric__trend--up {
+    color: var(--rams-green);
+}
+
+.rams-metric__trend--down {
+    color: var(--rams-red);
+}
+
+.rams-metric__trend--neutral {
+    color: var(--rams-muted);
+}
+
+/* ============================================
+   14. ALERTS & NOTIFICATIONS
+   ============================================ */
+
+.rams-alert {
+    padding: var(--space-4);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-left: 4px solid var(--rams-muted);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    position: relative;
+    overflow: hidden;
+}
+
+.rams-alert::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.1), transparent);
+}
+
+.rams-alert--info {
+    border-left-color: var(--rams-steel);
+    background: linear-gradient(90deg, rgba(74, 144, 226, 0.15) 0%, var(--rams-panel) 100%);
+}
+
+.rams-alert--success {
+    border-left-color: var(--rams-green);
+    background: linear-gradient(90deg, rgba(45, 140, 60, 0.15) 0%, var(--rams-panel) 100%);
+}
+
+.rams-alert--warning {
+    border-left-color: var(--rams-orange);
+    background: linear-gradient(90deg, rgba(255, 190, 0, 0.15) 0%, var(--rams-panel) 100%);
+}
+
+.rams-alert--error {
+    border-left-color: var(--rams-red);
+    background: linear-gradient(90deg, rgba(214, 45, 45, 0.15) 0%, var(--rams-panel) 100%);
+}
+
+.rams-alert__icon {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: var(--rams-panel);
+    border-radius: 2px;
+}
+
+.rams-alert__content {
+    flex: 1;
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.rams-alert__text {
+    margin: 0;
+    color: var(--rams-foreground);
+}
+
+.rams-alert__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.rams-alert__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: var(--space-1);
+    display: block;
+}
+
+/* ============================================
+   15. BADGES
+   ============================================ */
+
+.rams-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+}
+
+.rams-badge--success {
+    background: var(--rams-success-bg);
+    border-color: var(--rams-green);
+    color: var(--rams-green);
+}
+
+.rams-badge--warning {
+    background: var(--rams-warning-bg);
+    border-color: var(--rams-orange);
+    color: var(--rams-warning-text, var(--rams-orange));
+}
+
+.rams-badge--danger {
+    background: var(--rams-danger-bg);
+    border-color: var(--rams-red);
+    color: var(--rams-red);
+}
+
+.rams-badge--error {
+    background: var(--rams-danger-bg);
+    border-color: var(--rams-red);
+    color: var(--rams-red);
+}
+
+.rams-badge--info {
+    background: var(--rams-info-bg);
+    border-color: var(--rams-steel);
+    color: var(--rams-steel);
+}
+
+.rams-badge--green {
+    background: var(--rams-success-bg);
+    border-color: var(--rams-green);
+    color: var(--rams-green);
+}
+
+.rams-badge--yellow {
+    background: var(--rams-warning-bg);
+    border-color: var(--rams-orange);
+    color: var(--rams-warning-text, var(--rams-orange));
+}
+
+.rams-badge--red {
+    background: var(--rams-danger-bg);
+    border-color: var(--rams-red);
+    color: var(--rams-red);
+}
+
+.rams-badge--very-low {
+    background: color-mix(in srgb, var(--rams-red) 22%, transparent);
+    border-color: var(--rams-red);
+    color: var(--rams-red);
+}
+
+.rams-badge--primary {
+    background: var(--rams-orange);
+    border-color: var(--rams-orange);
+    color: #000;
+}
+
+/* Status text (inherits color from parent badge) */
+.rams-status-text {
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+/* ============================================
+   15. LAYOUT & COMPONENT UTILITIES
+   ============================================ */
+
+/* Core Containers */
+.rams-container {
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 var(--space-6);
+}
+
+.rams-container--full {
+    max-width: 100%;
+}
+
+.rams-container--narrow {
+    max-width: 800px;
+}
+
+.rams-metrics-grid {
+    display: grid;
+    gap: var(--space-4);
+}
+
+.rams-metrics-grid--2col { grid-template-columns: repeat(2, 1fr); }
+.rams-metrics-grid--3col { grid-template-columns: repeat(3, 1fr); }
+.rams-metrics-grid--4col { grid-template-columns: repeat(4, 1fr); }
+
+/* Stacking Utilities */
+.rams-upload-zone {
+    border: 2px dashed var(--rams-line);
+    padding: var(--space-8);
+    text-align: center;
+    cursor: pointer;
+    background: var(--rams-chassis);
+    transition: all 0.2s ease;
+}
+
+.rams-upload-zone:hover {
+    border-color: var(--rams-accent);
+    background: var(--rams-module);
+}
+
+.rams-upload-zone__icon {
+    font-size: 2rem;
+    margin-bottom: var(--space-2);
+}
+
+.rams-upload-zone__title {
+    font-weight: 700;
+    margin-bottom: var(--space-1);
+}
+
+.rams-upload-zone__hint {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+}
+
+.rams-upload-zone__filename {
+    margin-top: var(--space-4);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--rams-accent);
+}
+
+.rams-text-break {
+    word-break: break-all;
+    overflow-wrap: break-word;
+}
+
+.rams-stack {
+    display: flex;
+    flex-direction: column;
+}
+
+.rams-stack--xs { gap: var(--space-1); }
+.rams-stack--sm { gap: var(--space-2); }
+.rams-stack--md { gap: var(--space-4); }
+.rams-stack--lg { gap: var(--space-8); }
+.rams-stack--xl { gap: var(--space-12); }
+
+/* Heading Components */
+.rams-heading {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--rams-foreground);
+    line-height: 1.2;
+    margin: 0;
+}
+
+.rams-heading--1 { font-size: var(--text-3xl); letter-spacing: -0.03em; }
+.rams-heading--2 { font-size: var(--text-2xl); letter-spacing: -0.02em; }
+.rams-heading--3 { font-size: var(--text-xl); letter-spacing: -0.01em; }
+.rams-heading--4 { font-size: var(--text-lg); }
+
+/* Metric Variants */
+.rams-metric--lg .rams-metric__value { font-size: var(--text-4xl); }
+.rams-metric--xl .rams-metric__value { font-size: var(--text-5xl); }
+/* Allow direct class on element if no sub-elements */
+.rams-metric.rams-metric--lg { font-size: var(--text-4xl); font-weight: 700; font-family: var(--font-mono); }
+.rams-metric.rams-metric--xl { font-size: var(--text-5xl); font-weight: 700; font-family: var(--font-mono); }
+
+/* Badge Variants */
+.rams-badge--blue { background: rgba(74, 144, 226, 0.1); color: var(--rams-steel); border-color: var(--rams-steel); }
+.rams-badge--gray { background: var(--rams-panel); color: var(--rams-muted); border-color: var(--rams-line); }
+
+/* Definition Lists */
+.rams-definition-list {
+    display: grid;
+    gap: var(--space-4);
+}
+
+.rams-definition-list__item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.rams-definition-list__term {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+    font-family: var(--font-mono);
+}
+
+.rams-definition-list__desc {
+    font-size: var(--text-sm);
+    color: var(--rams-foreground);
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+/* Empty State */
+.rams-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-12) var(--space-6);
+    text-align: center;
+    background: var(--rams-surface);
+    border: 1px dashed var(--rams-line);
+    border-radius: var(--radius-lg);
+    margin: var(--space-4) 0;
+}
+
+.rams-empty-state__icon {
+    font-size: 3rem;
+    margin-bottom: var(--space-4);
+    color: var(--rams-muted);
+    opacity: 0.4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 80px;
+    height: 80px;
+    background: var(--rams-surface-alt);
+    border-radius: 50%;
+}
+
+.rams-empty-state__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--rams-foreground);
+    margin-bottom: var(--space-2);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.rams-empty-state__description,
+.rams-empty-state__text {
+    font-size: var(--text-sm);
+    color: var(--rams-muted);
+    max-width: 400px;
+    line-height: 1.6;
+}
+
+/* Links */
+.rams-link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--rams-steel);
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.rams-link:hover {
+    color: var(--rams-foreground);
+}
+
+.rams-link--back {
+    font-size: var(--text-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-family: var(--font-mono);
+}
+
+.rams-link__icon {
+    width: 16px;
+    height: 16px;
+}
+
+/* ============================================
+   16. PAGE LAYOUT UTILITIES
+   ============================================ */
+
+.rams-page-header,
+.rams-page__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-8);
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--rams-line);
+}
+
+.rams-page-title,
+.rams-page__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xl);
+    font-weight: 600;
+    color: var(--rams-foreground);
+    letter-spacing: -0.02em;
+}
+
+.rams-page-subtitle,
+.rams-page__subtitle {
+    font-size: var(--text-sm);
+    color: var(--rams-muted);
+    margin-top: var(--space-1);
+}
+
+.rams-page-actions,
+.rams-page__actions {
+    display: flex;
+    gap: var(--space-2);
+}
+
+.rams-page__container {
+    width: 100%;
+}
+
+.rams-page__container--narrow {
+    max-width: 800px;
+}
+
+.rams-page__header-content {
+    flex: 1;
+}
+
+/* Header overspill guardrails: the title block may shrink below its
+   content so long titles wrap instead of pushing the actions out of
+   the viewport; long single words (IDs, quote numbers) break anywhere;
+   the actions cluster wraps instead of being crushed. */
+.rams-page__header-content,
+.rams-page-header > div:first-child {
+    min-width: 0;
+}
+
+.rams-page-title,
+.rams-page__title {
+    overflow-wrap: anywhere;
+}
+
+.rams-page-actions,
+.rams-page__actions {
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+
+.rams-page__title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+}
+
+.rams-page__meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+    color: var(--rams-muted);
+    font-size: var(--text-xs);
+}
+
+.rams-page__meta-separator {
+    opacity: 0.5;
+}
+
+/* Grid Layouts */
+.rams-grid {
+    display: grid;
+    gap: var(--space-4);
+}
+
+.rams-grid--2 { grid-template-columns: repeat(2, 1fr); }
+.rams-grid--3 { grid-template-columns: repeat(3, 1fr); }
+.rams-grid--4 { grid-template-columns: repeat(4, 1fr); }
+.rams-grid--5 { grid-template-columns: repeat(5, 1fr); }
+.rams-grid--6 { grid-template-columns: repeat(6, 1fr); }
+
+@media (max-width: 1024px) {
+    .rams-grid--6 { grid-template-columns: repeat(3, 1fr); }
+    .rams-grid--5 { grid-template-columns: repeat(3, 1fr); }
+    .rams-grid--4 { grid-template-columns: repeat(2, 1fr); }
+    .rams-grid--3 { grid-template-columns: repeat(2, 1fr); }
+    /* Metric grids collapse with the same cadence as .rams-grid */
+    .rams-metrics-grid--4col,
+    .rams-metrics-grid--3col { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+    .rams-grid--6,
+    .rams-grid--5,
+    .rams-grid--4,
+    .rams-grid--3,
+    .rams-grid--2 { grid-template-columns: 1fr; }
+    .rams-metrics-grid--4col,
+    .rams-metrics-grid--3col,
+    .rams-metrics-grid--2col { grid-template-columns: 1fr; }
+}
+
+/* ============================================
+   17. ACCESSIBILITY
+   ============================================ */
+
+/* Skip Link */
+.rams-skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    padding: var(--space-2) var(--space-4);
+    background: var(--rams-orange);
+    color: #000;
+    font-weight: 600;
+    z-index: 9999;
+    transition: top var(--duration-fast);
+}
+
+.rams-skip-link:focus {
+    top: 0;
+}
+
+/* Focus visible */
+:focus-visible {
+    outline: 2px solid var(--rams-orange);
+    outline-offset: 2px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Screen reader only */
+.rams-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* ============================================
+   18. UTILITY CLASSES
+   ============================================ */
+
+.rams-text-muted { color: var(--rams-muted); }
+.rams-text-success { color: var(--rams-green); }
+.rams-text-warning { color: var(--rams-orange); }
+.rams-text-danger { color: var(--rams-red); }
+.rams-text-info { color: var(--rams-steel); }
+.rams-text-white { color: #ffffff; }
+.rams-text-white-muted { color: rgba(255, 255, 255, 0.72); }
+
+/* Legacy alias utilities (rams-text--*) */
+.rams-text--muted { color: var(--rams-muted); }
+.rams-text--success { color: var(--rams-green); }
+.rams-text--warning { color: var(--rams-orange); }
+.rams-text--danger { color: var(--rams-red); }
+.rams-text--info { color: var(--rams-steel); }
+.rams-text--white { color: #ffffff; }
+.rams-text--white-muted { color: rgba(255, 255, 255, 0.72); }
+
+.rams-bg-module { background: var(--rams-module); }
+.rams-bg-panel { background: var(--rams-panel); }
+.rams-bg-chassis { background: var(--rams-chassis); }
+
+.rams-border { border: 1px solid var(--rams-line); }
+.rams-border-t { border-top: 1px solid var(--rams-line); }
+.rams-border-b { border-bottom: 1px solid var(--rams-line); }
+.rams-border-l { border-inline-start: 1px solid var(--rams-line); }
+.rams-border-r { border-inline-end: 1px solid var(--rams-line); }
+
+.rams-font-mono { font-family: var(--font-mono); }
+.rams-font-sans { font-family: var(--font-sans); }
+
+.rams-uppercase {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Spacing utilities */
+.rams-m-0 { margin: 0; }
+.rams-m-1 { margin: var(--space-1); }
+.rams-m-2 { margin: var(--space-2); }
+.rams-m-3 { margin: var(--space-3); }
+.rams-m-4 { margin: var(--space-4); }
+.rams-m-6 { margin: var(--space-6); }
+.rams-m-8 { margin: var(--space-8); }
+
+.rams-mb-0 { margin-bottom: 0; }
+.rams-mb-1 { margin-bottom: var(--space-1); }
+.rams-mb-2 { margin-bottom: var(--space-2); }
+.rams-mb-3 { margin-bottom: var(--space-3); }
+.rams-mb-4 { margin-bottom: var(--space-4); }
+.rams-mb-6 { margin-bottom: var(--space-6); }
+.rams-mb-8 { margin-bottom: var(--space-8); }
+.rams-mb-xs { margin-bottom: var(--space-1); }
+.rams-mb-sm { margin-bottom: var(--space-2); }
+.rams-mb-md { margin-bottom: var(--space-3); }
+.rams-mb-lg { margin-bottom: var(--space-6); }
+.rams-mb-xl { margin-bottom: var(--space-8); }
+
+.rams-mt-0 { margin-top: 0; }
+.rams-mt-1 { margin-top: var(--space-1); }
+.rams-mt-2 { margin-top: var(--space-2); }
+.rams-mt-3 { margin-top: var(--space-3); }
+.rams-mt-4 { margin-top: var(--space-4); }
+.rams-mt-6 { margin-top: var(--space-6); }
+.rams-mt-8 { margin-top: var(--space-8); }
+.rams-mt-xs { margin-top: var(--space-1); }
+.rams-mt-sm { margin-top: var(--space-2); }
+.rams-mt-md { margin-top: var(--space-3); }
+.rams-mt-lg { margin-top: var(--space-6); }
+.rams-mt-xl { margin-top: var(--space-8); }
+
+.rams-p-0 { padding: 0; }
+.rams-p-1 { padding: var(--space-1); }
+.rams-p-2 { padding: var(--space-2); }
+.rams-p-3 { padding: var(--space-3); }
+.rams-p-4 { padding: var(--space-4); }
+.rams-p-6 { padding: var(--space-6); }
+.rams-p-8 { padding: var(--space-8); }
+.rams-p-xs { padding: var(--space-1); }
+.rams-p-sm { padding: var(--space-2); }
+.rams-p-md { padding: var(--space-3); }
+.rams-p-lg { padding: var(--space-6); }
+.rams-p-xl { padding: var(--space-8); }
+.rams-px-xs { padding-left: var(--space-1); padding-right: var(--space-1); }
+.rams-px-sm { padding-left: var(--space-2); padding-right: var(--space-2); }
+.rams-px-md { padding-left: var(--space-3); padding-right: var(--space-3); }
+.rams-px-lg { padding-left: var(--space-6); padding-right: var(--space-6); }
+.rams-px-xl { padding-left: var(--space-8); padding-right: var(--space-8); }
+.rams-py-xs { padding-top: var(--space-1); padding-bottom: var(--space-1); }
+.rams-py-sm { padding-top: var(--space-2); padding-bottom: var(--space-2); }
+.rams-py-md { padding-top: var(--space-3); padding-bottom: var(--space-3); }
+.rams-py-lg { padding-top: var(--space-6); padding-bottom: var(--space-6); }
+.rams-py-xl { padding-top: var(--space-8); padding-bottom: var(--space-8); }
+.rams-pt-xs { padding-top: var(--space-1); }
+.rams-pt-sm { padding-top: var(--space-2); }
+.rams-pt-md { padding-top: var(--space-3); }
+.rams-pt-lg { padding-top: var(--space-6); }
+.rams-pt-xl { padding-top: var(--space-8); }
+.rams-pb-xs { padding-bottom: var(--space-1); }
+.rams-pb-sm { padding-bottom: var(--space-2); }
+.rams-pb-md { padding-bottom: var(--space-3); }
+.rams-pb-lg { padding-bottom: var(--space-6); }
+.rams-pb-xl { padding-bottom: var(--space-8); }
+.rams-pl-xs { padding-inline-start: var(--space-1); }
+.rams-pl-sm { padding-inline-start: var(--space-2); }
+.rams-pl-md { padding-inline-start: var(--space-3); }
+.rams-pl-lg { padding-inline-start: var(--space-6); }
+.rams-pl-xl { padding-inline-start: var(--space-8); }
+.rams-pr-xs { padding-inline-end: var(--space-1); }
+.rams-pr-sm { padding-inline-end: var(--space-2); }
+.rams-pr-md { padding-inline-end: var(--space-3); }
+.rams-pr-lg { padding-inline-end: var(--space-6); }
+.rams-pr-xl { padding-inline-end: var(--space-8); }
+
+/* Flex utilities */
+.rams-flex { display: flex; }
+.rams-flex-col { flex-direction: column; }
+.rams-flex-1 { flex: 1; min-width: 0; }
+.rams-flex-auto { flex: auto; min-width: 0; }
+.rams-flex-none { flex: none; }
+.rams-flex-wrap { flex-wrap: wrap; }
+.rams-flex-shrink-0 { flex-shrink: 0; }
+.rams-items-center { align-items: center; }
+.rams-items-start { align-items: flex-start; }
+.rams-items-end { align-items: flex-end; }
+.rams-justify-start { justify-content: flex-start; }
+.rams-justify-center { justify-content: center; }
+.rams-justify-between { justify-content: space-between; }
+.rams-justify-end { justify-content: flex-end; }
+.rams-gap-1 { gap: var(--space-1); }
+.rams-gap-2 { gap: var(--space-2); }
+.rams-gap-3 { gap: var(--space-3); }
+.rams-gap-4 { gap: var(--space-4); }
+.rams-gap-6 { gap: var(--space-6); }
+
+/* Margin right utilities */
+.rams-mr-1 { margin-inline-end: var(--space-1); }
+.rams-mr-2 { margin-inline-end: var(--space-2); }
+.rams-mr-3 { margin-inline-end: var(--space-3); }
+.rams-mr-4 { margin-inline-end: var(--space-4); }
+.rams-ml-1 { margin-inline-start: var(--space-1); }
+.rams-ml-2 { margin-inline-start: var(--space-2); }
+.rams-ml-3 { margin-inline-start: var(--space-3); }
+.rams-ml-4 { margin-inline-start: var(--space-4); }
+.rams-mx-auto { margin-left: auto; margin-right: auto; }
+.rams-mx-xs { margin-left: var(--space-1); margin-right: var(--space-1); }
+.rams-mx-sm { margin-left: var(--space-2); margin-right: var(--space-2); }
+.rams-mx-md { margin-left: var(--space-3); margin-right: var(--space-3); }
+.rams-mx-lg { margin-left: var(--space-6); margin-right: var(--space-6); }
+.rams-mx-xl { margin-left: var(--space-8); margin-right: var(--space-8); }
+.rams-my-xs { margin-top: var(--space-1); margin-bottom: var(--space-1); }
+.rams-my-sm { margin-top: var(--space-2); margin-bottom: var(--space-2); }
+.rams-my-md { margin-top: var(--space-3); margin-bottom: var(--space-3); }
+.rams-my-lg { margin-top: var(--space-6); margin-bottom: var(--space-6); }
+.rams-my-xl { margin-top: var(--space-8); margin-bottom: var(--space-8); }
+
+/* Text alignment utilities */
+.rams-text-center { text-align: center; }
+.rams-text-left { text-align: start; }
+.rams-text-right { text-align: end; }
+.rams-text--center { text-align: center; }
+.rams-text--left { text-align: left; }
+.rams-text--right { text-align: right; }
+
+/* Display utilities */
+.rams-hidden { display: none; }
+.rams-block { display: block; }
+.rams-inline { display: inline; }
+.rams-inline-block { display: inline-block; }
+
+/* Position utilities */
+.rams-relative { position: relative; }
+.rams-absolute { position: absolute; }
+.rams-fixed { position: fixed; }
+.rams-sticky { position: sticky; }
+
+/* Overflow utilities */
+.rams-overflow-hidden { overflow: hidden; }
+.rams-overflow-auto { overflow: auto; }
+.rams-overflow-x-auto { overflow-x: auto; }
+.rams-overflow-y-auto { overflow-y: auto; }
+
+/* Width utilities */
+.rams-w-full { width: 100%; }
+.rams-w-auto { width: auto; }
+.rams-w-half { width: 50%; }
+
+/* Link styling */
+.rams-link {
+    color: var(--rams-steel);
+    text-decoration: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    transition: color var(--duration-fast);
+}
+
+.rams-link:hover {
+    color: var(--rams-orange);
+    text-decoration: underline;
+}
+
+.rams-link:focus-visible {
+    outline: 2px solid var(--rams-orange);
+    outline-offset: 2px;
+}
+
+/* ============================================
+   18A. FORM BEM ALIASES (rams-form__*)
+   ============================================ */
+
+/* Form container */
+.rams-form {
+    width: 100%;
+}
+
+/* Form group (BEM alias for rams-form-group) */
+.rams-form__group {
+    margin-bottom: var(--space-4);
+}
+
+.rams-form__group--full {
+    grid-column: 1 / -1;
+}
+
+.rams-form__group--actions {
+    display: flex;
+    align-items: flex-end;
+}
+
+/* Form label (BEM alias for rams-label) */
+.rams-form__label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+    margin-bottom: var(--space-1);
+}
+
+/* Form input (BEM alias for rams-input) */
+.rams-form__input {
+    width: 100%;
+    height: 40px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    transition: border-color var(--duration-fast);
+}
+
+.rams-form__input::placeholder {
+    color: var(--rams-muted);
+    opacity: 0.6;
+}
+
+.rams-form__input:focus {
+    outline: none;
+    border-color: var(--rams-accent);
+    box-shadow: var(--shadow-focus);
+}
+
+.rams-form__input[type="color"] {
+    padding: 0;
+    height: 40px;
+    width: 100%;
+    cursor: pointer;
+}
+
+.rams-form__input--error {
+    border-color: var(--rams-red);
+}
+
+.rams-form__input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Form select (BEM alias for rams-select) */
+.rams-form__select {
+    width: 100%;
+    height: 40px;
+    padding: 0 var(--space-8) 0 var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23999999' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 8px center;
+    background-repeat: no-repeat;
+    background-size: 20px;
+    cursor: pointer;
+}
+
+.rams-form__select:focus {
+    outline: none;
+    border-color: var(--rams-accent);
+    box-shadow: var(--shadow-focus);
+}
+
+/* Form hint text */
+.rams-form__hint {
+    display: block;
+    margin-top: var(--space-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--rams-muted);
+}
+
+/* Form textarea (BEM alias for rams-textarea) */
+.rams-form__textarea {
+    width: 100%;
+    min-height: 120px;
+    padding: var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    resize: vertical;
+}
+
+.rams-form__textarea:focus {
+    outline: none;
+    border-color: var(--rams-orange);
+    box-shadow: var(--shadow-focus);
+}
+
+/* Legacy textarea alias */
+.rams-form__input--textarea {
+    width: 100%;
+    min-height: 120px;
+    padding: var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    resize: vertical;
+}
+
+.rams-form__input--textarea:focus {
+    outline: none;
+    border-color: var(--rams-orange);
+    box-shadow: var(--shadow-focus);
+}
+
+/* Checkbox styling */
+.rams-form__checkbox {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--rams-foreground);
+}
+
+.rams-form__checkbox-input {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--rams-orange);
+}
+
+.rams-form__checkbox-input:focus-visible {
+    outline: 2px solid var(--rams-orange);
+    outline-offset: 2px;
+}
+
+.rams-form__checkbox-label {
+    user-select: none;
+}
+
+/* ============================================
+    20. MODAL / DIALOG
+   ============================================ */
+
+.rams-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: var(--space-4);
+}
+
+.rams-modal-backdrop.rams-hidden {
+    display: none;
+}
+
+/* Optional click-catcher layer for modals that manage their own closing */
+.rams-modal-backdrop__overlay {
+    position: absolute;
+    inset: 0;
+    background: var(--rams-overlay);
+    backdrop-filter: blur(4px);
+}
+
+.rams-modal {
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    width: 100%;
+    max-width: 500px;
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    animation: rams-modal-enter 0.2s ease-out;
+}
+
+.rams-modal--sm {
+    max-width: 400px;
+}
+
+.rams-modal--lg {
+    max-width: 600px;
+}
+
+@keyframes rams-modal-enter {
+    from {
+        opacity: 0;
+        transform: scale(0.95) translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+.rams-modal__header {
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--rams-line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.rams-modal__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+}
+
+.rams-modal__close {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--rams-muted);
+    cursor: pointer;
+    font-size: var(--text-xl);
+    line-height: 1;
+}
+
+.rams-modal__close:hover {
+    color: var(--rams-foreground);
+}
+
+.rams-modal__body {
+    padding: var(--space-4);
+    overflow-y: auto;
+    flex: 1;
+}
+
+.rams-modal__footer {
+    padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--rams-line);
+    background: var(--rams-panel);
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+}
+
+/* ============================================
+   21. TABS
+   ============================================ */
+
+.rams-tabs {
+    border-bottom: 1px solid var(--rams-line);
+    display: flex;
+    gap: var(--space-1);
+}
+
+.rams-tab {
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--rams-muted);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all var(--duration-fast);
+}
+
+.rams-tab:hover {
+    color: var(--rams-foreground);
+    background: var(--rams-panel);
+}
+
+.rams-tab--active {
+    color: var(--rams-foreground);
+    border-bottom-color: var(--rams-orange);
+}
+
+.rams-tab-content {
+    padding: var(--space-4) 0;
+}
+
+/* ============================================
+   22. PROGRESS BAR
+   ============================================ */
+
+.rams-progress {
+    height: 8px;
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.rams-progress__bar {
+    height: 100%;
+    background: var(--rams-orange);
+    /* Dynamic values enter through the --rams-progress-value token (set
+     * inline by templates as the delineated data channel), never through
+     * raw style overrides of system properties.
+     */
+    width: var(--rams-progress-value, 0%);
+    transition: width var(--duration-normal);
+}
+
+.rams-progress__bar--success {
+    background: var(--rams-green);
+}
+
+.rams-progress__bar--danger {
+    background: var(--rams-red);
+}
+
+.rams-progress__bar--info {
+    background: var(--rams-steel);
+}
+
+.rams-progress__bar--warning {
+    background: var(--rams-orange);
+}
+
+.rams-progress__bar--primary {
+    background: var(--rams-orange);
+}
+
+/* Compact progress bar (4px height for KPI cards) */
+.rams-progress--compact {
+    height: 4px;
+    border: none;
+}
+
+/* ============================================
+   23. LOADING STATES
+   ============================================ */
+
+.rams-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--rams-line);
+    border-top-color: var(--rams-orange);
+    border-radius: 50%;
+    animation: rams-spin 0.8s linear infinite;
+}
+
+@keyframes rams-spin {
+    to { transform: rotate(360deg); }
+}
+
+.rams-skeleton {
+    background: linear-gradient(90deg, var(--rams-panel) 25%, var(--rams-module) 50%, var(--rams-panel) 75%);
+    background-size: 200% 100%;
+    animation: rams-shimmer 1.5s infinite;
+    border-radius: var(--radius-sm);
+}
+
+@keyframes rams-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* Pulse Animation Utility */
+.rams-pulse {
+    animation: rams-pulse 1s infinite;
+}
+
+@keyframes rams-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Border Color Modifiers */
+.rams-border-danger {
+    border-color: var(--rams-red) !important;
+}
+
+.rams-border-warning {
+    border-color: var(--rams-orange) !important;
+}
+
+.rams-border-success {
+    border-color: var(--rams-green) !important;
+}
+
+.rams-border-info {
+    border-color: var(--rams-steel) !important;
+}
+
+/* ============================================
+   24. RESPONSIVE (handled by Section 6)
+   ============================================ */
+
+/* ============================================
+   25. AUTH PAGE STYLES
+   ============================================ */
+
+/**
+ * Authentication pages (login, register, forgot password, reset password)
+ * Dark-themed centered layout following Industrial Functionalist design
+ */
+
+.rams-auth-container {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-6);
+    background: var(--rams-chassis);
+}
+
+.rams-auth-module {
+    width: 100%;
+    max-width: 400px;
+}
+
+.rams-auth-logo {
+    text-align: center;
+    margin-bottom: var(--space-6);
+}
+
+.rams-auth-logo__symbol {
+    width: 48px;
+    height: 48px;
+    background: var(--rams-panel);
+    border: 2px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto var(--space-3);
+    font-size: 24px;
+    color: var(--rams-orange);
+}
+
+.rams-auth-logo__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+    font-weight: 600;
+    color: var(--rams-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.rams-auth-logo__subtitle {
+    font-size: var(--text-sm);
+    color: var(--rams-muted);
+    margin-top: var(--space-1);
+}
+
+/* Auth module overrides for dark background */
+.rams-auth-container .rams-module {
+    background: var(--rams-module);
+    border-color: var(--rams-line);
+}
+
+.rams-auth-container .rams-module__header {
+    border-bottom-color: var(--rams-line);
+}
+
+.rams-auth-container .rams-module__footer {
+    background: var(--rams-panel);
+    border-top-color: var(--rams-line);
+}
+
+.rams-auth-container .rams-form__input {
+    background: var(--rams-panel);
+    border-color: var(--rams-line);
+    color: var(--rams-foreground);
+}
+
+.rams-auth-container .rams-form__input::placeholder {
+    color: var(--rams-muted);
+}
+
+.rams-auth-container .rams-form__input:focus {
+    border-color: var(--rams-orange);
+}
+
+.rams-auth-container .rams-form__label {
+    color: var(--rams-muted);
+}
+
+.rams-auth-container .rams-form__hint {
+    color: var(--rams-muted);
+}
+
+.rams-auth-container .rams-form__checkbox-label {
+    color: var(--rams-foreground);
+}
+
+.rams-auth-container .rams-text-muted {
+    color: var(--rams-muted);
+}
+
+.rams-auth-container .rams-link {
+    color: var(--rams-steel);
+}
+
+.rams-auth-container .rams-link:hover {
+    color: var(--rams-orange);
+}
+
+/* ============================================
+   26. TYPOGRAPHY UTILITY CLASSES
+   ============================================ */
+
+/* Font Size Utilities */
+.rams-text-3xs { font-size: var(--text-3xs); line-height: var(--leading-3xs); }
+.rams-text-2xs { font-size: var(--text-2xs); line-height: var(--leading-2xs); }
+.rams-text-xs { font-size: var(--text-xs); line-height: var(--leading-xs); }
+.rams-text-sm { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.rams-text-base { font-size: var(--text-base); line-height: var(--leading-base); }
+.rams-text-lg { font-size: var(--text-lg); line-height: var(--leading-lg); }
+.rams-text-xl { font-size: var(--text-xl); line-height: var(--leading-xl); }
+.rams-text-2xl { font-size: var(--text-2xl); line-height: var(--leading-2xl); }
+.rams-text-3xl { font-size: var(--text-3xl); line-height: var(--leading-3xl); }
+.rams-text-4xl { font-size: var(--text-4xl); line-height: var(--leading-4xl); }
+.rams-text-5xl { font-size: var(--text-5xl); line-height: var(--leading-5xl); }
+.rams-text-6xl { font-size: var(--text-6xl); line-height: var(--leading-6xl); }
+
+/* Font Weight Utilities */
+.rams-font-normal { font-weight: 400; }
+.rams-font-medium { font-weight: 500; }
+.rams-font-semibold { font-weight: 600; }
+.rams-font-bold { font-weight: 700; }
+.rams-font-mono { font-family: var(--font-mono); }
+
+/* Legacy alias utilities (rams-text--size/weight) */
+.rams-text--6xl { font-size: var(--text-6xl); line-height: var(--leading-6xl); }
+.rams-text--5xl { font-size: var(--text-5xl); line-height: var(--leading-5xl); }
+.rams-text--4xl { font-size: var(--text-4xl); line-height: var(--leading-4xl); }
+.rams-text--3xl { font-size: var(--text-3xl); line-height: var(--leading-3xl); }
+.rams-text--2xl { font-size: var(--text-2xl); line-height: var(--leading-2xl); }
+.rams-text--xl { font-size: var(--text-xl); line-height: var(--leading-xl); }
+.rams-text--lg { font-size: var(--text-lg); line-height: var(--leading-lg); }
+.rams-text--sm { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.rams-text--xs { font-size: var(--text-xs); line-height: var(--leading-xs); }
+.rams-text--2xs { font-size: var(--text-2xs); line-height: var(--leading-2xs); }
+.rams-text--3xs { font-size: var(--text-3xs); line-height: var(--leading-3xs); }
+.rams-text--normal { font-weight: 400; }
+.rams-text--bold { font-weight: 700; }
+
+/* Text Color Utilities */
+.rams-text-foreground { color: var(--rams-foreground); }
+.rams-text-danger { color: var(--rams-red); }
+.rams-text-info { color: var(--rams-steel); }
+
+/* ============================================
+   27. ADDITIONAL UTILITY CLASSES
+   ============================================ */
+
+/* Link Variants */
+.rams-link--plain {
+    text-decoration: none;
+    color: inherit;
+}
+
+.rams-link--plain:hover {
+    color: var(--rams-orange);
+}
+
+/* Module Width Modifiers */
+.rams-module--narrow {
+    max-width: 800px;
+}
+
+.rams-module--medium {
+    max-width: 1000px;
+}
+
+.rams-module--wide {
+    max-width: 1200px;
+}
+
+/* Border Utilities */
+.rams-bordered {
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+}
+
+/* Border Radius Utilities */
+.rams-rounded { border-radius: var(--radius-sm); }
+.rams-rounded-md { border-radius: var(--radius-md); }
+.rams-rounded-lg { border-radius: var(--radius-lg); }
+.rams-rounded-full { border-radius: 9999px; }
+
+.rams-bordered:hover {
+    border-color: var(--rams-muted);
+}
+
+/* Display Utilities */
+.rams-inline-form {
+    display: inline;
+}
+
+.rams-inline-block {
+    display: inline-block;
+}
+
+/* Overflow Utilities */
+.rams-overflow-auto {
+    overflow: auto;
+}
+
+.rams-overflow-hidden {
+    overflow: hidden;
+}
+
+.rams-truncate {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Max Height Utilities */
+.rams-max-h-350 {
+    max-height: 350px;
+}
+
+.rams-max-h-400 {
+    max-height: 400px;
+}
+
+/* Background Color Utilities */
+.rams-bg-info-subtle {
+    background: var(--rams-info-bg);
+}
+
+.rams-bg-success-subtle {
+    background: var(--rams-success-bg);
+}
+
+.rams-bg-warning-subtle {
+    background: var(--rams-warning-bg);
+}
+
+.rams-bg-danger-subtle {
+    background: var(--rams-danger-bg);
+}
+
+/* ============================================
+   28. BREADCRUMB COMPONENT
+   ============================================ */
+
+.rams-breadcrumb {
+    margin-bottom: var(--space-4);
+}
+
+.rams-breadcrumb__list {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0;
+    margin: 0;
+}
+
+.rams-breadcrumb__item {
+    font-size: var(--text-2xs);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+}
+
+.rams-breadcrumb__link {
+    color: var(--rams-muted);
+    text-decoration: none;
+    transition: color 0.1s;
+}
+
+.rams-breadcrumb__link:hover {
+    color: var(--rams-foreground);
+}
+
+.rams-breadcrumb__separator {
+    color: var(--rams-line);
+    font-size: var(--text-2xs);
+}
+
+.rams-breadcrumb__current,
+.rams-breadcrumb__item--current {
+    color: var(--rams-foreground);
+    font-weight: 700;
+}
+
+.rams-breadcrumb--inline {
+    margin-bottom: var(--space-2);
+}
+
+/* Segmented Control */
+.rams-segmented-control {
+    display: inline-flex;
+    background: var(--rams-panel);
+    padding: 2px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--rams-line);
+}
+
+.rams-segmented-control__item {
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--rams-muted);
+    text-decoration: none;
+    border-radius: calc(var(--radius-sm) - 1px);
+    transition: all 0.1s;
+}
+
+.rams-segmented-control__item:hover {
+    color: var(--rams-foreground);
+}
+
+.rams-segmented-control__item--active {
+    background: var(--rams-module);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-sm);
+    font-weight: 700;
+}
+
+/* Filter Bar */
+.rams-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    margin-bottom: var(--space-6);
+    flex-wrap: wrap;
+}
+
+/* Metrics Row */
+.rams-metrics-row {
+    display: flex;
+    gap: var(--space-8);
+    padding: var(--space-4) 0;
+    border-top: 1px solid var(--rams-line);
+    border-bottom: 1px solid var(--rams-line);
+    margin: var(--space-4) 0;
+}
+
+/* Info Panel */
+.rams-info-panel {
+    display: flex;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    background: var(--rams-panel);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--rams-line);
+}
+
+.rams-info-panel__icon {
+    width: 20px;
+    height: 20px;
+    color: var(--rams-steel);
+    flex-shrink: 0;
+}
+
+.rams-info-panel__title {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    margin-bottom: var(--space-2);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-family: var(--font-mono);
+}
+
+.rams-info-panel__list {
+    margin: 0;
+    padding-left: var(--space-4);
+    font-size: var(--text-sm);
+    color: var(--rams-muted);
+}
+
+/* Form Row Layouts */
+.rams-form__row {
+    display: grid;
+    gap: var(--space-4);
+}
+
+.rams-form__row--2 { grid-template-columns: repeat(2, 1fr); }
+.rams-form__row--3 { grid-template-columns: repeat(3, 1fr); }
+.rams-form__row--4 { grid-template-columns: repeat(4, 1fr); }
+.rams-form__row--5 { grid-template-columns: repeat(5, 1fr); }
+.rams-form__row--6 { grid-template-columns: repeat(6, 1fr); }
+
+/* Action Links */
+.rams-action-links {
+    display: flex;
+    gap: var(--space-4);
+}
+
+.rams-action-link {
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-steel);
+    text-decoration: none;
+    font-weight: 700;
+}
+
+.rams-action-link:hover {
+    text-decoration: underline;
+}
+
+/* Results Count */
+.rams-results-count {
+    font-size: var(--text-2xs);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+    margin-bottom: var(--space-2);
+}
+
+.rams-results-count__value {
+    color: var(--rams-foreground);
+    font-weight: 700;
+}
+
+/* List Items (for Activity Feed etc) */
+.rams-list__item {
+    display: flex;
+    gap: var(--space-4);
+    align-items: flex-start;
+}
+
+.rams-list__icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    background: var(--rams-panel);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.rams-list__icon--call { color: var(--rams-green); }
+.rams-list__icon--email { color: var(--rams-steel); }
+.rams-list__icon--meeting { color: var(--rams-orange); }
+
+.rams-list__content {
+    flex: 1;
+    min-width: 0;
+}
+
+.rams-list__header {
+    margin-bottom: var(--space-1);
+}
+
+.rams-list__meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.rams-list__title {
+    font-weight: 600;
+    font-size: var(--text-sm);
+    margin-bottom: 2px;
+}
+
+.rams-list__description {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+    margin-bottom: var(--space-2);
+    line-height: 1.4;
+}
+
+.rams-list__footer {
+    font-size: var(--text-3xs);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+}
+
+.rams-list__separator {
+    opacity: 0.3;
+}
+
+.rams-list__actions {
+    display: flex;
+    gap: var(--space-1);
+}
+
+.rams-module--interactive {
+    transition: background-color 0.1s;
+}
+
+.rams-module--interactive:hover {
+    background-color: var(--rams-panel);
+}
+
+/* ============================================
+   29. ICON CONTAINER COMPONENT
+   ============================================ */
+
+.rams-icon-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+}
+
+.rams-icon-container--sm {
+    width: 32px;
+    height: 32px;
+}
+
+.rams-icon-container--info {
+    background: var(--rams-info-bg);
+}
+
+.rams-icon-container--success {
+    background: var(--rams-success-bg);
+}
+
+.rams-icon-container--warning {
+    background: var(--rams-warning-bg);
+}
+
+.rams-icon-container--danger {
+    background: var(--rams-danger-bg);
+}
+
+/* Icon container shape variants */
+.rams-icon-container--round {
+    border-radius: 9999px;
+}
+
+/* Avatar component - inherits from icon-container */
+.rams-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: var(--rams-panel);
+    border-radius: 9999px;
+    font-weight: 600;
+    font-size: var(--text-sm);
+}
+
+.rams-avatar--sm {
+    width: 32px;
+    height: 32px;
+    font-size: var(--text-xs);
+}
+
+/* Link Card - bordered link container */
+.rams-link-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    transition: border-color var(--duration-fast);
+}
+
+.rams-link-card:hover {
+    border-color: var(--rams-steel);
+}
+
+.rams-icon-container--round {
+    border-radius: 50%;
+}
+
+/* ============================================
+   30. CARD ITEM COMPONENT
+   ============================================ */
+
+.rams-card-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color var(--duration-fast);
+}
+
+.rams-card-item:hover {
+    border-color: var(--rams-muted);
+}
+
+.rams-card-item__content {
+    flex: 1;
+    min-width: 0;
+}
+
+.rams-card-item__title {
+    font-size: var(--text-sm);
+    font-weight: 500;
+}
+
+.rams-card-item__subtitle {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+}
+
+/* ============================================
+   31. COMMAND CENTER SPECIFIC COMPONENTS
+   ============================================ */
+
+.rams-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: var(--space-4);
+}
+
+@media (max-width: 1200px) {
+    .rams-stat-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .rams-stat-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+.rams-stat-card {
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    padding: var(--space-4);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    position: relative;
+    transition: all var(--duration-fast);
+}
+
+.rams-stat-card:hover {
+    border-color: var(--rams-muted);
+    background: var(--rams-panel);
+}
+
+.rams-stat-card__value {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    color: var(--rams-foreground);
+    line-height: 1.2;
+}
+
+.rams-stat-card__label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+}
+
+.rams-feed-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-height: 350px;
+    overflow-y: auto;
+}
+
+.rams-feed-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-2);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    color: inherit;
+}
+
+.rams-feed-item:hover {
+    border-color: var(--rams-muted);
+}
+
+.rams-feed-item__title {
+    font-size: var(--text-sm);
+    font-weight: 500;
+}
+
+.rams-feed-item__subtitle {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+}
+
+/* Alert Header Variant */
+.rams-module__header--alert {
+    background: var(--rams-danger-bg);
+}
+
+/* Border Color Modifiers */
+.rams-border-danger {
+    border-color: var(--rams-red) !important;
+}
+
+.rams-border-warning {
+    border-color: var(--rams-orange) !important;
+}
+
+/* ============================================
+   32. TOOLTIP COMPONENT (for heat maps etc.)
+   ============================================ */
+
+.rams-tooltip {
+    position: absolute;
+    z-index: 1000;
+    background: var(--rams-foreground);
+    color: var(--rams-chassis);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    font-size: var(--text-xs);
+    pointer-events: none;
+    box-shadow: var(--shadow-inset);
+}
+
+.rams-tooltip__score {
+    font-weight: 600;
+    margin-bottom: var(--space-1);
+}
+
+.rams-tooltip__details {
+    color: var(--rams-grey-400);
+}
+
+/* ============================================
+   33. LEGEND COMPONENT
+   ============================================ */
+
+.rams-legend {
+    display: flex;
+    gap: var(--space-4);
+    padding: var(--space-3);
+    border-top: 1px solid var(--rams-line);
+}
+
+.rams-legend__item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+}
+
+.rams-legend__swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: var(--radius-sm);
+}
+
+/* ============================================
+   34. SHORTCUTS MODAL COMPONENT
+   ============================================ */
+
+.rams-shortcuts__section {
+    margin-bottom: var(--space-4);
+}
+
+.rams-shortcuts__title {
+    font-weight: 600;
+    margin-bottom: var(--space-2);
+    font-size: var(--text-sm);
+}
+
+.rams-shortcuts__list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.rams-shortcuts__item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.rams-shortcuts__desc {
+    color: var(--rams-muted);
+    font-size: var(--text-sm);
+}
+
+.rams-shortcuts__keys {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+}
+
+.rams-shortcuts__key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 var(--space-2);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    font-weight: 500;
+    box-shadow: var(--shadow-inset);
+}
+
+.rams-shortcuts__plus {
+    color: var(--rams-muted);
+    font-size: var(--text-xs);
+}
+
+/* ============================================
+   35. CONFIDENCE BADGES (for quote review)
+   ============================================ */
+
+.rams-confidence--high {
+    background-color: var(--rams-success-bg);
+    border-color: var(--rams-green);
+}
+
+.rams-confidence--medium {
+    background-color: var(--rams-warning-bg);
+    border-color: var(--rams-orange);
+}
+
+.rams-confidence--low {
+    background-color: var(--rams-danger-bg);
+    border-color: var(--rams-red);
+}
+
+.rams-review-highlight {
+    background-color: var(--rams-warning-bg);
+}
+
+.rams-lifecycle-warning {
+    background-color: var(--rams-warning-bg);
+    border-left: 4px solid var(--rams-orange);
+    padding: var(--space-3);
+}
+
+.rams-diff-insert {
+    color: var(--rams-red);
+    background-color: var(--rams-danger-bg);
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: 600;
+}
+
+/* ============================================
+    37. ADDITIONAL ICON SIZE UTILITIES
+   ============================================ */
+
+/* Extra-small icon (10px) for compact indicators */
+.rams-icon--3xs {
+    width: 10px;
+    height: 10px;
+}
+
+/* ============================================
+   38. GRID SPAN UTILITIES
+   ============================================ */
+
+.rams-grid-span-2 {
+    grid-column: span 2;
+}
+
+.rams-grid-span-3 {
+    grid-column: span 3;
+}
+
+.rams-grid-span-full {
+    grid-column: 1 / -1;
+}
+
+/* ============================================
+   39. OPACITY UTILITIES
+   ============================================ */
+
+.rams-opacity-0 { opacity: 0; }
+.rams-opacity-25 { opacity: 0.25; }
+.rams-opacity-50 { opacity: 0.5; }
+.rams-opacity-75 { opacity: 0.75; }
+.rams-opacity-100 { opacity: 1; }
+
+/* ============================================
+   40. MAX HEIGHT UTILITIES
+   ============================================ */
+
+.rams-max-h-280 {
+    max-height: 280px;
+}
+
+.rams-max-h-300 {
+    max-height: 300px;
+}
+
+/* ============================================
+   41. CHART CONTAINER COMPONENT
+   ============================================ */
+
+.rams-chart-container {
+    height: 280px;
+    width: 100%;
+}
+
+.rams-chart-container--sm {
+    height: 200px;
+}
+
+.rams-chart-container--lg {
+    height: 400px;
+}
+
+/* ============================================
+   42. TOGGLE BUTTON COMPONENT
+   ============================================ */
+
+.rams-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    cursor: pointer;
+    transition: all var(--duration-fast);
+}
+
+.rams-toggle-btn:hover {
+    border-color: var(--rams-muted);
+}
+
+.rams-toggle-btn--active {
+    background: rgba(45, 140, 60, 0.15);
+    border-color: var(--rams-green);
+    color: var(--rams-green);
+}
+
+.rams-toggle-btn--inactive {
+    background: var(--rams-panel);
+    border-color: var(--rams-line);
+    color: var(--rams-muted);
+}
+
+/* ============================================
+   43. GAP UTILITIES (Extended)
+   ============================================ */
+
+.rams-gap-8 { gap: var(--space-8); }
+.rams-gap-12 { gap: var(--space-12); }
+
+/* Row and column gap utilities */
+.rams-row-gap-1 { row-gap: var(--space-1); }
+.rams-row-gap-2 { row-gap: var(--space-2); }
+.rams-row-gap-3 { row-gap: var(--space-3); }
+.rams-row-gap-4 { row-gap: var(--space-4); }
+
+.rams-col-gap-1 { column-gap: var(--space-1); }
+.rams-col-gap-2 { column-gap: var(--space-2); }
+.rams-col-gap-3 { column-gap: var(--space-3); }
+.rams-col-gap-4 { column-gap: var(--space-4); }
+
+/* ============================================
+   44. QUOTE LIVE PAGE COMPONENTS
+   ============================================ */
+
+.rams-quote-card {
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+.rams-tier-card {
+    cursor: pointer;
+    transition: all var(--duration-fast);
+    border: 2px solid transparent;
+}
+
+.rams-tier-card:hover {
+    border-color: var(--rams-muted);
+    background: var(--rams-panel);
+}
+
+.rams-tier-card--selected {
+    border-color: var(--rams-foreground);
+    background: var(--rams-module);
+}
+
+.rams-savings-badge {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+}
+
+.rams-price-highlight {
+    font-size: var(--text-3xl);
+    font-weight: 700;
+    color: var(--rams-foreground);
+}
+
+.rams-lead-time-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--rams-panel);
+    overflow: hidden;
+}
+
+.rams-lead-time-fill {
+    height: 100%;
+    border-radius: 3px;
+}
+
+.rams-lead-time-fill--fast {
+    background: var(--rams-green);
+    width: 30%;
+}
+
+.rams-lead-time-fill--medium {
+    background: var(--rams-orange);
+    width: 60%;
+}
+
+.rams-lead-time-fill--slow {
+    background: var(--rams-red);
+    width: 90%;
+}
+
+/* ============================================
+   45. EXPIRED CARD COMPONENT
+   ============================================ */
+
+.rams-expired-card {
+    max-width: 500px;
+    width: 90%;
+    text-align: center;
+}
+
+.rams-expired-icon {
+    font-size: var(--text-6xl);
+    margin-bottom: var(--space-4);
+}
+
+/* ============================================
+   46. TEXT DECORATION UTILITIES
+   ============================================ */
+
+.rams-no-underline {
+    text-decoration: none;
+}
+
+.rams-underline {
+    text-decoration: underline;
+}
+
+/* ============================================
+   47. MAX-WIDTH UTILITIES
+   ============================================ */
+
+.rams-max-w-180 {
+    max-width: 180px;
+}
+
+.rams-max-w-200 {
+    max-width: 200px;
+}
+
+.rams-max-w-300 {
+    max-width: 300px;
+}
+
+.rams-max-w-xs {
+    max-width: 20rem; /* 320px */
+}
+
+/* ============================================
+   47b. WHITESPACE & MISC UTILITIES
+   ============================================ */
+
+.rams-whitespace-nowrap {
+    white-space: nowrap;
+}
+
+.rams-whitespace-pre-line {
+    white-space: pre-line;
+}
+
+.rams-cursor-pointer {
+    cursor: pointer;
+}
+
+.rams-transition-colors {
+    transition: color var(--duration-fast), background-color var(--duration-fast), border-color var(--duration-fast);
+}
+
+/* Icon sizing utilities */
+.rams-icon-sm {
+    width: 1rem;
+    height: 1rem;
+}
+
+.rams-icon-md {
+    width: 1.25rem;
+    height: 1.25rem;
+}
+
+.rams-icon-lg {
+    width: 1.5rem;
+    height: 1.5rem;
+}
+
+/* Font weight utility */
+.rams-font-medium {
+    font-weight: 500;
+}
+
+/* Text color semantic (for inline status text) */
+.rams-text--green { color: var(--rams-green); }
+.rams-text--red { color: var(--rams-red); }
+
+/* Badge opacity utility for count pills */
+.rams-badge--count {
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+}
+
+/* Flex utility: min-width constraint */
+.rams-min-w-max {
+    min-width: max-content;
+}
+
+/* ============================================
+   47c. CALENDAR & MEETING COMPONENTS
+   ============================================ */
+
+/* Calendar Layout */
+.rams-calendar-wrapper {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: var(--space-6);
+}
+
+@media (max-width: 992px) {
+    .rams-calendar-wrapper {
+        grid-template-columns: 1fr;
+    }
+}
+
+.rams-calendar-sidebar { }
+
+.rams-calendar-main { }
+
+/* Meeting List Component */
+.rams-meeting-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.rams-meeting-item {
+    display: flex;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--rams-line);
+    transition: background-color var(--duration-fast) ease;
+}
+
+.rams-meeting-item:last-child {
+    border-bottom: none;
+}
+
+.rams-meeting-item:hover {
+    background: var(--rams-panel);
+}
+
+.rams-meeting-time {
+    flex-shrink: 0;
+    text-align: center;
+    min-width: 70px;
+}
+
+.rams-meeting-time__hour {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--rams-foreground);
+}
+
+.rams-meeting-time__duration {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+}
+
+.rams-meeting-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.rams-meeting-title {
+    font-weight: 500;
+    margin-bottom: var(--space-1);
+    font-size: var(--text-base);
+}
+
+.rams-meeting-title a {
+    text-decoration: none;
+    color: inherit;
+    transition: color var(--duration-fast) ease;
+}
+
+.rams-meeting-title a:hover {
+    color: var(--rams-orange);
+}
+
+.rams-meeting-meta {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.rams-meeting-booker {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+    font-size: var(--text-xs);
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.rams-meeting-booker__avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: rgba(255, 190, 0, 0.1);
+    color: var(--rams-orange);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 10px;
+}
+
+/* ============================================
+   48. MODULE LINK VARIANT
+   ============================================ */
+
+a.rams-module {
+    text-decoration: none;
+    display: block;
+    transition: border-color var(--duration-fast);
+}
+
+a.rams-module:hover {
+    border-color: var(--rams-muted);
+}
+
+/* ============================================
+   50. NOTIFICATION BELL COMPONENT
+   ============================================ */
+
+/* Notification Bell Button */
+.rams-notification__button {
+    cursor: pointer;
+}
+
+/* Sidebar Badge */
+.rams-notification__badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+}
+
+/* Modal positioned from sidebar - Sensei-Rams Module Style */
+/* ============================================
+   XX. KANBAN BOARD (Industrial Pipeline)
+   ============================================ */
+
+.rams-kanban {
+    display: flex;
+    gap: var(--space-4);
+    overflow-x: auto;
+    padding-bottom: var(--space-4);
+    min-height: 600px;
+    align-items: flex-start;
+}
+
+.rams-kanban__column {
+    flex: 0 0 300px;
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    display: flex;
+    flex-direction: column;
+    max-height: 100%;
+}
+
+.rams-kanban__header {
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--rams-line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--rams-panel);
+}
+
+.rams-kanban__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--rams-foreground);
+}
+
+.rams-kanban__cards {
+    padding: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    overflow-y: auto;
+}
+
+.rams-kanban__card {
+    background: var(--rams-chassis);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3);
+    text-decoration: none;
+    color: inherit;
+    transition: all var(--duration-fast);
+    display: block;
+    /* Unbreakable content (URLs, MPNs) must never bleed past the border */
+    overflow: hidden;
+}
+
+.rams-kanban__card:hover {
+    border-color: var(--rams-muted);
+    background: var(--rams-panel);
+}
+
+.rams-kanban__card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: var(--space-2);
+    gap: var(--space-2);
+}
+
+.rams-kanban__card-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+}
+
+.rams-kanban__card-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-3xs);
+    color: var(--rams-muted);
+    margin-bottom: var(--space-2);
+    text-transform: uppercase;
+}
+
+.rams-kanban__card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    margin-top: var(--space-2);
+}
+
+.rams-kanban__empty {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+    text-align: center;
+    padding: var(--space-8) 0;
+    font-style: italic;
+}
+
+/* Kanban Column Variants */
+.rams-kanban__column--in-review { border-top: 3px solid var(--rams-steel); }
+.rams-kanban__column--submitted { border-top: 3px solid var(--rams-orange); }
+.rams-kanban__column--won { border-top: 3px solid var(--rams-green); }
+.rams-kanban__column--lost { border-top: 3px solid var(--rams-red); }
+
+/* Kanban Card Variants */
+.rams-kanban__card--info { border-left: 3px solid var(--rams-steel); }
+.rams-kanban__card--warning { border-left: 3px solid var(--rams-orange); }
+.rams-kanban__card--success { border-left: 3px solid var(--rams-green); }
+.rams-kanban__card--danger { border-left: 3px solid var(--rams-red); }
+.rams-kanban__card--high { border-left: 3px solid var(--rams-red); }
+.rams-kanban__card--medium { border-left: 3px solid var(--rams-orange); }
+.rams-kanban__card--low { border-left: 3px solid var(--rams-steel); }
+.rams-kanban__card--urgent { border-left: 3px solid var(--rams-red); box-shadow: 0 0 8px rgba(214, 45, 45, 0.3); }
+.rams-kanban__card--muted { opacity: 0.7; }
+
+/* List Components */
+.rams-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.rams-list-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    transition: background-color var(--duration-fast);
+}
+
+.rams-list-item--hoverable:hover {
+    background-color: var(--rams-panel);
+}
+
+.rams-list-item__title {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: var(--text-sm);
+    color: var(--rams-foreground);
+}
+
+.rams-list-item__subtitle {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+}
+
+/* ============================================
+   XX. RFQ COMPONENTS
+   ============================================ */
+
+.rams-rfq-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-4);
+}
+
+.rams-rfq-card__main {
+    flex: 1;
+}
+
+.rams-rfq-card__header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+
+.rams-rfq-card__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--rams-foreground);
+    text-decoration: none;
+}
+
+.rams-rfq-card__title:hover {
+    color: var(--rams-accent);
+}
+
+.rams-rfq-card__details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin-bottom: var(--space-3);
+}
+
+.rams-rfq-card__detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.rams-rfq-card__actions {
+    display: flex;
+    gap: var(--space-2);
+}
+
+.rams-rfq-card__nda {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+}
+
+/* ============================================
+   XX. CONTACT COMPONENTS
+   ============================================ */
+
+.rams-contact-avatar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.rams-contact-avatar__icon {
+    width: 36px;
+    height: 36px;
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--rams-muted);
+}
+
+.rams-contact-avatar__details {
+    display: flex;
+    flex-direction: column;
+}
+
+.rams-contact-avatar__name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: var(--text-sm);
+}
+
+.rams-contact-avatar__subtitle {
+    font-size: var(--text-xs);
+    color: var(--rams-muted);
+}
+
+.rams-contact-icons {
+    display: flex;
+    gap: var(--space-2);
+}
+
+.rams-icon-link {
+    color: var(--rams-muted);
+    transition: color var(--duration-fast);
+}
+
+.rams-icon-link:hover {
+    color: var(--rams-foreground);
+}
+
+.rams-icon-link--linkedin:hover {
+    color: var(--rams-steel);
+}
+
+.rams-link--linkedin,
+.rams-linkedin {
+    color: var(--rams-steel) !important;
+}
+
+.rams-link--linkedin:hover,
+.rams-linkedin:hover {
+    color: var(--rams-orange) !important;
+}
+
+/* ============================================
+   XX. UTILITIES & ADDITIONS
+   ============================================ */
+
+.rams-code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--rams-panel);
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--rams-line);
+}
+
+.rams-badge--purple { background: rgba(139, 92, 246, 0.15); border-color: var(--rams-chart-purple); color: var(--rams-chart-purple); }
+.rams-badge--npi { background: rgba(255, 190, 0, 0.1); border-color: var(--rams-orange); color: var(--rams-warning-text, #8A5A00); }
+.rams-badge--framework { background: rgba(74, 144, 226, 0.1); border-color: var(--rams-steel); color: var(--rams-steel); }
+.rams-badge--small { font-size: 8px; padding: 1px 4px; }
+
+.rams-text--strong { font-weight: 700; }
+
+/* ============================================
+   XX. ADDITIONAL TABLE & DATA UTILITIES
+   ============================================ */
+
+.rams-table__cell--header {
+    background: var(--rams-panel);
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: var(--text-2xs);
+    letter-spacing: 0.05em;
+    color: var(--rams-muted);
+}
+
+.rams-table__cell--actions {
+    width: 1%;
+    white-space: nowrap;
+    text-align: right;
+}
+
+.rams-table__cell--right {
+    text-align: right;
+}
+
+.rams-table__cell--truncate {
+    max-width: 200px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rams-table__footer {
+    background: var(--rams-panel);
+    border-top: 2px solid var(--rams-line);
+    font-weight: 700;
+}
+
+.rams-badge-group {
+    display: flex;
+    gap: var(--space-2);
+}
+
+.rams-module__header--row {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+
+.rams-module__header--border-bottom {
+    border-bottom: 1px solid var(--rams-line);
+    padding-bottom: var(--space-4);
+    margin-bottom: var(--space-4);
+}
+
+.rams-metric--currency {
+    font-family: var(--font-mono);
+    color: var(--rams-green);
+    font-weight: 700;
+}
+
+.rams-metric--small {
+    font-size: var(--text-sm);
+}
+
+/* Modal BEM Aliases & Utilities */
+.rams-modal--hidden {
+    display: none !important;
+}
+
+.rams-modal__backdrop {
+    position: fixed;
+    inset: 0;
+    background: var(--rams-overlay);
+    z-index: 100;
+}
+
+.rams-modal__content {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    width: 100%;
+    max-width: 600px;
+    z-index: 101;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ============================================
+   XX. ENGAGEMENT HEAT MAP
+   ============================================ */
+
+.rams-heat-map {
+    margin-bottom: 24px;
+}
+
+.rams-heat-map__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.rams-heat-map__grid {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.rams-heat-map__cell {
+    aspect-ratio: 1;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    position: relative;
+    transition: all 0.2s;
+    border: 2px solid transparent;
+}
+
+.rams-heat-map__cell:not(.rams-heat-map__cell--empty):hover {
+    transform: scale(1.1);
+    z-index: 10;
+    border-color: var(--rams-foreground);
+    box-shadow: var(--shadow-pressed);
+}
+
+.rams-heat-map__cell--empty {
+    cursor: default;
+    opacity: 0.3;
+    background-color: var(--rams-panel);
+}
+
+.rams-heat-map__tooltip {
+    position: absolute;
+    bottom: calc(100% + 10px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--rams-module);
+    color: var(--rams-foreground);
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    min-width: 200px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    font-size: 12px;
+    line-height: 1.4;
+    box-shadow: var(--shadow-inset);
+    z-index: 1000;
+}
+
+.rams-heat-map__tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: var(--rams-module);
+}
+
+.rams-heat-map__cell:hover .rams-heat-map__tooltip {
+    opacity: 1;
+}
+
+.rams-heat-map__tooltip-name {
+    font-weight: 600;
+    font-size: var(--text-sm);
+    margin-bottom: var(--space-1);
+    color: var(--rams-foreground);
+}
+
+.rams-heat-map__tooltip-score {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    margin-bottom: var(--space-2);
+    color: var(--rams-orange);
+}
+
+.rams-heat-map__tooltip-details {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--rams-line);
+}
+
+.rams-heat-map__tooltip-details div {
+    font-size: var(--text-2xs);
+    color: var(--rams-muted);
+}
+
+/* Keyboard focus styles */
+.rams-heat-map__cell:focus {
+    outline: 2px solid var(--rams-orange);
+    outline-offset: 2px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 767px) {
+    .rams-heat-map__grid {
+        grid-template-columns: repeat(5, 1fr);
+        grid-template-rows: repeat(4, 1fr);
+    }
+}
+
+.rams-notification__modal {
+    z-index: 1000;
+}
+
+.rams-notification__modal.rams-hidden,
+.rams-notification__modal.hidden {
+    display: none !important;
+}
+
+.rams-notification__panel {
+    width: 100%;
+    max-width: 480px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    animation: rams-modal-enter 0.2s ease-out;
+}
+
+.rams-notification__panel .rams-modal__title {
+    color: var(--rams-foreground);
+}
+
+/* Empty state: quiet machine idiom — dim line icon + muted text, never a
+ * shouty label pill that reads like a debug placeholder. */
+.rams-notification__empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-8) var(--space-4);
+    color: var(--rams-muted);
+}
+
+.rams-notification__empty svg {
+    width: 24px;
+    height: 24px;
+    opacity: 0.6;
+}
+
+.rams-notification__empty p {
+    margin: 0;
+    font-size: var(--text-sm);
+}
+
+.rams-notification__panel .rams-notification__list {
+    position: static;
+    top: auto;
+    left: auto;
+    transform: none;
+    width: auto;
+    max-width: none;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    z-index: auto;
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--space-4);
+}
+
+.rams-notification__panel .rams-modal__footer {
+    padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--rams-line);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+/* Notification Item — andon + text row; anchors and static divs share it */
+.rams-notification__item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    width: 100%;
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--rams-line);
+    border-left: 3px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    text-align: start;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.rams-notification__item:hover {
+    background-color: var(--rams-panel);
+    border-left-color: var(--rams-line);
+}
+
+.rams-notification__item--error {
+    border-left-color: var(--rams-red);
+}
+
+.rams-notification__item--warning {
+    border-left-color: var(--rams-orange);
+}
+
+.rams-notification__item .rams-andon__light {
+    flex-shrink: 0;
+    margin-top: 5px;
+}
+
+.rams-notification__item.read {
+    opacity: 0.6;
+}
+
+.rams-notification__content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.rams-notification__message {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.rams-notification__timestamp {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--rams-muted);
+}
+
+/* Guidance & Toast Overlays */
+/* Guidance banners render IN-FLOW above the page content — a fixed overlay
+ * would cover the status bar and page header on phones (field-reported). */
+.rams-guidance-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    max-width: 640px;
+    margin-bottom: var(--space-4);
+}
+
+/* Industrial Guidance Module */
+.rams-module--guidance {
+    border-left: 4px solid var(--rams-steel);
+    background: var(--rams-module);
+    position: relative;
+}
+
+.rams-module--guidance::after {
+    content: "GUIDANCE";
+    position: absolute;
+    top: 0;
+    right: 0;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    padding: 2px 4px;
+    background: var(--rams-steel);
+    color: white;
+    opacity: 0.6;
+}
+
+/* Toast Notification (Legacy/System) */
+.rams-toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background-color: var(--rams-module);
+    color: var(--rams-foreground);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    box-shadow: var(--shadow-inset);
+    max-width: 400px;
+    animation: rams-toastSlideIn 0.3s ease-out;
+    z-index: 60;
+}
+
+/* Toast rendered via the alert system (unified window.showToast) */
+.rams-alert--toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    max-width: 400px;
+    box-shadow: var(--shadow-inset);
+    animation: rams-toastSlideIn 0.3s ease-out;
+    z-index: 60;
+}
+
+/* Fixed panels must never exceed the phone viewport */
+@media (max-width: 480px) {
+    .rams-alert--toast {
+        max-width: calc(100vw - 32px);
+    }
+}
+
+@keyframes rams-toastSlideIn {
+    from {
+        opacity: 0;
+        transform: translateX(100px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.rams-toast--fade-out {
+    animation: rams-toastSlideOut 0.3s ease-in;
+}
+
+@keyframes rams-toastSlideOut {
+    from {
+        opacity: 1;
+        transform: translateX(0);
+    }
+    to {
+        opacity: 0;
+        transform: translateX(100px);
+    }
+}
+
+.rams-toast__content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.rams-toast__icon {
+    flex-shrink: 0;
+}
+
+.rams-toast__message {
+    flex-shrink: 0;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+    .rams-notification__modal {
+        position: fixed;
+        left: 10px;
+        right: 10px;
+        bottom: 70px;
+        width: auto;
+        max-width: none;
+    }
+
+    .rams-toast {
+        width: calc(100vw - 40px);
+        max-width: none;
+    }
+}
+
+/* ============================================
+   51. PRINT STYLES
+   ============================================ */
+
+/* ============================================
+   SCROLLBAR STYLING
+   ============================================ */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--rams-bg-panel, var(--rams-chassis));
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--rams-muted, #6F6F6F);
+    border-radius: 4px;
+    border: 2px solid var(--rams-bg-panel, var(--rams-chassis));
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--rams-orange, #FFBE00);
+}
+
+/* Firefox Support */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rams-muted, #6F6F6F) var(--rams-bg-panel, #f0f0f0);
+}
+
+@media print {
+    .rams-sidebar,
+    .rams-status-bar,
+    .rams-bezel,
+    .rams-screw {
+        display: none !important;
+    }
+    
+    .rams-main {
+        margin: 0;
+        padding: 0;
+    }
+    
+    .rams-module {
+        border: 1px solid #ccc;
+        break-inside: avoid;
+    }
+}
+
+/* ============================================
+   MOBILE UI/UX SWEEP - RESPONSIVE OVERRIDES
+   ============================================ */
+
+@media (max-width: 768px) {
+    /* 0. Status line: phones keep only the health signal; the locale
+     * whisper adds nothing under a thumb. */
+    .rams-status-bar__meta {
+        display: none;
+    }
+
+    /* 0b. Page-header badges: long status labels may wrap, never overflow. */
+    .rams-page-header .rams-badge,
+    .rams-page__header .rams-badge {
+        white-space: normal;
+        text-align: left;
+    }
+
+    /* 1. Page Header Stacking */
+    .rams-page-header,
+    .rams-page__header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-4);
+    }
+
+    .rams-page-actions,
+    .rams-page__actions {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    .rams-page-actions .rams-btn,
+    .rams-page__actions .rams-btn {
+        flex: 1;
+        justify-content: center;
+    }
+
+    /* Header action groups hold forms + links as children (not bare buttons):
+     * stretch every child so stacked actions share one width — no ragged edge. */
+    .rams-btn-group.mobile-stack > * {
+        width: 100%;
+    }
+
+    .rams-btn-group.mobile-stack .rams-btn {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .rams-page__title-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-2);
+    }
+
+    .rams-page__meta {
+        flex-wrap: wrap;
+        row-gap: var(--space-1);
+    }
+
+    .rams-page,
+    .rams-page__container,
+    .rams-page__container--narrow {
+        width: 100%;
+        max-width: 100%;
+        padding-left: 0;
+        padding-right: 0;
+    }
+
+    .rams-page-title,
+    .rams-page__title {
+        word-break: break-word;
+        hyphens: auto;
+    }
+
+    /* 2. Grid Collapsing specifically for 3+ cols */
+    .grid-cols-3, 
+    .grid-cols-4, 
+    .grid-cols-5, 
+    .grid-cols-6, 
+    .grid-cols-12 {
+        grid-template-columns: 1fr !important;
+    }
+
+    .grid-cols-2 {
+        grid-template-columns: 1fr; /* Optional for 2-col, usually looks better stacked */
+    }
+
+    .rams-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .rams-grid-span-2,
+    .rams-grid-span-3,
+    .rams-grid-span-full {
+        grid-column: 1 / -1;
+    }
+
+    /* 3. Modal Responsiveness */
+    .rams-modal {
+        max-width: 90vw;
+        max-height: 85vh;
+        margin: var(--space-4);
+    }
+    
+    .rams-modal__footer {
+        flex-direction: column-reverse; /* Put primary action at top or preserve order but stack */
+        gap: var(--space-3);
+    }
+
+    .rams-modal__footer .rams-btn {
+        width: 100%;
+        justify-content: center;
+    }
+
+    /* 4. Form Controls */
+    .rams-input-group,
+    div[class*="flex"][class*="gap-"] > input,
+    div[class*="flex"][class*="gap-"] > select {
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+    }
+
+    .rams-form__row--2,
+    .rams-form__row--3,
+    .rams-form__row--4,
+    .rams-form__row--5,
+    .rams-form__row--6 {
+        grid-template-columns: 1fr;
+    }
+
+    .rams-action-links {
+        flex-wrap: wrap;
+        row-gap: var(--space-2);
+    }
+
+    /* Full-width stacking for free-text controls. Intentionally narrow
+       controls are excluded: date/number pickers (native width) and
+       anything carrying a .rams-w-* width utility (filter selects,
+       quantity inputs), so their fixed widths survive. */
+    input:not([type="date"]):not([type="number"]):not([class*="rams-w-"]),
+    select:not([class*="rams-w-"]),
+    textarea,
+    .rams-form-control:not([class*="rams-w-"]),
+    .rams-form__select:not([class*="rams-w-"]),
+    .rams-select:not([class*="rams-w-"]) {
+        width: 100%;
+        max-width: 100%;
+    }
+
+    /* iOS zoom prevention stays universal, regardless of width scoping */
+    input,
+    select,
+    textarea,
+    .rams-form-control,
+    .rams-form__select,
+    .rams-select {
+        font-size: 16px;
+    }
+
+    /* 5. Metric Cards & Stats */
+    .rams-metrics-grid,
+    [class*="grid-cols-4"] .rams-metric {
+        grid-template-columns: 1fr;
+    }
+
+    .rams-metric__value {
+        font-size: var(--text-2xl); /* Scale down huge numbers */
+    }
+
+    /* 6. Table Mobile Adjustments */
+    .rams-table-container {
+        border-right: 1px solid var(--rams-line);
+        border-left: 1px solid var(--rams-line);
+        border-radius: var(--radius-sm);
+        margin: 0;
+        width: 100%;
+        max-width: 100%;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .rams-table-wrapper {
+        border-right: 1px solid var(--rams-line);
+        border-left: 1px solid var(--rams-line);
+        border-radius: var(--radius-sm);
+        margin: 0;
+        width: 100%;
+        max-width: 100%;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .rams-table {
+        width: 100%;
+        max-width: 100%;
+        table-layout: fixed;
+    }
+
+    /* Root fix for vertical text: multi-column tables cannot fit a phone
+       width, so keep usable column widths (content-sized, table-layout:
+       auto) and let the scroll container pan horizontally. Containers
+       already have overflow:auto + touch scrolling. */
+    .rams-table-container .rams-table,
+    .rams-table-wrapper .rams-table {
+        table-layout: auto;
+        min-width: 640px;
+    }
+
+    /* Small (≤3 column) tables fit a phone fine: stretching them to
+       640px would force pointless scrolling. :has() detects the 4th cell
+       of any row, so dynamically-built tables (report grids) classify
+       themselves at render time. Browsers without :has() keep the
+       blanket scroll rule above. */
+    .rams-table-container .rams-table:not(:has(tr > :nth-child(4))),
+    .rams-table-wrapper .rams-table:not(:has(tr > :nth-child(4))) {
+        table-layout: fixed;
+        min-width: 0;
+    }
+
+    /* Scrolled tables size columns to content, so unbreakable strings
+       (MPNs, emails) keep their natural width; break-word is only a
+       safety net, not the per-character crusher `anywhere` was. */
+    .rams-table-container .rams-table:has(tr > :nth-child(4)) td,
+    .rams-table-wrapper .rams-table:has(tr > :nth-child(4)) td,
+    .rams-table-container .rams-table:has(tr > :nth-child(4)) td a,
+    .rams-table-wrapper .rams-table:has(tr > :nth-child(4)) td a {
+        overflow-wrap: break-word;
+        word-break: normal;
+    }
+    
+    .rams-table th {
+        padding: var(--space-3) var(--space-2); /* Tighter horizontal padding */
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .rams-table td {
+        padding: var(--space-3) var(--space-2);
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .rams-table td a {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .rams-table__cell--truncate {
+        max-width: none;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+    }
+
+    /* Specificity must beat the generic `.rams-table td` rule, whose
+       white-space:normal + word-break:break-word wrapped "Delete" per
+       character on narrow screens. */
+    /* Tables with several columns (e.g. Administration ▸ Users) cannot fit a
+       phone width: keep usable column widths and let the container scroll
+       horizontally instead of squeezing cells (which wrapped button labels
+       per character). */
+    .rams-table-container--scroll-mobile .rams-table {
+        min-width: 600px;
+        /* table-layout:fixed (set for mobile tables below) ignores content
+           widths, collapsing the actions column and wrapping its button
+           labels per character. Content-sized columns + a scrolling
+           container keep every label on one line. */
+        table-layout: auto;
+    }
+
+    .rams-table td.rams-table__cell--actions {
+        /* Never let button labels wrap per character. No width constraint: a
+           percentage width collapsed the column and pushed the labels out. */
+        white-space: nowrap;
+        overflow-wrap: normal;
+        word-break: normal;
+    }
+
+    /* min-width is ignored on <td>; the inner wrapper carries the minimum so
+       the starved actions column cannot collapse to a few pixels. */
+    .rams-table__cell--actions .rams-btn-group {
+        min-width: 120px;
+        width: max-content;
+    }
+
+    .rams-table__cell--actions .rams-btn,
+    .rams-table__cell--actions .rams-inline-block {
+        white-space: nowrap;
+    }
+
+    .rams-table__cell--actions form {
+        display: block !important;
+        margin-bottom: var(--space-2);
+    }
+
+    .rams-table__cell--actions form:last-child {
+        margin-bottom: 0;
+    }
+
+    .rams-table__cell--actions .rams-btn {
+        /* Natural width: a 100%-wide button gives the actions column a
+           min-content of zero, which collapsed the column and pushed the
+           labels out of their cell. */
+        width: auto;
+        white-space: nowrap;
+        justify-content: center;
+    }
+
+    .rams-table td form[style*="display:inline"] {
+        display: block !important;
+        margin-bottom: var(--space-2);
+    }
+
+    .rams-table td form[style*="display:inline"]:last-child {
+        margin-bottom: 0;
+    }
+
+    .rams-alert {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-2);
+    }
+
+    .rams-module__header,
+    .rams-module__footer {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-3);
+    }
+
+    .rams-actions,
+    .rams-actions--sm,
+    .rams-form__actions,
+    .rams-page-header__actions,
+    .rams-module__header-actions,
+    .rams-module__header__actions {
+        /* One mobile idiom everywhere: wrapping row, buttons share the
+           width. Column-of-slabs read as a wall of buttons (sweep). */
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: var(--space-2);
+    }
+
+    .rams-actions .rams-btn,
+    .rams-actions--sm .rams-btn,
+    .rams-form__actions .rams-btn,
+    .rams-page-header__actions .rams-btn,
+    .rams-module__header-actions .rams-btn,
+    .rams-module__header__actions .rams-btn {
+        flex: 1 1 auto;
+        min-width: min(100%, 160px);
+        justify-content: center;
+    }
+
+    .rams-module__footer .rams-btn,
+    .rams-module__header .rams-btn {
+        /* Auto width in a wrapping row: full-width stacks made module
+           footers a wall of giant buttons on phones (sweep finding). */
+        flex: 1 1 auto;
+        justify-content: center;
+    }
+
+    .rams-btn {
+        min-height: 44px;
+    }
+
+    .rams-module--narrow {
+        max-width: 100%;
+    }
+
+    .rams-flex {
+        flex-wrap: wrap;
+    }
+
+    .rams-flex.rams-justify-between {
+        align-items: flex-start;
+        row-gap: var(--space-2);
+    }
+    
+    /* 7. Typography Scaling */
+    h1, .rams-heading--1 { font-size: var(--text-2xl); }
+    h2, .rams-heading--2 { font-size: var(--text-xl); }
+    h3, .rams-heading--3 { font-size: var(--text-lg); }
+
+    /* 8. Spacing Reductions */
+    .rams-main {
+        padding: var(--space-4);
+        padding-top: calc(56px + var(--space-4));
+    }
+    
+    .rams-module {
+        margin-bottom: var(--space-4);
+    }
+
+    /* 9. Utility Overrides */
+    .hidden-mobile {
+        display: none !important;
+    }
+    
+    .flex-mobile-col {
+        flex-direction: column !important;
+    }
+    
+    .w-full-mobile {
+        width: 100% !important;
+    }
+
+    .rams-breadcrumb__list {
+        flex-wrap: wrap;
+        row-gap: var(--space-1);
+    }
+
+    .rams-btn-group {
+        flex-wrap: wrap;
+        width: 100%;
+    }
+
+    .rams-btn-group .rams-btn {
+        /* Share the row: equal-flex buttons wrap as a set instead of every
+           button becoming a full-width slab (sweep finding: ragged groups,
+           two-line labels). */
+        flex: 1 1 auto;
+        justify-content: center;
+    }
+
+    .rams-breadcrumb {
+        margin-bottom: var(--space-3);
+    }
+
+    .rams-breadcrumb__item,
+    .rams-breadcrumb__link,
+    .rams-breadcrumb__separator {
+        font-size: var(--text-xs);
+    }
+
+    .rams-tabs {
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .rams-tab {
+        flex: 0 0 auto;
+    }
+
+    /* 10. Mobile Utility Classes (Trigger ONLY on mobile) */
+    .mobile-only {
+        display: block !important;
+    }
+    
+    .mobile-hidden {
+        display: none !important;
+    }
+    
+    .mobile-stack {
+        flex-direction: column !important;
+    }
+    
+    .mobile-w-full {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    
+    .mobile-h-auto {
+        height: auto !important;
+    }
+    
+    .mobile-text-center {
+        text-align: center !important;
+    }
+    
+    .mobile-text-left {
+        text-align: left !important;
+    }
+    
+    .mobile-mb-2 { margin-bottom: var(--space-2) !important; }
+    .mobile-mb-4 { margin-bottom: var(--space-4) !important; }
+    
+    .mobile-p-2 { padding: var(--space-2) !important; }
+    .mobile-p-0 { padding: 0 !important; }
+}
+
+/* Default state for mobile-only classes (hidden on desktop) */
+.mobile-only {
+    display: none !important;
+}
+
+/* ============================================================
+   LOADING OVERLAY
+   Full-screen loading indicator with spinner and message
+   ============================================================ */
+
+.rams-loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.rams-loading-overlay__content {
+    background: var(--rams-surface);
+    border-radius: var(--radius-lg);
+    padding: var(--space-8);
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    border: 2px solid var(--rams-steel);
+}
+
+.rams-loading-spinner {
+    display: flex;
+    justify-content: center;
+    margin-bottom: var(--space-4);
+}
+
+.rams-loading-spinner__svg {
+    width: 60px;
+    height: 60px;
+    animation: rams-spin 1.2s linear infinite;
+}
+
+.rams-loading-spinner__circle {
+    stroke: var(--rams-steel);
+    stroke-linecap: round;
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: 0;
+    animation: rams-dash 1.2s ease-in-out infinite;
+}
+
+@keyframes rams-dash {
+    0% {
+        stroke-dasharray: 1, 150;
+        stroke-dashoffset: 0;
+    }
+    50% {
+        stroke-dasharray: 90, 150;
+        stroke-dashoffset: -35;
+    }
+    100% {
+        stroke-dasharray: 90, 150;
+        stroke-dashoffset: -124;
+    }
+}
+
+.rams-loading-overlay__title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+    font-weight: 700;
+    color: var(--rams-foreground);
+    margin: 0 0 var(--space-2) 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.rams-loading-overlay__message {
+    font-size: var(--text-base);
+    color: var(--rams-muted);
+    margin: 0 0 var(--space-3) 0;
+    line-height: 1.5;
+}
+
+.rams-loading-overlay__hint {
+    font-size: var(--text-sm);
+    color: var(--rams-steel);
+    margin: 0;
+    font-style: italic;
+}
+
+/* ============================================================
+   RTL SUPPORT (Arabic)
+   Mirrors physical directional properties when dir="rtl".
+   Fires via html[dir=rtl] set in base.html.twig / base_login.html.twig.
+   ============================================================ */
+
+[dir="rtl"] body {
+    text-align: right;
+}
+
+/* 5. Rack sidebar: mirror to the right edge */
+[dir="rtl"] .rams-sidebar {
+    left: auto;
+    right: 0;
+    border-right: none;
+    border-left: 1px solid var(--rams-line);
+}
+
+/* 6. Main content: offset from the right edge */
+[dir="rtl"] .rams-main {
+    margin-left: 0;
+    margin-right: var(--sidebar-width);
+}
+
+[dir="rtl"] .rams-sidebar__nav-badge {
+    margin-left: 0;
+    margin-right: auto;
+}
+
+/* Accent borders flip to the right side */
+[dir="rtl"] .rams-module--filters,
+[dir="rtl"] .rams-lifecycle-warning,
+[dir="rtl"] .rams-alert,
+[dir="rtl"] .rams-kanban__card--info,
+[dir="rtl"] .rams-kanban__card--warning,
+[dir="rtl"] .rams-kanban__card--success,
+[dir="rtl"] .rams-kanban__card--danger,
+[dir="rtl"] .rams-kanban__card--high,
+[dir="rtl"] .rams-kanban__card--medium,
+[dir="rtl"] .rams-kanban__card--low,
+[dir="rtl"] .rams-kanban__card--urgent {
+    border-left-width: 0;
+    border-left-color: transparent;
+}
+
+[dir="rtl"] .rams-module--filters { border-right: 4px solid var(--rams-orange); }
+[dir="rtl"] .rams-lifecycle-warning { border-right: 4px solid var(--rams-orange); }
+[dir="rtl"] .rams-alert { border-right: 4px solid var(--rams-muted); }
+[dir="rtl"] .rams-kanban__card--info { border-right: 3px solid var(--rams-steel); }
+[dir="rtl"] .rams-kanban__card--warning { border-right: 3px solid var(--rams-orange); }
+[dir="rtl"] .rams-kanban__card--success { border-right: 3px solid var(--rams-green); }
+[dir="rtl"] .rams-kanban__card--danger { border-right: 3px solid var(--rams-red); }
+[dir="rtl"] .rams-kanban__card--high { border-right: 3px solid var(--rams-red); }
+[dir="rtl"] .rams-kanban__card--medium { border-right: 3px solid var(--rams-orange); }
+[dir="rtl"] .rams-kanban__card--low { border-right: 3px solid var(--rams-steel); }
+[dir="rtl"] .rams-kanban__card--urgent { border-right: 3px solid var(--rams-red); }
+
+/* Border utilities */
+
+/* Spacing utilities flip side */
+
+
+/* Text alignment utilities flip */
+[dir="rtl"] .rams-text--left { text-align: right; }
+[dir="rtl"] .rams-text--right { text-align: left; }
+
+/* Inline element offsets flip */
+[dir="rtl"] .rams-btn__icon--end { margin-left: 0; margin-right: var(--space-1); }
+[dir="rtl"] .rams-metric__unit { margin-left: 0; margin-right: var(--space-2); }
+[dir="rtl"] .rams-info-panel__list { padding-left: 0; padding-right: var(--space-4); }
+
+/* Absolute-positioned elements flip */
+[dir="rtl"] .rams-dropdown { right: auto; left: 0; }
+[dir="rtl"] .rams-savings-badge { right: auto; left: -8px; }
+/* Guidance banners are in-flow; no RTL fixed-position override needed. */
+[dir="rtl"] .rams-module--guidance::after { right: auto; left: 0; }
+[dir="rtl"] .rams-toast { right: auto; left: 20px; }
+[dir="rtl"] .rams-alert--toast { right: auto; left: 20px; }
+[dir="rtl"] .rams-skip-link { left: auto; right: 0; }
+
+/* Mobile FAB flips to the start edge in RTL */
+[dir="rtl"] .rams-fab { right: auto !important; left: 24px !important; }
+[dir="rtl"] .rams-fab__actions { right: auto !important; left: 0 !important; }
+@media (max-width: 374px) {
+    [dir="rtl"] .rams-fab { right: auto !important; left: 16px !important; }
+}
+
+/* Task item row: 4px accent border sits on the leading edge */
+.rams-task-item-row {
+    border-left: 4px solid var(--rams-orange);
+}
+.rams-task-item-row--overdue {
+    border-left-color: var(--rams-red);
+}
+[dir="rtl"] .rams-task-item-row {
+    border-left: none;
+    border-right: 4px solid var(--rams-orange);
+}
+[dir="rtl"] .rams-task-item-row--overdue {
+    border-right-color: var(--rams-red);
+}
+
+/* Calendar day view: hour-label divider and event accent border flip */
+[dir="rtl"] .rams-calendar-hour-label {
+    border-right: none !important;
+    border-left: 1px solid var(--rams-border) !important;
+}
+[dir="rtl"] .rams-calendar-hour-event {
+    border-left: none !important;
+    border-right: 4px solid rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Quote review lifecycle indicator flips in RTL */
+[dir="rtl"] .rams-lifecycle--critical { border-left: none !important; border-right: 4px solid var(--rams-red) !important; }
+[dir="rtl"] .rams-lifecycle--warning { border-left: none !important; border-right: 4px solid var(--rams-orange) !important; }
+
+/* Tables: headers align right; numeric/action cells stay right-aligned */
+[dir="rtl"] .rams-table th { text-align: right; }
+[dir="rtl"] .rams-table__cell--actions,
+[dir="rtl"] .rams-table__cell--right { text-align: left; }
+
+[dir="rtl"] .mobile-text-left { text-align: right !important; }
+
+/* Arabic typography: strip decorative letter-spacing from labels (disconnects Arabic glyphs) */
+[dir="rtl"] .rams-module__title,
+[dir="rtl"] .rams-btn,
+[dir="rtl"] .rams-dropdown__header,
+[dir="rtl"] .rams-label,
+[dir="rtl"] .rams-table th,
+[dir="rtl"] .rams-dymo,
+[dir="rtl"] .rams-metric__label,
+[dir="rtl"] .rams-alert__title,
+[dir="rtl"] .rams-badge,
+[dir="rtl"] .rams-status-text,
+[dir="rtl"] .rams-definition-list__term,
+[dir="rtl"] .rams-empty-state__title,
+[dir="rtl"] .rams-link--back,
+[dir="rtl"] .rams-uppercase,
+[dir="rtl"] .rams-form__label,
+[dir="rtl"] .rams-modal__title,
+[dir="rtl"] .rams-auth-logo__title,
+[dir="rtl"] .rams-breadcrumb__item,
+[dir="rtl"] .rams-loading-overlay__title {
+    letter-spacing: normal;
+}
+
+/* ============================================
+   Icon button variant (compact square button
+   carrying only an SVG icon)
+   ============================================ */
+.rams-btn--icon {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.rams-btn--icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Warning variant for confirmation buttons */
+.rams-btn--warning {
+    background: var(--rams-orange, #d97706);
+    border-color: var(--rams-orange, #d97706);
+    color: #fff;
+}
+.rams-btn--warning:hover {
+    background: var(--rams-orange, #d97706);
+    filter: brightness(0.92);
+}
+
+/* Long URLs: break anywhere so they never overflow their container */
+.rams-url-break {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    display: inline-block;
+    max-width: 100%;
+}
+
+
+/* ============================================
+   v3.1 SHARP REFINEMENT LAYER
+   Modern crispness within the Rams vocabulary:
+   optical depth, focus clarity, data presence.
+   No new colors, no new radii — sharper edges
+   of the EXISTING system.
+   ============================================ */
+
+/* Crisp optical elevation replaces flat grey-on-grey
+ * (cards lift by contrast, not blur). The card sits on the MODULE
+ * surface token - one step above the chassis page in BOTH themes
+ * (chassis here made cards dissolve into the page). */
+.rams-module {
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    box-shadow: var(--shadow-card);
+}
+
+.rams-module__header {
+    border-bottom: 1px solid var(--rams-line);
+    letter-spacing: 0.04em;
+}
+
+/* Focus clarity: unmistakable keyboard focus ring —
+ * the machine tells you where you ARE. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--rams-accent);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+}
+
+/* Buttons: confident primary action, tactile press. */
+.rams-btn--primary {
+    box-shadow: 0 1px 0 rgba(26, 26, 26, 0.15);
+    transition: transform 80ms ease, box-shadow var(--duration-normal) ease, background var(--duration-normal) ease;
+}
+
+.rams-btn--primary:not(:disabled):hover {
+    box-shadow: 0 2px 6px rgba(26, 26, 26, 0.18);
+}
+
+.rams-btn--primary:not(:disabled):active {
+    transform: translateY(1px);
+    box-shadow: 0 0 0 rgba(26, 26, 26, 0);
+}
+
+/* Data presence: rows breathe and answer the pointer. */
+.rams-table tbody tr {
+    transition: background var(--duration-fast, 80ms) ease;
+}
+
+.rams-table tbody tr:hover {
+    background: var(--rams-panel);
+}
+
+.rams-table th {
+    letter-spacing: 0.04em;
+    font-size: 0.78rem;
+}
+
+/* Status icons: andon dots gain ring carriers so
+ * state is visible at any size, including small. */
+.rams-andon__light {
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.rams-andon__light--green {
+    color: var(--rams-green);
+}
+
+.rams-andon__light--yellow {
+    color: var(--rams-orange);
+}
+
+.rams-andon__light--red {
+    color: var(--rams-red);
+}
+
+/* Progress track: subtle inner shadow gives the bar
+ * a machined-channel read. */
+.rams-progress {
+    box-shadow: inset 0 1px 2px rgba(26, 26, 26, 0.08);
+}
+
+.rams-progress__bar {
+    box-shadow: inset 0 -1px 0 rgba(26, 26, 26, 0.15);
+}
+
+/* Metric numbers: tabular figures for control-room readouts. */
+.rams-metric__value,
+.rams-stat__value,
+td .rams-text--bold {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Empty states: the system states its state. */
+.rams-empty-state {
+    border: 1px dashed var(--rams-line);
+    border-radius: var(--radius-sm);
+    padding: var(--space-lg, 32px) var(--space-md, 16px);
+    text-align: center;
+    color: var(--rams-muted);
+    background: var(--rams-chassis);
+}
+
+/* Dark-mode parity: tokens already flip the surfaces; this layer only
+ * deepens elevation shadows. NEVER repaint surfaces with the grey ramp
+ * here — the dark ramp is INVERTED (grey-800 = #E6E6E6), which once
+ * turned every dark-mode card into a near-white panel. */
+@media (prefers-color-scheme: dark) {
+    :root[data-theme="dark"] .rams-module,
+    [data-theme="dark"] .rams-module {
+        box-shadow: var(--shadow-card);
+    }
+}
+
+
+/* v3.1 utility completions: the recurring inline-style patterns,
+ * promoted to first-class utilities so templates stay delineated. */
+
+.rams-text--muted-2 { color: var(--rams-text-muted, var(--rams-muted)); }
+
+.rams-icon--xs { width: 12px; height: 12px; }
+.rams-icon--sm { width: 16px; height: 16px; }
+.rams-icon--lg { width: 48px; height: 48px; }
+
+.rams-inline-block { display: inline-block; }
+
+.rams-w-full { width: 100%; }
+
+/* Dynamic-width bar (charts, meters): value flows in via token. */
+.rams-meter-fill {
+    width: var(--rams-meter-value, 0%);
+    transition: width var(--duration-normal);
+}
+
+
+/* SVG sizing utilities work on svg elements directly. */
+svg.rams-icon--xs, svg.rams-icon--sm, svg.rams-icon--lg { display: inline-block; vertical-align: middle; }
+
+/* Andon indicator size channel. */
+.rams-andon__light[style*="--rams-icon-size"] {
+    width: var(--rams-icon-size, 10px);
+    height: var(--rams-icon-size, 10px);
+}
+
+
+/* Generic meter fill: any bar-like element that passes --rams-meter-value.
+ * Distinct from .rams-progress__bar (which reads --rams-progress-value). */
+[style*="--rams-meter-value"] {
+    width: var(--rams-meter-value, 0%);
+}
+
+/* Fixed narrow-width form controls — delineated utility. */
+.rams-w-xs { width: 50px; }
+.rams-w-sm { width: 60px; }
+.rams-w-md { width: 100px; }
+.rams-w-lg { width: 140px; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   REPORT BUILDER — Data → Configure → Preview layout
+   Templates describe semantics; the stylesheet owns presentation.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.rams-builder-layout {
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr);
+    gap: var(--space-4);
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .rams-builder-layout {
+        grid-template-columns: 1fr; /* component-level responsive strategy */
+    }
+}
+
+.rams-builder-fieldlist {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 480px;
+    overflow-y: auto;
+}
+
+.rams-builder-field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--rams-border);
+    background: var(--rams-surface);
+    margin-bottom: var(--space-1);
+    flex-wrap: wrap;
+}
+
+.rams-builder-field__label {
+    font-weight: 600;
+    margin-right: auto;
+}
+
+.rams-builder-field__actions {
+    display: flex;
+    gap: var(--space-1);
+}
+
+.rams-builder-field:hover {
+    border-color: var(--rams-primary);
+}
+
+.rams-builder-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    min-height: 3rem;
+    border: 1px dashed var(--rams-line);
+}
+
+.rams-builder-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border-bottom: 1px solid var(--rams-line);
+    background: var(--rams-surface);
+    flex-wrap: wrap;
+}
+
+.rams-builder-row:last-child {
+    border-bottom: none;
+}
+
+.rams-builder-row__label {
+    font-weight: 600;
+    margin-right: auto;
+}
+
+.rams-builder-row__control {
+    min-width: 10rem;
+}
+
+.rams-builder-row--filter .rams-builder-row__control {
+    min-width: 8rem;
+}
+
+.rams-builder-row__remove {
+    border: 1px solid var(--rams-border);
+    background: var(--rams-surface);
+    color: var(--rams-text);
+    cursor: pointer;
+    padding: 0 var(--space-2);
+}
+
+.rams-builder-row__remove:hover {
+    border-color: var(--rams-danger);
+    color: var(--rams-danger);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CALENDAR — component-owned sizing (was inline min-height: 700px
+   hostile to short viewports; scales down on laptops and mobile)
+   ═══════════════════════════════════════════════════════════════════ */
+
+.rams-calendar-wrap {
+    min-height: clamp(420px, 72vh, 700px);
+}
+
+.rams-calendar {
+    height: 100%;
+}
+
+/* A month grid at phone width starves day cells until FullCalendar clips
+   its own day numbers ("31" reads as "3"). Same idiom as tables: the grid
+   keeps a readable minimum and scrolls horizontally in its panel. */
+@media (max-width: 768px) {
+    .rams-calendar-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .rams-calendar {
+        min-width: 640px;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TOASTS — single ordered region; errors persist until acknowledged
+   ═══════════════════════════════════════════════════════════════════ */
+
+.rams-toast-region {
+    position: fixed;
+    top: var(--space-4);
+    right: var(--space-4);
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-width: min(24rem, calc(100vw - 2 * var(--space-4)));
+}
+
+.rams-toast__close {
+    margin-left: var(--space-3);
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 var(--space-1);
+}
+
+.rams-toast__close:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SEMANTIC UTILITIES for former inline styles (round-8 UI-8 sweep)
+   Templates state meaning; these classes carry the presentation.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.rams-inline-icon {
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: var(--space-1);
+}
+
+.rams-cell--metric {
+    min-width: 20px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.rams-cell--measure {
+    min-width: 120px;
+    text-align: center;
+}
+
+.rams-cell--wide {
+    min-width: 180px;
+}
+
+.rams-block {
+    display: block;
+}
+
+.rams-inline {
+    display: inline;
+}
+
+.rams-hidden-soft {
+    display: none; /* server-rendered hidden state (JS reveals) */
+}
+
+.rams-fit {
+    height: fit-content;
+}
+
+.rams-scroll-region {
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.rams-min-h-60vh {
+    min-height: 60vh;
+}
+
+.rams-strike {
+    text-decoration: line-through;
+}
+
+.rams-tracked {
+    letter-spacing: 0.05em;
+}
+
+.rams-w-80 {
+    width: 80px;
+}
+
+.rams-measure-input {
+    width: 140px;
+    flex-shrink: 0;
+}
+
+.rams-icon-sm {
+    width: 1.25rem;
+    height: 1.25rem;
+}
+
+.rams-stack-h {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.rams-max-w-form {
+    max-width: 500px;
+    width: 100%;
+}
+
+/* Second-wave inline-style replacements */
+.rams-my-2 {
+    margin: 8px 0;
+}
+
+.rams-py-2 {
+    padding: 8px 0;
+}
+
+.rams-px-1 {
+    padding: 0 6px;
+}
+
+.rams-opacity-50 {
+    opacity: 0.5;
+}
+
+.rams-cell--qty {
+    min-width: 50px;
+}
+
+.rams-w-200 {
+    min-width: 200px;
+}
+
+.rams-min-h-600 {
+    min-height: 600px;
+}
+
+.rams-centered {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.rams-centered--narrow {
+    max-width: 600px;
+    width: 100%;
+}
+
+.rams-centered--form {
+    max-width: 480px;
+    margin: 48px auto;
+}
+
+.rams-w-280 {
+    max-width: 280px;
+}
+
+.rams-scroll-region--sm {
+    max-height: 560px;
+}
+
+.rams-scroll-region--notes {
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.rams-panel-head {
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.rams-chart-area {
+    height: 400px;
+    width: 100%;
+}
+
+.rams-meta-row {
+    gap: 0.75rem;
+    font-size: 0.85rem;
+}
+
+.rams-flex-2 {
+    flex: 2;
+}
+
+.rams-progress-line {
+    flex: 1;
+    height: 20px;
+}
+
+.rams-badge-code {
+    font-size: 0.65rem;
+}
+
+.rams-value-lg {
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.rams-value-md {
+    font-size: 1.25rem;
+}
+
+.rams-text-body {
+    font-weight: 500;
+}
+
+.rams-list-plain {
+    list-style: none;
+    padding-left: 0;
+}
+
+.rams-week-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 0;
+    min-height: 600px;
+}
+
+/* A 7-column week cannot fit a phone: give each day a floor width and
+   let the grid pan horizontally instead of crushing day cells. */
+@media (max-width: 768px) {
+    .rams-week-grid {
+        grid-template-columns: repeat(7, minmax(110px, 1fr));
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+}
+
+a[data-dashed="true"] {
+    border-style: dashed;
+}
+
+div[data-past-marker="true"] {
+    border-left: 4px solid rgba(0, 0, 0, 0.2);
+}
+
+summary[data-clickable="true"] {
+    cursor: pointer;
+    user-select: none;
+}
+
+/* ============================================
+   XX. CANONICAL STATUS CHIPS (bordered; fill only for unrecoverable fault)
+   ============================================ */
+
+.rams-status-chip { display:inline-flex; align-items:center; gap:4px; font-family:var(--font-mono); font-size:10px; letter-spacing:0.05em; text-transform:uppercase; padding:2px 8px; border:1px solid var(--rams-line); border-radius:var(--radius-sm); color:var(--rams-muted); background:transparent; }
+.rams-status-chip--ok { border-color:var(--rams-green); color:var(--rams-green); }
+.rams-status-chip--caution { border-color:var(--rams-orange); color:var(--rams-orange); }
+.rams-status-chip--fault { border-color:var(--rams-red); color:var(--rams-red); }
+.rams-status-chip--info { border-color:var(--rams-steel); color:var(--rams-steel); }
+.rams-status-chip--solid { background:var(--rams-red); border-color:var(--rams-red); color:#fff; }
+
+/* ============================================
+   LIST CHROME — server meta line + DataTables
+   Machine metadata idiom: mono, uppercase, 2xs,
+   muted. "Showing 1 to 25 of 50 entries" reads
+   as instrument output, not prose.
+   ============================================ */
+
+/* Server-rendered list meta ("Showing 24 companies") */
+.rams-list-meta {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rams-muted);
+}
+
+.rams-list-meta__count {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--rams-foreground);
+}
+
+/* DataTables v2 emits bare controls (no stylesheet is loaded); align the
+   whole strip — length select, search, info, pager — with the system. */
+.dt-container,
+div.dt-container,
+div.dataTables_wrapper {
+    font-family: var(--font-sans);
+}
+
+.dt-length,
+.dataTables_length {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rams-muted);
+}
+
+.dt-length select,
+.dataTables_length select {
+    height: 30px;
+    padding: 0 var(--space-6) 0 var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23999999' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 6px center;
+    background-repeat: no-repeat;
+    background-size: 12px;
+    cursor: pointer;
+}
+
+.dt-search,
+.dataTables_filter {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rams-muted);
+}
+
+.dt-search input,
+.dataTables_filter input {
+    height: 30px;
+    padding: 0 var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--rams-panel);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    color: var(--rams-foreground);
+    box-shadow: var(--shadow-inset);
+}
+
+.dt-search input:focus-visible,
+.dt-length select:focus-visible {
+    outline: 2px solid var(--rams-accent);
+    outline-offset: 1px;
+}
+
+.dt-info,
+.dataTables_info {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rams-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.dt-paging,
+.dataTables_paginate {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+}
+
+.dt-paging-button,
+.dataTables_paginate .paginate_button {
+    min-width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm);
+    background: var(--rams-panel);
+    color: var(--rams-foreground);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.dt-paging-button:hover,
+.dataTables_paginate .paginate_button:hover {
+    border-color: var(--rams-accent);
+}
+
+.dt-paging-button.dt-active,
+.dataTables_paginate .paginate_button.current {
+    background: var(--rams-accent);
+    border-color: var(--rams-accent);
+    color: #000;
+    font-weight: 700;
+}
+
+.dt-paging-button:disabled,
+.dt-paging-button.dt-disabled,
+.dataTables_paginate .paginate_button.disabled {
+    opacity: 0.4;
+    cursor: default;
+    border-color: var(--rams-line);
+}
+
+/* Sorted-column indicators: quiet mono arrows */
+table.data-table thead th.sorting_asc::after { content: " ▲"; font-size: 8px; color: var(--rams-muted); }
+table.data-table thead th.sorting_desc::after { content: " ▼"; font-size: 8px; color: var(--rams-muted); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GLOBAL LAYOUT DEFECTS — shared-layer fixes (round 19)
+   Root causes behind lead-discovery / calendar / guidance / admin-users /
+   compliance page breakage. All fixed here, globally; no inline patches.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── FIX 1 · `.rams-dymo` sweep disease ────────────────────────────────────
+   A template sweep applied `.rams-dymo` (a black, rotated badge plate) to
+   266 FORM LABELS, subtitles, and notification timestamps. Result: giant
+   black plates on every form (lead discovery, admin/users, compliance…),
+   the badge overlapping the page title on guidance, and full-width black
+   timestamp bars inside notifications. Every usage treats the class as
+   "small uppercase label text", so the class itself now IS the machine
+   label idiom; the colored `--warning/--critical/--success` variants keep
+   their plates as genuine status chips. */
+.rams-dymo {
+    display: block;
+    padding: 0;
+    background: transparent;
+    color: var(--rams-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    transform: none;
+    user-select: none;
+}
+
+/* Keep the plate ONLY for explicit status variants. */
+.rams-dymo--warning,
+.rams-dymo--critical,
+.rams-dymo--success {
+    display: inline-block;
+    padding: 2px var(--space-2);
+    font-weight: 700;
+}
+
+/* ── FIX 2 · DataTables tables escape the wide-table rescue ────────────────
+   The ≤768px rescue (content-sized columns + horizontal panning) targeted
+   `.rams-table-container`/`.rams-table-wrapper` only — DataTables wraps its
+   tables in `.dt-container`, so its tables kept `table-layout: fixed` and
+   crushed to one CHARACTER per line on phones (lead-discovery "Recent
+   Discoveries"). Extend the same idiom to DataTables containers, and make
+   the table span its container on desktop instead of hugging the left. */
+.dt-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.dt-container .rams-table {
+    width: 100%;
+    table-layout: auto;
+}
+
+@media (max-width: 768px) {
+    .dt-container .rams-table {
+        table-layout: auto;
+        min-width: 640px;
+    }
+
+    /* DataTables injects fixed <colgroup> pixel widths from its desktop
+       layout pass; under content-sized layout those are hints only, but an
+       explicit min-width keeps the name column from collapsing. */
+    .dt-container .rams-table col {
+        min-width: 72px;
+    }
+}
+
+/* ── FIX 3 · `.rams-grid-span-4` never existed ─────────────────────────────
+   The calendar page places "Upcoming Events" in a `rams-grid--4` and the
+   calendar itself in `rams-grid-span-4` — a class with no CSS definition.
+   The calendar therefore landed in ONE 1fr column (~394px of 1200px): the
+   toolbar wrapped and the title slid under the view buttons, and a third
+   of the grid sat empty. Define the span family completely and collapse it
+   with the same breakpoints as span-2/3. */
+.rams-grid-span-4 {
+    grid-column: span 4 / span 4;
+}
+
+@media (max-width: 1024px) {
+    .rams-grid-span-4 {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 768px) {
+    .rams-grid-span-4 {
+        grid-column: 1 / -1;
+    }
+}
+
+/* ── FIX 4 · Segmented control strips overflow their module ────────────────
+   `display: inline-flex` grows with content: the compliance sector strip
+   (14 items) overflowed its module horizontally on desktop ("ENERGY
+   STORAGE" wrapping per word, "OTHER" outside the box) and pushed the
+   whole page wide on phones. Scrollable-strip idiom, same as the calendar
+   wrap. */
+.rams-segmented-control {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+}
+
+/* ── FIX 5 · Notification cards crush their message on phones ──────────────
+   `content (flex:1) + actions (flex-shrink:0)` side by side: at 390px the
+   actions column (~170px) crushed the message to ~100px — one word per
+   line (guidance/all). Stack below 480px. */
+@media (max-width: 480px) {
+    .rams-notification {
+        flex-wrap: wrap;
+    }
+
+    .rams-notification__content {
+        flex: 1 1 100%;
+    }
+
+    .rams-notification__actions {
+        flex: 1 1 100%;
+        justify-content: flex-start;
+        padding-top: var(--space-1);
+    }
+}
+
+/* ── FIX 6 · Long labels overflow nowrap actions cells ─────────────────────
+   Actions cells are `white-space: nowrap` (button labels must not wrap per
+   character), but admin/users packs a delete-confirm CHECKBOX LABEL there
+   ("Also erase personal data…") — with the dymo plate gone it still
+   overflowed the cell. Labels may wrap; buttons stay nowrap. */
+.rams-table__cell--actions label {
+    white-space: normal;
+    overflow-wrap: break-word;
+}

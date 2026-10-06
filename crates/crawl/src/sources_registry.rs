@@ -25,9 +25,47 @@ use apex_store::postgres::{PgStore, SourceRuntimeStateRow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
-use tracing::warn;
+use tracing::{debug, warn};
 
 pub const SOURCE_REGISTRY_PATH_ENV: &str = "APEX_SOURCE_REGISTRY_PATH";
+
+/// Whether the endpoint resolves to a Tor onion service.  Onion endpoints are
+/// fetched exclusively through the Tor SOCKS5h path — never through the
+/// clearnet HTTP client — so the check is also the SSRF guard for the Tor
+/// transport.
+pub fn is_onion_endpoint(endpoint: &str) -> bool {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .is_some_and(|host| host.ends_with(".onion"))
+}
+
+/// True when this source is a Tor onion service (see [`is_onion_endpoint`]).
+pub fn is_onion_source(source: &Source) -> bool {
+    is_onion_endpoint(source.rss_url.as_deref().unwrap_or(source.url.as_str()))
+}
+
+/// Whether Tor is configured in this deployment.  Tor is on by default
+/// (matching the historical daemon); `TOR_ENABLED=false` opts out and
+/// `TOR_SOCKS_PROXY` overrides the SOCKS5 endpoint address.
+fn tor_configured_from_env() -> bool {
+    std::env::var("TOR_ENABLED")
+        .ok()
+        .map(|value| apex_core::env::parse_truthy_flag(&value))
+        .unwrap_or(true)
+}
+
+/// Environment variable naming an optional supplementary source registry
+/// (YAML, same schema as the override).  When unset, the compiled-in
+/// supplement (`config/sources_supplement.yaml`, generated from the legacy
+/// crawl daemon's lists) is merged into the built-in registry.  When set to an
+/// empty string, supplement merging is disabled entirely.
+pub const SOURCE_SUPPLEMENT_PATH_ENV: &str = "APEX_SOURCE_SUPPLEMENT_PATH";
+
+/// Compiled-in supplementary registry: the legacy crawl daemon's clear-web,
+/// social and dark-web source lists carried forward so no historically
+/// monitored source is silently dropped from the live system.
+const BUILT_IN_SOURCE_SUPPLEMENT: &str = include_str!("../../../config/sources_supplement.yaml");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -261,6 +299,8 @@ pub struct DeploymentCapabilities {
     pub browser: bool,
     /// At least one proxy endpoint is configured for proxied sources.
     pub proxy: bool,
+    /// Tor SOCKS5 proxy is configured for `.onion` dark-web sources.
+    pub tor: bool,
     /// API adapter ids whose credentials are present in this deployment.
     pub credentialed_api_adapters: HashSet<String>,
 }
@@ -273,6 +313,7 @@ impl Default for DeploymentCapabilities {
         Self {
             browser: true,
             proxy: true,
+            tor: true,
             credentialed_api_adapters: HashSet::new(),
         }
     }
@@ -291,13 +332,14 @@ impl DeploymentCapabilities {
         Self {
             browser: config.enable_headless_browser,
             proxy: config.enable_proxy_rotation && configured_proxy_endpoints(),
+            tor: tor_configured_from_env(),
             credentialed_api_adapters: credentialed_api_adapters_from_env(),
         }
     }
 
     /// Capabilities configured in this deployment, read from the same
     /// environment the crawl workers use (`ENABLE_HEADLESS_BROWSER`,
-    /// `ENABLE_PROXY_ROTATION` plus proxy endpoints, and
+    /// `ENABLE_PROXY_ROTATION` plus proxy endpoints, `TOR_ENABLED`, and
     /// [`CREDENTIALED_API_ADAPTERS_ENV`]).
     pub fn from_env() -> Self {
         let browser = env_truthy(apex_core::env::ENABLE_HEADLESS_BROWSER);
@@ -306,6 +348,7 @@ impl DeploymentCapabilities {
         Self {
             browser,
             proxy,
+            tor: tor_configured_from_env(),
             credentialed_api_adapters: credentialed_api_adapters_from_env(),
         }
     }
@@ -450,8 +493,12 @@ pub fn effective_capability(
         }
         _ => {}
     }
-    if source.needs_proxy && !deployment_caps.proxy {
+    if source.needs_proxy && !deployment_caps.proxy && !is_onion_source(source) {
         return SourceCapability::UnavailableMissingProxy;
+    }
+    // Onion sources need the Tor SOCKS5 proxy, not the clearnet proxy pool.
+    if is_onion_source(source) && !deployment_caps.tor {
+        return SourceCapability::UnavailableMissingCapability;
     }
     if let Some(row) = runtime {
         if row
@@ -682,14 +729,120 @@ impl Source {
 
 /// Return the full source registry.
 ///
-/// This is the authoritative list of all crawlable sources.  New sources
-/// should be appended here; removal is done by setting `enabled = false` so
-/// historical metadata is preserved.
+/// This is the authoritative list of all crawlable sources: the built-in
+/// registry merged with the supplementary registry (legacy daemon sources —
+/// clear web, social and dark web).  No source is excluded by policy: every
+/// entry ships `enabled = true` and starts `Unvalidated`, earning
+/// `Operational` status through a successful fetch/parser contract check.
+/// Removal is done by setting `enabled = false` so historical metadata is
+/// preserved.
 pub fn all_sources() -> Vec<Source> {
-    load_sources_from_env().unwrap_or_else(|error| {
+    let mut sources = load_sources_from_env().unwrap_or_else(|error| {
         warn!(error = %error, "source registry override invalid; falling back to built-in registry");
         default_sources()
-    })
+    });
+    merge_supplement_sources(&mut sources);
+    sources
+}
+
+/// Merge the supplementary registry into `sources` in place.
+///
+/// Supplement entries are appended unless a source with the same slug or the
+/// same normalized endpoint already exists, in which case the built-in entry
+/// wins (the source is registered, not excluded).  A missing or invalid
+/// supplement degrades to a warning, never a hard failure: the built-in
+/// registry remains authoritative and complete.
+fn merge_supplement_sources(sources: &mut Vec<Source>) {
+    let supplement = match load_supplement_sources() {
+        Ok(supplement) => supplement,
+        Err(error) => {
+            warn!(error = %error, "source supplement invalid; continuing with built-in registry only");
+            return;
+        }
+    };
+    merge_supplement_entries(sources, supplement);
+}
+
+/// Pure merge of supplement entries into the registry (dedup by slug and by
+/// normalized endpoint); separated from the loading path for testability.
+fn merge_supplement_entries(sources: &mut Vec<Source>, supplement: Vec<Source>) {
+    let mut known_slugs: HashSet<String> =
+        sources.iter().map(|source| source.slug.clone()).collect();
+    let mut known_endpoints: HashSet<String> = sources
+        .iter()
+        .filter_map(|source| {
+            normalize_endpoint(source.rss_url.as_deref().unwrap_or(source.url.as_str()))
+        })
+        .collect();
+
+    let before = sources.len();
+    for mut candidate in supplement {
+        let endpoint_key = normalize_endpoint(
+            candidate
+                .rss_url
+                .as_deref()
+                .unwrap_or(candidate.url.as_str()),
+        )
+        .unwrap_or_default();
+        let slug = candidate.slug.clone();
+        if known_slugs.contains(slug.as_str()) || known_endpoints.contains(&endpoint_key) {
+            debug!(slug = %slug, "supplement source already registered; skipping duplicate");
+            continue;
+        }
+        // A supplementary source may never override the built-in enabled
+        // semantics: it is enabled and starts unvalidated, and its tier must
+        // be a valid registry tier.
+        candidate.enabled = true;
+        candidate.capability = SourceCapability::Unvalidated;
+        candidate.tier = candidate.tier.clamp(1, 5);
+        known_slugs.insert(slug);
+        known_endpoints.insert(endpoint_key);
+        sources.push(candidate);
+    }
+    tracing::info!(
+        built_in = before,
+        supplement_added = sources.len() - before,
+        total = sources.len(),
+        "source registry merged with supplement"
+    );
+}
+
+/// Canonical form of an endpoint used for dedup: lower-cased, scheme and
+/// trailing slash stripped.
+fn normalize_endpoint(endpoint: &str) -> Option<String> {
+    let trimmed = endpoint.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.trim_end_matches('/').to_string())
+}
+
+/// Load the supplementary registry from the override path when set, else the
+/// compiled-in supplement.  An explicitly empty
+/// [`SOURCE_SUPPLEMENT_PATH_ENV`] disables supplement merging.
+pub fn load_supplement_sources() -> Result<Vec<Source>, SourceRegistryError> {
+    match std::env::var(SOURCE_SUPPLEMENT_PATH_ENV) {
+        Ok(path) if path.trim().is_empty() => Ok(Vec::new()),
+        Ok(path) => load_sources_from_path(path),
+        Err(std::env::VarError::NotPresent) => parse_supplement(BUILT_IN_SOURCE_SUPPLEMENT),
+        Err(error) => Err(SourceRegistryError::Invalid {
+            path: SOURCE_SUPPLEMENT_PATH_ENV.to_string(),
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn parse_supplement(contents: &str) -> Result<Vec<Source>, SourceRegistryError> {
+    let registry: SourceRegistryFile =
+        serde_yaml::from_str(contents).map_err(|error| SourceRegistryError::Parse {
+            path: "<built-in sources_supplement.yaml>".to_string(),
+            message: error.to_string(),
+        })?;
+    validate_sources(&registry.sources).map_err(|message| SourceRegistryError::Invalid {
+        path: "<built-in sources_supplement.yaml>".to_string(),
+        message,
+    })?;
+    Ok(registry.sources)
 }
 
 pub fn load_sources_from_env() -> Result<Vec<Source>, SourceRegistryError> {
@@ -3889,6 +4042,77 @@ mod tests {
     }
 
     #[test]
+    fn supplement_sources_are_merged_and_enabled() {
+        let s = all_sources();
+        let intelslava = s
+            .iter()
+            .find(|src| src.slug == "telegram_intelslavaz")
+            .expect("IntelSlavaZ telegram channel must be in the merged registry");
+        assert!(intelslava.enabled, "IntelSlavaZ must never be excluded");
+        for onion_slug in ["darkweb_pwndb", "darkweb_exposed_vc", "darkweb_dread_osint"] {
+            let onion = s
+                .iter()
+                .find(|src| src.slug == onion_slug)
+                .unwrap_or_else(|| panic!("{onion_slug} must be in the merged registry"));
+            assert!(onion.enabled);
+            assert!(onion.needs_proxy || is_onion_source(onion));
+            assert!(is_onion_endpoint(&onion.url));
+        }
+    }
+
+    #[test]
+    fn supplement_merge_dedups_slug_and_endpoint_duplicates() {
+        let mut registry = vec![Source::new(
+            "existing",
+            "Existing",
+            "https://existing.example.com",
+            Region::Global,
+            Category::News,
+            2,
+        )];
+        let supplement = vec![
+            // Same slug as built-in: skipped.
+            Source::new(
+                "existing",
+                "Duplicate slug",
+                "https://other.example.com",
+                Region::Global,
+                Category::News,
+                2,
+            ),
+            // Different slug, same endpoint: skipped.
+            Source::new(
+                "other_slug",
+                "Duplicate endpoint",
+                "https://existing.example.com",
+                Region::Global,
+                Category::News,
+                2,
+            ),
+            // Genuinely new: appended.
+            Source::new(
+                "fresh",
+                "Fresh",
+                "https://fresh.example.com",
+                Region::Global,
+                Category::News,
+                2,
+            ),
+        ];
+        merge_supplement_entries(&mut registry, supplement);
+        assert_eq!(registry.len(), 2, "duplicates must not be re-added");
+        assert_eq!(registry[1].slug, "fresh");
+    }
+
+    #[test]
+    fn onion_endpoint_detection() {
+        assert!(is_onion_endpoint("http://pwndb2am4tzkvold.onion/?luser=x"));
+        assert!(is_onion_endpoint("https://example.onion/path"));
+        assert!(!is_onion_endpoint("https://example.com"));
+        assert!(!is_onion_endpoint("https://example.onion.evil.com"));
+    }
+
+    #[test]
     fn israel_sources_present() {
         let s = all_sources();
         let il: Vec<_> = filter_by_region(&s, &Region::Israel);
@@ -4677,6 +4901,7 @@ mod scheduler_tests {
         let capabilities = DeploymentCapabilities {
             browser: false,
             proxy: false,
+            tor: true,
             credentialed_api_adapters: HashSet::new(),
         };
         // `healthy` has runtime success but `healthy` is a plain-HTTP source:

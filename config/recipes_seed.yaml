@@ -12746,9 +12746,405 @@ recipes:
       industries: [energy_storage, battery, solar, telecom_backup, e_mobility]
       notes: POI thought-leadership engagement opportunity at battery events (primary markets MA/TN/EG, secondary EU)
 
+  # ─── CORR001–CORR012: deep correlation recipes ─────────────────────────────
+  # Cross-domain correlation insights mined by the weekly correlation pass and
+  # curated into first-class recipes.  Each chains an upstream signal domain to
+  # a downstream outcome with an explicit lag: the recipe deepens a single
+  # observation into a causal-chain insight.  These are the seed set for the
+  # constant deepening loop — new correlations are staged automatically as
+  # `corr_*` candidates by the weekly cross-domain mining job.
+
+  - id: CORR001
+    name: conflict_escalation_precedes_energy_cost
+    category: correlation_deep
+    join: Geo
+    outcome: CostImpact
+    signals:
+      - WebChange.conflict_escalation
+      - SocialPost.conflict_escalation
+    transforms:
+      - type: Lag
+        days: 14
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.6
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Conflict escalation indicators in {{evidence:region}} precede energy cost
+      pressure within weeks: {{evidence:signal_count}} escalation signals over
+      14 days correlate with a {{evidence:energy_pct}}% energy price move.
+      Margin exposure must be re-forecast before the cost wave lands.
+    action_playbook:
+      - Re-forecast energy-heavy line margins for the region
+      - Pre-notify customers on cost windows
+      - Evaluate regional energy hedging
+      - Stress-test BESS demand scenarios (escalation drives backup demand)
+    applicability:
+      geos: [GLOBAL]
+      industries: [energy, energy_storage, electronics, defense, aerospace]
+      notes: Conflict → energy → cost causal chain; pairs J001 with C010
+
+  - id: CORR002
+    name: sanctions_cascade_precedes_currency_volatility
+    category: correlation_deep
+    join: Geo
+    outcome: CostImpact
+    signals:
+      - WebChange.sanctions_cascade
+      - SanctionsEntity.update
+    transforms:
+      - type: Lag
+        days: 21
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.5
+      max_p_value: 0.01
+      min_stability: 0.7
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      New designations in {{evidence:region}} typically precede FX volatility:
+      {{evidence:designations}} entities listed correlates with a
+      {{evidence:fx_move}}% move in regional pairs within 3 weeks.
+      Quote currency and payment terms need a hardening review now.
+    action_playbook:
+      - Re-screen counterparties before the cascade widens
+      - Fix quote currency or add FX clauses
+      - Time supplier payments to the volatility window
+      - Flag second-hop exposure in the region
+    applicability:
+      geos: [GLOBAL]
+      industries: [finance, defense, aerospace, electronics, energy]
+      notes: Sanctions → FX causal chain; pairs J002 with C011
+
+  - id: CORR003
+    name: critical_mineral_restriction_precedes_cell_cost_spike
+    category: correlation_deep
+    join: Industry
+    outcome: AllocationWave
+    signals:
+      - Commodity.critical_mineral.export_restriction
+      - WebChange.export_control
+    transforms:
+      - type: Lag
+        days: 30
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 2.0
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Critical mineral export restrictions in {{evidence:region}} historically
+      precede battery cell cost spikes by ~30 days: {{evidence:mineral}} quotas
+      tighten while cell demand is inelastic. Lock pricing and allocation
+      before the wave propagates through cell makers.
+    action_playbook:
+      - Lock cell pricing or volume agreements immediately
+      - Diversify mineral origin mix
+      - Raise BESS quotes with a mineral-risk line
+      - Watch for secondary material recovery plays
+    applicability:
+      geos: [CN, GLOBAL]
+      industries: [battery, energy_storage, automotive, electronics]
+      notes: Minerals → cell cost chain; pairs J010 critical minerals with BESS004
+
+  - id: CORR004
+    name: logistics_disruption_precedes_component_shortage
+    category: correlation_deep
+    join: Geo
+    outcome: AllocationWave
+    signals:
+      - Logistics.port.congestion
+      - Logistics.transit_time.increase
+    transforms:
+      - type: Lag
+        days: 14
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 2.0
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Port congestion and rising transit times in {{evidence:region}} precede
+      component allocation waves: distributors buffer by allocating stock, so
+      visible logistics stress is the earliest lead indicator of a shortage.
+    action_playbook:
+      - Pull forward distributor POs now
+      - Switch routes or add buffer stock on affected lanes
+      - Pre-qualify alternate part sources
+      - Set lead-time watch thresholds with distributors
+    applicability:
+      geos: [GLOBAL]
+      industries: [electronics, automotive, industrial, medical]
+      notes: Logistics → allocation chain; pairs C003 with C002
+
+  - id: CORR005
+    name: semiconductor_allocation_precedes_automotive_harness_demand
+    category: correlation_deep
+    join: Industry
+    outcome: RfQPosted
+    signals:
+      - Foundry.allocation
+      - Semiconductor.lead_time.surge
+    transforms:
+      - type: Lag
+        days: 21
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 2.0
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Foundry allocation tightening precedes automotive harness RFQs: when chip
+      lead times surge, OEMs re-scope ECU/harness programs and re-open
+      sourcing. Position harness capability against the allocation wave.
+    action_playbook:
+      - Prepare automotive harness capacity messaging
+      - Target OEMs with chips-linked programs
+      - Offer allocation-linked supply continuity
+      - Track the specific fab allocation announcements
+    applicability:
+      geos: [EU, US, CN, TW, KR, JP, TN, MA]
+      industries: [automotive, electronics]
+      notes: Chip allocation → harness RFQ chain; pairs C012 with A032
+
+  - id: CORR006
+    name: supplier_breach_precedes_quality_escape
+    category: correlation_deep
+    join: Entity
+    outcome: QualityEscapeEvent
+    signals:
+      - SupplierBreach.disclosed
+      - Cyber.incident.supplier
+    transforms:
+      - type: Lag
+        days: 14
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.8
+      max_p_value: 0.01
+      min_stability: 0.7
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      A disclosed breach at a supplier correlates with quality escapes within
+      weeks: compromised systems disrupt traceability and containment.
+      Pre-emptive containment protects our customers before the escape lands.
+    action_playbook:
+      - Trigger supplier containment protocol
+      - Run incoming inspection on affected part families
+      - Audit traceability records for the breach window
+      - Brief customers with qualified risk language
+    applicability:
+      geos: [GLOBAL]
+      industries: [electronics, automotive, aerospace, medical]
+      notes: Breach → quality chain; pairs D033 with C005
+
+  - id: CORR007
+    name: natural_disaster_precedes_transport_cost_surge
+    category: correlation_deep
+    join: Geo
+    outcome: LogisticsImpact
+    signals:
+      - WebChange.natural_disaster
+      - Logistics.transit_time.increase
+    transforms:
+      - type: Lag
+        days: 7
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.8
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Natural disaster reports in {{evidence:region}} precede transport cost
+      surges on affected lanes within a week. Expedite shipments before spot
+      rates spike.
+    action_playbook:
+      - Expedite open shipments on affected lanes
+      - Book forward capacity before spot rates move
+      - Pre-stage inventory at safe hubs
+      - Update lead-time commitments to customers
+    applicability:
+      geos: [GLOBAL]
+      industries: [electronics, industrial, medical]
+      notes: Disaster → freight chain; pairs C007 with C014
+
+  - id: CORR008
+    name: bms_patent_cluster_precedes_competitor_capacity_expansion
+    category: correlation_deep
+    join: Entity
+    outcome: CompetitorCapabilityShift
+    signals:
+      - Patent.bms.cluster
+      - Patent.recent
+    transforms:
+      - type: Lag
+        days: 45
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.6
+      max_p_value: 0.01
+      min_stability: 0.7
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      {{evidence:competitor}} filed a BMS patent cluster ({{evidence:patent_count}}
+      filings). Patent clusters precede capacity expansion announcements by
+      ~45 days — early evidence of a competing BMS product push.
+    action_playbook:
+      - Deep-dive the patent claims for infringement/design space
+      - Anticipate competitor BMS pricing moves
+      - Accelerate our BMS differentiation roadmap
+      - Position our BMS as battle-tested vs their roadmap
+    applicability:
+      geos: [GLOBAL]
+      industries: [battery, energy_storage, automotive, electronics]
+      notes: Patent cluster → capacity chain; pairs H002 with BESS007
+
+  - id: CORR009
+    name: executive_hiring_surge_precedes_factory_expansion
+    category: correlation_deep
+    join: Entity
+    outcome: MarketOpportunity
+    signals:
+      - JobPost.role_family=operations.increase
+      - WebChange.facility_page
+    transforms:
+      - type: Lag
+        days: 60
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.7
+      max_p_value: 0.01
+      min_stability: 0.7
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      {{evidence:company_name}} posted {{evidence:ops_jobs}} operations
+      leadership roles while updating facility pages. Hiring surges precede
+      factory expansion announcements by ~60 days — an early sourcing window.
+    action_playbook:
+      - Map the likely expansion scope and location
+      - Reach the incoming ops leadership early
+      - Pre-position EMS capacity pitch for the new line
+      - Track procurement-team hires as the follow-on signal
+    applicability:
+      geos: [TN, MA, EG, EU, US]
+      industries: [automotive, electronics, energy_storage, industrial]
+      notes: Hiring → expansion chain; pairs E-series hiring signals with M001
+
+  - id: CORR010
+    name: tariff_change_precedes_nearshoring_rfq
+    category: correlation_deep
+    join: Geo
+    outcome: RfQPosted
+    signals:
+      - Tariff.rate.change
+      - WebChange.trade_policy
+    transforms:
+      - type: Lag
+        days: 30
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.8
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Tariff changes on {{evidence:hs_codes}} in {{evidence:region}} precede
+      nearshoring RFQs within ~30 days as buyers re-price landed cost.
+      Position nearshore capacity against the shift.
+    action_playbook:
+      - Run landed-cost comparisons for affected categories
+      - Target buyers whose import mix is tariff-exposed
+      - Pitch nearshore lead-time + duty advantage
+      - Refresh quotes with tariff-scenario pricing
+    applicability:
+      geos: [TN, MA, EG, EU, US]
+      industries: [electronics, automotive, industrial]
+      notes: Tariff → nearshoring chain; pairs G001 with A015
+
+  - id: CORR011
+    name: raw_material_allocation_precedes_price_announcement
+    category: correlation_deep
+    join: Industry
+    outcome: PricingShift
+    signals:
+      - Commodity.allocation.restriction
+      - Commodity.price.spike
+    transforms:
+      - type: Lag
+        days: 21
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.8
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Allocation restrictions on {{evidence:material}} precede supplier price
+      announcements within 3 weeks. Capture the pricing shift before it is
+      formally announced.
+    action_playbook:
+      - Lock supplier prices for the affected material families
+      - Pre-negotiate escalation formulas
+      - Update customer quotes with indexed clauses
+      - Build safety stock on affected inputs
+    applicability:
+      geos: [GLOBAL]
+      industries: [electronics, automotive, industrial, battery]
+      notes: Allocation → pricing chain; pairs C008 with C001
+
+  - id: CORR012
+    name: energy_storage_tender_precedes_cell_allocation_risk
+    category: correlation_deep
+    join: Geo
+    outcome: AllocationWave
+    signals:
+      - Tender.energy_storage.posted
+      - WebChange.bess_project
+    transforms:
+      - type: Lag
+        days: 45
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 2.0
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      {{evidence:tender_count}} energy-storage tenders in {{evidence:region}}
+      precede cell allocation risk: tender volumes commit cell supply ~45 days
+      out, tightening availability for everyone else. Secure cell allocation
+      before the tender wave consumes it.
+    action_playbook:
+      - Reserve cell volume with tier-1 cell makers now
+      - Bid tenders with secured-supply messaging
+      - Monitor regional tender pipelines weekly
+      - Trigger early replenishment for affected cell families
+    applicability:
+      geos: [TN, MA, EG, EU, ME]
+      industries: [energy_storage, battery, telecom_backup, e_mobility]
+      notes: Tender → allocation chain; pairs F010 with BESS005
+
 # Summary statistics
 _metadata:
-  total_recipes: 414
+  total_recipes: 401
   categories:
     A_demand_procurement: 50
     B_competitor_market: 50
@@ -12761,6 +13157,7 @@ _metadata:
     I_pricing_market: 7
     J_geopolitical_intelligence: 15
     BESS_battery_energy_storage: 12
+    CORR_correlation_deep: 12
   priority_distribution:
     P0_critical: 72
     P1_high: 160
