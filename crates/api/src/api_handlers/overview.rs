@@ -408,7 +408,7 @@ pub(crate) async fn suggest(
                 });
             }
         }
-        items.truncate(limit as usize);
+        items.truncate(limit);
     }
 
     let response = SuggestResponse { suggestions: items };
