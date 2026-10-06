@@ -464,8 +464,44 @@ async fn insight_quality(harness: &mut Harness, pool: &sqlx::PgPool) {
         insights_48h >= 1,
         format!("insight pipeline produced output in 48h ({insights_48h} insights)"),
     );
+
+    // Value floor: an insight that reports without telling the reader what to
+    // do with it is noise. At least half of recent products must carry an
+    // action/impact marker (recommendation block or explicit impact language).
+    let actionable_markers = [
+        "recommend",
+        "action:",
+        "next step",
+        "impact",
+        "risk",
+        "opportunit",
+        "exposure",
+        "should ",
+        "secure ",
+        "verify ",
+        "monitor for",
+    ];
+    let actionable = rows
+        .iter()
+        .filter(|row| {
+            let summary: String = row.get("summary");
+            let lower = summary.to_ascii_lowercase();
+            actionable_markers
+                .iter()
+                .any(|marker| lower.contains(marker))
+        })
+        .count();
+    let ratio = if rows.is_empty() {
+        0.0
+    } else {
+        actionable as f64 / rows.len() as f64
+    };
+    harness.check(
+        rows.is_empty() || ratio >= 0.5,
+        format!("recent insights tell the reader how it matters ({actionable}/{} actionable, {ratio:.2})", rows.len()),
+    );
     println!(
-        "  note {} insights in the last 7 days; {insights_48h} in the last 48h",
+        "  note {} insights in the last 7 days; {insights_48h} in the last 48h; {actionable} actionable",
         rows.len()
     );
 }
