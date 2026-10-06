@@ -1257,6 +1257,51 @@ impl PgStore {
     }
 }
 
+impl PgStore {
+    /// Auto-resolve source-health warnings whose condition no longer holds:
+    /// a `source_fetch_failure` whose source has fewer than 3 consecutive
+    /// failures again (recovered or reset), or a `source_outage` whose source
+    /// produced observations after the warning was created. Without this,
+    /// warnings outlive the condition they describe (audit 2026-10-06: 78
+    /// failure warnings stayed open after their sources recovered).
+    ///
+    /// Resolved warnings are acknowledged with an explicit note and marked
+    /// `false_positive` so warning-quality metrics record the supersession
+    /// honestly rather than counting the stale warning as a true positive.
+    pub async fn auto_resolve_recovered_source_warnings(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r#"UPDATE warnings w
+               SET acknowledged = true,
+                   acknowledged_at = now(),
+                   acknowledged_by = 'system:auto_resolve',
+                   acknowledged_note = 'Auto-resolved: the source-health condition no longer holds.',
+                   review_outcome = COALESCE(w.review_outcome, 'false_positive'),
+                   reviewed_at = COALESCE(w.reviewed_at, now()),
+                   reviewed_by = COALESCE(w.reviewed_by, 'system:auto_resolve')
+               WHERE w.acknowledged = false
+                 AND (
+                     (w.warning_type = 'source_fetch_failure'
+                      AND EXISTS (
+                          SELECT 1 FROM source_runtime_state s
+                          WHERE s.source_slug = split_part(split_part(w.title, '''', 2), '''', 1)
+                            AND s.consecutive_failures < 3
+                      ))
+                     OR
+                     (w.warning_type = 'source_outage'
+                      AND EXISTS (
+                          SELECT 1 FROM observations o
+                          WHERE COALESCE(o.provenance->>'source_id', o.provenance->>'source')
+                                = split_part(split_part(w.title, '''', 2), '''', 1)
+                            AND o.ts_utc > w.created_at
+                      ))
+                 )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::saturating_count_to_u64;

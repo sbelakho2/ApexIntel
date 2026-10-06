@@ -394,6 +394,21 @@ pub(super) async fn run_anomaly_scan(
         }
     }
 
+    // Warning lifecycle hygiene: a warning whose condition no longer holds is
+    // superseded, not true. Without this, recovered sources left failure
+    // warnings open forever (audit 2026-10-06: 78 stale warnings).
+    match store.auto_resolve_recovered_source_warnings().await {
+        Ok(resolved) if resolved > 0 => tracing::info!(
+            resolved,
+            "anomaly_scan: auto-resolved recovered source-health warnings"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            %error,
+            "anomaly_scan: failed to auto-resolve recovered source warnings"
+        ),
+    }
+
     tracing::info!(
         ingestion_stalls = stalls.len(),
         failing_sources = failing.len(),

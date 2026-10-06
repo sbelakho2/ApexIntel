@@ -303,12 +303,12 @@ async fn detection_crosscheck(
     println!("[detection cross-check]");
 
     let rows = sqlx::query(
-        "SELECT title, warning_type, created_at
+        "SELECT title, warning_type, created_at, acknowledged
          FROM warnings
          WHERE warning_type IN ('source_outage', 'source_fetch_failure')
            AND created_at > $1
          ORDER BY created_at DESC
-         LIMIT 100",
+         LIMIT 200",
     )
     .bind(policy_since)
     .fetch_all(pool)
@@ -333,9 +333,14 @@ async fn detection_crosscheck(
     //    is genuinely fresh (an ingestion stall), not a quiet feed.
     let mut outage_problems = Vec::new();
     let mut fetch_problems = Vec::new();
+    let mut pending_resolution = 0usize;
     for row in &rows {
         let title: String = row.get("title");
         let warning_type: String = row.get("warning_type");
+        let acknowledged: bool = row.get("acknowledged");
+        if acknowledged {
+            continue; // resolved/superseded warnings are history, not claims
+        }
         let Some(slug) = extract_source_slug(&title) else {
             continue;
         };
@@ -366,9 +371,11 @@ async fn detection_crosscheck(
             let failures: i32 = runtime.get("consecutive_failures");
             let error: Option<String> = runtime.get("last_error");
             if failures < 3 {
-                fetch_problems.push(format!(
-                    "{slug}: fetch-failure warning with only {failures} failures"
-                ));
+                // The source recovered or was reset after the warning was
+                // generated; the detector's auto-resolution resolves these at
+                // the next scan. Between recovery and the scan the audit
+                // records them as pending, not as violations.
+                pending_resolution += 1;
             }
             if error
                 .as_deref()
@@ -386,6 +393,11 @@ async fn detection_crosscheck(
         fetch_problems.is_empty(),
         format!("fetch-failure warnings match failing runtime rows ({fetch_problems:?})"),
     );
+    if pending_resolution > 0 {
+        println!(
+            "  note {pending_resolution} fetch-failure warnings await auto-resolution (source recovered/reset since warning)"
+        );
+    }
     println!("  note {} post-fix source warnings checked", rows.len());
 }
 
