@@ -276,6 +276,60 @@ def convert_onion(onion: dict[str, str], used: set[str]) -> list[dict]:
     return out
 
 
+# Feeds verified live from the production host (HTTP 200 + XML + items) on
+# 2026-10-06. Additions are skipped only when their endpoint is already in the
+# built-in registry or an earlier supplement entry (true duplicates); no
+# existing source is ever removed.
+VERIFIED_ADDITIONS = [
+    ("crisisgroup", "crisisgroup.org feed", "https://www.crisisgroup.org/rss.xml", "GeopoliticsThinkTank", "Global", 3),
+    ("foreignpolicy", "Foreign Policy", "https://foreignpolicy.com/feed/", "GeopoliticsThinkTank", "NorthAmerica", 3),
+    ("warontherocks", "War on the Rocks", "https://warontherocks.com/feed/", "GeopoliticsThinkTank", "NorthAmerica", 3),
+    ("defense_news", "Defense News", "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml", "Defence", "NorthAmerica", 2),
+    ("breaking_defense", "Breaking Defense", "https://breakingdefense.com/feed/", "Defence", "NorthAmerica", 3),
+    ("gcaptain", "gCaptain Maritime", "https://gcaptain.com/feed/", "SupplyChain", "Global", 3),
+    ("freightwaves", "FreightWaves", "https://www.freightwaves.com/feed", "SupplyChain", "NorthAmerica", 3),
+    ("supplychaindive", "Supply Chain Dive", "https://www.supplychaindive.com/feeds/news/", "SupplyChain", "NorthAmerica", 3),
+    ("manufacturingdive", "Manufacturing Dive", "https://www.manufacturingdive.com/feeds/news/", "SupplyChain", "NorthAmerica", 3),
+    ("arstechnica_feed", "Ars Technica", "https://feeds.arstechnica.com/arstechnica/index", "Technology", "Global", 2),
+    ("the_register", "The Register", "https://www.theregister.com/headlines.atom", "Technology", "Europe", 3),
+    ("dark_reading", "Dark Reading", "https://www.darkreading.com/rss.xml", "Cybersecurity", "Global", 3),
+    ("securityweek", "SecurityWeek", "https://www.securityweek.com/feed/", "Cybersecurity", "Global", 3),
+    ("the_hackers_news", "The Hacker News", "https://feeds.feedburner.com/TheHackersNews", "Cybersecurity", "Global", 3),
+    ("aljazeera", "Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml", "News", "MiddleEast", 2),
+    ("france24", "France 24", "https://www.france24.com/en/rss", "News", "Europe", 2),
+    ("le_monde_en", "Le Monde (EN)", "https://www.lemonde.fr/en/rss/une.xml", "News", "Europe", 2),
+    ("spiegel_intl", "Der Spiegel International", "https://www.spiegel.de/international/index.rss", "News", "Europe", 2),
+    ("npr_world", "NPR World", "https://feeds.npr.org/1004/rss.xml", "News", "NorthAmerica", 2),
+    ("bbc_world", "BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml", "News", "Europe", 1),
+    ("economist_finance_feed", "The Economist — Finance & Economics (feed)", "https://www.economist.com/finance-and-economics/rss.xml", "Finance", "Europe", 2),
+    ("mining_com", "Mining.com", "https://www.mining.com/feed/", "EnergyResources", "Global", 3),
+    ("electrive", "Electrive", "https://www.electrive.com/feed/", "EnergyResources", "Europe", 3),
+    ("pv_magazine", "pv magazine", "https://www.pv-magazine.com/feed/", "EnergyResources", "Global", 3),
+    ("energy_storage_news", "Energy-Storage.news", "https://www.energy-storage.news/feed/", "EnergyResources", "Europe", 3),
+    ("utility_dive", "Utility Dive", "https://www.utilitydive.com/feeds/news/", "EnergyResources", "NorthAmerica", 3),
+    ("strait_times_world", "The Straits Times — World", "https://www.straitstimes.com/news/world/rss.xml", "News", "AsiaPacific", 2),
+    ("the_diplomat", "The Diplomat", "https://thediplomat.com/feed/", "GeopoliticsThinkTank", "AsiaPacific", 3),
+    ("scmp", "South China Morning Post", "https://www.scmp.com/rss/91/feed", "News", "China", 2),
+    ("intellinews", "bne IntelliNews", "https://www.intellinews.com/feed/", "Finance", "EasternEurope", 3),
+]
+
+
+def convert_verified_additions(used: set[str]) -> list[dict]:
+    """Add the probe-verified feeds (see VERIFIED_ADDITIONS)."""
+    out = []
+    for slug, name, url, category, region, tier in VERIFIED_ADDITIONS:
+        if slug in used or normalize_url(url) in EXCLUDED_URLS:
+            continue
+        used.add(slug)
+        out.append(make_entry(
+            slug, name, url, region, category, tier,
+            rss_url=url,
+            notes="verified live 2026-10-06 (HTTP 200 + feed items)",
+            interval=60,
+        ))
+    return out
+
+
 def convert_dark_clearnet(used: set[str]) -> list[dict]:
     """Active dark-web-adjacent clearnet monitors from dark_web.rs::default_forums.
 
@@ -319,6 +373,7 @@ def main() -> int:
     entries += convert_social(social, used)
     entries += convert_onion(onion, used)
     entries += convert_dark_clearnet(used)
+    entries += convert_verified_additions(used)
 
     # Drop supplement entries already covered by the built-in registry: news
     # entries by host, social entries by exact URL (a host like t.me or
@@ -335,9 +390,13 @@ def main() -> int:
                 continue
             kept.append(e)
             continue
-        if host_of(e["url"]) in EXCLUDED_HOSTS:
-            dropped += 1
-            continue
+        # Policy (2026-10-06): nothing legacy is ever deduplicated away.
+        # Host-overlap with the built-in registry was previously used to drop
+        # duplicate publishers, but that silently reduced coverage (48 entries
+        # removed); the owner's rule is that sources only ever grow. Duplicate
+        # publishers are kept; endpoint-level duplicates are still avoided at
+        # merge time by slug/endpoint dedup, and NEW additions skip hosts that
+        # are already registered.
         kept.append(e)
 
     header = (

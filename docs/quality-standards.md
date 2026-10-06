@@ -51,7 +51,9 @@ mechanically. "Unverifiable" is always treated as failure — never as pass.
 | S3 | Validation evidence | a source is `operational` only after fetch + parser contract check | `source_is_validated` |
 | S4 | Self-healing circuits | failures back off (30m→8h ladder), success resets, probe reopens | `record_source_attempt_failure` / breaker probe |
 | S5 | Dark-web transport safety | only `.onion` hosts may traverse Tor; clearnet never downgraded to Tor and vice versa | `tor_client::fetch_onion_text` host guard |
-| S6 | Outage honesty | only actively-fetched sources can be "silent"; decommissioned ids never warn | `list_silent_observation_sources` EXISTS guard |
+| S6 | Outage honesty | "silent source" requires a recent successful fetch AND a fresh feed (`last_item_at` within 3d) while ingestion stopped; quiet feeds warn nothing; failing fetches report the real error in one consolidated warning (stable title) | `list_ingestion_stalled_sources` + `list_failing_sources` (migration 110) |
+| S7 | Fetch compatibility | HTTP sources fetch with a browser User-Agent by default (CDNs mass-403 custom bot UAs even for public feeds); robots.txt and per-domain pacing still enforced; `APEX_CRAWL_USE_BOT_UA=1` opts out | `fetch_source` UA policy |
+| S8 | Ingestion accounting | a source success means fetch + parser contract; observation inserts report actual new rows (`ON CONFLICT DO NOTHING` accounted separately); cycle logs `new/duplicates` counts | `insert_observation -> bool`, crawl summary |
 
 ## 5. Analytical standards (editorial board, migration 109)
 

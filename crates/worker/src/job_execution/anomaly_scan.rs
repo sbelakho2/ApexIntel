@@ -246,73 +246,159 @@ pub(super) async fn run_anomaly_scan(
         }
     }
 
-    // ── 4. Source outage detection ─────────────────────────────────────────
-    // Only sources the scheduler is still fetching can be "silent": legacy or
-    // decommissioned source ids (e.g. `telegram_<url>` rows from before the
-    // daemon-list migration) have no runtime-state row and are excluded by
-    // the store query — warning about them was noise, not an outage.
-    let source_counts: Vec<apex_store::postgres::SilentSourceRow> =
-        match store.list_silent_observation_sources(30, 10, 3).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                // Source-outage detection must not silently degrade into "no
-                // outages": a failed query is a failed job, not a clean scan.
-                run.fail(&format!(
-                    "anomaly_scan: failed to load source activity for outage detection: {e}"
-                ));
-                return run;
-            }
-        };
+    // ── 4. Source health: ingestion stalls + failing fetches ───────────────
+    //
+    // "No observations" alone is not an outage: feeds are legitimately quiet
+    // for days (KrebsOnSecurity posts weekly; whole regions take holidays).
+    // The old detector warned "silent for N days" for those healthy feeds
+    // while genuine failures (403 blocks, dead feed URLs, robots denials)
+    // were hidden behind the same wording. With migration 110 the crawl cycle
+    // records the feed's own freshness (`last_item_at`), so detection can
+    // finally tell the two apart:
+    //
+    //   * ingestion stall — fetch succeeds and the feed reports fresh items,
+    //     but observations stopped: a real pipeline bug (high severity);
+    //   * fetch failure   — recent attempts fail: report the actual error
+    //     (stable title so the warning consolidates instead of spawning a
+    //     new "silent for N days" row every day).
+    //
+    // Quiet feeds produce no warning at all.
 
-    for sc in &source_counts {
-        let Some(last_obs) = sc.last_obs else {
-            continue;
-        };
-        if sc.obs_count <= 10 {
-            continue;
+    let stalls = match store.list_ingestion_stalled_sources(30, 10, 3).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            // Source-health detection must not silently degrade into "no
+            // problems": a failed query is a failed job, not a clean scan.
+            run.fail(&format!(
+                "anomaly_scan: failed to load ingestion-stall sources: {e}"
+            ));
+            return run;
         }
-        let days_silent = (Utc::now() - last_obs).num_days();
-        if days_silent >= 3 {
-            let title = format!(
-                "Source '{}' has been silent for {} days",
-                sc.source_id, days_silent
-            );
-            let description = format!(
-                "Data source '{}' has not produced any observations in {} days. \
-                     It previously generated {} observations in the last 30 days. \
-                     This may indicate a source outage, feed disruption, or blocking. \
-                     Verify source connectivity and restore data flow.",
-                sc.source_id, days_silent, sc.obs_count
-            );
+    };
 
-            match ingress
-                .submit_warning(
-                    // A silent source is an operational, system-wide problem (no
-                    // single entity owns it), so this is the explicit case where
-                    // Broadcast is correct instead of entity-subscriber resolution.
-                    NewWarning::new("source_outage", &title, "high")
-                        .description(&description)
-                        .confidence(0.80)
-                        .system_broadcast(),
-                )
-                .await
-            {
-                Ok(result) => {
-                    counters.record(&result);
-                    tracing::info!(
-                        source = %sc.source_id,
-                        days_silent,
-                        warning_id = %result.warning_id(),
-                        occurrence_count = result.occurrence_count(),
-                        "anomaly_scan: source outage warning generated"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "anomaly_scan: failed to insert source outage warning");
-                }
+    for stall in &stalls {
+        let Some(last_obs) = stall.last_obs else {
+            continue;
+        };
+        let days_stalled = (Utc::now() - last_obs).num_days();
+        let feed_freshness = stall
+            .last_item_at
+            .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        // Stable title: the day count lives in the description so the warning
+        // consolidates (occurrence_count) instead of creating a new row daily.
+        let title = format!(
+            "Source '{}' is publishing but ingestion has stalled",
+            stall.source_id
+        );
+        let description = format!(
+            "Source '{}' is being fetched successfully and its feed reported fresh items \
+             (newest item {}), yet no observations have been ingested for {} days \
+             (last stored observation {}; {} observations in the last 30 days; last parse \
+             produced {} items). This indicates a parser/ingestion defect on our side, \
+             not a quiet source or a blocked one.",
+            stall.source_id,
+            feed_freshness,
+            days_stalled,
+            last_obs.format("%Y-%m-%d"),
+            stall.obs_count,
+            stall
+                .last_item_count
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+        );
+
+        match ingress
+            .submit_warning(
+                NewWarning::new("source_outage", &title, "high")
+                    .description(&description)
+                    .confidence(0.85)
+                    .system_broadcast(),
+            )
+            .await
+        {
+            Ok(result) => {
+                counters.record(&result);
+                anomalies_detected += 1;
+                tracing::info!(
+                    source = %stall.source_id,
+                    days_stalled,
+                    last_item_at = %feed_freshness,
+                    warning_id = %result.warning_id(),
+                    occurrence_count = result.occurrence_count(),
+                    "anomaly_scan: ingestion stall warning generated"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "anomaly_scan: failed to insert ingestion stall warning");
             }
         }
     }
+
+    let failing = match store.list_failing_sources(3).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            run.fail(&format!(
+                "anomaly_scan: failed to load failing sources: {e}"
+            ));
+            return run;
+        }
+    };
+
+    for failure in &failing {
+        let error_text = failure
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "unknown fetch error".to_string());
+        let title = format!("Source '{}' fetch is failing", failure.source_slug);
+        let description = format!(
+            "Source '{}' has failed {} consecutive fetch attempts (last status: {}; \
+             last error: {}). Last successful fetch: {}. The scheduler keeps retrying on \
+             the backoff ladder; fix the endpoint or credentials, or reclassify the source.",
+            failure.source_slug,
+            failure.consecutive_failures,
+            failure
+                .last_http_status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            error_text,
+            failure
+                .last_success_at
+                .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string())
+                .unwrap_or_else(|| "never".to_string()),
+        );
+
+        match ingress
+            .submit_warning(
+                NewWarning::new("source_fetch_failure", &title, "medium")
+                    .description(&description)
+                    .confidence(0.9)
+                    .system_broadcast(),
+            )
+            .await
+        {
+            Ok(result) => {
+                counters.record(&result);
+                anomalies_detected += 1;
+                tracing::info!(
+                    source = %failure.source_slug,
+                    consecutive_failures = failure.consecutive_failures,
+                    warning_id = %result.warning_id(),
+                    occurrence_count = result.occurrence_count(),
+                    "anomaly_scan: fetch failure warning generated"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "anomaly_scan: failed to insert fetch failure warning");
+            }
+        }
+    }
+
+    tracing::info!(
+        ingestion_stalls = stalls.len(),
+        failing_sources = failing.len(),
+        "anomaly_scan: source health scan complete"
+    );
 
     let elapsed = start.elapsed();
     let summary = format!(

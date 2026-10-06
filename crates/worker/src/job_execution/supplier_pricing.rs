@@ -155,7 +155,7 @@ pub(crate) async fn run_supplier_pricing_refresh(
                     .insert_observation(&quote_observation(&part, &quote))
                     .await
                 {
-                    Ok(()) => stats.quoted += 1,
+                    Ok(_) => stats.quoted += 1,
                     Err(error) => {
                         stats.failed += 1;
                         tracing::error!(

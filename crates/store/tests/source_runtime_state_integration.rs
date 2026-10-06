@@ -70,7 +70,15 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
 
     let now = base + Duration::days(30);
     let row = store
-        .record_source_success(slug, Duration::minutes(45), Some(120.0), Some(200), now)
+        .record_source_success(
+            slug,
+            Duration::minutes(45),
+            Some(120.0),
+            Some(200),
+            None,
+            None,
+            now,
+        )
         .await
         .unwrap();
     assert_eq!(row.consecutive_failures, 0);
@@ -83,7 +91,15 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
 
     let later = now + Duration::minutes(45);
     let row = store
-        .record_source_success(slug, Duration::minutes(45), Some(180.0), Some(200), later)
+        .record_source_success(
+            slug,
+            Duration::minutes(45),
+            Some(180.0),
+            Some(200),
+            None,
+            None,
+            later,
+        )
         .await
         .unwrap();
     assert!((row.rolling_latency_ms.unwrap() - 129.0).abs() < 1e-9);
@@ -218,7 +234,15 @@ async fn source_parse_failure_preserves_last_success_and_degrades() {
     let interval = Duration::hours(24);
     let success_at = base - Duration::hours(2);
     let row = store
-        .record_source_success(slug, interval, Some(90.0), Some(200), success_at)
+        .record_source_success(
+            slug,
+            interval,
+            Some(90.0),
+            Some(200),
+            None,
+            None,
+            success_at,
+        )
         .await
         .unwrap();
     assert_eq!(row.last_success_at, Some(success_at));

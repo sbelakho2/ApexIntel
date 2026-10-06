@@ -214,12 +214,20 @@ fn feed_observations(
     source: &Source,
     feed_url: &str,
     items: Vec<FeedItem>,
-) -> (Vec<SourceObservation>, String, usize) {
+) -> (Vec<SourceObservation>, String, usize, Option<DateTime<Utc>>) {
     let total_items = items.len();
     let mut observations = Vec::with_capacity(total_items.min(MAX_FEED_ITEMS_PER_SOURCE));
     let mut feed_text = String::new();
+    let mut newest_item_at: Option<DateTime<Utc>> = None;
 
     for item in items.into_iter().take(MAX_FEED_ITEMS_PER_SOURCE) {
+        // The feed's own freshness signal (migration 110): the newest
+        // published timestamp among parsed items (the parser already
+        // normalized RSS RFC-2822 / Atom RFC-3339 dates).
+        if let Some(published) = item.published {
+            newest_item_at =
+                Some(newest_item_at.map_or(published, |current| current.max(published)));
+        }
         // `content` carries the full item body (`content:encoded`) and already
         // falls back to the description in the parser; items whose entity
         // mentions live only in the body must still be matched.
@@ -275,7 +283,7 @@ fn feed_observations(
         });
     }
 
-    (observations, feed_text, total_items)
+    (observations, feed_text, total_items, newest_item_at)
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -289,7 +297,18 @@ async fn fetch_source(
     source_index: usize,
 ) -> SourceFetchOutcome {
     let endpoint = source.rss_url.as_deref().unwrap_or(source.url.as_str());
-    let prefers_browser_ua = source.slug == "globes_il_tech";
+    // User-agent policy (incident 2026-10-06): CDNs routinely 403 the custom
+    // bot UA even for public RSS feeds — arabnews, haaretz, ft, platts, cisa,
+    // nvd, isw, iea and dozens more spent weeks in the failure ladder while
+    // the same URLs answered a browser UA with HTTP 200. The browser UA is
+    // therefore the default for HTTP source fetches; robots.txt enforcement
+    // and per-domain pacing are unchanged, so crawl politeness is identical.
+    // `APEX_CRAWL_USE_BOT_UA=1` restores the honest bot identity for
+    // deployments that require it (and accepts the blocks that come with it).
+    let prefers_browser_ua = !std::env::var("APEX_CRAWL_USE_BOT_UA")
+        .ok()
+        .map(|value| apex_core::env::parse_truthy_flag(&value))
+        .unwrap_or(false);
 
     // Single dispatch decision: `Browser` sources either render with the
     // shared Chromium renderer or fail as a capability gap — never HTTP. The
@@ -1216,6 +1235,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     let mut staged_dynamic_candidates: HashMap<String, StagedDynamicCandidate> = HashMap::new();
 
     let mut ingested: u64 = 0;
+    let mut deduplicated: u64 = 0;
     let mut entity_linked: u64 = 0;
     #[allow(unused_mut)]
     let mut dynamically_discovered_companies: u64 = 0;
@@ -1223,6 +1243,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     let mut sources_attempted: u64 = 0;
     let mut sources_succeeded: u64 = 0;
     let mut sources_failed: u64 = 0;
+    let mut sources_robots_denied: u64 = 0;
     // Parser-contract failures are a distinct incident class from transport
     // failures: the fetch worked but extraction/deserialization did not.
     let mut sources_parse_failed: u64 = 0;
@@ -1292,6 +1313,8 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                 // source stays unvalidated instead of being promoted.
                 let mut observations_to_store: Vec<SourceObservation> = Vec::new();
                 let mut parser_contract_ok = false;
+                let mut feed_newest_item_at: Option<DateTime<Utc>> = None;
+                let mut feed_item_count: Option<i32> = None;
                 let mut parser_failure_sample: Option<String> = None;
                 let mut parser_failure_error: Option<String> = None;
 
@@ -1301,8 +1324,10 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                         Ok(parsed_feed_url) => {
                             match parse_feed_with_base(&body, Some(&parsed_feed_url)) {
                                 Ok(feed_items) => {
-                                    let (items, feed_text, total_items) =
+                                    let (items, feed_text, total_items, newest_item_at) =
                                         feed_observations(src, feed_url, feed_items);
+                                    feed_newest_item_at = newest_item_at;
+                                    feed_item_count = Some(total_items as i32);
                                     if total_items > items.len() {
                                         tracing::warn!(
                                             source = %src.slug,
@@ -1342,6 +1367,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                     // ── HTML path (unchanged) with the page URL supplied ──
                     #[cfg(any(feature = "parse", feature = "llm"))]
                     {
+                        feed_item_count = Some(1);
                         let page_url_parsed = Url::parse(url).ok();
                         match extract_page(&body, page_url_parsed.as_ref()) {
                             Ok(page) => {
@@ -1462,13 +1488,22 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                             );
                         }
 
-                        if let Err(error) = store.insert_observation(&observation).await {
-                            insert_failure = Some(error.to_string());
-                            break 'observation;
-                        }
-                        ingested += 1;
-                        if entity_id.is_some() {
-                            entity_linked += 1;
+                        match store.insert_observation(&observation).await {
+                            Ok(true) => {
+                                ingested += 1;
+                                if entity_id.is_some() {
+                                    entity_linked += 1;
+                                }
+                            }
+                            // Re-crawl of unchanged content: a real duplicate,
+                            // distinct from "ingested" in the metrics.
+                            Ok(false) => {
+                                deduplicated += 1;
+                            }
+                            Err(error) => {
+                                insert_failure = Some(error.to_string());
+                                break 'observation;
+                            }
                         }
 
                         #[cfg(feature = "llm")]
@@ -1543,6 +1578,8 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                             min_interval,
                             Some(fetched.latency_ms),
                             Some(fetched.http_status),
+                            feed_newest_item_at,
+                            feed_item_count,
                             Utc::now(),
                         )
                         .await
@@ -1629,27 +1666,57 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             }
             Err(failure) => {
                 sources_attempted += 1;
-                tracing::warn!(
-                    source = %src.slug,
-                    http_status = ?failure.http_status,
-                    error = %failure.message,
-                    "crawl_cycle: fetch error"
-                );
-                errors += 1;
-                sources_failed += 1;
-                failed_sources.insert(src.slug.clone());
-                if persist_source_failure(
-                    store.as_ref(),
-                    &src.slug,
-                    &failure.message,
-                    failure.http_status,
-                    min_interval,
-                    Utc::now(),
-                )
-                .await
-                .is_err()
-                {
-                    scheduler_state_write_failures += 1;
+                if failure.message.contains("robots.txt") {
+                    // A robots.txt policy block is not a transient fetch
+                    // failure: retrying it on the failure ladder wastes crawl
+                    // budget and pollutes fetch-failure alerting. Record it as
+                    // an unavailable capability with a one-day backoff; the
+                    // coverage admin surfaces it as a policy block.
+                    sources_robots_denied += 1;
+                    tracing::warn!(
+                        source = %src.slug,
+                        error = %failure.message,
+                        "crawl_cycle: robots.txt policy block; backing off for 24h"
+                    );
+                    if let Err(error) = store
+                        .mark_source_unavailable(
+                            &src.slug,
+                            &format!("unavailable: {}", failure.message),
+                            chrono::Duration::hours(24),
+                            Utc::now(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            source = %src.slug,
+                            error = %error,
+                            "crawl_cycle: failed to persist robots-denied source state"
+                        );
+                        scheduler_state_write_failures += 1;
+                    }
+                } else {
+                    tracing::warn!(
+                        source = %src.slug,
+                        http_status = ?failure.http_status,
+                        error = %failure.message,
+                        "crawl_cycle: fetch error"
+                    );
+                    errors += 1;
+                    sources_failed += 1;
+                    failed_sources.insert(src.slug.clone());
+                    if persist_source_failure(
+                        store.as_ref(),
+                        &src.slug,
+                        &failure.message,
+                        failure.http_status,
+                        min_interval,
+                        Utc::now(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        scheduler_state_write_failures += 1;
+                    }
                 }
             }
         }
@@ -1836,13 +1903,15 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: due={} attempted={} succeeded={} failed={} browser_unavailable={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; due_sources_remaining={}; total_coverage_debt={:.2}; success_ratio={:.2}",
+            "crawl_cycle: due={} attempted={} succeeded={} failed={} browser_unavailable={} robots_denied={}; {} new observations ({} duplicates skipped, {} entity-linked), {} dynamically discovered companies, {} errors; due_sources_remaining={}; total_coverage_debt={:.2}; success_ratio={:.2}",
             sources_due,
             sources_attempted,
             sources_succeeded,
             sources_failed,
             sources_browser_unavailable,
+            sources_robots_denied,
             ingested,
+            deduplicated,
             entity_linked,
             dynamically_discovered_companies,
             errors,
@@ -2927,7 +2996,7 @@ mod feed_observation_tests {
             feed_item("Third", "", ""),
         ];
 
-        let (observations, text, total) =
+        let (observations, text, total, _newest) =
             feed_observations(&feed_source(), "https://example.com/feed.xml", items);
 
         assert_eq!(total, 3);
@@ -2946,12 +3015,43 @@ mod feed_observation_tests {
     }
 
     #[test]
+    fn feed_observations_report_the_newest_published_item_for_freshness_tracking() {
+        // Migration 110: the crawl records the feed's own newest published
+        // timestamp so outage detection can tell a quiet feed apart from a
+        // stalled ingestion path. The value must be the maximum across items
+        // regardless of feed order.
+        let make = |title: &str, published: Option<&str>| {
+            let mut item = feed_item(title, "", "");
+            item.published = published.and_then(|raw| {
+                DateTime::parse_from_rfc2822(raw)
+                    .ok()
+                    .map(|parsed| parsed.with_timezone(&Utc))
+            });
+            item
+        };
+        let items = vec![
+            make("Older", Some("Mon, 28 Sep 2026 15:08:57 +0000")),
+            make("No date", None),
+            make("Newest", Some("Fri, 02 Oct 2026 03:05:54 +0000")),
+        ];
+
+        let (_, _, _, newest) =
+            feed_observations(&feed_source(), "https://example.com/feed.xml", items);
+        let newest = newest.expect("newest published timestamp");
+        assert_eq!(
+            newest.timestamp(),
+            1_790_910_354,
+            "must pick the max published"
+        );
+    }
+
+    #[test]
     fn feed_item_body_is_scanned_for_entities_not_only_the_summary() {
         let mut item = feed_item("Brief", "https://example.com/body", "guid-body");
         item.description = "summary without names".to_string();
         item.content = "Acme Batteries announced a new plant.".to_string();
 
-        let (observations, text, _) =
+        let (observations, text, _, _newest) =
             feed_observations(&feed_source(), "https://example.com/feed.xml", vec![item]);
 
         assert!(
@@ -2975,7 +3075,7 @@ mod feed_observation_tests {
             })
             .collect();
 
-        let (observations, text, total) =
+        let (observations, text, total, _newest) =
             feed_observations(&feed_source(), "https://example.com/feed.xml", items);
 
         assert_eq!(

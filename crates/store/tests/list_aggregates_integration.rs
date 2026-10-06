@@ -1167,6 +1167,108 @@ async fn silent_sources_exclude_unmonitored_ids_and_keep_live_outages() {
     );
 }
 
+/// Migration 110 semantics: an ingestion stall requires BOTH a recent
+/// successful fetch AND a fresh feed (`last_item_at` recent) while
+/// observations stopped. A quiet feed (old `last_item_at`) must not be
+/// reported; a fetch-failing source is a failure row, not an ingestion stall.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn ingestion_stalls_require_fresh_feeds_and_quiet_feeds_are_not_stalls() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("STALL");
+
+    let stalled = format!("{p}_stalled");
+    let quiet = format!("{p}_quiet");
+
+    for (source, last_item_expr) in [
+        // Feed itself reports items from 1 hour ago, but nothing ingested.
+        (&stalled, "now() - interval '1 hour'"),
+        // Feed's newest item is 20 days old: genuinely quiet, not stalled.
+        (&quiet, "now() - interval '20 days'"),
+    ] {
+        for _ in 0..12 {
+            sqlx::query(
+                "INSERT INTO observations (id, observation_type, value, provenance, ts_utc)
+                 VALUES (gen_random_uuid(), 'news', '{}'::jsonb,
+                         jsonb_build_object('source_id', $1::text), now() - interval '10 days')",
+            )
+            .bind(source)
+            .execute(&pool)
+            .await
+            .expect("insert observation");
+        }
+        sqlx::query(&format!(
+            "INSERT INTO source_runtime_state
+                 (source_slug, last_attempt_at, last_success_at, next_due_at,
+                  consecutive_failures, last_item_at, last_item_count)
+             VALUES ($1, now(), now(), now() + interval '1 hour', 0, {last_item_expr}, 10)"
+        ))
+        .bind(source)
+        .execute(&pool)
+        .await
+        .expect("insert runtime state");
+    }
+
+    let stalls = store
+        .list_ingestion_stalled_sources(30, 10, 3)
+        .await
+        .expect("stall query");
+    let ids: Vec<&str> = stalls.iter().map(|row| row.source_id.as_str()).collect();
+    assert!(
+        ids.contains(&stalled.as_str()),
+        "fetching successfully with a fresh feed but no ingestion must be a stall: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&quiet.as_str()),
+        "a quiet feed (old last_item_at) must not be reported as a stall: {ids:?}"
+    );
+}
+
+/// Fetch-failure detection reports real failing sources and excludes
+/// capability gaps recorded as `unavailable:`.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn failing_sources_report_real_errors_and_exclude_capability_gaps() {
+    let pool = setup().await;
+    let store = PgStore::from_pool(pool.clone());
+    let p = prefix("FAILSRC");
+
+    let blocked = format!("{p}_blocked");
+    let capability = format!("{p}_capability");
+
+    sqlx::query(
+        "INSERT INTO source_runtime_state
+             (source_slug, last_attempt_at, next_due_at, consecutive_failures, last_http_status, last_error)
+         VALUES ($1, now(), now() + interval '1 hour', 5, 403, 'authentication_required: HTTP 403 for https://x.example')",
+    )
+    .bind(&blocked)
+    .execute(&pool)
+    .await
+    .expect("insert blocked runtime state");
+
+    sqlx::query(
+        "INSERT INTO source_runtime_state
+             (source_slug, last_attempt_at, next_due_at, consecutive_failures, last_error)
+         VALUES ($1, now(), now() + interval '1 hour', 0, 'unavailable: robots.txt denied https://x.example/feed')",
+    )
+    .bind(&capability)
+    .execute(&pool)
+    .await
+    .expect("insert capability runtime state");
+
+    let failing = store.list_failing_sources(3).await.expect("failing query");
+    let ids: Vec<&str> = failing.iter().map(|row| row.source_slug.as_str()).collect();
+    assert!(
+        ids.contains(&blocked.as_str()),
+        "a source with 5 consecutive 403s must be reported: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&capability.as_str()),
+        "an unavailable: capability gap must not be reported as a fetch failure: {ids:?}"
+    );
+}
+
 /// Calibration samples must decode: the record includes `predicted_at` and
 /// `expected_by`, and a production incident showed the query selecting only
 /// some of the struct's columns ("no column found for name: predicted_at") —

@@ -1073,6 +1073,8 @@ mod tests {
             etag: None,
             last_modified: None,
             last_error: None,
+            last_item_at: None,
+            last_item_count: None,
             updated_at: now,
         }
     }

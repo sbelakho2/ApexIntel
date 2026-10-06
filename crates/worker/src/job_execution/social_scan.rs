@@ -620,6 +620,7 @@ async fn store_social_observation(
     store
         .insert_observation(&obs)
         .await
+        .map(|_| ())
         .map_err(|e| sqlx::Error::Protocol(format!("{e}")))
 }
 

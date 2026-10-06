@@ -523,15 +523,14 @@ async fn store_tender_observation(
     obs.entity_type = Some("company".to_string());
     obs.confidence = if entity_id.is_some() { 0.85 } else { 0.6 };
 
-    // insert_observation uses ON CONFLICT (id) DO NOTHING. We can't easily read
-    // back the affected-row count across the sqlx abstraction here, so we rely
-    // on the caller's counters being best-effort. The idempotency guarantee is
-    // the important property.
-    store
+    // insert_observation returns whether a new row was actually written
+    // (`ON CONFLICT (id) DO NOTHING`): re-scanning an unchanged tender reports
+    // `false` so callers can count real inserts instead of attempts.
+    let inserted = store
         .insert_observation(&obs)
         .await
         .map_err(|e| sqlx::Error::Protocol(format!("{e}")))?;
-    Ok(true)
+    Ok(inserted)
 }
 
 /// Derive a stable UUIDv5 from the portal code and the posting's reference

@@ -6,7 +6,7 @@
 # enabled: true and starts Unvalidated until a successful fetch/parser
 # contract check promotes it to Operational.
 # Generated from: experiments/legacy-python-crawl-daemon/crawl_daemon.py
-# news=253 social=103 onion=4 emitted=353 host-dedup-dropped=13
+# news=253 social=103 onion=4 emitted=380 host-dedup-dropped=0
 sources:
 - slug: legacy_news_eetimes-com
   name: Eetimes
@@ -368,6 +368,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=news topic=defense poi_signal=True'
+- slug: legacy_news_breakingdefense-com_a7afec2d
+  name: Breakingdefense
+  url: https://breakingdefense.com/
+  search_param: null
+  region: Global
+  category: News
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=news topic=defense poi_signal=True'
 - slug: legacy_news_c4isrnet-com_e8b495ca
   name: C4Isrnet
   url: https://www.c4isrnet.com/
@@ -500,6 +512,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=gov topic=sanctions poi_signal=True'
+- slug: legacy_news_ec-europa-eu_9bbe4674
+  name: Ec
+  url: https://ec.europa.eu/trade/
+  search_param: null
+  region: Europe
+  category: GovernmentRegistry
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=gov topic=government_eu poi_signal=True'
 - slug: legacy_news_europarl-europa-eu
   name: Europarl
   url: https://www.europarl.europa.eu/news/
@@ -980,6 +1004,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=regulatory topic=company_registry poi_signal=True'
+- slug: legacy_news_patents-google-com_07381d66
+  name: Patents
+  url: https://patents.google.com/
+  search_param: null
+  region: Global
+  category: Patents
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=patent topic=patents poi_signal=True'
 - slug: legacy_news_uspto-gov
   name: Uspto
   url: https://www.uspto.gov/patents/
@@ -992,6 +1028,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=patent topic=patents poi_signal=True'
+- slug: legacy_news_worldwide-espacenet-com_100c44d0
+  name: Worldwide
+  url: https://worldwide.espacenet.com/
+  search_param: null
+  region: Global
+  category: Patents
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=patent topic=patents_eu poi_signal=True'
 - slug: legacy_news_linkedin-com
   name: Linkedin
   url: https://www.linkedin.com/jobs/executive-jobs/
@@ -1391,6 +1439,18 @@ sources:
 - slug: legacy_news_thehindubusinessline-com
   name: Thehindubusinessline
   url: https://www.thehindubusinessline.com/
+  search_param: null
+  region: India
+  category: News
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=news topic=india poi_signal=True'
+- slug: legacy_news_economictimes-indiatimes-com_2b7188db
+  name: Economictimes
+  url: https://economictimes.indiatimes.com/
   search_param: null
   region: India
   category: News
@@ -1808,6 +1868,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=think_tank topic=defense_policy poi_signal=True'
+- slug: legacy_news_ecfr-eu_d4261d75
+  name: Ecfr
+  url: https://ecfr.eu/
+  search_param: null
+  region: Global
+  category: GeopoliticsThinkTank
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=think_tank topic=geopolitics_eu poi_signal=True'
 - slug: legacy_news_cnas-org
   name: Cnas
   url: https://www.cnas.org/
@@ -1916,6 +1988,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=think_tank topic=transatlantic poi_signal=True'
+- slug: legacy_news_cepa-org_b9826aaf
+  name: Cepa
+  url: https://cepa.org/
+  search_param: null
+  region: Global
+  category: GeopoliticsThinkTank
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=think_tank topic=geopolitics_eu poi_signal=True'
 - slug: legacy_news_fdd-org
   name: Fdd
   url: https://www.fdd.org/
@@ -1964,6 +2048,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=think_tank topic=indo_pacific poi_signal=True'
+- slug: legacy_news_thediplomat-com_62666cf6
+  name: Thediplomat
+  url: https://thediplomat.com/
+  search_param: null
+  region: Global
+  category: GeopoliticsThinkTank
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=think_tank topic=asia_pacific poi_signal=True'
 - slug: legacy_news_mei-edu_af46b3d8
   name: Mei
   url: https://www.mei.edu/
@@ -2264,6 +2360,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=sanctions topic=export_control poi_signal=True'
+- slug: legacy_news_ecfr-eu_168ec877
+  name: Ecfr
+  url: https://ecfr.eu/special/sanctions-tracker/
+  search_param: null
+  region: Global
+  category: Sanctions
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=sanctions topic=sanctions_eu poi_signal=True'
 - slug: legacy_news_sipri-org_2a543cee
   name: Sipri
   url: https://www.sipri.org/databases/armstransfers
@@ -2375,6 +2483,18 @@ sources:
 - slug: legacy_news_maritime-executive-com
   name: Maritime Executive
   url: https://www.maritime-executive.com/
+  search_param: null
+  region: Global
+  category: SupplyChain
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=maritime topic=shipping poi_signal=True'
+- slug: legacy_news_gcaptain-com_0589aab3
+  name: Gcaptain
+  url: https://gcaptain.com/
   search_param: null
   region: Global
   category: SupplyChain
@@ -2516,6 +2636,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=energy topic=energy_intelligence poi_signal=True'
+- slug: legacy_news_oilprice-com_6c977e79
+  name: Oilprice
+  url: https://oilprice.com/
+  search_param: null
+  region: Global
+  category: EnergyResources
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=energy topic=oil_gas poi_signal=True'
 - slug: legacy_news_mining-com
   name: Mining
   url: https://www.mining.com/
@@ -2744,6 +2876,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=diplomatic topic=african_union poi_signal=True'
+- slug: legacy_news_asean-org_6d18d077
+  name: Asean
+  url: https://asean.org/category/news/
+  search_param: null
+  region: Global
+  category: News
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=diplomatic topic=asean poi_signal=True'
 - slug: legacy_news_oas-org
   name: Oas
   url: https://www.oas.org/en/media_center/press_releases.asp
@@ -2828,6 +2972,18 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: 'legacy daemon: type=news topic=tech_global poi_signal=True'
+- slug: legacy_news_techcrunch-com_e1180e65
+  name: Techcrunch
+  url: https://techcrunch.com/tag/geopolitics/
+  search_param: null
+  region: Global
+  category: News
+  tier: 3
+  needs_proxy: false
+  rss_url: null
+  enabled: true
+  min_interval_minutes: 120
+  notes: 'legacy daemon: type=news topic=tech_geopolitics poi_signal=True'
 - slug: legacy_news_lawfaremedia-org
   name: Lawfaremedia
   url: https://www.lawfaremedia.org/
@@ -4244,3 +4400,171 @@ sources:
   enabled: true
   min_interval_minutes: 120
   notes: ransomware leak/victim aggregator (clearnet)
+- slug: crisisgroup
+  name: crisisgroup.org feed
+  url: https://www.crisisgroup.org/rss.xml
+  search_param: null
+  region: Global
+  category: GeopoliticsThinkTank
+  tier: 3
+  needs_proxy: false
+  rss_url: https://www.crisisgroup.org/rss.xml
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: foreignpolicy
+  name: Foreign Policy
+  url: https://foreignpolicy.com/feed/
+  search_param: null
+  region: NorthAmerica
+  category: GeopoliticsThinkTank
+  tier: 3
+  needs_proxy: false
+  rss_url: https://foreignpolicy.com/feed/
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: warontherocks
+  name: War on the Rocks
+  url: https://warontherocks.com/feed/
+  search_param: null
+  region: NorthAmerica
+  category: GeopoliticsThinkTank
+  tier: 3
+  needs_proxy: false
+  rss_url: https://warontherocks.com/feed/
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: defense_news
+  name: Defense News
+  url: https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml
+  search_param: null
+  region: NorthAmerica
+  category: Defence
+  tier: 2
+  needs_proxy: false
+  rss_url: https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: manufacturingdive
+  name: Manufacturing Dive
+  url: https://www.manufacturingdive.com/feeds/news/
+  search_param: null
+  region: NorthAmerica
+  category: SupplyChain
+  tier: 3
+  needs_proxy: false
+  rss_url: https://www.manufacturingdive.com/feeds/news/
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: the_register
+  name: The Register
+  url: https://www.theregister.com/headlines.atom
+  search_param: null
+  region: Europe
+  category: Technology
+  tier: 3
+  needs_proxy: false
+  rss_url: https://www.theregister.com/headlines.atom
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: securityweek
+  name: SecurityWeek
+  url: https://www.securityweek.com/feed/
+  search_param: null
+  region: Global
+  category: Cybersecurity
+  tier: 3
+  needs_proxy: false
+  rss_url: https://www.securityweek.com/feed/
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: the_hackers_news
+  name: The Hacker News
+  url: https://feeds.feedburner.com/TheHackersNews
+  search_param: null
+  region: Global
+  category: Cybersecurity
+  tier: 3
+  needs_proxy: false
+  rss_url: https://feeds.feedburner.com/TheHackersNews
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: le_monde_en
+  name: Le Monde (EN)
+  url: https://www.lemonde.fr/en/rss/une.xml
+  search_param: null
+  region: Europe
+  category: News
+  tier: 2
+  needs_proxy: false
+  rss_url: https://www.lemonde.fr/en/rss/une.xml
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: spiegel_intl
+  name: Der Spiegel International
+  url: https://www.spiegel.de/international/index.rss
+  search_param: null
+  region: Europe
+  category: News
+  tier: 2
+  needs_proxy: false
+  rss_url: https://www.spiegel.de/international/index.rss
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: npr_world
+  name: NPR World
+  url: https://feeds.npr.org/1004/rss.xml
+  search_param: null
+  region: NorthAmerica
+  category: News
+  tier: 2
+  needs_proxy: false
+  rss_url: https://feeds.npr.org/1004/rss.xml
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: mining_com
+  name: Mining.com
+  url: https://www.mining.com/feed/
+  search_param: null
+  region: Global
+  category: EnergyResources
+  tier: 3
+  needs_proxy: false
+  rss_url: https://www.mining.com/feed/
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: utility_dive
+  name: Utility Dive
+  url: https://www.utilitydive.com/feeds/news/
+  search_param: null
+  region: NorthAmerica
+  category: EnergyResources
+  tier: 3
+  needs_proxy: false
+  rss_url: https://www.utilitydive.com/feeds/news/
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: strait_times_world
+  name: "The Straits Times \u2014 World"
+  url: https://www.straitstimes.com/news/world/rss.xml
+  search_param: null
+  region: AsiaPacific
+  category: News
+  tier: 2
+  needs_proxy: false
+  rss_url: https://www.straitstimes.com/news/world/rss.xml
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)

@@ -224,6 +224,71 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Sources whose recent fetch attempts are failing, with the actual
+    /// error. Replaces inferred "silent for N days" warnings for sources that
+    /// are simply blocked or broken: the message now names the real failure.
+    ///
+    /// Capability gaps recorded by [`PgStore::mark_source_unavailable`]
+    /// (`unavailable:` prefix) are excluded — they are surfaced by the source
+    /// coverage admin, not as crawl failures.
+    pub async fn list_failing_sources(
+        &self,
+        min_consecutive_failures: i32,
+    ) -> Result<Vec<FailingSourceRow>> {
+        let rows = sqlx::query_as::<_, FailingSourceRow>(
+            r#"SELECT source_slug, consecutive_failures, last_http_status, last_error,
+                      last_success_at, last_attempt_at, next_due_at
+               FROM source_runtime_state
+               WHERE consecutive_failures >= $1
+                 AND last_attempt_at >= NOW() - INTERVAL '2 days'
+                 AND (last_error IS NULL OR last_error NOT LIKE 'unavailable:%')
+               ORDER BY consecutive_failures DESC, source_slug"#,
+        )
+        .bind(min_consecutive_failures)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Genuine ingestion stalls (migration 110): the source is being fetched
+    /// successfully AND its own feed reported fresh items at that fetch, but
+    /// observations stopped arriving for `silent_days`. This is the only
+    /// "silent source" class that indicates a pipeline bug — a healthy feed
+    /// with nothing new (`last_item_at` old) is quiet, not broken, and must
+    /// not be alerted on.
+    pub async fn list_ingestion_stalled_sources(
+        &self,
+        lookback_days: i32,
+        min_observations: i64,
+        silent_days: i32,
+    ) -> Result<Vec<IngestionStallRow>> {
+        let rows = sqlx::query_as::<_, IngestionStallRow>(
+            r#"SELECT
+                   COALESCE(o.provenance->>'source_id', o.provenance->>'source') AS source_id,
+                   MAX(o.ts_utc) AS last_obs,
+                   COUNT(*)::bigint AS obs_count,
+                   s.last_item_at,
+                   s.last_item_count,
+                   s.last_success_at
+               FROM observations o
+               JOIN source_runtime_state s
+                 ON s.source_slug = COALESCE(o.provenance->>'source_id', o.provenance->>'source')
+               WHERE o.ts_utc >= NOW() - make_interval(days => $1)
+                 AND (o.provenance->>'source_id' IS NOT NULL OR o.provenance->>'source' IS NOT NULL)
+                 AND s.last_success_at >= NOW() - INTERVAL '2 days'
+                 AND s.last_item_at >= NOW() - make_interval(days => $3)
+               GROUP BY 1, s.last_item_at, s.last_item_count, s.last_success_at
+               HAVING MAX(o.ts_utc) < NOW() - make_interval(days => $3)
+                  AND COUNT(*)::bigint > $2"#,
+        )
+        .bind(lookback_days)
+        .bind(min_observations)
+        .bind(silent_days)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn list_resolved_stats_alert_calibration_samples(
         &self,
         since: Option<DateTime<Utc>>,

@@ -5,8 +5,14 @@ fn normalize_observation_window(limit: i64, offset: i64) -> (i64, i64) {
 }
 
 impl PgStore {
-    pub async fn insert_observation(&self, o: &Observation) -> Result<()> {
-        sqlx::query(
+    /// Insert the observation. Returns `true` when a new row was written and
+    /// `false` when the deterministic id already existed (re-crawl of
+    /// unchanged content). Callers must count new rows from the return value:
+    /// `ON CONFLICT DO NOTHING` makes silent no-ops indistinguishable from
+    /// inserts otherwise, which hid whether a source was actually producing
+    /// new intelligence.
+    pub async fn insert_observation(&self, o: &Observation) -> Result<bool> {
+        let result = sqlx::query(
             r#"INSERT INTO observations
                (id, observation_type, entity_id, entity_type, ts_utc,
                 value, provenance, confidence, created_at)
@@ -24,7 +30,7 @@ impl PgStore {
         .bind(o.created_at)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn get_observations_by_entity(

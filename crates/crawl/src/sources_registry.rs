@@ -1243,6 +1243,8 @@ fn default_sources() -> Vec<Source> {
             Category::Finance,
             1,
         )
+        // Verified live feed (2026-10-06); the homepage returns 403 to bots.
+        .rss("https://www.ft.com/rss/home")
         .interval(30),
     );
     sources.push(
@@ -1451,6 +1453,11 @@ fn default_sources() -> Vec<Source> {
             Category::News,
             1,
         )
+        // The homepage is bot-blocked (HTTP 403, verified 2026-10-06).
+        // nyt_world/nyt_business already ingest the World/Business feeds, so
+        // this entry uses NYT's HomePage feed (verified live, distinct
+        // content) instead of duplicating them.
+        .rss("https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml")
         .interval(15),
     );
     sources.push(
@@ -1462,6 +1469,8 @@ fn default_sources() -> Vec<Source> {
             Category::News,
             1,
         )
+        // Verified live feed (2026-10-06); the homepage transport-fails.
+        .rss("https://feeds.washingtonpost.com/rss/world")
         .interval(15),
     );
     sources.push(
@@ -2366,7 +2375,7 @@ fn default_sources() -> Vec<Source> {
             Category::News,
             1,
         )
-        .rss("https://www.kyivpost.com/rss")
+        .rss("https://www.kyivpost.com/feed")
         .interval(20),
     );
     sources.push(
@@ -2970,7 +2979,7 @@ fn default_sources() -> Vec<Source> {
             Category::GeopoliticsThinkTank,
             1,
         )
-        .rss("https://www.csis.org/analysis/rss.xml")
+        .rss("https://www.csis.org/rss.xml")
         .interval(120),
     );
     sources.push(
@@ -4270,6 +4279,8 @@ mod scheduler_tests {
             etag: None,
             last_modified: None,
             last_error: None,
+            last_item_at: None,
+            last_item_count: None,
             updated_at: now,
         }
     }
@@ -5095,6 +5106,8 @@ mod scheduler_simulation_tests {
             etag: None,
             last_modified: None,
             last_error: None,
+            last_item_at: None,
+            last_item_count: None,
             updated_at: now,
         }
     }

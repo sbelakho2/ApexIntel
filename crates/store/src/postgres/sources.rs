@@ -50,6 +50,12 @@ pub struct SourceRuntimeStateRow {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub last_error: Option<String>,
+    /// Newest published timestamp seen in the last successful feed parse
+    /// (migration 110). Lets detection tell a quiet feed apart from a stalled
+    /// ingestion path.
+    pub last_item_at: Option<DateTime<Utc>>,
+    /// Items the last successful parse produced (migration 110).
+    pub last_item_count: Option<i32>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -58,7 +64,8 @@ pub type DueSourceRow = SourceRuntimeStateRow;
 
 const SOURCE_RUNTIME_COLUMNS: &str = "source_slug, last_attempt_at, last_success_at, \
      next_due_at, consecutive_failures, rolling_success_rate, rolling_latency_ms, \
-     last_http_status, circuit_open_until, etag, last_modified, last_error, updated_at";
+     last_http_status, circuit_open_until, etag, last_modified, last_error, \
+     last_item_at, last_item_count, updated_at";
 
 /// Backoff before the next attempt after `consecutive_failures` consecutive
 /// failures.
@@ -249,12 +256,15 @@ impl PgStore {
     /// `INSERT ... ON CONFLICT DO UPDATE`: the stored EWMA values are read and
     /// blended inside the statement, so concurrent workers cannot overwrite
     /// each other's counter/EWMA updates with stale values.
+    #[allow(clippy::too_many_arguments)] // Flat audit payload; the storage statement is the single call boundary.
     pub async fn record_source_success(
         &self,
         source_slug: &str,
         min_interval: Duration,
         latency_ms: Option<f64>,
         last_http_status: Option<i32>,
+        newest_item_at: Option<DateTime<Utc>>,
+        item_count: Option<i32>,
         now: DateTime<Utc>,
     ) -> Result<SourceRuntimeStateRow> {
         let next_due_at = next_due_after_success(now, min_interval);
@@ -262,8 +272,9 @@ impl PgStore {
             r#"INSERT INTO source_runtime_state (
                    source_slug, last_attempt_at, last_success_at, next_due_at,
                    consecutive_failures, rolling_success_rate, rolling_latency_ms,
-                   last_http_status, circuit_open_until, last_error, updated_at
-               ) VALUES ($1, $2, $2, $3, 0, 1.0, $4, $5, NULL, NULL, $2)
+                   last_http_status, circuit_open_until, last_error,
+                   last_item_at, last_item_count, updated_at
+               ) VALUES ($1, $2, $2, $3, 0, 1.0, $4, $5, NULL, NULL, $7, $8, $2)
                ON CONFLICT (source_slug) DO UPDATE SET
                    last_attempt_at = EXCLUDED.last_attempt_at,
                    last_success_at = EXCLUDED.last_success_at,
@@ -285,6 +296,10 @@ impl PgStore {
                    last_http_status = EXCLUDED.last_http_status,
                    circuit_open_until = NULL,
                    last_error = NULL,
+                   last_item_at = COALESCE(EXCLUDED.last_item_at,
+                                           source_runtime_state.last_item_at),
+                   last_item_count = COALESCE(EXCLUDED.last_item_count,
+                                              source_runtime_state.last_item_count),
                    updated_at = EXCLUDED.updated_at
                RETURNING {SOURCE_RUNTIME_COLUMNS}"#
         ))
@@ -294,6 +309,8 @@ impl PgStore {
         .bind(latency_ms)
         .bind(last_http_status)
         .bind(EWMA_ALPHA)
+        .bind(newest_item_at)
+        .bind(item_count)
         .fetch_one(&self.pool)
         .await?;
         Ok(row)

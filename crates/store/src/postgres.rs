@@ -1868,6 +1868,32 @@ pub struct SilentSourceRow {
     pub obs_count: i64,
 }
 
+/// A source being fetched successfully whose own feed reports fresh items
+/// (migration 110) but whose observations stopped arriving: a genuine
+/// ingestion stall, not a quiet feed.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct IngestionStallRow {
+    pub source_id: String,
+    pub last_obs: Option<DateTime<Utc>>,
+    pub obs_count: i64,
+    pub last_item_at: Option<DateTime<Utc>>,
+    pub last_item_count: Option<i32>,
+    pub last_success_at: Option<DateTime<Utc>>,
+}
+
+/// A source whose recent fetch attempts are failing, with the actual error
+/// (blocked, robots-denied, dead endpoint) instead of an inferred silence.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct FailingSourceRow {
+    pub source_slug: String,
+    pub consecutive_failures: i32,
+    pub last_http_status: Option<i32>,
+    pub last_error: Option<String>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub next_due_at: DateTime<Utc>,
+}
+
 /// Source reliability aggregate record (computed).
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct SourceReliabilityAggregateRecord {
