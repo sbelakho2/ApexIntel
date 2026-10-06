@@ -69,7 +69,7 @@ mechanically. "Unverifiable" is always treated as failure — never as pass.
 | A8 | Red team | insight-level coordinated-placement attack ≥ 0.6 blocks publish | placement detection wired into review |
 | A9 | Quality trend | > 0.05 drop in mean depth/factuality vs previous weekly snapshot ⇒ regression warning + degraded cycle | weekly review |
 | A10 | Rejection audit | every reject persisted with verdict + reasons | quality ledger |
-| A11 | Adversarial self-verification | 12 attack cases + 400 fuzz mutations, 0 escapes | `scripts/ci/check_analytical_dogfood.sh` (CI) |
+| A11 | Adversarial self-verification | analytical: 12 attack cases + 400 fuzz mutations, 0 escapes; source pipeline: registry floors, 0 excluded, UA policy, onion rules (CI) + DB/warning cross-checks and live endpoint audit (ops) | `scripts/ci/check_dogfood.sh`, `scripts/ops/source_health_audit.sh` |
 | A12 | Model onboarding | candidate model: reachable, 0 hard violations, factuality ≥ 0.75 on its own output | `model_onboarding` example + registry gate |
 
 ## 6. Enforcement philosophy

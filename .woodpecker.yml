@@ -48,9 +48,11 @@
 #      workspace and all targets; the step fails when any `pub` item is only
 #      reachable within its own crate (stable rustc lint; see
 #      scripts/ci/check_unused_public_items.sh).
-#  16. analytical adversarial dogfood: the deterministic attack suite plus
-#      mutation fuzzing must be caught by the editorial board
-#      (scripts/ci/check_analytical_dogfood.sh).
+#  16. repo-wide dogfood: the analytical attack suite + mutation fuzzing must
+#      be caught by the editorial board, and source-pipeline invariants
+#      (registry floors, 0 excluded, UA policy, onion rules) must hold
+#      (scripts/ci/check_dogfood.sh; live DB/endpoint audits run in ops via
+#      scripts/ops/source_health_audit.sh).
 #
 # Runtime readiness additionally proves the schema lineage (applied migration
 # head == embedded head + checksum verification) through the `schema`
@@ -312,16 +314,16 @@ steps:
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
       - bash scripts/ci/run_pg_integration_suites.sh
 
-  # Adversarial dogfood for the analytical-excellence pipeline: the
-  # deterministic attack suite plus 400 mutation-fuzz iterations must all be
-  # caught by the editorial board (fabricated figures, poisoned
-  # corroboration, overclaims, contradictions, shallow filler). No network,
-  # no database, ~1s after build.
-  - name: analytical-dogfood
+  # Repo-wide dogfood: (1) the analytical attack suite + mutation fuzzing
+  # (fabricated figures, poisoned corroboration, overclaims, contradictions,
+  # shallow filler) must all be caught by the editorial board; (2) source
+  # pipeline invariants (registry floors, 0 excluded sources, UA policy,
+  # onion/Tor rules) must hold. No network, no database.
+  - name: dogfood
     image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     depends_on: [rust]
     commands:
-      - bash scripts/ci/check_analytical_dogfood.sh
+      - bash scripts/ci/check_dogfood.sh
 
   # N3: the deleted parallel `crates/store/migrations/` lineage (versions
   # 066/067/095) must never appear in an applied environment. Runs against the

@@ -51,8 +51,9 @@ const BROWSER_CONCURRENCY: usize = 2;
 /// that budget; without this each item costs at least one observation insert.
 const MAX_FEED_ITEMS_PER_SOURCE: usize = 200;
 
-const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-const CRAWL_USER_AGENT: &str = "ApexIntelBot/1.0 (+https://apex-intel.io/bot)";
+// User-Agent policy lives in apex_crawl::fetch_policy (unit-tested; asserted
+// by the source-pipeline dogfood). See the module docs for the 2026-10-06
+// incident that made browser-class UAs the default for source fetches.
 
 /// Result of fetching one scheduled source.
 struct SourceFetchOutcome {
@@ -297,18 +298,7 @@ async fn fetch_source(
     source_index: usize,
 ) -> SourceFetchOutcome {
     let endpoint = source.rss_url.as_deref().unwrap_or(source.url.as_str());
-    // User-agent policy (incident 2026-10-06): CDNs routinely 403 the custom
-    // bot UA even for public RSS feeds — arabnews, haaretz, ft, platts, cisa,
-    // nvd, isw, iea and dozens more spent weeks in the failure ladder while
-    // the same URLs answered a browser UA with HTTP 200. The browser UA is
-    // therefore the default for HTTP source fetches; robots.txt enforcement
-    // and per-domain pacing are unchanged, so crawl politeness is identical.
-    // `APEX_CRAWL_USE_BOT_UA=1` restores the honest bot identity for
-    // deployments that require it (and accepts the blocks that come with it).
-    let prefers_browser_ua = !std::env::var("APEX_CRAWL_USE_BOT_UA")
-        .ok()
-        .map(|value| apex_core::env::parse_truthy_flag(&value))
-        .unwrap_or(false);
+    let prefers_browser_ua = apex_crawl::fetch_policy::prefer_browser_user_agent();
 
     // Single dispatch decision: `Browser` sources either render with the
     // shared Chromium renderer or fail as a capability gap — never HTTP. The
@@ -426,11 +416,9 @@ async fn fetch_source(
         .source_id(&source.slug)
         .requires_proxy(source.needs_proxy)
         .prefer_browser_user_agent(prefers_browser_ua)
-        .override_user_agent(if prefers_browser_ua {
-            BROWSER_USER_AGENT
-        } else {
-            CRAWL_USER_AGENT
-        });
+        .override_user_agent(apex_crawl::fetch_policy::user_agent_for_fetch(
+            prefers_browser_ua,
+        ));
 
     let started = std::time::Instant::now();
     match crawl_client.fetch_text(&request).await {

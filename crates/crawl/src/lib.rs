@@ -13,6 +13,7 @@ pub mod dark_web;
 pub mod diff_engine;
 pub mod dns;
 pub mod errors;
+pub mod fetch_policy;
 pub mod governor_limiter;
 pub mod headers;
 pub mod http;

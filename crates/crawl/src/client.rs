@@ -702,6 +702,113 @@ mod tests {
         addr
     }
 
+    /// Mock server that filters on the request's User-Agent: the honest bot
+    /// UA gets HTTP 403 (exactly how CDNs treat us in production), the
+    /// browser UA gets a 200 feed. This locks the mechanism behind the
+    /// 2026-10-06 incident where the browser UA was hardcoded for one source.
+    async fn start_ua_filtering_server() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("test: bind ephemeral port: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("test: get local addr: {error}"));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = [0_u8; 4096];
+                let read = stream.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                let response = if request.to_ascii_lowercase().contains("apexintelbot") {
+                    "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 9\r\n\r\nforbidden"
+                } else {
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/rss+xml\r\nContent-Length: 40\r\n\r\n<rss><channel><item>ok</item></channel></rss>"
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        addr
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[tokio::test]
+    async fn browser_ua_passes_ua_filtering_hosts_while_bot_ua_is_blocked() {
+        use crate::fetch_policy::{user_agent_for_fetch, BOT_USER_AGENT, BROWSER_USER_AGENT};
+
+        let addr = start_ua_filtering_server().await;
+        let url = format!("http://{addr}/feed.xml");
+        let config = CrawlClientConfig {
+            enforce_robots_txt: false,
+            allow_private_targets: true,
+            ..CrawlClientConfig::default()
+        };
+        let client = CrawlClient::new(config).expect("client");
+
+        // The default fetch-source policy (browser UA) must succeed.
+        let browser_request = CrawlRequest::new(&url)
+            .prefer_browser_user_agent(true)
+            .override_user_agent(user_agent_for_fetch(true));
+        let fetched = client
+            .fetch_text(&browser_request)
+            .await
+            .expect("browser UA must pass UA-filtering hosts");
+        assert!(fetched.body.contains("<item>"));
+
+        // The bot UA is blocked by the same host: this is the failure class
+        // the policy exists to avoid, and why the default must stay browser.
+        let bot_request = CrawlRequest::new(&url)
+            .prefer_browser_user_agent(false)
+            .override_user_agent(user_agent_for_fetch(false));
+        assert!(
+            client.fetch_text(&bot_request).await.is_err(),
+            "bot UA must be blocked by the filtering host (regression in the UA policy)"
+        );
+        assert_ne!(BROWSER_USER_AGENT, BOT_USER_AGENT);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[tokio::test]
+    async fn robots_denied_fetch_reports_robots_in_the_error() {
+        // Robots fixture: the UA-aware server answers the first request
+        // (robots.txt) with a disallow, the second would be the feed.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("test: bind ephemeral port: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("test: get local addr: {error}"));
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0_u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let robots = "User-agent: *\nDisallow: /\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{robots}",
+                    robots.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let config = CrawlClientConfig {
+            enforce_robots_txt: true,
+            allow_private_targets: true,
+            ..CrawlClientConfig::default()
+        };
+        let client = CrawlClient::new(config).expect("client");
+        let url = format!("http://{addr}/feed.xml");
+        let error = client
+            .fetch_text(&CrawlRequest::new(&url))
+            .await
+            .expect_err("robots-disallowed fetch must fail");
+        assert!(
+            error.to_string().contains("robots.txt"),
+            "robots denial must be identifiable in the error: {error}"
+        );
+    }
+
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn fetch_text_retries_after_rate_limit() {

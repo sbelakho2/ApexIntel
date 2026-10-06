@@ -4050,6 +4050,83 @@ mod tests {
         }
     }
 
+    /// Regression floors (2026-10-06): a generator change silently removed 48
+    /// legacy sources because a www-prefix mismatch defeated the host dedup.
+    /// Coverage may only grow: these floors must only ever be raised.
+    const SUPPLEMENT_SLUG_FLOOR: usize = 366;
+    const MERGED_REGISTRY_FLOOR: usize = 570;
+
+    #[test]
+    fn supplement_never_shrinks_below_the_recorded_floor() {
+        let supplement: SourceRegistryFile =
+            serde_yaml::from_str(BUILT_IN_SOURCE_SUPPLEMENT).expect("supplement parses");
+        assert!(
+            supplement.sources.len() >= SUPPLEMENT_SLUG_FLOOR,
+            "supplement shrank to {} entries (floor {}); sources may only grow",
+            supplement.sources.len(),
+            SUPPLEMENT_SLUG_FLOOR
+        );
+    }
+
+    #[test]
+    fn merged_registry_never_shrinks_and_every_source_is_enabled() {
+        let sources = all_sources();
+        assert!(
+            sources.len() >= MERGED_REGISTRY_FLOOR,
+            "merged registry shrank to {} sources (floor {})",
+            sources.len(),
+            MERGED_REGISTRY_FLOOR
+        );
+        let disabled: Vec<&str> = sources
+            .iter()
+            .filter(|source| !source.enabled)
+            .map(|source| source.slug.as_str())
+            .collect();
+        assert!(
+            disabled.is_empty(),
+            "the registry must never exclude sources: {disabled:?}"
+        );
+    }
+
+    /// Every supplement entry must be present in the merged registry, or its
+    /// endpoint must already be covered by another registered source (the
+    /// only documented dedup). A supplement source that is neither has been
+    /// silently dropped.
+    #[test]
+    fn every_supplement_source_is_merged_or_endpoint_covered() {
+        let supplement: SourceRegistryFile =
+            serde_yaml::from_str(BUILT_IN_SOURCE_SUPPLEMENT).expect("supplement parses");
+        let merged = all_sources();
+        let merged_slugs: HashSet<&str> =
+            merged.iter().map(|source| source.slug.as_str()).collect();
+        let merged_endpoints: HashSet<String> = merged
+            .iter()
+            .filter_map(|source| {
+                normalize_endpoint(source.rss_url.as_deref().unwrap_or(source.url.as_str()))
+            })
+            .collect();
+
+        let mut missing: Vec<&str> = Vec::new();
+        for entry in &supplement.sources {
+            if merged_slugs.contains(entry.slug.as_str()) {
+                continue;
+            }
+            let endpoint =
+                normalize_endpoint(entry.rss_url.as_deref().unwrap_or(entry.url.as_str()));
+            if endpoint
+                .as_ref()
+                .is_some_and(|endpoint| merged_endpoints.contains(endpoint))
+            {
+                continue;
+            }
+            missing.push(entry.slug.as_str());
+        }
+        assert!(
+            missing.is_empty(),
+            "supplement sources silently dropped (neither merged nor endpoint-covered): {missing:?}"
+        );
+    }
+
     #[test]
     fn supplement_sources_are_merged_and_enabled() {
         let s = all_sources();
