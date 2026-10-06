@@ -249,22 +249,58 @@ pub(super) async fn run_sanctions_screen(
             tracing::debug!(entity = %name, "sanctions_screen: no match");
         } else {
             total_hits += matches.len() as u64;
-            for m in &matches {
-                tracing::warn!(
-                    entity = %name,
-                    matched = %m.matched_name,
-                    similarity = m.similarity,
-                    list = ?m.list,
-                    is_exact = m.is_exact,
-                    "sanctions_screen: MATCH FOUND"
-                );
-                let title = format!("Sanctions match: {name} → {}", m.matched_name);
-                let description = format!(
-                    "Entity '{}' matched sanctions entry '{}' (similarity {:.2}, list: {:?}, exact: {}).",
-                    name, m.matched_name, m.similarity, m.list, m.is_exact
-                );
-                let severity = if m.is_exact { "critical" } else { "high" };
-                let list_url = match &m.list {
+            // One consolidated warning per screened entity (incident
+            // 2026-10-06): per-matched-pair warnings produced 600+ rows per
+            // day ("Mohammed Khalil → MOHAMMED, Ali" ...) because every title
+            // embedded a different matched name and could never dedup. The
+            // title is now stable per entity; the closest matches live in the
+            // description and repeats collapse through the dedup window.
+            let mut ranked = matches.clone();
+            ranked.sort_by(|left, right| {
+                right
+                    .similarity
+                    .partial_cmp(&left.similarity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let exact_any = ranked.iter().any(|m| m.is_exact);
+            let best = ranked.first();
+            let title = format!("Sanctions screening hit: {name}");
+            let mut closest = ranked
+                .iter()
+                .take(3)
+                .map(|m| {
+                    format!(
+                        "'{}' ({:?}, similarity {:.2}{})",
+                        m.matched_name,
+                        m.list,
+                        m.similarity,
+                        if m.is_exact { ", EXACT" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            if ranked.len() > 3 {
+                closest.push_str(&format!("; +{} more", ranked.len() - 3));
+            }
+            let exact_note = if exact_any {
+                "At least one EXACT match: treat as confirmed until identifiers are disproven."
+            } else {
+                "No exact match: name-only similarity. Verify date of birth, nationality, or registration number before any action."
+            };
+            let description = format!(
+                "Entity '{name}' matched {} sanctions entr{} across loaded lists. Closest: {closest}. {exact_note}",
+                ranked.len(),
+                if ranked.len() == 1 { "y" } else { "ies" }
+            );
+            tracing::warn!(
+                entity = %name,
+                matches = ranked.len(),
+                exact = exact_any,
+                best_similarity = best.map(|m| m.similarity),
+                "sanctions_screen: MATCH FOUND"
+            );
+            {
+                let list_url = match &best.map(|m| m.list.clone()).unwrap_or(SanctionsList::OfacSdn) {
                     SanctionsList::OfacSdn | SanctionsList::OfacNs =>
                         "https://home.treasury.gov/policy-issues/financial-sanctions/sdn-list",
                     SanctionsList::EuConsolidated =>
@@ -276,10 +312,11 @@ pub(super) async fn run_sanctions_screen(
                     SanctionsList::BisDeniedPersons =>
                         "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/denied-persons-list",
                 };
+                let severity = if exact_any { "critical" } else { "high" };
                 let mut warning = NewWarning::new("sanctions", &title, severity)
                     .description(&description)
                     .source_urls(vec![list_url.to_string()])
-                    .confidence(m.similarity);
+                    .confidence(best.map(|m| m.similarity).unwrap_or(threshold));
                 match entity_id {
                     Some(entity_id) => warning = warning.entity_ids(vec![*entity_id]),
                     // Env-configured name with no entity row: a compliance

@@ -566,7 +566,6 @@ impl SanctionsScreener {
         identifiers: &[(String, String)],
     ) -> Vec<SanctionsMatch> {
         let query_lower = name.to_lowercase();
-        let query_tokens: Vec<&str> = query_lower.split_whitespace().collect();
 
         let mut matches: Vec<SanctionsMatch> = Vec::new();
 
@@ -588,11 +587,16 @@ impl SanctionsScreener {
             let has_id_match = !id_matches.is_empty();
 
             // Compute best name similarity across all names for this entry
+            // using the token-gated matcher (name_match_score). Full-string
+            // Jaro-Winkler alone matched on prefix similarity and produced
+            // pair-level false-positive floods (2026-10-06 incident).
             let mut best_score: f64 = 0.0;
             let mut best_name = entry.primary_name.clone();
 
             for candidate_lower in &entry.searchable_names {
-                let score = jaro_winkler(&query_lower, candidate_lower);
+                let Some(score) = name_match_score(&query_lower, candidate_lower) else {
+                    continue;
+                };
                 if score > best_score {
                     best_score = score;
                     // Find original (non-lowercase) name
@@ -606,14 +610,6 @@ impl SanctionsScreener {
                         best_name = alias.clone();
                     }
                 }
-            }
-
-            // Also try token-by-token matching for multi-word names
-            if entry.searchable_names.iter().any(|n| {
-                let tokens: Vec<&str> = n.split_whitespace().collect();
-                token_match_score(&query_tokens, &tokens) >= self.threshold
-            }) {
-                best_score = best_score.max(self.threshold);
             }
 
             // Report if above threshold or exact identifier match
@@ -765,19 +761,89 @@ fn jaro_similarity(s1: &str, s2: &str) -> f64 {
 }
 
 /// Token-level matching score: what fraction of query tokens appear in the candidate.
-fn token_match_score(query_tokens: &[&str], candidate_tokens: &[&str]) -> f64 {
-    if query_tokens.is_empty() {
-        return 0.0;
+/// Normalize a name for matching: lowercase, punctuation removed, collapse
+/// whitespace. "MOHAMMED, Ali" -> "mohammed ali".
+fn normalize_name_tokens(name: &str) -> Vec<String> {
+    name.to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Token-gated name match score (incident 2026-10-06).
+///
+/// Full-string Jaro-Winkler matched "Mohammed Khalil" against "MOHAMMED, Ali"
+/// on prefix similarity alone, flooding sanctions warnings with pair-level
+/// false positives. The gate is now explicit:
+///
+/// * every query token must match some candidate token at >= 0.90,
+/// * single-token queries only match exactly (a lone common given name is
+///   never a sanctions hit),
+/// * a candidate carrying extra tokens (middle names, patronymics) scores
+///   0.85 + 0.15 * coverage, so "Mohammed Khalil" still matches "Mohammed
+///   Khalil Zadeh" without matching "Mohammed Ali".
+///
+/// Returns `None` when the gate fails, else the score in `0..=1`.
+pub fn name_match_score(query: &str, candidate: &str) -> Option<f64> {
+    let query_tokens = normalize_name_tokens(query);
+    let candidate_tokens = normalize_name_tokens(candidate);
+    if query_tokens.is_empty() || candidate_tokens.is_empty() {
+        return None;
     }
-    let matched = query_tokens
+    if query_tokens == candidate_tokens {
+        return Some(1.0);
+    }
+    if query_tokens.len() == 1 {
+        // A single-token query only matches single-token candidates exactly
+        // (already handled above); anything else needs corroborating
+        // identifiers, which the caller checks separately.
+        return None;
+    }
+
+    let mut matched_candidates: Vec<bool> = vec![false; candidate_tokens.len()];
+    let mut matched_query = 0usize;
+    for query_token in &query_tokens {
+        let mut best_index: Option<usize> = None;
+        let mut best_score = 0.0_f64;
+        for (index, candidate_token) in candidate_tokens.iter().enumerate() {
+            if matched_candidates[index] {
+                continue;
+            }
+            let score = jaro_winkler(query_token, candidate_token);
+            if score > best_score {
+                best_score = score;
+                best_index = Some(index);
+            }
+        }
+        if best_score >= 0.90 {
+            matched_query += 1;
+            if let Some(index) = best_index {
+                matched_candidates[index] = true;
+            }
+        }
+    }
+    if matched_query != query_tokens.len() {
+        return None;
+    }
+    let matched_candidate_count = matched_candidates
         .iter()
-        .filter(|&&qt| {
-            candidate_tokens
-                .iter()
-                .any(|&ct| jaro_winkler(qt, ct) >= 0.92)
-        })
+        .filter(|matched| **matched)
         .count();
-    matched as f64 / query_tokens.len() as f64
+    let coverage = matched_candidate_count as f64 / candidate_tokens.len() as f64;
+    // Equal-length token sets already returned 1.0; here the candidate carries
+    // extra tokens, so score slightly below an exact match but above the
+    // containment floor.
+    let containment = 0.85 + 0.15 * coverage;
+    // Reordered full names ("putin vladimir" vs "vladimir putin") deserve the
+    // full score even though token order differs.
+    if query_tokens.len() == candidate_tokens.len() {
+        Some(1.0_f64.max(containment))
+    } else {
+        Some(containment)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -802,6 +868,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn token_gate_rejects_prefix_similarity_false_positives() {
+        // Production false-positive pairs from the 2026-10-06 sanctions flood:
+        // full-string Jaro-Winkler matched on the shared given name alone.
+        assert_eq!(name_match_score("MOHAMMED Khalil", "MOHAMMED, Ali"), None);
+        assert_eq!(name_match_score("Mohammed Khalil", "Mohammed Hassan"), None);
+        assert_eq!(name_match_score("Ahmed Ben Salah", "Ahmed Ben Ali"), None);
+    }
+
+    #[test]
+    fn token_gate_accepts_containment_and_reordering() {
+        // Middle names / patronymics are containment, not rejection.
+        let contained = name_match_score("Mohammed Khalil", "Mohammed Khalil Zadeh")
+            .expect("containment must match");
+        assert!(contained >= 0.92, "containment score {contained}");
+
+        // Reordered full names match at full score.
+        let reordered =
+            name_match_score("putin vladimir", "Vladimir Putin").expect("reorder must match");
+        assert!(reordered >= 0.99, "reorder score {reordered}");
+
+        // Transliteration-grade token similarity still matches.
+        assert!(name_match_score("Mohamed Khalil", "Mohammed Khalil").is_some());
+
+        // Exact equality is the perfect score.
+        assert_eq!(
+            name_match_score("Mohammed Khalil", "MOHAMMED KHALIL"),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn single_token_queries_never_match_on_a_common_given_name() {
+        assert_eq!(name_match_score("Mohammed", "Mohammed Khalil Zadeh"), None);
+        assert_eq!(name_match_score("Mohammed", "Mohammed"), Some(1.0));
+    }
+
     fn jaro_winkler_exact() {
         assert!((jaro_winkler("john smith", "john smith") - 1.0).abs() < 1e-9);
     }

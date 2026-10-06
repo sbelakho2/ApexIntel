@@ -407,6 +407,145 @@ fn extract_source_slug(title: &str) -> Option<String> {
     Some(title[start..end].to_string())
 }
 
+// ── 3b. Insight quality (--db) ──────────────────────────────────────────────
+
+/// Boilerplate that must never appear in a published insight: coverage
+/// mechanics, confidence rationales, and pass-the-decision closers belong in
+/// metadata, not the analysis (2026-10-06 incident: the legacy daemon wrote
+/// "X is appearing in N recent reports... If this matters commercially...",
+/// and the analytical dogfood cannot see the database).
+const BANNED_INSIGHT_PATTERNS: &[&str] = &[
+    "is appearing in",
+    "being compared for corroboration",
+    "current read is likely at roughly",
+    "recurring reported themes",
+    "if this matters commercially",
+    "keep it on an active watchlist",
+    "make a hard commitment",
+    "non-social reporting",
+    "look for formal confirmation",
+];
+
+async fn insight_quality(harness: &mut Harness, pool: &sqlx::PgPool) {
+    println!("[insight quality]");
+    let rows = sqlx::query(
+        "SELECT title, summary FROM insights
+         WHERE created_at > now() - interval '7 days'
+         ORDER BY created_at DESC LIMIT 25",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load recent insights");
+
+    let mut violations = Vec::new();
+    for row in &rows {
+        let summary: String = row.get("summary");
+        let lower = summary.to_ascii_lowercase();
+        for pattern in BANNED_INSIGHT_PATTERNS {
+            if lower.contains(pattern) {
+                let title: String = row.get("title");
+                violations.push(format!("{}: contains {pattern:?}", truncate(&title, 60)));
+            }
+        }
+    }
+    harness.check(
+        violations.is_empty(),
+        format!("no coverage-mechanics boilerplate in recent insights ({violations:?})"),
+    );
+
+    let insights_48h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM insights WHERE created_at > now() - interval '48 hours'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count recent insights");
+    harness.check(
+        insights_48h >= 1,
+        format!("insight pipeline produced output in 48h ({insights_48h} insights)"),
+    );
+    println!(
+        "  note {} insights in the last 7 days; {insights_48h} in the last 48h",
+        rows.len()
+    );
+}
+
+// ── 3c. Warning hygiene (--db) ──────────────────────────────────────────────
+
+/// Per-type warning budgets and title-stability rules. The 2026-10-06 audit
+/// counted 607 sanctions, 221 volume_anomaly and 170 signal_shift warnings in
+/// 24h — storms created by titles that embedded per-event details
+/// ("X -> Name", "107% vs baseline"), which defeat dedup by design.
+async fn warning_hygiene(
+    harness: &mut Harness,
+    pool: &sqlx::PgPool,
+    since: chrono::DateTime<chrono::Utc>,
+) {
+    println!("[warning hygiene]");
+    let rows = sqlx::query("SELECT warning_type, title FROM warnings WHERE created_at > $1")
+        .bind(since)
+        .fetch_all(pool)
+        .await
+        .expect("load warnings since cutoff");
+
+    let budgets: &[(&str, i64)] = &[
+        ("sanctions", 80),
+        ("volume_anomaly", 100),
+        ("signal_shift", 100),
+        ("security", 150),
+        ("threat_actor", 50),
+    ];
+    let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for row in &rows {
+        let warning_type: String = row.get("warning_type");
+        let bucket = match warning_type.as_str() {
+            "sanctions" => "sanctions",
+            "volume_anomaly" => "volume_anomaly",
+            "signal_shift" => "signal_shift",
+            "security" => "security",
+            "threat_actor" => "threat_actor",
+            _ => "other",
+        };
+        *counts.entry(bucket).or_insert(0) += 1;
+    }
+    for (warning_type, budget) in budgets {
+        let count = counts.get(warning_type).copied().unwrap_or(0);
+        harness.check(
+            count <= *budget,
+            format!("{warning_type} warnings since cutoff within budget ({count} <= {budget})"),
+        );
+    }
+
+    let mut unstable = Vec::new();
+    for row in &rows {
+        let warning_type: String = row.get("warning_type");
+        let title: String = row.get("title");
+        match warning_type.as_str() {
+            "sanctions" if title.contains('→') || title.contains("->") => {
+                unstable.push(format!("sanctions title embeds matched pair: {title}"));
+            }
+            "volume_anomaly" if title.contains('%') || title.contains("vs baseline") => {
+                unstable.push(format!("volume title embeds percentage: {title}"));
+            }
+            "signal_shift" if title.contains(':') => {
+                unstable.push(format!("signal_shift title embeds type list: {title}"));
+            }
+            _ => {}
+        }
+    }
+    harness.check(
+        unstable.is_empty(),
+        format!("warning titles are stable per entity ({unstable:?})"),
+    );
+    println!("  note {} warnings since cutoff", rows.len());
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    text.chars().take(max).collect::<String>() + "…"
+}
+
 // ── 4. Live endpoint sampling (--live) ──────────────────────────────────────
 
 async fn live_endpoint_sample(harness: &mut Harness, sample: usize, ua_suspects: &[String]) {
@@ -579,6 +718,8 @@ async fn main() {
             .expect("connect to postgres for --db checks");
         ua_suspects = runtime_invariants(&mut harness, &pool, policy_since).await;
         detection_crosscheck(&mut harness, &pool, policy_since).await;
+        insight_quality(&mut harness, &pool).await;
+        warning_hygiene(&mut harness, &pool, policy_since).await;
     } else {
         println!("[runtime-state honesty] skipped (pass --db <DATABASE_URL>)");
         println!("[detection cross-check] skipped (pass --db <DATABASE_URL>)");

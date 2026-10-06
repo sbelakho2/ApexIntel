@@ -76,3 +76,6 @@ DATABASE_URL=... bash scripts/ops/source_health_audit.sh --live 40
 | `ON CONFLICT DO NOTHING` counted as ingestion | insert-accounting contract (bool) + cycle new/duplicates log; feed accounting tests |
 | Parsed items never ingested (zero new rows) | feed freshness (`last_item_at`) + ingestion-stall detection |
 | robots denials retried on the failure ladder | robots mock test + 24h capability backoff |
+| Legacy Python daemon still running, writing template insights ("X is appearing in N recent reports... If this matters commercially...") alongside the Rust pipeline | insight-quality audit check (banned pattern list over recent insights); daemon service stopped and disabled 2026-10-06, its 2 products retracted |
+| Sanctions fuzzy matching flooding 607 warnings/day with pair-level false positives ("Mohammed Khalil -> MOHAMMED, Ali") | token-gated matcher (`name_match_score`, production pairs asserted in unit tests) + one consolidated warning per screened entity with a stable title |
+| volume_anomaly/signal_shift storms from titles embedding per-run details (221 and 170/day) | stable per-entity titles, absolute-delta and baseline floors, generic observation-type filtering, warning-hygiene budgets in the audit |

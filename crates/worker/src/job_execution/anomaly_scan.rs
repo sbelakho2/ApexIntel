@@ -102,6 +102,13 @@ pub(super) async fn run_anomaly_scan(
             .push((dc.day, dc.obs_count));
     }
 
+    // Noise-floor constants (2026-10-06 audit).
+    const VOLUME_ANOMALY_MIN_ABS_DELTA: f64 = 5.0;
+    const VOLUME_ANOMALY_MIN_BASELINE: f64 = 2.0;
+    /// Generic crawl/collector types that appear for nearly every entity and
+    /// therefore never indicate an entity-level change.
+    const GENERIC_OBSERVATION_TYPES: &[&str] = &["WebChange", "web_change", "SocialPost"];
+
     let mut anomalies_detected: u64 = 0;
     let mut counters = IngressCounters::default();
 
@@ -124,21 +131,26 @@ pub(super) async fn run_anomaly_scan(
 
         if prior_mean > 0.0 {
             let deviation = (latest - prior_mean).abs() / prior_mean;
+            let absolute_delta = (latest - prior_mean).abs();
 
-            if deviation >= VOLUME_ANOMALY_THRESHOLD {
+            // Two gates (2026-10-06 noise audit): a relative spike on a tiny
+            // baseline (1 -> 2 observations) is not intelligence; require a
+            // material absolute change as well. And the title is stable per
+            // entity — the percentage used to live in the title, so every run
+            // produced a new warning that could never dedup (221/day).
+            if deviation >= VOLUME_ANOMALY_THRESHOLD
+                && absolute_delta >= VOLUME_ANOMALY_MIN_ABS_DELTA
+                && prior_mean >= VOLUME_ANOMALY_MIN_BASELINE
+            {
                 let direction = if latest > prior_mean { "spike" } else { "drop" };
                 let pct_change = ((latest - prior_mean) / prior_mean * 100.0).round() as i64;
 
-                // Generate a warning for this anomaly
-                let title = format!(
-                    "{direction} in data volume for {entity_name} ({pct_change}% vs baseline)"
-                );
+                let title = format!("Volume anomaly: {entity_name}");
                 let description = format!(
                     "{entity_name} shows a {pct_change}% {direction} in observation volume. \
-                     Latest: {latest:.0} observations, baseline: {prior_mean:.0}. \
-                     This may indicate a significant event — increased activity ({direction} = spike) \
-                     or reduced coverage/data loss ({direction} = drop). \
-                     Investigate the underlying cause and assess operational impact."
+                     Latest: {latest:.0} observations, baseline: {prior_mean:.0} (absolute change {absolute_delta:.0}). \
+                     A spike can indicate a significant event; a drop can indicate coverage loss. \
+                     Check the underlying reports before drawing conclusions."
                 );
 
                 match ingress
@@ -203,28 +215,56 @@ pub(super) async fn run_anomaly_scan(
             Err(_) => continue,
         };
 
-        let new_types: Vec<&String> = recent_types.difference(&historical_types).collect();
+        // Generic observation types appear for nearly every entity whenever a
+        // collector is deployed; alerting on those is a coverage artifact, not
+        // an entity event (2026-10-06 noise audit). Only substantive types
+        // count, and a one-off sighting is not a shift.
+        let new_types: Vec<&String> = recent_types
+            .difference(&historical_types)
+            .filter(|observation_type| {
+                !GENERIC_OBSERVATION_TYPES
+                    .iter()
+                    .any(|generic| observation_type.eq_ignore_ascii_case(generic))
+            })
+            .collect();
         if !new_types.is_empty() && historical_types.len() >= 2 {
+            // Require at least two observations of the new types in the
+            // recent window: one straggler row is not a shift.
+            let new_type_count: i64 = match sqlx::query_scalar(
+                r#"SELECT COUNT(*) FROM observations
+                   WHERE entity_id = $1 AND ts_utc >= NOW() - INTERVAL '3 days'
+                     AND observation_type = ANY($2)"#,
+            )
+            .bind(*entity_id)
+            .bind(new_types.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+            .fetch_one(&store.pool)
+            .await
+            {
+                Ok(count) => count,
+                Err(_) => continue,
+            };
+            if new_type_count < 2 {
+                continue;
+            }
             let types_str = new_types
                 .iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            let title = format!("New signal types for {entity_name}: {types_str}");
+            let title = format!("Signal coverage change: {entity_name}");
             let description = format!(
                 "{entity_name} has started generating new observation types ({types_str}) \
-                 that weren't present in the previous 27 days. This may indicate a \
-                 significant strategic shift — new market entry, capability expansion, \
-                 leadership change, or emerging risk. Analyze the new signals for \
-                 actionable intelligence."
+                 with {new_type_count} recent observations; they were absent in the previous \
+                 27 days. This is usually new collection coverage rather than a strategic \
+                 shift, but a genuinely new signal family on a tracked entity is worth a look."
             );
 
             match ingress
                 .submit_warning(
-                    NewWarning::new("signal_shift", &title, "medium")
+                    NewWarning::new("signal_shift", &title, "low")
                         .description(&description)
                         .entity_ids(vec![*entity_id])
-                        .confidence(0.70),
+                        .confidence(0.60),
                 )
                 .await
             {
