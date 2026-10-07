@@ -573,6 +573,15 @@ impl SanctionsScreener {
     /// match >= 0.90 shares the first two characters except for very short
     /// tokens, which bucket by their full text.
     fn candidate_entry_indices(&self, query_tokens: &[String]) -> Vec<usize> {
+        fn bucket_key(token: &str) -> String {
+            let chars: Vec<char> = token.chars().collect();
+            match chars.len() {
+                0..=2 => token.to_string(),
+                3..=4 => chars[..2].iter().collect(),
+                _ => chars[..3].iter().collect(),
+            }
+        }
+
         let buckets = self.token_buckets.get_or_init(|| {
             let mut map: std::collections::HashMap<String, Vec<usize>> =
                 std::collections::HashMap::new();
@@ -580,11 +589,7 @@ impl SanctionsScreener {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 for name in &entry.searchable_names {
                     for token in normalize_name_tokens(name) {
-                        let key: String = if token.chars().count() <= 2 {
-                            token
-                        } else {
-                            token.chars().take(2).collect()
-                        };
+                        let key = bucket_key(&token);
                         if seen.insert(key.clone()) {
                             map.entry(key).or_default().push(index);
                         }
@@ -594,22 +599,38 @@ impl SanctionsScreener {
             map
         });
 
-        let mut indices: Vec<usize> = Vec::new();
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // Every query token must match some candidate token, so an entry must
+        // appear in every query token's bucket list to satisfy the gate.
+        let mut per_token: Vec<std::collections::HashSet<usize>> = Vec::new();
         for token in query_tokens {
-            let key: String = if token.chars().count() <= 2 {
-                token.clone()
-            } else {
-                token.chars().take(2).collect()
+            let Some(entries) = buckets.get(&bucket_key(token)) else {
+                return Vec::new();
             };
-            if let Some(entries) = buckets.get(&key) {
-                for index in entries {
-                    if seen.insert(*index) {
-                        indices.push(*index);
-                    }
-                }
+            per_token.push(entries.iter().copied().collect());
+        }
+        if per_token.is_empty() {
+            return Vec::new();
+        }
+        let mut intersection = per_token[0].clone();
+        for set in per_token.iter().skip(1) {
+            intersection.retain(|index| set.contains(index));
+            if intersection.is_empty() {
+                break;
             }
         }
+        // Empty intersection: fall back to the union so cross-bucket fuzzy
+        // matches stay reachable; the token gate still rejects non-matches.
+        let pool: std::collections::HashSet<usize> = if intersection.is_empty() {
+            let mut union: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for set in &per_token {
+                union.extend(set.iter().copied());
+            }
+            union
+        } else {
+            intersection
+        };
+        let mut indices: Vec<usize> = pool.into_iter().collect();
+        indices.sort_unstable();
         indices
     }
 
@@ -882,8 +903,15 @@ fn normalize_name_tokens(name: &str) -> Vec<String> {
 ///
 /// Returns `None` when the gate fails, else the score in `0..=1`.
 pub fn name_match_score(query: &str, candidate: &str) -> Option<f64> {
-    let query_tokens = normalize_name_tokens(query);
-    let candidate_tokens = normalize_name_tokens(candidate);
+    let mut query_tokens = normalize_name_tokens(query);
+    let mut candidate_tokens = normalize_name_tokens(candidate);
+    if query_tokens.is_empty() || candidate_tokens.is_empty() {
+        return None;
+    }
+    // Single-letter tokens are initials, not names: "S. A. Mir" must never
+    // match "MINERA MI ESPERANZA, S.A." through "s"/"a" (2026-10-07 audit).
+    query_tokens.retain(|token| token.chars().count() >= 2);
+    candidate_tokens.retain(|token| token.chars().count() >= 2);
     if query_tokens.is_empty() || candidate_tokens.is_empty() {
         return None;
     }
@@ -891,8 +919,8 @@ pub fn name_match_score(query: &str, candidate: &str) -> Option<f64> {
         return Some(1.0);
     }
     if query_tokens.len() == 1 {
-        // A single-token query only matches single-token candidates exactly
-        // (already handled above); anything else needs corroborating
+        // After removing initials a single meaningful token remains (a lone
+        // surname): it only matches exactly; anything else needs corroborating
         // identifiers, which the caller checks separately.
         return None;
     }
@@ -990,6 +1018,126 @@ mod tests {
             name_match_score("Mohammed Khalil", "MOHAMMED KHALIL"),
             Some(1.0)
         );
+    }
+
+    #[test]
+    fn candidate_pruning_never_loses_a_true_match() {
+        // Pruned screening must agree with brute-force scoring over every
+        // entry for a spread of query shapes (initials, reorder, containment,
+        // cross-transliteration, non-matches).
+        let entries = vec![
+            SanctionEntry {
+                id: "1".into(),
+                primary_name: "Mohammed Khalil Zadeh".into(),
+                aliases: vec!["Mohammed Khalil".into()],
+                identifiers: vec![],
+                list: SanctionsList::OfacSdn,
+                programs: vec![],
+                added_date: None,
+                entity_type: EntityType::Individual,
+                nationalities: vec![],
+                searchable_names: vec!["mohammed khalil zadeh".into(), "mohammed khalil".into()],
+            },
+            SanctionEntry {
+                id: "2".into(),
+                primary_name: "Vladimir Putin".into(),
+                aliases: vec![],
+                identifiers: vec![],
+                list: SanctionsList::EuConsolidated,
+                programs: vec![],
+                added_date: None,
+                entity_type: EntityType::Individual,
+                nationalities: vec![],
+                searchable_names: vec!["vladimir putin".into()],
+            },
+            SanctionEntry {
+                id: "3".into(),
+                primary_name: "MINERA MI ESPERANZA, S.A.".into(),
+                aliases: vec![],
+                identifiers: vec![],
+                list: SanctionsList::OfacSdn,
+                programs: vec![],
+                added_date: None,
+                entity_type: EntityType::Individual,
+                nationalities: vec![],
+                searchable_names: vec!["minera mi esperanza s a".into()],
+            },
+            SanctionEntry {
+                id: "4".into(),
+                primary_name: "Xiaodong Chen".into(),
+                aliases: vec![],
+                identifiers: vec![],
+                list: SanctionsList::OfacSdn,
+                programs: vec![],
+                added_date: None,
+                entity_type: EntityType::Individual,
+                nationalities: vec![],
+                searchable_names: vec!["xiaodong chen".into()],
+            },
+            SanctionEntry {
+                id: "5".into(),
+                primary_name: "Ali Mir".into(),
+                aliases: vec![],
+                identifiers: vec![],
+                list: SanctionsList::OfacSdn,
+                programs: vec![],
+                added_date: None,
+                entity_type: EntityType::Individual,
+                nationalities: vec![],
+                searchable_names: vec!["ali mir".into()],
+            },
+        ];
+        let screener = SanctionsScreener {
+            entries: entries.clone(),
+            threshold: 0.92,
+            last_refreshed: Utc::now(),
+            token_buckets: std::sync::OnceLock::new(),
+            identifier_buckets: std::sync::OnceLock::new(),
+        };
+
+        for query in [
+            "Mohammed Khalil",
+            "Vladimir Putin",
+            "putin vladimir",
+            "Ali Mir",
+            "S. A. Mir",
+            "Xiaodong Chen",
+            "Mohamed Khalil",
+            "Unrelated Company",
+        ] {
+            let pruned: std::collections::HashSet<String> = screener
+                .screen_entity(query, &[])
+                .into_iter()
+                .map(|hit| hit.entry_id)
+                .collect();
+            let brute: std::collections::HashSet<String> = entries
+                .iter()
+                .filter(|entry| {
+                    entry.searchable_names.iter().any(|name| {
+                        name_match_score(query, name).is_some_and(|score| score >= 0.92)
+                    })
+                })
+                .map(|entry| entry.id.clone())
+                .collect();
+            assert_eq!(
+                pruned, brute,
+                "pruning diverged from brute force for {query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn initials_are_not_match_evidence() {
+        // Production false positive from the 2026-10-07 audit: initials-only
+        // query tokens matched on "s", "a".
+        assert_eq!(
+            name_match_score("S. A. Mir", "MINERA MI ESPERANZA, S.A."),
+            None
+        );
+        assert_eq!(name_match_score("A. K. Chen", "AN KANG CHEN"), None);
+        // A meaningful full name still matches through initials in the list.
+        let matched = name_match_score("Ali Mir", "Ali A. Mir").expect("containment");
+        assert!(matched >= 0.92, "score {matched}");
     }
 
     #[test]
