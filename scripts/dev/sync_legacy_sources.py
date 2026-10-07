@@ -311,6 +311,8 @@ VERIFIED_ADDITIONS = [
     ("the_diplomat", "The Diplomat", "https://thediplomat.com/feed/", "GeopoliticsThinkTank", "AsiaPacific", 3),
     ("scmp", "South China Morning Post", "https://www.scmp.com/rss/91/feed", "News", "China", 2),
     ("intellinews", "bne IntelliNews", "https://www.intellinews.com/feed/", "Finance", "EasternEurope", 3),
+    ("patentlyo", "Patently-O", "https://patentlyo.com/feed", "Patents", "NorthAmerica", 3),
+    ("ipwatchdog", "IPWatchdog", "https://www.ipwatchdog.com/feed/", "Patents", "NorthAmerica", 3),
 ]
 
 

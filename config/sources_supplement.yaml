@@ -6,7 +6,7 @@
 # enabled: true and starts Unvalidated until a successful fetch/parser
 # contract check promotes it to Operational.
 # Generated from: experiments/legacy-python-crawl-daemon/crawl_daemon.py
-# news=253 social=103 onion=4 emitted=380 host-dedup-dropped=0
+# news=253 social=103 onion=4 emitted=382 host-dedup-dropped=0
 sources:
 - slug: legacy_news_eetimes-com
   name: Eetimes
@@ -4565,6 +4565,30 @@ sources:
   tier: 2
   needs_proxy: false
   rss_url: https://www.straitstimes.com/news/world/rss.xml
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: patentlyo
+  name: Patently-O
+  url: https://patentlyo.com/feed
+  search_param: null
+  region: NorthAmerica
+  category: Patents
+  tier: 3
+  needs_proxy: false
+  rss_url: https://patentlyo.com/feed
+  enabled: true
+  min_interval_minutes: 60
+  notes: verified live 2026-10-06 (HTTP 200 + feed items)
+- slug: ipwatchdog
+  name: IPWatchdog
+  url: https://www.ipwatchdog.com/feed/
+  search_param: null
+  region: NorthAmerica
+  category: Patents
+  tier: 3
+  needs_proxy: false
+  rss_url: https://www.ipwatchdog.com/feed/
   enabled: true
   min_interval_minutes: 60
   notes: verified live 2026-10-06 (HTTP 200 + feed items)
