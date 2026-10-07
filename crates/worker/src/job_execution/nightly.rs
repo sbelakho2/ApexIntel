@@ -224,8 +224,12 @@ fn feed_observations(
     for item in items.into_iter().take(MAX_FEED_ITEMS_PER_SOURCE) {
         // The feed's own freshness signal (migration 110): the newest
         // published timestamp among parsed items (the parser already
-        // normalized RSS RFC-2822 / Atom RFC-3339 dates).
+        // normalized RSS RFC-2822 / Atom RFC-3339 dates). Future-dated items
+        // exist in the wild (JPost published 1h40m ahead, 2026-10-07 audit);
+        // clamp to the fetch time so feed freshness can never post-date the
+        // success that observed it.
         if let Some(published) = item.published {
+            let published = published.min(Utc::now());
             newest_item_at =
                 Some(newest_item_at.map_or(published, |current| current.max(published)));
         }

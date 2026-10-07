@@ -5510,11 +5510,21 @@ pub(super) async fn run_recipe_fire(
         feature_report.inputs_loaded(),
         feature_report.inputs_loaded() + feature_report.inputs_failed(),
     );
-    if deferred_by_cap > 0 || deferred_by_budget > 0 {
+    // Budget deferral is planned backpressure (the run processed its share and
+    // the rest is re-evaluated next run) — informational, not degradation.
+    // Cap deferral stays a caveat: the explicit per-run cap truncated the
+    // list. Incident 2026-10-07: 907/933 budget deferrals made every daily
+    // run degraded, training operators to ignore the yellow.
+    if deferred_by_cap > 0 {
         context_degraded.push(format!(
-            "{} candidate(s) deferred by cap and {} by budget",
+            "{} candidate(s) deferred by cap; {} by budget (planned backpressure)",
             deferred_by_cap, deferred_by_budget
         ));
+    } else if deferred_by_budget > 0 {
+        tracing::info!(
+            deferred_by_budget,
+            "recipe_fire: candidates deferred by budget; re-evaluated next run"
+        );
     }
     // Per-entity context sections that could not be loaded (P1-13) also make
     // this run degraded: the LLM saw less context than the recipe expects.

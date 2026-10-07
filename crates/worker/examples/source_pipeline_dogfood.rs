@@ -524,8 +524,11 @@ async fn warning_hygiene(
         .await
         .expect("load warnings since cutoff");
 
+    // Budgets apply to generators whose volume is noise; sanctions matches
+    // are the screening product itself and scale with the tracked portfolio,
+    // so they get structural + ratio assertions below instead of a count
+    // ceiling (2026-10-07 calibration).
     let budgets: &[(&str, i64)] = &[
-        ("sanctions", 80),
         ("volume_anomaly", 100),
         ("signal_shift", 100),
         ("security", 150),
@@ -553,6 +556,7 @@ async fn warning_hygiene(
     }
 
     let mut unstable = Vec::new();
+    let mut sanctions_titles = Vec::new();
     for row in &rows {
         let warning_type: String = row.get("warning_type");
         let title: String = row.get("title");
@@ -566,6 +570,7 @@ async fn warning_hygiene(
             "signal_shift" if title.contains(':') => {
                 unstable.push(format!("signal_shift title embeds type list: {title}"));
             }
+            "sanctions" => sanctions_titles.push(title),
             _ => {}
         }
     }
@@ -573,7 +578,54 @@ async fn warning_hygiene(
         unstable.is_empty(),
         format!("warning titles are stable per entity ({unstable:?})"),
     );
-    println!("  note {} warnings since cutoff", rows.len());
+
+    // Sanctions structural assertions: an entity title must be a real name,
+    // not a run of initials ("S. A. Mir" was matching list acronyms), and the
+    // portfolio-scale match count must stay within a sane ratio.
+    let initials_only: Vec<&String> = sanctions_titles
+        .iter()
+        .filter(|title| {
+            let name = title.trim_start_matches("Sanctions screening hit: ").trim();
+            let mut single_letter_tokens = 0usize;
+            let mut total_tokens = 0usize;
+            for token in name.split_whitespace() {
+                let cleaned = token.trim_matches(|ch: char| !ch.is_alphanumeric());
+                if cleaned.is_empty() {
+                    continue;
+                }
+                total_tokens += 1;
+                if cleaned.chars().count() == 1 {
+                    single_letter_tokens += 1;
+                }
+            }
+            total_tokens > 0 && single_letter_tokens >= 2
+        })
+        .collect();
+    harness.check(
+        initials_only.is_empty(),
+        format!("sanctions titles are names, not initials ({initials_only:?})"),
+    );
+
+    let companies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM companies")
+        .fetch_one(pool)
+        .await
+        .expect("count companies");
+    let sanctions_count = sanctions_titles.len() as i64;
+    let ratio = if companies == 0 {
+        0.0
+    } else {
+        sanctions_count as f64 / companies as f64
+    };
+    harness.check(
+        companies == 0 || ratio <= 0.40,
+        format!(
+            "sanctions matches within portfolio ratio ({sanctions_count}/{companies} = {ratio:.2} <= 0.40)"
+        ),
+    );
+    println!(
+        "  note {} warnings since cutoff ({sanctions_count} sanctions over {companies} companies)",
+        rows.len()
+    );
 }
 
 fn truncate(text: &str, max: usize) -> String {
