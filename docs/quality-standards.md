@@ -17,6 +17,9 @@ mechanically. "Unverifiable" is always treated as failure — never as pass.
 | P7 | Template leakage | no un-substituted `{{...}}` | `InsightCandidate::has_template_leakage` |
 | P8 | Grounding citations | RAG responses must cite sources | `rag.rs::citation_from_response` |
 | P9 | Bias challenge | devil's-advocate adjustment applied before confidence is stored | `apply_bias_mitigation` |
+| P10 | No process advice | recommendation sentences shaped as "verify/map/engage/assess/explore ..." require a digit or explicit timing window; violated drafts are regenerated with targeted guidance and never persisted | `process_advice_hits` veto blocker in the shared generation loop |
+| P11 | Editorial standard on every path | depth ≥ 0.50, factuality ≥ 0.75, warrant ≥ 0.55, independence ≥ 0.45 hold for insights and recipe-fire alike; failures retry with board reasons, then reject | `editorial_gate_for_generation` |
+| P12 | Specificity | ≥ 60% of recent insights carry a digit or a named entity (pure prose restatement has neither) | insight-quality audit (48h window) |
 
 ## 2. Recipe lifecycle standards
 
