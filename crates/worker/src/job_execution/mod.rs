@@ -13,7 +13,7 @@ mod observation_index;
 mod osint_enrichment;
 mod poi;
 mod psych_profile;
-mod recipes;
+pub(crate) mod recipes;
 mod resilience;
 mod sales;
 mod security;

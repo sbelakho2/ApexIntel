@@ -565,7 +565,15 @@ tracked globally regardless of their location."
             .to_string()
     });
 
-    let system = format!("You are a competitive intelligence analyst at an OSINT firm. Your job is to read raw signal evidence and report what it actually shows — nothing more, nothing less. You write for C-suite executives and procurement leadership who will act on your words, so accuracy matters more than narrative flair.
+    let system = format!("You are a competitive intelligence analyst at an OSINT firm. Your job is to read raw signal evidence and analyse what it means for the named entities — not to summarise the news. You write for C-suite executives and procurement leadership who will act on your words, so accuracy matters more than narrative flair.
+
+ANALYSIS STANDARD (every brief is judged against this):
+- Explain HOW the development changes something concrete for the named entities: capacity, cost, lead time, compliance exposure, competitive position, or supply continuity — with the magnitudes or named artifacts the evidence provides.
+- Include at least one second-order consequence (what follows for suppliers, buyers, or competitors if this holds).
+- Address the strongest alternative reading of the evidence where one exists.
+- Recommendations must be specific actions: actor + action + object + timing, each justified by cited evidence.
+- BANNED recommendation shapes (process advice is not analysis): 'verify the ...', 'map the ...', 'engage with ...', 'assess the impact', 'explore opportunities', 'stakeholder engagement', 'scenario planning'. If the evidence supports no specific action, write 'No specific action warranted'.
+- Never describe your own process or what a reader could investigate; state findings and implications.
 
 --- OUR COMPANY ---
 {our_profile}
@@ -1178,6 +1186,23 @@ REQUIREMENTS:
             || has_confidence_boilerplate(&recommendation)
             || has_confidence_boilerplate(&headline);
 
+        // ── Global editorial standard ────────────────────────────────────
+        // Depth, factuality, warrant, and process-advice checks apply to
+        // EVERY insight path through this shared generation loop; failures
+        // reuse the retry machinery with targeted guidance (2026-10-07: a
+        // published insight restated a news item with three process-advice
+        // steps and passed every boolean validator).
+        let process_advice = crate::job_execution::recipes::process_advice_hits(&recommendation);
+        let process_advice_violation = !process_advice.is_empty();
+        let editorial_reason_keys = crate::job_execution::recipes::editorial_gate_for_generation(
+            category,
+            &headline,
+            &narrative,
+            &recommendation,
+            evidence_signals,
+        );
+        let editorial_violation = !editorial_reason_keys.is_empty();
+
         let gate_decisions = vec![
             quality_gate_blocker("generic_language", is_generic, false),
             quality_gate_blocker("malformed_output", malformed, false),
@@ -1267,6 +1292,8 @@ REQUIREMENTS:
                 if is_headline_ok { 1.0 } else { 0.0 },
                 0.5,
             ),
+            quality_gate_blocker("process_advice", process_advice_violation, true),
+            quality_gate_blocker("editorial_standard", editorial_violation, true),
         ];
         emit_quality_gate_decisions(
             &entity_ctx.name,
@@ -1377,6 +1404,10 @@ REQUIREMENTS:
         }
 
         previous_failure_reasons.clear();
+        if process_advice_violation {
+            previous_failure_reasons.push("generic_advice");
+        }
+        previous_failure_reasons.extend(editorial_reason_keys.iter().copied());
         if !has_reasoning_depth {
             previous_failure_reasons.push("reasoning");
         }
@@ -1442,6 +1473,8 @@ REQUIREMENTS:
             recommendation_words = recommendation.split_whitespace().count(),
             recommendation_preview = %crate::truncate_text(&recommendation, 120),
             generic = is_generic,
+            process_advice = ?process_advice,
+            editorial = ?editorial_reason_keys,
             has_placeholders,
             malformed,
             headline = %headline,

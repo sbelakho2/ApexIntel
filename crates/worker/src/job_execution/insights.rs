@@ -394,10 +394,11 @@ fn build_buying_center_recommendation(
     company_name: &str,
     company_pois: &[CompanyPoiRef],
 ) -> String {
+    // No filler: an insight must not pad itself with "no contacts tracked"
+    // notices (2026-10-07). The contacts block appears only when there are
+    // real, buyer-relevant POIs to name.
     if company_pois.is_empty() {
-        return format!(
-            "\n\n**Recommended contacts at {company_name}:** No tracked personnel with buyer-relevant roles yet. Prioritize discovering the procurement or supply-chain lead before outreach."
-        );
+        return String::new();
     }
 
     // Classify each POI's real role family from their title (bypassing any
@@ -424,9 +425,7 @@ fn build_buying_center_recommendation(
     ranked.sort_by_key(|(_, _, _, bc)| bc.priority());
 
     if ranked.is_empty() {
-        return format!(
-            "\n\n**Recommended contacts at {company_name}:** No buyer-relevant personnel currently tracked. Enrich POI discovery to find procurement, supply-chain, or quality contacts."
-        );
+        return String::new();
     }
 
     let mut lines = Vec::new();
@@ -782,7 +781,7 @@ async fn generate_insights_for_company(
     // rendered prompt inputs, so a different rendering of the same evidence
     // (changed company profile, changed evidence text) can never be served a
     // stale response.
-    const INSIGHT_PROMPT_VERSION: &str = "insight_generation_v1";
+    const INSIGHT_PROMPT_VERSION: &str = "insight_generation_v2_editorial";
     let observation_ids: Vec<uuid::Uuid> = observations
         .iter()
         .take(MAX_EVIDENCE_SIGNALS)

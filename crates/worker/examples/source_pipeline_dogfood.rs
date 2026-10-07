@@ -424,19 +424,44 @@ const BANNED_INSIGHT_PATTERNS: &[&str] = &[
     "make a hard commitment",
     "non-social reporting",
     "look for formal confirmation",
+    // Process advice disguised as recommendations (2026-10-07: a published
+    // insight's entire recommendation field was three process steps).
+    "verify the timeline",
+    "map the policy",
+    "map the implications",
+    "engage with eu",
+    "engage with trade representatives",
+    "assess the impact",
+    "explore opportunities",
+    "scenario planning",
+    "stakeholder engagement",
+    "no tracked personnel",
+    "no buyer-relevant personnel",
 ];
 
 async fn insight_quality(harness: &mut Harness, pool: &sqlx::PgPool) {
     println!("[insight quality]");
+    // Banned-pattern enforcement applies to the NEW pipeline's output: the
+    // gate shipped 2026-10-07, so only insights from the last 48h are judged
+    // (older rows are reported as backlog, not as violations).
     let rows = sqlx::query(
         "SELECT title, summary FROM insights
-         WHERE created_at > now() - interval '7 days'
+         WHERE created_at > now() - interval '48 hours'
            AND COALESCE(metadata->>'retracted','false') <> 'true'
          ORDER BY created_at DESC LIMIT 25",
     )
     .fetch_all(pool)
     .await
     .expect("load recent insights");
+    let backlog: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM insights
+         WHERE created_at <= now() - interval '48 hours'
+           AND created_at > now() - interval '8 days'
+           AND COALESCE(metadata->>'retracted','false') <> 'true'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count backlog insights");
 
     let mut violations = Vec::new();
     for row in &rows {
@@ -500,8 +525,36 @@ async fn insight_quality(harness: &mut Harness, pool: &sqlx::PgPool) {
         rows.is_empty() || ratio >= 0.5,
         format!("recent insights tell the reader how it matters ({actionable}/{} actionable, {ratio:.2})", rows.len()),
     );
+    // Specificity floor: an insight must carry at least one digit or a
+    // capitalized entity token beyond a sentence start — pure prose
+    // restatement has neither.
+    let specific = rows
+        .iter()
+        .filter(|row| {
+            let summary: String = row.get("summary");
+            let has_digit = summary.chars().any(|ch| ch.is_ascii_digit());
+            let has_entity = summary.split_whitespace().skip(1).any(|word| {
+                let cleaned: String = word.chars().filter(|ch| ch.is_alphanumeric()).collect();
+                cleaned.chars().count() >= 3
+                    && cleaned.chars().next().is_some_and(|ch| ch.is_uppercase())
+            });
+            has_digit || has_entity
+        })
+        .count();
+    let specificity_ratio = if rows.is_empty() {
+        1.0
+    } else {
+        specific as f64 / rows.len() as f64
+    };
+    harness.check(
+        rows.is_empty() || specificity_ratio >= 0.6,
+        format!(
+            "recent insights are specific (digit or named entity: {specific}/{}, {specificity_ratio:.2} >= 0.60)",
+            rows.len()
+        ),
+    );
     println!(
-        "  note {} insights in the last 7 days; {insights_48h} in the last 48h; {actionable} actionable",
+        "  note {} insights in the last 48h; {insights_48h} in the last 48h; {actionable} actionable; {backlog} older backlog (not judged)",
         rows.len()
     );
 }

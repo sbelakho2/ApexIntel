@@ -5571,6 +5571,147 @@ pub(super) async fn run_recipe_fire(
     run
 }
 
+/// Sentences that read as process advice instead of analysis. A hit is only
+/// a violation when the sentence carries no concrete anchor: a digit or a
+/// capitalized proper noun (excluding the sentence's first word). "Engage with
+/// ACME GmbH before Q2" is fine; "Engage with EU trade representatives" is
+/// not (2026-10-07: three of three recommendations in a published insight
+/// were process steps).
+const PROCESS_ADVICE_STEMS: [&str; 16] = [
+    "verify the",
+    "map the",
+    "map how",
+    "engage with",
+    "assess the",
+    "assess how",
+    "explore opportunities",
+    "stakeholder engagement",
+    "policy advisors",
+    "scenario planning",
+    "reviewing the",
+    "understand the broader",
+    "monitor the situation",
+    "keep on watchlist",
+    "continue monitoring",
+    "reach out to",
+];
+
+/// Returns the process-advice stems present without a concrete anchor.
+///
+/// A process-advice sentence is only acceptable when it carries an explicit
+/// commitment shape: a digit (count, percentage, quarter, year) or a timing
+/// window. A named institution alone does not make an action concrete —
+/// "Engage with EU trade representatives" is process advice even though it
+/// names the EU (2026-10-07).
+#[cfg(feature = "llm")]
+pub(crate) fn process_advice_hits(text: &str) -> Vec<&'static str> {
+    const TIMING_MARKERS: [&str; 10] = [
+        "within",
+        "before",
+        "by the end",
+        "next week",
+        "next month",
+        "next quarter",
+        "this week",
+        "this month",
+        "this quarter",
+        "deadline",
+    ];
+    let mut hits: Vec<&'static str> = Vec::new();
+    for sentence in text.split(['.', '!', '?', '\n']) {
+        let trimmed = sentence.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        let has_digit = trimmed.chars().any(|ch| ch.is_ascii_digit());
+        let has_timing = TIMING_MARKERS.iter().any(|marker| lower.contains(marker));
+        if has_digit || has_timing {
+            continue;
+        }
+        for stem in PROCESS_ADVICE_STEMS {
+            if lower.contains(stem) && !hits.contains(&stem) {
+                hits.push(stem);
+            }
+        }
+    }
+    hits
+}
+
+/// Run the analytical editorial board over one generation attempt and map the
+/// verdict to retry-guidance reason keys. Used by the shared generation loop
+/// so every insight path (recipe fire and insight generation) is held to the
+/// same depth/factuality/warrant standard, with the existing retry machinery
+/// regenerating against the specific failure (2026-10-07: an insight that
+/// restated a news item with three process-advice steps passed every boolean
+/// validator).
+#[cfg(feature = "llm")]
+pub(crate) fn editorial_gate_for_generation(
+    category: &str,
+    headline: &str,
+    narrative: &str,
+    recommendation: &str,
+    evidence_signals: &[crate::prompts::EvidenceSignal],
+) -> Vec<&'static str> {
+    use apex_insights::analytical::editorial::{
+        review, EditorialConfig, EditorialInputs, EditorialVerdict,
+    };
+
+    let evidence = evidence_records_from_signals("insight_generation", category, evidence_signals);
+    let refs: Vec<apex_insights::claims::ClaimEvidenceRef> = evidence
+        .iter()
+        .map(|record| {
+            apex_insights::claims::ClaimEvidenceRef::new(
+                record.evidence_id,
+                record.source_url.clone(),
+            )
+        })
+        .collect();
+    let claims = apex_insights::claims::extract_claims(narrative, recommendation, &refs, 0.7, None);
+    let external_attacks = build_external_attacks("insight_generation", &evidence);
+    let inputs = EditorialInputs {
+        headline,
+        narrative,
+        recommendations: recommendation,
+        claims: &claims,
+        evidence: &evidence,
+        stated_confidence: 0.7,
+        alternative_hypotheses: 0,
+        external_attacks: &external_attacks,
+        calibration: None,
+        as_of: Utc::now(),
+    };
+    let review = review(&inputs, &EditorialConfig::default());
+
+    let mut reasons: Vec<&'static str> = Vec::new();
+    if review.verdict != EditorialVerdict::Publish {
+        for reason in &review.reasons {
+            let key = if reason.contains("hard integrity") {
+                "editorial_factuality"
+            } else if reason.contains("depth index") {
+                "editorial_depth"
+            } else if reason.contains("factuality") {
+                "editorial_factuality"
+            } else if reason.contains("warrant") {
+                "editorial_warrant"
+            } else if reason.contains("independence") {
+                "editorial_independence"
+            } else if reason.contains("red-team") {
+                "editorial_red_team"
+            } else {
+                "editorial_depth"
+            };
+            if !reasons.contains(&key) {
+                reasons.push(key);
+            }
+        }
+        if reasons.is_empty() {
+            reasons.push("editorial_depth");
+        }
+    }
+    reasons
+}
+
 /// Build review-only evidence records from LLM evidence signals. Ids are
 /// deterministic (v5) from recipe + URL so repeated reviews are stable and
 /// never collide with real storage ids (these records are not persisted).
@@ -5819,6 +5960,38 @@ pub(crate) async fn persist_analytical_quality_score(
             reasons = ?review.reasons,
             "recipe_fire: analytical quality ledger recorded rejected product"
         );
+    }
+}
+
+#[cfg(all(test, feature = "llm"))]
+mod process_advice_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::process_advice_hits;
+
+    #[test]
+    fn generic_process_advice_is_detected() {
+        // The 2026-10-07 published insight's recommendation field.
+        let recommendations = "Verify the timeline and scope of the proposed safeguard measures by reviewing the European Commission's official documentation. Map the policy implications for EU member states. Engage with EU trade representatives to understand the broader implications.";
+        let hits = process_advice_hits(recommendations);
+        assert!(hits.contains(&"verify the"));
+        assert!(hits.contains(&"map the"));
+        assert!(hits.contains(&"engage with"));
+    }
+
+    #[test]
+    fn concrete_actions_with_anchors_are_allowed() {
+        let concrete = "Contact Volkswagen Group procurement within 14 days to confirm safeguard-exposure on their Chinese hybrid imports. Renegotiate the 2026 cell-supply clause with CATL before Q1.";
+        assert!(
+            process_advice_hits(concrete).is_empty(),
+            "anchored actions must pass: {:?}",
+            process_advice_hits(concrete)
+        );
+    }
+
+    #[test]
+    fn no_action_statement_is_allowed() {
+        assert!(process_advice_hits("No specific action warranted").is_empty());
     }
 }
 

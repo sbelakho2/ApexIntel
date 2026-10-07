@@ -674,6 +674,24 @@ pub(super) fn build_llm_retry_guidance(
             "readability" => guidance.push(
                 "Write plain business prose with no template phrasing, no labels, and no repetitive restatements. Every sentence should add a new fact, implication, or action.".to_string(),
             ),
+            "generic_advice" => guidance.push(
+                "Your recommendation is process advice, not analysis. Banned shapes: 'verify the ...', 'map the ...', 'engage with ...', 'assess the impact', 'explore opportunities', 'stakeholder engagement', 'scenario planning'. Replace it with a specific action: actor + action + object + timing, justified by cited evidence. If nothing specific is warranted, write exactly 'No specific action warranted'.".to_string(),
+            ),
+            "editorial_depth" => guidance.push(
+                "The draft failed the editorial board's depth standard — it summarises instead of analysing. State WHAT the development changes for the named entities (capacity, cost, lead time, compliance exposure, competitive position) using the magnitudes or named artifacts in the evidence; add one second-order consequence; and address the strongest alternative reading. Keep every claim cited as [n].".to_string(),
+            ),
+            "editorial_factuality" => guidance.push(
+                "Every figure, date, and named entity must appear in the cited evidence; remove anything you cannot cite. The board detected unsupported specifics.".to_string(),
+            ),
+            "editorial_warrant" => guidance.push(
+                "Separate observation from inference explicitly ('the evidence shows X; this suggests Y') and drop causal claims the cited evidence cannot carry.".to_string(),
+            ),
+            "editorial_independence" => guidance.push(
+                "The central claim rests on a single source. Either corroborate it from the other evidence or state the limitation plainly.".to_string(),
+            ),
+            "editorial_red_team" => guidance.push(
+                "The evidence shows signs of coordinated or duplicated placement; describe findings conservatively and avoid amplifying repeated wording.".to_string(),
+            ),
             "reasoning" => guidance.push(
                 "Make the causal chain explicit with clear 'because/therefore' logic or a concrete counterfactual based on the evidence.".to_string(),
             ),
