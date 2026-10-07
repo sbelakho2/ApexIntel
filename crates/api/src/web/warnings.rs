@@ -1176,6 +1176,49 @@ pub async fn get_warning(
 }
 
 /// POST /warnings/:id/acknowledge — acknowledge a warning, return updated card HTML.
+/// POST /warnings/acknowledge-all — dismiss every open warning for the
+/// signed-in user, then refresh the warnings page. Deliberately separate
+/// from the per-warning path so the audit trail records a bulk dismissal.
+pub async fn acknowledge_all_warnings_html(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+) -> impl IntoResponse {
+    match store
+        .acknowledge_all_open_warnings(&session.user_id, "Bulk dismissal from the warnings page")
+        .await
+    {
+        Ok(count) => {
+            tracing::info!(
+                user = %session.username,
+                count,
+                "warnings: bulk acknowledge completed"
+            );
+            let mut headers = HeaderMap::new();
+            // Full reload keeps counters, nav badges, and the table in sync.
+            headers.insert("HX-Refresh", HeaderValue::from_static("true"));
+            (
+                headers,
+                Html(format!(
+                    r#"<div class="apex-card p-4 border-rams-green/30 bg-rams-green/5">
+                         <p class="text-sm font-bold text-rams-green">{count} warning(s) acknowledged</p>
+                         <p class="text-[10px] text-muted-foreground mt-1">The active board was cleared by {}.</p>
+                       </div>"#,
+                    super::escape_html(&session.username)
+                )),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "warnings: bulk acknowledge failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to acknowledge warnings".to_string()),
+            )
+                .into_response()
+        }
+    }
+}
+
 pub async fn acknowledge_warning_html(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,

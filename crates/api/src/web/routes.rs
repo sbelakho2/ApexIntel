@@ -248,6 +248,10 @@ where
         .get("/triage/:id", crate::web::triage::get_triage_item)
         // ─── Write pages (require_web_write + require_session) ───────────────
         .post(
+            "/warnings/acknowledge-all",
+            crate::web::warnings::acknowledge_all_warnings_html,
+        )
+        .post(
             "/warnings/:id/acknowledge",
             crate::web::warnings::acknowledge_warning_html,
         )

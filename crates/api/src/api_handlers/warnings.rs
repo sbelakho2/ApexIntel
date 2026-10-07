@@ -51,6 +51,32 @@ fn review_outcome_as_str(outcome: &WarningReviewOutcome) -> &'static str {
     }
 }
 
+/// POST /api/warnings/acknowledge-all — dismiss every open warning.
+pub(crate) async fn acknowledge_all_warnings(
+    State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
+) -> impl IntoResponse {
+    match state
+        .store
+        .acknowledge_all_open_warnings(&auth_ctx.user_id, "Bulk dismissal via API")
+        .await
+    {
+        Ok(count) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "acknowledged": count })),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "warnings: api bulk acknowledge failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to acknowledge warnings" })),
+            )
+                .into_response()
+        }
+    }
+}
+
 pub(crate) async fn list_warnings(
     State(state): State<AppState>,
     Extension(auth_ctx): Extension<ApiAuthContext>,

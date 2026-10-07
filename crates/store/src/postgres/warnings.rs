@@ -298,6 +298,26 @@ impl PgStore {
         Ok(row.0)
     }
 
+    /// Acknowledge every unacknowledged warning in one statement. Returns the
+    /// number transitioned. The audit trail records who cleared the board;
+    /// `review_outcome` is deliberately untouched — dismissing the whole board
+    /// is not a false-positive verdict on every warning.
+    pub async fn acknowledge_all_open_warnings(&self, user_id: &str, note: &str) -> Result<u64> {
+        let result = sqlx::query(
+            r#"UPDATE warnings
+               SET acknowledged = TRUE,
+                   acknowledged_by = $1,
+                   acknowledged_at = now(),
+                   acknowledged_note = $2
+               WHERE acknowledged = FALSE"#,
+        )
+        .bind(user_id)
+        .bind(note)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn acknowledge_warning(
         &self,
         id: Uuid,

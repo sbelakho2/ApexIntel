@@ -405,3 +405,64 @@ async fn explicit_refs_link_real_objects_and_refuse_dangling_ids() {
     cleanup(&pool, outcome.id, &[&doc_url, &obs_url], &[observation_id]).await;
     pool.close().await;
 }
+
+/// Bulk dismissal acknowledges every unacknowledged warning, leaves
+/// already-acknowledged rows alone, and never fabricates a review verdict
+/// (review_outcome is untouched — dismissing the board is not a
+/// false-positive call on every warning).
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn acknowledge_all_open_warnings_transitions_only_unacknowledged_rows() {
+    let pool = connect().await;
+    migrate(&pool).await;
+    let store = PgStore::from_pool(pool.clone());
+    let open_a = Uuid::new_v4();
+    let open_b = Uuid::new_v4();
+    let already = Uuid::new_v4();
+    for (id, acknowledged) in [(open_a, false), (open_b, false), (already, true)] {
+        sqlx::query(
+            "INSERT INTO warnings (id, warning_type, severity, title, is_system_broadcast,
+                                   acknowledged, review_outcome)
+             VALUES ($1, 'bulk_ack_test', 'low', $2, false, $3, 'true_positive')",
+        )
+        .bind(id)
+        .bind(format!("bulk ack fixture {id}"))
+        .bind(acknowledged)
+        .execute(&pool)
+        .await
+        .expect("insert warning fixture");
+    }
+
+    let transitioned = store
+        .acknowledge_all_open_warnings("tester", "bulk dismissal test")
+        .await
+        .expect("bulk acknowledge");
+    assert!(transitioned >= 2, "expected at least the two open fixtures");
+
+    let rows = sqlx::query_as::<_, (Uuid, bool, Option<String>)>(
+        "SELECT id, acknowledged, review_outcome::text FROM warnings WHERE id = ANY($1)",
+    )
+    .bind(vec![open_a, open_b, already])
+    .fetch_all(&pool)
+    .await
+    .expect("load fixtures");
+    assert_eq!(rows.len(), 3);
+    for (_, acknowledged, review_outcome) in rows {
+        assert!(
+            acknowledged,
+            "every fixture is acknowledged after bulk dismissal"
+        );
+        assert_eq!(
+            review_outcome.as_deref(),
+            Some("true_positive"),
+            "bulk dismissal must not overwrite review verdicts"
+        );
+    }
+
+    sqlx::query("DELETE FROM warnings WHERE id = ANY($1)")
+        .bind(vec![open_a, open_b, already])
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+    pool.close().await;
+}

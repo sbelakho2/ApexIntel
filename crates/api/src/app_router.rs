@@ -107,6 +107,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             post(warnings_handlers::delete_warnings_bulk),
         )
         .route(
+            "/api/warnings/acknowledge-all",
+            post(warnings_handlers::acknowledge_all_warnings),
+        )
+        .route(
             "/api/warnings/:id",
             get(details_handlers::get_warning_detail).delete(warnings_handlers::delete_warning),
         )

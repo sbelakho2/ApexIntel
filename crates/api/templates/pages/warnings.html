@@ -47,7 +47,14 @@
 <div class="apex-module mb-6">
   <div class="apex-module-header">
     <h2>Warning trend (30d)</h2>
-    <a href="/api/warnings" class="apex-action-link">Export JSON</a>
+    <div class="flex items-center gap-3">
+      <form hx-post="/warnings/acknowledge-all"
+            hx-confirm="Acknowledge ALL open warnings? This clears the entire active board."
+            hx-swap="none">
+        <button type="submit" class="apex-btn apex-btn-secondary">Acknowledge all</button>
+      </form>
+      <a href="/api/warnings" class="apex-action-link">Export JSON</a>
+    </div>
   </div>
   <div class="apex-module-body">
     <div class="apex-chart-frame apex-chart-frame-dense">
@@ -158,7 +165,18 @@
           <td>{% call m::region_badge(w.region) %}</td>
           <td class="text-right font-bold tabular-nums">{% if let Some(pct) = w.confidence_pct %}{{ pct }}%{% else %}—{% endif %}</td>
           <td class="px-3 py-3 tabular-nums text-rams-muted">{{ w.created_date }}</td>
-          <td>{% if w.acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>{% else %}<span class="text-[10px] font-bold uppercase apex-text-warning">Active</span>{% endif %}</td>
+          <td>
+            {% if w.acknowledged %}
+            <span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>
+            {% else %}
+            <span class="text-[10px] font-bold uppercase apex-text-warning">Active</span>
+            <button type="button"
+                    hx-post="/warnings/{{ w.id }}/acknowledge"
+                    hx-confirm="Acknowledge this warning?"
+                    hx-swap="none"
+                    class="ml-2 apex-action-link">Dismiss</button>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
