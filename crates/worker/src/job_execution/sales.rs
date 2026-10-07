@@ -131,7 +131,14 @@ pub(super) async fn run_contact_enrichment(kind: &JobKind, store: &Arc<PgStore>)
         run.fail(&format!(
             "{summary} — provider parser or persistence failure"
         ));
-    } else if provider_fetch_failures > 0 {
+    } else if provider_fetch_failures > 0
+        && enriched == 0
+        && provider_fetch_failures * 4 >= rows.len() as u64
+    {
+        // Materially broken providers degrade; sparse per-record fetch
+        // failures with healthy enrichment are a note, not a permanent
+        // yellow (2026-10-07: 13/50 failures kept the hourly job degraded for
+        // two days with zero information gain).
         run.degrade(enriched, &format!("{summary} — provider fetch degraded"));
     } else {
         run.succeed(enriched, &summary);

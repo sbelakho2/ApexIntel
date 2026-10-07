@@ -331,6 +331,16 @@ pub(super) async fn run_anomaly_scan(
             "Source '{}' is publishing but ingestion has stalled",
             stall.source_id
         );
+        match store
+            .open_source_warning_exists("source_outage", &title)
+            .await
+        {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, "anomaly_scan: open-warning check failed; warning may duplicate")
+            }
+        }
         let description = format!(
             "Source '{}' is being fetched successfully and its feed reported fresh items \
              (newest item {}), yet no observations have been ingested for {} days \
@@ -386,11 +396,28 @@ pub(super) async fn run_anomaly_scan(
     };
 
     for failure in &failing {
+        // Quarantined sources (repeated failures on the 7-day retry tier) are
+        // reported by coverage, not re-warned every scan.
+        if failure.consecutive_failures >= 6
+            && failure.next_due_at > Utc::now() + chrono::Duration::days(1)
+        {
+            continue;
+        }
         let error_text = failure
             .last_error
             .clone()
             .unwrap_or_else(|| "unknown fetch error".to_string());
         let title = format!("Source '{}' fetch is failing", failure.source_slug);
+        match store
+            .open_source_warning_exists("source_fetch_failure", &title)
+            .await
+        {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, "anomaly_scan: open-warning check failed; warning may duplicate")
+            }
+        }
         let description = format!(
             "Source '{}' has failed {} consecutive fetch attempts (last status: {}; \
              last error: {}). Last successful fetch: {}. The scheduler keeps retrying on \

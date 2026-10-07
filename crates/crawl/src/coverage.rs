@@ -698,6 +698,14 @@ pub fn family_coverage(
             .last_success_at
             .map(|success_at| success_at >= attempted_at)
             .unwrap_or(false);
+        // Quarantined sources (>=6 consecutive failures, on the 7-day retry
+        // tier) are dead hosts, not active coverage: excluding them keeps the
+        // success ratios about sources we can actually crawl (2026-10-07).
+        if runtime.consecutive_failures >= 6
+            && runtime.next_due_at > now + chrono::Duration::hours(24)
+        {
+            continue;
+        }
         let success_at = runtime.last_success_at.unwrap_or(attempted_at);
         let rate = runtime.rolling_success_rate.unwrap_or(0.0).clamp(0.0, 1.0);
         for family in &families {

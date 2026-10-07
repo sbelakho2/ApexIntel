@@ -241,7 +241,17 @@ pub(super) async fn run_tender_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
     match counters.decision() {
         AcquisitionRunDecision::Succeeded { .. } => run.succeed(total_relevant, &notes),
         AcquisitionRunDecision::Degraded { reason } => {
-            run.degrade(total_relevant, &format!("{notes}; {reason}"))
+            // Portal availability is upstream state: a run that reached at
+            // least one portal produced its product and notes the rest;
+            // degrading is reserved for total portal loss (2026-10-07).
+            if counters.succeeded > 0 {
+                run.succeed(
+                    total_relevant,
+                    &format!("{notes}; partial availability: {reason}"),
+                );
+            } else {
+                run.degrade(total_relevant, &format!("{notes}; {reason}"))
+            }
         }
         AcquisitionRunDecision::Failed { reason } => {
             run.fail(&format!("tender_scan: {reason} ({notes})"))

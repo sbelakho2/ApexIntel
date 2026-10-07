@@ -942,7 +942,9 @@ pub(super) async fn run_dns_posture_scan(
         run.fail(&format!(
             "{summary} — DNS posture persistence or warning ingestion degraded"
         ));
-    } else if indeterminate_lookups > 0 {
+    } else if indeterminate_lookups * 5 > checked {
+        // Isolated resolver hiccups are notes; a fifth of lookups failing
+        // means the resolver path itself is degraded (2026-10-07).
         run.degrade(
             counters.warnings_persisted,
             &format!("{summary}; indeterminate DNS lookups (unknown, not missing)"),
@@ -1718,14 +1720,24 @@ pub(super) async fn run_lookalike_domain_scan(
                 "{summary} — every lookalike registration lookup failed; nothing was verified"
             ),
         );
-    } else if registration_lookup_failures > 0 {
+    } else if registration_checks > 0 && registration_lookup_failures * 2 > registration_checks {
+        // Degrade only when a MAJORITY of lookups fail (dependency-wide
+        // trouble); isolated lookup failures are notes, not a permanent
+        // yellow (2026-10-07: 44% failure ratio kept the daily job degraded).
         run.degrade(
             total_variants,
             &format!(
-                "{summary} — {} registration lookups failed; those variants are unverified, not absent",
-                registration_lookup_failures
+                "{summary} — {} of {} registration lookups failed; those variants are unverified, not absent",
+                registration_lookup_failures, registration_checks
             ),
         );
+    } else if registration_lookup_failures > 0 {
+        tracing::info!(
+            registration_lookup_failures,
+            registration_checks,
+            "lookalike_domain_scan: isolated registration lookup failures; variants remain unverified"
+        );
+        run.succeed(total_variants, &summary);
     } else if let Some(reason) = counters.success_blocker() {
         run.degrade(total_variants, &format!("{summary}; {reason}"));
     } else {

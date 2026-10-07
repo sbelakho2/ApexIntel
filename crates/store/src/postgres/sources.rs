@@ -180,6 +180,8 @@ impl PgStore {
                                THEN interval '2 hours'
                            WHEN source_runtime_state.consecutive_failures + 1 = 4
                                THEN interval '4 hours'
+                           WHEN source_runtime_state.consecutive_failures + 1 >= 6
+                               THEN interval '7 days'
                            ELSE interval '8 hours'
                        END,
                        make_interval(secs => $5)),
@@ -194,6 +196,8 @@ impl PgStore {
                                THEN interval '2 hours'
                            WHEN source_runtime_state.consecutive_failures + 1 = 4
                                THEN interval '4 hours'
+                           WHEN source_runtime_state.consecutive_failures + 1 >= 6
+                               THEN interval '7 days'
                            ELSE interval '8 hours'
                        END,
                        make_interval(secs => $5)),

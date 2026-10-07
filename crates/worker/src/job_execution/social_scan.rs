@@ -332,7 +332,7 @@ async fn fetch_text(
 async fn ingest_reddit(
     _company_names: &[(uuid::Uuid, String)],
 ) -> AcquisitionOutcome<IngestedPost> {
-    let client = match build_social_client("ApexIntel-Social/1.0 (research)", 15) {
+    let client = match build_social_client(apex_crawl::fetch_policy::BROWSER_USER_AGENT, 15) {
         Ok(client) => client,
         Err(reason) => return AcquisitionOutcome::Unavailable { reason },
     };
@@ -390,7 +390,7 @@ async fn ingest_reddit(
 async fn ingest_telegram(
     _company_names: &[(uuid::Uuid, String)],
 ) -> AcquisitionOutcome<IngestedPost> {
-    let client = match build_social_client("ApexIntel-Social/1.0", 15) {
+    let client = match build_social_client(apex_crawl::fetch_policy::BROWSER_USER_AGENT, 15) {
         Ok(client) => client,
         Err(reason) => return AcquisitionOutcome::Unavailable { reason },
     };
@@ -439,7 +439,7 @@ async fn ingest_telegram(
 async fn ingest_hackernews(
     company_names: &[(uuid::Uuid, String)],
 ) -> AcquisitionOutcome<IngestedPost> {
-    let client = match build_social_client("ApexIntel-Social/1.0", 15) {
+    let client = match build_social_client(apex_crawl::fetch_policy::BROWSER_USER_AGENT, 15) {
         Ok(client) => client,
         Err(reason) => return AcquisitionOutcome::Unavailable { reason },
     };
@@ -510,19 +510,34 @@ async fn ingest_hackernews(
 }
 
 /// Ingest from Twitter/X via Nitter instances (no bearer token needed).
+///
+/// The public Nitter pool is dead (2026-10-07 audit: every instance
+/// transport-fails). Twitter/X has no free public surface, so the platform is
+/// NotApplicable — neither success nor failure, never degrading the run —
+/// unless the deployment configures working instances via
+/// `NITTER_INSTANCES=a,b,c`.
 async fn ingest_twitter_nitter(
     company_names: &[(uuid::Uuid, String)],
 ) -> AcquisitionOutcome<IngestedPost> {
-    let client = match build_social_client("ApexIntel-Social/1.0", 10) {
+    let nitter_instances: Vec<String> = std::env::var("NITTER_INSTANCES")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if nitter_instances.is_empty() {
+        return AcquisitionOutcome::NotApplicable;
+    }
+
+    let client = match build_social_client(apex_crawl::fetch_policy::BROWSER_USER_AGENT, 10) {
         Ok(client) => client,
         Err(reason) => return AcquisitionOutcome::Unavailable { reason },
     };
-
-    let nitter_instances = [
-        "nitter.privacydev.net",
-        "nitter.poast.org",
-        "nitter.woodland.cafe",
-    ];
 
     let mut acc = PlatformAccumulator::default();
 

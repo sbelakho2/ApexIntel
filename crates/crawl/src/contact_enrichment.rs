@@ -54,7 +54,7 @@ impl ContactEnricher {
     pub fn from_env() -> Self {
         let client = crate::http::external_client_or_panic(crate::http::ExternalClientOptions {
             timeout: Duration::from_secs(20),
-            user_agent: Some("ApexIntel-Contacts/1.0".to_string()),
+            user_agent: Some(crate::fetch_policy::BROWSER_USER_AGENT.to_string()),
             ..crate::http::ExternalClientOptions::default()
         });
         Self {

@@ -1258,6 +1258,31 @@ impl PgStore {
 }
 
 impl PgStore {
+    /// Whether an unacknowledged warning with this exact type and title
+    /// already exists. The anomaly scan consults this before re-submitting a
+    /// source-health warning so a persistent condition stays ONE open warning
+    /// until it is resolved (2026-10-07: 523 open rows from ~90 failing
+    /// sources re-warned every 4h scan).
+    pub async fn open_source_warning_exists(
+        &self,
+        warning_type: &str,
+        title: &str,
+    ) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM warnings
+                   WHERE warning_type = $1 AND title = $2 AND acknowledged = false
+               )"#,
+        )
+        .bind(warning_type)
+        .bind(title)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+}
+
+impl PgStore {
     /// Auto-resolve source-health warnings whose condition no longer holds:
     /// a `source_fetch_failure` whose source has fewer than 3 consecutive
     /// failures again (recovered or reset), or a `source_outage` whose source
