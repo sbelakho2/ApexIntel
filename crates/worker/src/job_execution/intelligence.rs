@@ -662,13 +662,17 @@ pub(super) async fn run_self_improvement_cycle(
                     for stage in stages {
                         failed_component_names.push(format!("llm:{stage}"));
                     }
-                } else if !stage_failures.is_empty() || outcome.persistence_degraded() {
+                } else if !stage_failures.is_empty()
+                    || outcome.persistence_degraded()
+                    || outcome.quality_gate_degraded()
+                {
                     tracing::warn!(
                         stages = ?stage_failures
                             .iter()
                             .map(|failure| failure.stage.as_str())
                             .collect::<Vec<_>>(),
-                        "self_improvement_cycle: llm cycle degraded (partial stages or persistence failures)"
+                        golden_set_below_target = outcome.quality_gate_degraded(),
+                        "self_improvement_cycle: llm cycle degraded (partial stages, persistence failures, or golden-set regression)"
                     );
                     partial_learning_failures = true;
                 }

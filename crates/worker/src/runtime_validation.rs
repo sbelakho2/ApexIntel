@@ -27,6 +27,11 @@ pub(crate) struct QualityGateGoldenSetRegressionResult {
     pub(crate) rejected_examples: usize,
     pub(crate) agreement: f64,
     pub(crate) disagreements: Vec<QualityGateGoldenSetDisagreement>,
+    /// Agreement below target on a statistically meaningful sample. The
+    /// caller degrades the cycle and withholds the promotion; it is not a
+    /// whole-cycle failure (2026-10-06: one disagreeing example of one failed
+    /// the entire weekly cycle after the dataset had already been persisted).
+    pub(crate) below_target: bool,
 }
 
 #[cfg(feature = "llm")]
@@ -77,6 +82,7 @@ pub(crate) fn evaluate_quality_gate_golden_set(
         rejected_examples,
         agreement,
         disagreements,
+        below_target: false,
     }
 }
 
@@ -113,9 +119,10 @@ pub(crate) async fn run_quality_gate_golden_set_regression(
             rejected_examples: 0,
             agreement: 1.0,
             disagreements: Vec::new(),
+            below_target: false,
         });
     }
-    let regression = evaluate_quality_gate_golden_set(&export.examples);
+    let mut regression = evaluate_quality_gate_golden_set(&export.examples);
     let metrics = serde_json::json!({
         "dataset_id": export.dataset_id,
         "dataset_name": export.dataset_name,
@@ -196,13 +203,24 @@ pub(crate) async fn run_quality_gate_golden_set_regression(
         }
     }
 
-    if regression.agreement + f64::EPSILON < agreement_target {
-        anyhow::bail!(
-            "quality gate golden set agreement {:.3} below threshold {:.3}",
-            regression.agreement,
-            agreement_target
+    // A verdict needs a sample: agreement over fewer than
+    // `LLM_GOLDEN_SET_MIN_EXAMPLES` cases is noise, not regression. Even a
+    // meaningful regression is a governance outcome (degrade + withhold
+    // promotion), not a cycle failure — the earlier `bail!` here failed the
+    // whole weekly cycle after the dataset had already been persisted.
+    let min_examples = std::env::var("LLM_GOLDEN_SET_MIN_EXAMPLES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(5);
+    let below_target = regression.total_examples >= min_examples
+        && regression.agreement + f64::EPSILON < agreement_target;
+    if regression.total_examples > 0 && regression.total_examples < min_examples {
+        tracing::info!(
+            examples = regression.total_examples,
+            min_examples,
+            "quality_gate_golden_set: sample below the statistical floor; verdict recorded without action"
         );
     }
-
+    regression.below_target = below_target;
     Ok(regression)
 }

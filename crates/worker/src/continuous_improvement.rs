@@ -140,6 +140,8 @@ pub(crate) struct DatasetPersistenceSummary {
 #[cfg(feature = "llm")]
 #[derive(Debug, Clone)]
 pub(crate) struct ContinuousImprovementOutcome {
+    /// Golden-set agreement below target on a meaningful sample.
+    pub(crate) golden_set_below_target: bool,
     pub(crate) evaluation: StageResult<EvaluationStageSummary>,
     pub(crate) critique: StageResult<CritiqueStageSummary>,
     pub(crate) proposals: StageResult<ProposalsStageSummary>,
@@ -175,6 +177,13 @@ impl ContinuousImprovementOutcome {
     /// Whether governance or dataset persistence failed.
     pub(crate) fn persistence_degraded(&self) -> bool {
         self.governance_persistence.has_failure() || self.dataset_persistence.has_failure()
+    }
+
+    /// Golden-set agreement below target on a meaningful sample: the cycle
+    /// degrades and the promotion is withheld (governance outcome), without
+    /// failing the whole run.
+    pub(crate) fn quality_gate_degraded(&self) -> bool {
+        self.golden_set_below_target
     }
 }
 
@@ -900,7 +909,9 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         WORKER_METRICS.record_self_improvement_stage_failure("dataset_persistence");
     }
 
-    // ── 5. Golden-set regression gate (unchanged contract) ─────────────
+    // ── 5. Golden-set regression gate ──────────────────────────────────
+    // A regression is governance state (degrade + withhold promotion), not a
+    // cycle failure; persistence/export errors still fail loudly.
     let golden_set_regression = run_quality_gate_golden_set_regression(store, ingress)
         .await
         .context("llm self-improvement: quality gate golden set regression failed")?;
@@ -908,10 +919,13 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         agreement = golden_set_regression.agreement,
         total_examples = golden_set_regression.total_examples,
         disagreements = golden_set_regression.disagreements.len(),
+        below_target = golden_set_regression.below_target,
         "self_improvement_cycle: quality gate golden set regression completed"
     );
+    let golden_set_below_target = golden_set_regression.below_target;
 
     Ok(ContinuousImprovementOutcome {
+        golden_set_below_target,
         evaluation,
         critique,
         proposals,
@@ -1007,6 +1021,7 @@ mod tests {
         dataset_persistence: StageResult<DatasetPersistenceSummary>,
     ) -> ContinuousImprovementOutcome {
         ContinuousImprovementOutcome {
+            golden_set_below_target: false,
             evaluation: StageResult::success(evaluation_summary()),
             critique: StageResult::success(critique_summary()),
             proposals: StageResult::success(ProposalsStageSummary {
