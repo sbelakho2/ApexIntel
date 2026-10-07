@@ -98,7 +98,7 @@ pub const JOBS: &[JobDogfood] = &[
     JobDogfood { name: "anomaly_scan", mode: DogfoodMode::Live, max_age_hours: Some(9), check: "stable-title, floor-gated anomalies; auto-resolution of recovered warnings" },
     JobDogfood { name: "social_scan", mode: DogfoodMode::Live, max_age_hours: Some(5), check: "platform observations incl. Telegram IntelSlavaZ" },
     JobDogfood { name: "tender_scan", mode: DogfoodMode::Live, max_age_hours: Some(14), check: "MENA portal tenders; per-portal outcomes recorded" },
-    JobDogfood { name: "contact_enrichment", mode: DogfoodMode::Live, max_age_hours: Some(3), check: "provider fetch policy; enrich counters" },
+    JobDogfood { name: "contact_enrichment", mode: DogfoodMode::Live, max_age_hours: Some(3), check: "provider fetch policy; enrich counters; skips when no provider credentials configured (configuration gap, not failure)" },
     JobDogfood { name: "icp_scoring", mode: DogfoodMode::Live, max_age_hours: Some(14), check: "ICP scores refreshed" },
     JobDogfood { name: "engagement_refresh", mode: DogfoodMode::Live, max_age_hours: Some(2), check: "engagement rollups; skip is healthy when idle" },
     JobDogfood { name: "buying_center_derivation", mode: DogfoodMode::Live, max_age_hours: Some(14), check: "buying-center roles derived" },

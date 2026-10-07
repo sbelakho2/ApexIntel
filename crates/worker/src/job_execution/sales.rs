@@ -61,6 +61,25 @@ pub(super) async fn run_contact_enrichment(kind: &JobKind, store: &Arc<PgStore>)
         return run;
     }
 
+    // Without provider credentials the waterfall is website-only, which has
+    // never yielded a contact (2026-10-07 audit: 0 enriched across days, 14
+    // fetch failures/hour, permanent degrade). Configuration gaps are skips,
+    // not failures: set any of the provider keys to activate the job.
+    let providers_configured = ["APOLLO_API_KEY", "HUNTER_API_KEY", "CLEARBIT_API_KEY"]
+        .iter()
+        .any(|key| {
+            std::env::var(key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        });
+    if !providers_configured {
+        run.skip(
+            "contact_enrichment: no contact provider credentials configured \
+             (APOLLO_API_KEY / HUNTER_API_KEY / CLEARBIT_API_KEY); website-only enrichment yields no contacts",
+        );
+        return run;
+    }
+
     let enricher = ContactEnricher::from_env();
     let mut enriched = 0u64;
     // Distinct false-success counters: a provider schema change is a parser
