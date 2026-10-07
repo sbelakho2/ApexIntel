@@ -727,13 +727,18 @@ impl JobDef {
                     );
                 }
             }
-            JobStatus::Succeeded { .. } => {
+            JobStatus::Succeeded { .. } | JobStatus::Degraded { .. } => {
+                // A degraded run is not a failure: the job executed and
+                // surfaced caveats in its notes. Counting it against the
+                // failure streak left e.g. crawl_cycle (upstream source state
+                // only) permanently one step from the circuit after every
+                // degraded batch (2026-10-07 audit).
                 self.consecutive_failures = 0;
                 // #106: a successful probe (or any success) closes the breaker.
                 if !self.enabled {
                     tracing::info!(
                         job = self.kind.as_str(),
-                        "circuit breaker closed after a successful run"
+                        "circuit breaker closed after a non-failed run"
                     );
                 }
                 self.enabled = true;
