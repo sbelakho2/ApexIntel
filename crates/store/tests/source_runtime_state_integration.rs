@@ -51,7 +51,11 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
         captured - Duration::nanoseconds(i64::from(captured.timestamp_subsec_nanos() % 1_000))
     };
     let interval = Duration::hours(24);
-    for (attempt, expected_minutes) in [1440_i64, 1440, 1440, 1440, 1440, 1440]
+    // The sixth consecutive failure moves the source to the quarantine tier
+    // (7-day retry): dead hosts stay registered but stop consuming budget
+    // (2026-10-07). Attempts 1-5 back off at the 8h ladder capped by the
+    // 24h min interval; attempt 6+ is 7 days.
+    for (attempt, expected_minutes) in [1440_i64, 1440, 1440, 1440, 1440, 10080, 10080]
         .into_iter()
         .enumerate()
     {
