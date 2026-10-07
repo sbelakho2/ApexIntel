@@ -1309,7 +1309,12 @@ impl PgStore {
                       AND EXISTS (
                           SELECT 1 FROM source_runtime_state s
                           WHERE s.source_slug = split_part(split_part(w.title, '''', 2), '''', 1)
-                            AND s.consecutive_failures < 3
+                            AND (s.consecutive_failures < 3
+                                 -- Quarantined sources leave the active-failure
+                                 -- warning set; they are retried weekly and
+                                 -- reported by coverage instead.
+                                 OR (s.consecutive_failures >= 6
+                                     AND s.next_due_at > now() + interval '1 day'))
                       ))
                      OR
                      (w.warning_type = 'source_outage'
