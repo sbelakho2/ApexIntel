@@ -935,6 +935,21 @@ impl PgStore {
     }
 }
 
+impl PgStore {
+    /// Domain → company id pairs for domain-based observation linking: content
+    /// published on a company's own domain is that company's material even
+    /// when its name is never spelled out (2026-10-22 enrichment).
+    pub async fn list_company_domain_index(&self) -> Result<Vec<(String, Uuid)>> {
+        let rows = sqlx::query_as::<_, (String, Uuid)>(
+            r#"SELECT lower(domain), id FROM companies
+               WHERE domain IS NOT NULL AND domain <> ''"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

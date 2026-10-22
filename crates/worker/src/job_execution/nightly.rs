@@ -710,6 +710,131 @@ fn contains_ascii_word(haystack: &str, needle: &str) -> bool {
 ///
 /// Shared with the social scan so both callers link entities under the same
 /// rules.
+/// Host of an absolute URL, lower-cased, without `www.`/port/path.
+pub(super) fn url_host(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .split(':')
+        .next()
+        .unwrap_or(authority)
+        .trim_start_matches("www.")
+        .to_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// True when `host` is the domain itself or a subdomain of it. Suffix checks
+/// are dot-anchored so `evilacme.com` never matches `acme.com`.
+pub(super) fn host_matches_domain(host: &str, domain: &str) -> bool {
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+
+/// Look up a company by host: exact match first, then progressively shorter
+/// parent domains (`news.acme.com` → `acme.com`). Returns the most specific
+/// registered domain.
+pub(super) fn lookup_company_by_host(domains: &HashMap<String, Uuid>, host: &str) -> Option<Uuid> {
+    if let Some(id) = domains.get(host) {
+        return Some(*id);
+    }
+    let mut labels: Vec<&str> = host.split('.').collect();
+    while labels.len() > 2 {
+        labels.remove(0);
+        let candidate = labels.join(".");
+        if let Some(id) = domains.get(&candidate) {
+            return Some(*id);
+        }
+    }
+    None
+}
+
+/// Deterministic semantic classification of crawl content into existing
+/// `ObservationType` variants. The miner pairs streams by observation type;
+/// before this every crawl row was `WebChange`, so cross-domain patterns could
+/// never form (2026-10-22: 1 mined candidate/day). High-precision keyword
+/// sets only — anything unmatched stays `WebChange`.
+pub(super) fn classify_crawl_observation(title: &str, body: &str) -> ObservationType {
+    let probe = format!("{title} {body}").to_ascii_lowercase();
+    let any = |needles: &[&str]| needles.iter().any(|needle| probe.contains(needle));
+
+    if any(&[
+        "tender",
+        "call for bids",
+        "request for quotation",
+        "rfq issued",
+        "invitation to bid",
+    ]) {
+        return ObservationType::TenderPosted;
+    }
+    if any(&[
+        "procurement",
+        "supplier qualification",
+        "approved supplier",
+        "sourcing event",
+    ]) {
+        return ObservationType::ProcurementSignal;
+    }
+    if any(&[
+        "iso 9001",
+        "iso 14001",
+        "iatf 16949",
+        "as9100",
+        "iso 13485",
+        "certification granted",
+        "certificate revoked",
+        "audit failed",
+    ]) {
+        return ObservationType::CertificationUpdate;
+    }
+    if any(&["patent", "patent application", "uspto", "epo publication"]) {
+        return ObservationType::PatentPublished;
+    }
+    if any(&[
+        "expansion",
+        "new factory",
+        "groundbreaking",
+        "capacity increase",
+        "new plant",
+        "facility opens",
+        "production line",
+    ]) {
+        return ObservationType::CompetitorEvent;
+    }
+    if any(&[
+        "appointed",
+        "appoints",
+        "new ceo",
+        "chief executive",
+        "board appoints",
+        "resigns",
+    ]) {
+        return ObservationType::RoleChange;
+    }
+    if any(&[
+        "hiring",
+        "job openings",
+        "now hiring",
+        "careers",
+        "recruiting",
+    ]) {
+        return ObservationType::JobPost;
+    }
+    if any(&[
+        "cve-",
+        "vulnerability",
+        "security advisory",
+        "exploited",
+        "zero-day",
+    ]) {
+        return ObservationType::VulnNotice;
+    }
+    ObservationType::WebChange
+}
+
 pub(super) fn match_entities_in_text(
     text: &str,
     title: &str,
@@ -1215,6 +1340,20 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     else {
         return run;
     };
+    // Domain-based linking enrichment: company-site content links without a
+    // name mention. Soft dependency — a lookup failure degrades the cycle's
+    // enrichment but never blocks crawling.
+    let company_domains: HashMap<String, Uuid> = match store.list_company_domain_index().await {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(error) => {
+            tracing::warn!(%error, "crawl_cycle: company domain index unavailable; continuing without domain linking");
+            HashMap::new()
+        }
+    };
+    tracing::info!(
+        domains = company_domains.len(),
+        "crawl_cycle: company domain index loaded"
+    );
     tracing::info!(
         entity_names = entity_lookup.len(),
         "crawl_cycle: entity name index loaded for observation linking"
@@ -1448,15 +1587,21 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                         &payload.title_for_matching,
                         &entity_matcher,
                     );
+                    let observation_type =
+                        classify_crawl_observation(&payload.title_for_matching, &payload.link_text);
                     let entity_targets: Vec<Option<Uuid>> = if matched_entities.is_empty() {
-                        vec![None]
+                        // Domain fallback: content published on a company's
+                        // own domain belongs to it even without a name mention.
+                        let domain_entity = url_host(&payload.source_url)
+                            .and_then(|host| lookup_company_by_host(&company_domains, &host));
+                        vec![domain_entity]
                     } else {
                         matched_entities.into_iter().map(Some).collect()
                     };
 
                     for entity_id in entity_targets {
                         let mut observation = Observation::new(
-                            ObservationType::WebChange,
+                            observation_type.clone(),
                             observed_at,
                             payload.value.clone(),
                             payload.provenance.clone(),
@@ -3010,6 +3155,73 @@ mod feed_observation_tests {
         assert_eq!(observations[1].source_url, "https://example.com/feed.xml");
         assert_eq!(observations[0].source_url, "https://example.com/1");
         assert!(text.contains("First description"), "{text}");
+    }
+
+    #[test]
+    fn crawl_content_is_classified_into_semantic_observation_types() {
+        let cases = [
+            (
+                "New tender: battery cells for Tunis metro",
+                ObservationType::TenderPosted,
+            ),
+            (
+                "Supplier qualification program opened",
+                ObservationType::ProcurementSignal,
+            ),
+            (
+                "Plant achieves IATF 16949 certification",
+                ObservationType::CertificationUpdate,
+            ),
+            (
+                "Patent application published for BMS topology",
+                ObservationType::PatentPublished,
+            ),
+            (
+                "Company announces new factory expansion in Casablanca",
+                ObservationType::CompetitorEvent,
+            ),
+            (
+                "Board appoints new chief executive",
+                ObservationType::RoleChange,
+            ),
+            (
+                "Careers: now hiring 200 operators",
+                ObservationType::JobPost,
+            ),
+            (
+                "CVE-2026-1234 exploited in the wild",
+                ObservationType::VulnNotice,
+            ),
+            ("Quarterly market commentary", ObservationType::WebChange),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(
+                classify_crawl_observation("", text),
+                expected,
+                "classification for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_lookup_prefers_the_most_specific_registered_domain() {
+        let mut domains = HashMap::new();
+        let company = Uuid::from_u128(7);
+        domains.insert("acme.com".to_string(), company);
+        assert_eq!(lookup_company_by_host(&domains, "acme.com"), Some(company));
+        assert_eq!(
+            lookup_company_by_host(&domains, "news.acme.com"),
+            Some(company)
+        );
+        assert_eq!(lookup_company_by_host(&domains, "evilacme.com"), None);
+        assert_eq!(lookup_company_by_host(&domains, "acme.org"), None);
+    }
+
+    #[test]
+    fn host_matching_is_dot_anchored() {
+        assert!(host_matches_domain("acme.com", "acme.com"));
+        assert!(host_matches_domain("news.acme.com", "acme.com"));
+        assert!(!host_matches_domain("evilacme.com", "acme.com"));
     }
 
     #[test]

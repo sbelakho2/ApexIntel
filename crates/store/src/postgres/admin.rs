@@ -32,6 +32,9 @@ pub fn is_valid_manual_trigger_kind(kind: &str) -> bool {
             // Supplier pricing refresh: trigger-only marketplace crawl through
             // the r.jina.ai reader (reader quota is consumed per run).
             | "supplier_pricing_refresh"
+            // Insight generation: scheduled every 6h, but operators need an
+            // on-demand run after gate/threshold changes (2026-10-22 outage).
+            | "insight_generation"
     )
 }
 
