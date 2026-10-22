@@ -1,3 +1,4 @@
+use chrono::Datelike;
 use std::collections::HashMap;
 #[cfg(feature = "llm")]
 use std::collections::HashSet;
@@ -3173,6 +3174,18 @@ pub(super) async fn run_recipe_fire(
                 .partial_cmp(&left_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
+
+    // Deterministic daily rotation: the wall-clock budget only reaches the
+    // first ~15 candidates, so without rotation the same head of the list runs
+    // every day and produces only dedups while 800+ deferred candidates never
+    // get evaluated (2026-10-22: "5 inserts/day" that were all duplicates).
+    // Rotating the sorted list by day-of-year gives every candidate its turn
+    // across days while preserving score order within the run.
+    if !candidates.is_empty() {
+        let day = chrono::Utc::now().ordinal() as usize;
+        let rotation = day.wrapping_mul(37) % candidates.len();
+        candidates.rotate_left(rotation);
     }
 
     // Bound the run before the expensive per-entity evidence/context/name
