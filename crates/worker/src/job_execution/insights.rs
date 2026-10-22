@@ -106,7 +106,31 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
 
         // 3. Process companies (limit to MAX_COMPANIES_PER_RUN, prioritize by observation count)
         let mut sorted: Vec<_> = company_observations.iter().collect();
-        sorted.sort_by_key(|a| std::cmp::Reverse(a.1.len()));
+        // Prefer companies with real events over noisy high-volume feeds:
+        // typed signals (tenders, capacity events, certifications, filings)
+        // weigh more than generic page-change rows (2026-10-22: sorting by
+        // raw count fed the generator "nothing changed" drafts).
+        fn observation_weight(observation_type: &str) -> u32 {
+            match observation_type {
+                "TenderPosted"
+                | "ProcurementSignal"
+                | "CertificationUpdate"
+                | "PatentPublished"
+                | "CompetitorEvent"
+                | "RoleChange"
+                | "VulnNotice"
+                | "SecFiling" => 3,
+                "JobPost" | "DnsPosture" | "NewDomain" | "SocialPost" => 2,
+                _ => 1,
+            }
+        }
+        sorted.sort_by_key(|(_, observations)| {
+            let score: u32 = observations
+                .iter()
+                .map(|observation| observation_weight(&observation.observation_type))
+                .sum();
+            std::cmp::Reverse(score)
+        });
         sorted.truncate(*MAX_COMPANIES_PER_RUN);
 
         let mut total_insights_generated: u64 = 0;
@@ -250,6 +274,9 @@ pub(crate) struct ObservationText {
     pub id: uuid::Uuid,
     pub text: String,
     pub url: Option<String>,
+    /// Semantic observation type (classified at ingestion). Drives candidate
+    /// prioritization: companies with real events outrank noisy feeds.
+    pub observation_type: String,
 }
 
 pub(crate) async fn load_recent_observations_by_company(
@@ -264,6 +291,7 @@ pub(crate) async fn load_recent_observations_by_company(
         company_id: uuid::Uuid,
         content: String,
         url: Option<String>,
+        observation_type: String,
     }
 
     // B335: the observations table has no `content` column — crawled text
@@ -282,7 +310,7 @@ pub(crate) async fn load_recent_observations_by_company(
     // deterministic tie-breaker) and keep only the newest
     // `MAX_EVIDENCE_SIGNALS` rows each.
     let rows = sqlx::query_as::<_, ObsCompanyRow>(
-        r#"SELECT observation_id, company_id, content, url
+        r#"SELECT observation_id, company_id, content, url, observation_type
             FROM (
                 SELECT o.id AS observation_id,
                        o.entity_id AS company_id,
@@ -317,6 +345,7 @@ pub(crate) async fn load_recent_observations_by_company(
                 id: row.observation_id,
                 text: row.content,
                 url: row.url.filter(|u| u.starts_with("http")),
+                observation_type: row.observation_type,
             });
     }
     Ok(map)

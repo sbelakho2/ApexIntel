@@ -1086,7 +1086,18 @@ REQUIREMENTS:
         let reference_count = count_numbered_references(&narrative, 12);
         let has_refs = reference_count >= 2;
         let recommendation_reference_count = count_numbered_references(&recommendation, 12);
-        let recommendation_has_refs = recommendation_reference_count >= 1;
+        // The prompt sanctions an explicit no-action sentence when the
+        // evidence supports nothing actionable. Requiring a citation for that
+        // sentence contradicted the prompt and guaranteed rejection of honest
+        // low-substance drafts (2026-10-22 logs). The editorial board still
+        // judges whether such a draft is worth publishing.
+        let is_escape_recommendation = {
+            let lower = recommendation.to_ascii_lowercase();
+            lower.contains("no specific action warranted")
+                || lower.contains("insufficient evidence to recommend")
+        };
+        let recommendation_has_refs =
+            recommendation_reference_count >= 1 || is_escape_recommendation;
         let has_digits = narrative.chars().any(|c| c.is_ascii_digit());
         let has_recommendation = recommendation.split_whitespace().count() >= 12;
         let is_headline_ok = !headline.is_empty() && headline.len() <= 160;
@@ -1231,7 +1242,11 @@ REQUIREMENTS:
             quality_gate_requirement("narrative_references", reference_count as f32, 2.0),
             quality_gate_requirement(
                 "recommendation_references",
-                recommendation_reference_count as f32,
+                if is_escape_recommendation {
+                    1.0
+                } else {
+                    recommendation_reference_count as f32
+                },
                 1.0,
             ),
             quality_gate_requirement(
