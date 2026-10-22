@@ -266,7 +266,56 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
     run
 }
 
-#[cfg(feature = "llm")]
+/// Whether a crawled text block is substantive evidence rather than page
+/// chrome (navigation, logos, cookie notices) or structured noise (ticker
+/// tables). The generator cannot produce depth from chrome — the editorial
+/// board correctly rejected drafts quoting "Assembly Magazine's logo" and
+/// stock-index tables (2026-10-22).
+pub(crate) fn observation_is_substantive(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.chars().count() < 200 {
+        return false;
+    }
+    let letters = trimmed.chars().filter(|c| c.is_alphabetic()).count() as f64;
+    let total = trimmed.chars().count() as f64;
+    if letters / total.max(1.0) < 0.55 {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    const CHROME_MARKERS: [&str; 10] = [
+        "cookie",
+        "subscribe",
+        "newsletter",
+        "advertisement",
+        "all rights reserved",
+        "privacy policy",
+        "sign in",
+        "log in",
+        "newsletter signup",
+        "menu",
+    ];
+    let chrome_hits = CHROME_MARKERS
+        .iter()
+        .filter(|marker| lower.contains(*marker))
+        .count();
+    if chrome_hits >= 3 {
+        return false;
+    }
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    if words.len() < 25 {
+        return false;
+    }
+    let unique: std::collections::HashSet<&str> = words.iter().copied().collect();
+    if (unique.len() as f64) / (words.len() as f64) < 0.30 {
+        return false;
+    }
+    let sentences = trimmed
+        .chars()
+        .filter(|c| matches!(c, '.' | '!' | '?'))
+        .count();
+    sentences >= 2
+}
+
 /// An observation's text plus its source URL (when the provenance carries one).
 #[cfg(feature = "llm")]
 #[derive(Debug, Clone)]
@@ -340,6 +389,9 @@ pub(crate) async fn load_recent_observations_by_company(
 
     let mut map: HashMap<uuid::Uuid, Vec<ObservationText>> = HashMap::new();
     for row in rows {
+        if !observation_is_substantive(&row.content) {
+            continue;
+        }
         map.entry(row.company_id)
             .or_default()
             .push(ObservationText {
@@ -349,6 +401,9 @@ pub(crate) async fn load_recent_observations_by_company(
                 observation_type: row.observation_type,
             });
     }
+    // A company needs at least two qualifying observations to be a candidate:
+    // single-item evidence cannot support an analytical insight.
+    map.retain(|_, observations| observations.len() >= 2);
     Ok(map)
 }
 
@@ -1810,5 +1865,29 @@ mod tests {
         let spacex = known(&["spacex"]);
         assert!(!phrase_supported_by_name_tokens("ace", &spacex));
         assert!(phrase_supported_by_name_tokens("ace", &known(&["ace"])));
+    }
+}
+
+#[cfg(all(test, feature = "llm"))]
+mod substance_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::observation_is_substantive;
+
+    #[test]
+    fn page_chrome_and_ticker_tables_are_not_substantive() {
+        let chrome = "Home Menu Subscribe Newsletter Advertisement Cookie policy Privacy policy Sign in. All rights reserved. Our logos and brands. Read more about our logo and menu and newsletter.";
+        assert!(!observation_is_substantive(chrome));
+
+        let tickers = "DAX 25.379,49 -1,04% Euro Stoxx 50 6.090,36 -1,89% Dow Jones 52.762,569 -0,17% EUR/USD 1,123 -0,06% Gold USD 4.045,98 -1,92% MDAX 30.059,46 -1,93% Brent 108,047 +1,93% NIKKEI 62.907,84 -2,65%.";
+        assert!(!observation_is_substantive(tickers));
+    }
+
+    #[test]
+    fn article_text_is_substantive() {
+        let article = "The European Commission proposed safeguard measures on Chinese hybrid vehicle imports, \
+opening a tariff-rate quota consultation that would levy duties above a set volume. Industry groups warned \
+the measure could trigger retaliatory tariffs on automotive components. The proposal enters a four-week \
+consultation before member states vote. Analysts expect battery and harness suppliers to re-price contracts.";
+        assert!(observation_is_substantive(article));
     }
 }
