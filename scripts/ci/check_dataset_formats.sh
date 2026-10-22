@@ -17,7 +17,7 @@
 # steps can run it directly.
 #
 # Run locally with: bash scripts/ci/check_dataset_formats.sh
-# npm alias:        npm run check:datasets
+# run:              bash scripts/ci/check_dataset_formats.sh
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

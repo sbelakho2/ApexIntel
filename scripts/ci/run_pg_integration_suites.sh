@@ -3,7 +3,7 @@
 # suite in the workspace.
 #
 # CI invokes this script from the `migrations` step (.woodpecker.yml) against a
-# real PostgreSQL service; `npm run test:pg` invokes it locally. The script is
+# real PostgreSQL service; run it directly locally. The script is
 # the single source of truth for the PostgreSQL suite list, and
 # `scripts/ci/check_pg_test_coverage.sh` fails the build whenever a new ignored
 # PostgreSQL test target is not registered here.

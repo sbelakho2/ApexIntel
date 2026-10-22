@@ -44,7 +44,7 @@ screens that own them instead of occupying sidebar space:
 | Automations | Recipes · Sources · Jobs · Admin Panel (admin only) |
 
 Route removals from the nav (Queue, Supplier Risk, Evidence, Team Assignments,
-Buying Centres) keep their URLs; `scripts/ci/e2e_server_ui.mjs` still passes
+Buying Centres) keep their URLs; the Rust UI contract test still passes
 because the six required group labels, the search form, the user menu and the
 mobile tab bar are unchanged.
 
@@ -57,8 +57,8 @@ number must be actionable or a measured health signal.
 
 ## Enforcement
 
-- Visual baselines (`e2e/server-ui-visual.spec.js-snapshots/*-linux.png`) were
-  reset with this global redesign; regenerate in the Linux CI container with
-  `npm run test:server-ui:specs:update` before merging.
-- `scripts/ci/e2e_server_ui.mjs` enforces the shell contract (nav groups,
-  mobile tabs, search form, no vertical h1 wrapping, no horizontal overflow).
+- UI coverage is Rust-native: `cargo test -p apex-api --test ui_contract`
+  asserts the navigation contract, route wiring, shell hooks, warnings
+  bulk-dismiss, and committed stylesheets; `cargo run -p apex-api --example
+  route_sweep` authenticates and walks every rendered route against a running
+  API. There is no Node/Playwright toolchain in this repository.

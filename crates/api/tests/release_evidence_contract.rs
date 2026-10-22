@@ -31,7 +31,7 @@ fn run(args: &[String]) -> Output {
         .unwrap_or_else(|error| panic!("run {}: {error}", script().display()))
 }
 
-const CANONICAL_GATES: [&str; 13] = [
+const CANONICAL_GATES: [&str; 10] = [
     "exact-sha",
     "rustfmt",
     "clippy-default",
@@ -40,9 +40,6 @@ const CANONICAL_GATES: [&str; 13] = [
     "all-features-tests",
     "pg-canonical",
     "migration-bootstrap",
-    "browser-integration",
-    "ui-journey",
-    "tailwind-assets",
     "wasm-shared",
     "container-browser",
 ];

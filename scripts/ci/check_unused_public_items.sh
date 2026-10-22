@@ -16,7 +16,7 @@
 # tests/benches are not real published API and must not pass the gate.
 #
 # Run locally with: bash scripts/ci/check_unused_public_items.sh
-# npm alias:        npm run check:unused-public
+# run:              bash scripts/ci/check_unused_public_items.sh
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

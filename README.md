@@ -120,8 +120,7 @@ also authenticate read + CSRF-checked write calls to `/api/*` endpoints
 ```bash
 cargo test --workspace        # ~2,000 unit/integration tests
 cargo clippy --workspace --all-targets -- -D warnings -W clippy::disallowed_methods
-npx tailwindcss -i crates/api/static/css/globals.css \
-  -o crates/api/static/css/tailwind.css --minify   # after CSS edits
+cargo test -p apex-api --test ui_contract  # UI contract + committed stylesheets
 
 # Container-level browser check: builds Dockerfile.worker's browser-check stage
 # and renders a JS-only fixture (late network + lazy-loaded DOM) inside it.

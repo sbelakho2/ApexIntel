@@ -301,7 +301,7 @@ engine require no API keys.
 
 - **Backup verification**: Restore a backup to a test database and verify integrity
 - **SSL renewal**: `sudo certbot renew --dry-run`
-- **Dependency audit**: Check for Rust/npm security advisories
+- **Dependency audit**: Check for Rust security advisories
 - **Performance review**: Check Grafana dashboards for degradation trends
 
 ---
@@ -318,7 +318,7 @@ engine require no API keys.
 | WebSocket disconnects | Nginx proxy timeout | Check `proxy_read_timeout` in nginx config | Increase to 300s, reload nginx |
 | Disk full | Logs or MinIO artifacts | `df -h` and `du -sh /var/log/*` | Rotate logs, clean old artifacts |
 | High memory usage | Too many concurrent crawls | `htop` — check worker RSS | Reduce `CRAWL_CONCURRENCY` |
-| Compiled stylesheet stale | Tailwind build not re-run after template edits | Diff `crates/api/static/css/tailwind.css` against a fresh build | `npx tailwindcss -i crates/api/static/css/globals.css -o crates/api/static/css/tailwind.css --minify` |
+| Stylesheet or UI contract broken | Template/link/asset regression | Rust UI contract test failures | `cargo test -p apex-api --test ui_contract` |
 | Migration fails | Schema already exists | Check `\dt` in psql | Use `IF NOT EXISTS` or skip |
 
 ---
@@ -583,8 +583,8 @@ DATABASE_READ_URL=postgres://user:pass@replica:5432/apexintel
 - [ ] Update SSL certificates before expiry
 - [ ] Monitor `/api/health/deep` for component health
 - [ ] Review API access logs weekly for anomalies
-- [ ] Keep Rust toolchain and npm dependencies updated
-- [ ] Run `cargo audit` and `npm audit` monthly
+- [ ] Keep the Rust toolchain updated
+- [ ] Run `cargo audit` monthly
 
 ---
 

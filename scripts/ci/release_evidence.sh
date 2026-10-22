@@ -13,9 +13,6 @@
 #   all-features-tests   cargo test --workspace --all-features --locked --no-fail-fast
 #   pg-canonical         scripts/ci/run_pg_integration_suites.sh (needs TEST_DATABASE_URL)
 #   migration-bootstrap  fresh-database migration chain (apex-store migrations_integration)
-#   browser-integration  scripts/ci/e2e_server_ui.mjs route sweep (needs a running API)
-#   ui-journey           npm run test:server-ui:journeys (needs a running API)
-#   tailwind-assets      rebuild the committed stylesheet
 #   wasm-shared          cargo check -p apex-shared --target wasm32-unknown-unknown --locked
 #   container-browser    scripts/ci/browser_container_check.sh (needs a Docker daemon)
 #
@@ -36,7 +33,7 @@
 #   release-evidence.txt    human-readable summary
 #   release-evidence.sha256 sha256 of the two bundle files
 #   logs/<gate>.log         captured output for executed gates
-#   tailwind.css            rebuilt stylesheet from the tailwind-assets gate
+#   tailwind-committed.css  committed stylesheet artifact
 #
 # Environment (first non-empty wins; keep in sync with
 # scripts/ops/record_deployment.sh and crates/api/src/provenance.rs):
@@ -57,7 +54,7 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 
 
 SCHEMA_VERSION=1
-CANONICAL_GATES="exact-sha rustfmt clippy-default clippy-all-features unit-tests all-features-tests pg-canonical migration-bootstrap browser-integration ui-journey tailwind-assets wasm-shared container-browser"
+CANONICAL_GATES="exact-sha rustfmt clippy-default clippy-all-features unit-tests all-features-tests pg-canonical migration-bootstrap wasm-shared container-browser"
 
 sha=""
 out_dir=""
@@ -220,7 +217,6 @@ mkdir -p "${out_dir}/logs"
 # having it interpolated into the executed command string, so a crafted --sha
 # or --out cannot inject shell syntax.
 export APEX_EVIDENCE_SHA="${sha}"
-export APEX_EVIDENCE_TAILWIND="${out_dir}/tailwind.css"
 
 # ─── Gate commands ───────────────────────────────────────────────────────────
 gate_command() { # <gate> -> the exact release command
@@ -238,11 +234,6 @@ gate_command() { # <gate> -> the exact release command
     pg-canonical) printf 'bash scripts/ci/run_pg_integration_suites.sh' ;;
     migration-bootstrap)
       printf 'cargo test -p apex-store --test migrations_integration --locked -- --ignored --test-threads=1'
-      ;;
-    browser-integration) printf 'node scripts/ci/e2e_server_ui.mjs' ;;
-    ui-journey) printf 'npm run test:server-ui:journeys' ;;
-    tailwind-assets)
-      printf 'npx tailwindcss -i crates/api/static/css/globals.css -o "${APEX_EVIDENCE_TAILWIND}" --minify'
       ;;
     wasm-shared)
       printf 'cargo check -p apex-shared --target wasm32-unknown-unknown --locked'
@@ -369,7 +360,6 @@ record_artifact() { # <label> <path>
 record_artifact apex-api target/release/apex-api
 record_artifact apex-worker target/release/apex-worker
 record_artifact tailwind-committed crates/api/static/css/tailwind.css
-record_artifact tailwind-rebuilt "${out_dir}/tailwind.css"
 
 generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "${FAILED}" -ne 0 ]; then

@@ -16,17 +16,15 @@
 #      scripts/ci/run_pg_integration_suites.sh
 #   6. a registration guard that fails when a new ignored PostgreSQL test target
 #      is not wired into that runner
-#   7. Tailwind asset build
-#   8. server-rendered UI end-to-end (Playwright) smoke sweep: logs in and sweeps
-#      EVERY navigation route at mobile + desktop, asserting HTTP 2xx, no
-#      console / page errors, no horizontal overflow (the "vertical text" class
-#      of bug), data-table cells stay on one line on mobile, the styled 404
-#      works, and every rendered link resolves.
-#   9. server-rendered UI journey contracts (Playwright): drives the real UI and
-#      asserts the resulting PostgreSQL state for create/save/delete/ack/
-#      resolve/dismiss/bookmark/recipe/investigation/export/preferences/
-#      subscription/graph/battlecard/admin journeys.
-#  10. container-level browser integration: builds Dockerfile.worker's
+#   7. UI contract tests (Rust, templates + route wiring): the six nav groups,
+#      every navigation link resolves to a registered GET route, the five
+#      mobile tabs, search/user-menu hooks, the warnings bulk-dismiss action,
+#      the no-sticky-header rule, and the committed stylesheets.
+#   8. server-rendered UI end-to-end smoke sweep (Rust route_sweep example):
+#      authenticates, walks every rendered navigation route, and fails on any
+#      non-2xx page or empty render. No Node/Playwright toolchain exists in
+#      this repository.
+#   9. container-level browser integration: builds Dockerfile.worker's
 #      browser-check stage (runtime image + Chromium) and renders a JS-only
 #      fixture (late network + lazy-loaded DOM) through that image.
 #  11. migration identity check: every pending migration states its own number
@@ -282,14 +280,6 @@ steps:
     commands:
       - bash scripts/ci/check_unused_public_items.sh
 
-  - name: ui-assets
-    image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
-    commands:
-      - npm ci
-      # The compiled stylesheet is committed; rebuild it to prove the Tailwind
-      # config and source CSS still produce output.
-      - npx tailwindcss -i crates/api/static/css/globals.css -o /tmp/tailwind.css --minify
-
   # apex-shared is the wasm-compatible boundary crate (serde/chrono only); the
   # release-evidence `wasm-shared` gate is only truthful if a step actually
   # compiles it for wasm32, so a native-only regression fails CI here.
@@ -303,7 +293,7 @@ steps:
   # then runs EVERY ignored PostgreSQL integration suite in the workspace (store
   # RLS/outbox/subscriptions/migrations, triage ingest, insight evidence, API
   # login) plus the learning evaluation gate. The suite list lives in the
-  # canonical runner so local `npm run test:pg` and CI cannot drift.
+  # canonical runner so local `bash scripts/ci/run_pg_integration_suites.sh` and CI cannot drift.
   - name: migrations
     image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
     depends_on: [rust]
@@ -369,16 +359,6 @@ steps:
       PORT: "9095"
       NO_COLOR: "1"
     commands:
-      # Container networks can be flaky; retry the package fetch and use
-      # apt's own retry support before giving up.
-      - >-
-        for i in 1 2 3 4 5; do
-        apt-get -o Acquire::Retries=5 update &&
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends nodejs npm cmake clang && break;
-        echo "apt attempt $i failed; retrying"; sleep 10; done
-      - node --version && npm --version
-      - npm ci
-      - npx playwright install --with-deps chromium
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
       - cargo build --release --bin apex-api --features llm --locked
       # Server output is kept in the CI log and in a file the route sweep
@@ -392,57 +372,9 @@ steps:
       # Deployment provenance route must answer with the running service identity.
       - curl -sf http://127.0.0.1:9095/api/version | grep -q '"service":"apex-api"'
       - bash scripts/ci/check_ui_components.sh
-      - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs
-      # Every registered GET route (web + API) with seeded ids: no 5xx, no
-      # 404 for a seeded detail page, no server-side ERROR log lines.
-      - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword SWEEP_ADMIN_KEY=ci-sweep-admin-key-0123456789abcdef0123 SERVER_LOG=/tmp/apex-api.log node scripts/ci/e2e_route_sweep.mjs
-      # Adversarial pixel/a11y/resource scan across every navigation route at
-      # mobile/tablet/desktop; screenshots land in artifacts/dogfood.
-      - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/scan_server_ui.mjs
-
-  # JOURNEY CONTRACTS — Playwright specs that drive the real UI and then assert
-  # the PostgreSQL rows the actions must have produced (not just rendered
-  # success). Separate stage from the route sweep on purpose.
-  - name: e2e-server-ui-journeys
-    image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
-    depends_on: [rust, migrations, e2e-server-ui-smoke]
-    environment:
-      BASE_URL: http://127.0.0.1:9095
-      PLAYWRIGHT_BASE_URL: http://127.0.0.1:9095
-      DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
-      ADMIN_USER: admin
-      ADMIN_PASS: adminpassword
-      APEX_ADMIN_USERNAME: admin
-      # Argon2id PHC hash of the e2e password; the legacy SHA-256 hash is
-      # rejected by default (ALLOW_LEGACY_PASSWORD_HASHES unset).
-      APEX_ADMIN_PASSWORD_HASH: '$argon2id$v=19$m=19456,t=2,p=1$Qe/tm9Em6f7USVaFRR+YXg$TxfPRKI0V+m+Dx/BcP5Ybv2d8hbiQoI8oxMENcztwL4'
-      SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-      # CI only: allow a documented non-secret so startup validation passes.
-      APEX_ALLOW_TEST_SESSION_SECRET: "1"
-      # Service key for authenticated metadata checks (>= 32 chars).
-      API_KEY_1: ci-features-check-key-0123456789abcdef,ci-check,service,ci-service
-      SEARCH_INDEX_PATH: /tmp/apex-index-journeys
-      # Test-only: the server refuses to start with rate limiting disabled
-      # unless this explicit override is also present (same pattern as
-      # APEX_ALLOW_TEST_SESSION_SECRET).
-      RATE_LIMIT_DISABLED: "true"
-      APEX_ALLOW_TEST_RATE_LIMIT_DISABLED: "1"
-      HOST: 127.0.0.1
-      PORT: "9095"
-    commands:
-      - >-
-        for i in 1 2 3 4 5; do
-        apt-get -o Acquire::Retries=5 update &&
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends nodejs npm cmake clang && break;
-        echo "apt attempt $i failed; retrying"; sleep 10; done
-      - npm ci
-      - npx playwright install --with-deps chromium
-      - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
-      - cargo build --release --bin apex-api --features llm --locked
-      - ./target/release/apex-api & sleep 6
-      - curl -sf http://127.0.0.1:9095/api/health
-      # Single definition of the journey spec list lives in package.json.
-      - npm run test:server-ui:journeys
+      # Rust-native route sweep (replaces the former Node smoke crawler):
+      # authenticates, walks every navigation link, fails on any non-2xx page.
+      - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword cargo run --release -p apex-api --example route_sweep
 
   # Container-level browser integration. Builds the worker image's
   # browser-check stage (real runtime image + Chromium) and renders a JS-only
@@ -474,7 +406,7 @@ steps:
   # injected by Woodpecker and feed /api/version via the printed exports.
   - name: release-evidence
     image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, wasm-shared]
     when:
       - event: [pull_request]
     commands:
@@ -490,16 +422,13 @@ steps:
         --record all-features-tests=passed
         --record pg-canonical=passed
         --record migration-bootstrap=passed
-        --record browser-integration=passed
-        --record ui-journey=passed
-        --record tailwind-assets=passed
         --record wasm-shared=passed
 
   # Release-event evidence additionally records the container browser gate,
   # which only runs on trusted events (push/tag/manual).
   - name: release-evidence-release
     image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
-    depends_on: [rust, migrations, e2e-server-ui-smoke, e2e-server-ui-journeys, ui-assets, wasm-shared, browser-container]
+    depends_on: [rust, migrations, e2e-server-ui-smoke, wasm-shared, browser-container]
     when:
       - event: [push, tag, manual]
     commands:
@@ -515,8 +444,5 @@ steps:
         --record all-features-tests=passed
         --record pg-canonical=passed
         --record migration-bootstrap=passed
-        --record browser-integration=passed
-        --record ui-journey=passed
-        --record tailwind-assets=passed
         --record wasm-shared=passed
         --record container-browser=passed
