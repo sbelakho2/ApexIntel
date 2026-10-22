@@ -1194,14 +1194,29 @@ REQUIREMENTS:
         // steps and passed every boolean validator).
         let process_advice = crate::job_execution::recipes::process_advice_hits(&recommendation);
         let process_advice_violation = !process_advice.is_empty();
-        let editorial_reason_keys = crate::job_execution::recipes::editorial_gate_for_generation(
-            category,
-            &headline,
-            &narrative,
-            &recommendation,
-            evidence_signals,
+        let (editorial_reason_keys, editorial_class) =
+            crate::job_execution::recipes::editorial_gate_for_generation(
+                category,
+                &headline,
+                &narrative,
+                &recommendation,
+                evidence_signals,
+            );
+        // Revise-class drafts regenerate while attempts remain; the final
+        // attempt publishes tagged `editorial:revise`. Hard rejects always
+        // block; process advice always blocks.
+        let is_final_attempt = attempt >= *crate::config::LLM_MAX_RETRIES;
+        let editorial_violation = matches!(
+            editorial_class,
+            crate::job_execution::recipes::GenerationEditorialClass::Reject
+        ) || (matches!(
+            editorial_class,
+            crate::job_execution::recipes::GenerationEditorialClass::Revise
+        ) && !is_final_attempt);
+        let editorial_revise = matches!(
+            editorial_class,
+            crate::job_execution::recipes::GenerationEditorialClass::Revise
         );
-        let editorial_violation = !editorial_reason_keys.is_empty();
 
         let gate_decisions = vec![
             quality_gate_blocker("generic_language", is_generic, false),
@@ -1393,6 +1408,8 @@ REQUIREMENTS:
                 "consensus_reached": consensus_reached,
                 "consensus_samples_failed": consensus_samples_failed,
                 "dissenting_opinions": dissenting_opinions,
+                "editorial_revise": editorial_revise,
+                "editorial_reasons": editorial_reason_keys,
             });
             return Ok((
                 headline,

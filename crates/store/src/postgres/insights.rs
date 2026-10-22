@@ -8,6 +8,27 @@ fn normalize_insight_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
 
+/// Result of [`PgStore::insert_insight_with_outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsightInsertOutcome {
+    /// A new insight row was written.
+    Inserted(Uuid),
+    /// The dedup logic matched an existing insight and refreshed it.
+    Refreshed(Uuid),
+}
+
+impl InsightInsertOutcome {
+    pub const fn id(self) -> Uuid {
+        match self {
+            Self::Inserted(id) | Self::Refreshed(id) => id,
+        }
+    }
+
+    pub const fn is_new(self) -> bool {
+        matches!(self, Self::Inserted(_))
+    }
+}
+
 /// Keep the first row per (title, type, region) key, preserving order.
 fn dedup_insight_rows(rows: Vec<InsightRow>) -> Vec<InsightRow> {
     let mut seen = std::collections::HashSet::<String>::new();
@@ -71,7 +92,14 @@ impl PgStore {
         Ok(filter_visible_insights(rows))
     }
 
-    pub async fn insert_insight(
+    /// Insert with an explicit outcome: [`InsightInsertOutcome::Inserted`]
+    /// for a genuinely new row, [`InsightInsertOutcome::Refreshed`] when the
+    /// dedup logic matched an existing insight (title/story-signature within
+    /// 21 days) and refreshed it. Callers that count "insights generated"
+    /// must use this so dedup hits are never reported as new intelligence
+    /// (2026-10-22: recipe_fire reported 5 inserts daily while the table
+    /// gained nothing).
+    pub async fn insert_insight_with_outcome(
         &self,
         title: &str,
         summary: &str,
@@ -82,7 +110,7 @@ impl PgStore {
         entity_ids: Option<Vec<Uuid>>,
         tags: Option<Vec<String>>,
         metadata: Option<serde_json::Value>,
-    ) -> Result<Uuid> {
+    ) -> Result<InsightInsertOutcome> {
         let id = Uuid::new_v4();
         let normalized_title = title.trim();
         let normalized_entity_ids: Option<Vec<Uuid>> = entity_ids.map(|mut ids| {
@@ -96,7 +124,7 @@ impl PgStore {
             insight_type,
             normalized_entity_ids.as_deref(),
         );
-        let row: (Uuid,) = sqlx::query_as(
+        let row: (Uuid, String) = sqlx::query_as(
             r#"WITH existing AS (
                    SELECT i.id
                    FROM insights i
@@ -151,9 +179,11 @@ impl PgStore {
                    DO UPDATE SET updated_at = now()
                    RETURNING id
                )
-               SELECT id FROM updated
-               UNION ALL
-               SELECT id FROM inserted
+               SELECT id, source FROM (
+                   SELECT id, 'refreshed' AS source FROM updated
+                   UNION ALL
+                   SELECT id, 'inserted' AS source FROM inserted
+               ) candidates
                LIMIT 1"#,
         )
         .bind(id)
@@ -169,7 +199,43 @@ impl PgStore {
         .bind(&metadata)
         .fetch_one(&self.pool)
         .await?;
-        Ok(row.0)
+        Ok(if row.1 == "inserted" {
+            InsightInsertOutcome::Inserted(row.0)
+        } else {
+            InsightInsertOutcome::Refreshed(row.0)
+        })
+    }
+
+    /// Backwards-compatible insert returning only the id.
+    ///
+    /// # Panics
+    /// Never: the outcome is reduced to its id here.
+    pub async fn insert_insight(
+        &self,
+        title: &str,
+        summary: &str,
+        insight_type: Option<&str>,
+        region: Option<&str>,
+        confidence: Option<f64>,
+        evidence_urls: Option<Vec<String>>,
+        entity_ids: Option<Vec<Uuid>>,
+        tags: Option<Vec<String>>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<Uuid> {
+        Ok(self
+            .insert_insight_with_outcome(
+                title,
+                summary,
+                insight_type,
+                region,
+                confidence,
+                evidence_urls,
+                entity_ids,
+                tags,
+                metadata,
+            )
+            .await?
+            .id())
     }
 
     pub async fn is_insight_bookmarked(&self, insight_id: Uuid, user_id: &str) -> Result<bool> {

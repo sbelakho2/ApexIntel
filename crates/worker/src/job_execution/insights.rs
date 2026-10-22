@@ -110,6 +110,7 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
         sorted.truncate(*MAX_COMPANIES_PER_RUN);
 
         let mut total_insights_generated: u64 = 0;
+        let mut total_insights_refreshed: u64 = 0;
         let mut companies_processed: u64 = 0;
         let mut companies_skipped: u64 = 0;
         let mut companies_failed: u64 = 0;
@@ -168,6 +169,7 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
             {
                 Ok(outcome) => {
                     total_insights_generated += outcome.insights_generated;
+                    total_insights_refreshed += outcome.insights_refreshed;
                     secondary_persistence_failures += outcome.link_failures;
                     companies_processed += 1;
                     tracing::info!(
@@ -189,30 +191,43 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
         }
 
         let elapsed = total_start.elapsed();
-        if companies_failed > 0 || secondary_persistence_failures > 0 {
+        // A run that processed companies but produced no new insight is not a
+        // success: the gate rejected every draft, or all drafts deduplicated.
+        // That was invisible for 15 days (2026-10-22).
+        let zero_output = companies_processed > 0 && total_insights_generated == 0;
+        if companies_failed > 0 || secondary_persistence_failures > 0 || zero_output {
             // A company whose insight could not be stored, or whose secondary
             // links failed after the insight persisted, means the run is not a
             // clean success.
             run.degrade(
                 total_insights_generated,
                 &format!(
-                    "insight_generation: {} companies processed, {} failed, {} skipped, {} secondary persistence failure(s), {} insights generated in {:.1}s",
+                    "insight_generation: {} companies processed, {} failed, {} skipped, {} secondary persistence failure(s), {} new insights, {} deduplicated in {:.1}s{}",
                     companies_processed,
                     companies_failed,
                     companies_skipped,
                     secondary_persistence_failures,
                     total_insights_generated,
+                    total_insights_refreshed,
                     elapsed.as_secs_f64(),
+                    if zero_output && total_insights_refreshed == 0 {
+                        " — ZERO OUTPUT: every draft was rejected by the generation gates (see LLM quality gate logs)"
+                    } else if zero_output {
+                        " — zero new insights: all drafts deduplicated against recent insights"
+                    } else {
+                        ""
+                    },
                 ),
             );
         } else {
             run.succeed(
                 total_insights_generated,
                 &format!(
-                    "insight_generation: {} companies processed, {} skipped, {} insights generated in {:.1}s",
+                    "insight_generation: {} companies processed, {} skipped, {} new insights, {} deduplicated in {:.1}s",
                     companies_processed,
                     companies_skipped,
                     total_insights_generated,
+                    total_insights_refreshed,
                     elapsed.as_secs_f64(),
                 ),
             );
@@ -589,6 +604,10 @@ fn claim_evidence_ref(
 #[derive(Debug, Clone, Copy, Default)]
 struct CompanyInsightOutcome {
     insights_generated: u64,
+    /// Dedup hits: the generation produced an insight identical (by title /
+    /// story signature) to a recent one, so no new row was created. Counted
+    /// separately so a spinning pipeline cannot report "generated" (2026-10-22).
+    insights_refreshed: u64,
     /// Secondary writes (claim evidence, entity links) that failed after the
     /// insight row itself was persisted. The caller degrades the run on any
     /// non-zero value instead of reporting a clean success.
@@ -1005,8 +1024,16 @@ async fn generate_insights_for_company(
     let entity_ids = vec![*company_id];
     let tags = vec![category.clone(), "insight_generation".to_string()];
 
+    let mut tags = tags;
+    if insight_metadata
+        .get("editorial_revise")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        tags.push("editorial:revise".to_string());
+    }
     match store
-        .insert_insight(
+        .insert_insight_with_outcome(
             &headline,
             &summary,
             Some(&category),
@@ -1023,7 +1050,8 @@ async fn generate_insights_for_company(
         )
         .await
     {
-        Ok(insight_id) => {
+        Ok(inserted) if inserted.is_new() => {
+            let insight_id = inserted.id();
             let mut link_failures: u64 = 0;
             // Persist claim-level evidence so the detail page can cite each
             // claim back to its source rows. Failure is secondary to the
@@ -1096,7 +1124,22 @@ async fn generate_insights_for_company(
             );
             Ok(CompanyInsightOutcome {
                 insights_generated: 1,
+                insights_refreshed: 0,
                 link_failures,
+            })
+        }
+        Ok(refreshed) => {
+            let insight_id = refreshed.id();
+            tracing::info!(
+                company = %company_name,
+                category = %category,
+                insight_id = %insight_id,
+                "insight_generation: insight deduplicated against an existing recent insight"
+            );
+            Ok(CompanyInsightOutcome {
+                insights_generated: 0,
+                insights_refreshed: 1,
+                link_failures: 0,
             })
         }
         Err(e) => {

@@ -4124,6 +4124,7 @@ pub(super) async fn run_recipe_fire(
     }
 
     let mut insights_inserted: u64 = 0;
+    let mut insights_deduplicated: u64 = 0;
     let mut insight_insert_failures: u64 = 0;
     let mut warnings_inserted: u64 = 0;
     let mut warning_ingest_failures: u64 = 0;
@@ -4889,7 +4890,7 @@ pub(super) async fn run_recipe_fire(
         let mut insight_inserted = false;
         if insight_gate_passed {
             match store
-                .insert_insight(
+                .insert_insight_with_outcome(
                     &title,
                     &summary,
                     Some(c.category.as_str()),
@@ -4902,8 +4903,16 @@ pub(super) async fn run_recipe_fire(
                 )
                 .await
             {
-                Ok(insight_id) => {
-                    insights_inserted += 1;
+                Ok(inserted) => {
+                    let insight_id = inserted.id();
+                    if inserted.is_new() {
+                        insights_inserted += 1;
+                    } else {
+                        // Dedup hit: an identical/near-identical insight
+                        // exists. Never counted as new intelligence
+                        // (2026-10-22: 5 "inserts"/day with no new rows).
+                        insights_deduplicated += 1;
+                    }
                     #[cfg(feature = "llm")]
                     {
                         insight_inserted = true;
@@ -5495,9 +5504,10 @@ pub(super) async fn run_recipe_fire(
     );
 
     let summary = format!(
-        "recipe_fire: {} candidate(s), inserted {} insight(s), {} insight persistence failure(s), {} feature persistence failure(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run; deferred {} by cap, {} by budget); feature inputs loaded {}/{}",
+        "recipe_fire: {} candidate(s), inserted {} new insight(s) ({} deduplicated against existing), {} insight persistence failure(s), {} feature persistence failure(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run; deferred {} by cap, {} by budget); feature inputs loaded {}/{}",
         total_candidates,
         insights_inserted,
+        insights_deduplicated,
         insight_insert_failures,
         feature_persistence_failures,
         warnings_inserted,
@@ -5638,13 +5648,29 @@ pub(crate) fn process_advice_hits(text: &str) -> Vec<&'static str> {
     hits
 }
 
+/// How the editorial board classified one generation attempt.
+#[cfg(feature = "llm")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenerationEditorialClass {
+    /// Meets the full standard.
+    Publish,
+    /// Salvageable but below standard: regenerate while attempts remain, and
+    /// on the final attempt publish tagged `editorial:revise` rather than
+    /// losing all output (2026-10-22: the uncalibrated gate rejected 100% of
+    /// drafts on the 8B synthesis model and the pipeline produced nothing).
+    Revise,
+    /// Hard failure (integrity violation, unverifiable evidence): never
+    /// publish this draft.
+    Reject,
+}
+
 /// Run the analytical editorial board over one generation attempt and map the
-/// verdict to retry-guidance reason keys. Used by the shared generation loop
-/// so every insight path (recipe fire and insight generation) is held to the
-/// same depth/factuality/warrant standard, with the existing retry machinery
-/// regenerating against the specific failure (2026-10-07: an insight that
-/// restated a news item with three process-advice steps passed every boolean
-/// validator).
+/// verdict to a class plus retry-guidance reason keys. Used by the shared
+/// generation loop so every insight path (recipe fire and insight generation)
+/// is held to the same depth/factuality/warrant standard, with the existing
+/// retry machinery regenerating against the specific failure (2026-10-07: an
+/// insight that restated a news item with three process-advice steps passed
+/// every boolean validator).
 #[cfg(feature = "llm")]
 pub(crate) fn editorial_gate_for_generation(
     category: &str,
@@ -5652,7 +5678,7 @@ pub(crate) fn editorial_gate_for_generation(
     narrative: &str,
     recommendation: &str,
     evidence_signals: &[crate::prompts::EvidenceSignal],
-) -> Vec<&'static str> {
+) -> (Vec<&'static str>, GenerationEditorialClass) {
     use apex_insights::analytical::editorial::{
         review, EditorialConfig, EditorialInputs, EditorialVerdict,
     };
@@ -5684,7 +5710,20 @@ pub(crate) fn editorial_gate_for_generation(
     let review = review(&inputs, &EditorialConfig::default());
 
     let mut reasons: Vec<&'static str> = Vec::new();
+    let mut class = GenerationEditorialClass::Publish;
     if review.verdict != EditorialVerdict::Publish {
+        // Hard floors are absolute: integrity violations and unverifiable
+        // evidence never publish. Everything else is a revision candidate:
+        // the retry loop refines it, and a final-attempt draft publishes
+        // tagged `editorial:revise` with its measured confidence.
+        let hard_reject = !review.verification.hard_violations.is_empty()
+            || review.verification.factuality_score < 0.5
+            || review.warrants.overall < 0.35;
+        class = if hard_reject {
+            GenerationEditorialClass::Reject
+        } else {
+            GenerationEditorialClass::Revise
+        };
         for reason in &review.reasons {
             let key = if reason.contains("hard integrity") {
                 "editorial_factuality"
@@ -5709,7 +5748,7 @@ pub(crate) fn editorial_gate_for_generation(
             reasons.push("editorial_depth");
         }
     }
-    reasons
+    (reasons, class)
 }
 
 /// Build review-only evidence records from LLM evidence signals. Ids are
