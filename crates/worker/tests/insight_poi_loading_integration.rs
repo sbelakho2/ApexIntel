@@ -240,7 +240,12 @@ async fn selects_the_newest_twelve_observations_per_company() {
         .bind(company_a)
         .bind(created_at)
         .bind(serde_json::json!({
-            "content": format!("company-a observation {index:02} {}", "x".repeat(64)),
+            "content": format!(
+                "Company A released supply-chain update {index:02}. The filing describes a capacity \
+                 increase at its Tunis plant, a revised component sourcing agreement, and a new \
+                 qualification milestone for automotive customers. Analysts expect the change to \
+                 affect 2026 allocation decisions across the region."
+            ),
         }))
         .bind(serde_json::json!({ "url": format!("https://example.com/a/{index}") }))
         .execute(&pool)
@@ -264,7 +269,12 @@ async fn selects_the_newest_twelve_observations_per_company() {
         .bind(company_b)
         .bind(created_at)
         .bind(serde_json::json!({
-            "content": format!("company-b observation {index:02} {}", "y".repeat(64)),
+            "content": format!(
+                "Company B published quarterly operations review {index:02}. The report covers \
+                 factory utilization, component lead times, certification progress, and customer \
+                 demand across Europe. It also flags tariff exposure and logistics changes that \
+                 could affect delivery schedules in the coming quarter."
+            ),
         }))
         .bind(serde_json::json!({ "url": format!("https://example.com/b/{index}") }))
         .execute(&pool)
