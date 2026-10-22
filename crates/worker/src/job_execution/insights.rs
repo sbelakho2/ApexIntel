@@ -372,11 +372,20 @@ pub(crate) async fn load_recent_observations_by_company(
                            ORDER BY o.created_at DESC, o.id DESC
                        ) AS rn
                 FROM observations o
+                JOIN companies c ON c.id = o.entity_id
                 WHERE o.created_at >= $1
                   AND o.entity_id IS NOT NULL
                   AND o.entity_type = 'company'
                   AND LENGTH(COALESCE(o.value->>'content', o.value->>'body', o.value->>'body_excerpt',
                                 o.value->>'text', o.value->>'description', '')) >= $2
+                  -- Commercial scope: governments/regulators stay tracked for
+                  -- regulatory warnings, but they are not commercial insight
+                  -- subjects ("citizen satisfaction" briefs are not
+                  -- actionable for a B2B intelligence product, 2026-10-22).
+                  AND lower(coalesce(c.company_type, '')) NOT IN (
+                      'government', 'regulator', 'institution', 'agency',
+                      'ministry', 'public_sector', 'trade_association'
+                  )
             ) ranked
             WHERE rn <= $3
             ORDER BY company_id, rn"#,

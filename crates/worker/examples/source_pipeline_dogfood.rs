@@ -620,8 +620,15 @@ async fn warning_hygiene(
             "volume_anomaly" if title.contains('%') || title.contains("vs baseline") => {
                 unstable.push(format!("volume title embeds percentage: {title}"));
             }
-            "signal_shift" if title.contains(':') => {
-                unstable.push(format!("signal_shift title embeds type list: {title}"));
+            "signal_shift" => {
+                // Stable shape is exactly "Signal coverage change: <entity>".
+                // A comma after the colon means a per-run type list leaked
+                // into the title again (2026-10-07 storm class).
+                if let Some((_, entity)) = title.split_once(':') {
+                    if entity.contains(',') {
+                        unstable.push(format!("signal_shift title embeds a type list: {title}"));
+                    }
+                }
             }
             "sanctions" => sanctions_titles.push(title),
             _ => {}
