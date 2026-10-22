@@ -317,6 +317,7 @@ pub(crate) async fn load_recent_observations_by_company(
                        COALESCE(o.value->>'content', o.value->>'body', o.value->>'body_excerpt',
                                 o.value->>'text', o.value->>'description', o.value->>'title', '') AS content,
                        o.provenance->>'url' AS url,
+                       o.observation_type,
                        ROW_NUMBER() OVER (
                            PARTITION BY o.entity_id
                            ORDER BY o.created_at DESC, o.id DESC
